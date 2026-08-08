@@ -89,18 +89,19 @@ bash ios/scripts/check-public-log-hygiene.sh
 bash android/scripts/check-log-hygiene.sh --self-test
 bash android/scripts/check-log-hygiene.sh
 
-# Assert no `core` error variant interpolates a runtime String into its
-# #[error] message (#474), AND no bridge-authored `detail`/hex-field carries
-# one construction site can't vouch for (#480). RecordError::DuplicateKey
-# formatted a decrypted CBOR field name, which is why both platforms once
-# redacted whole error arms. `core/src/**` payload types are data-free by
-# construction; `ffi/secretary-ffi-bridge/src/**`'s six gated field names
-# (`detail`, `uuid_hex`, `block_uuid_hex`, `recipient_fingerprint_hex`,
-# `expected_fingerprint_hex`, `got_fingerprint_hex`) are gated by CONSTRUCTION
-# SITE instead — every one must route through `error/detail.rs` (rules
-# E2/E3/E4). Both scan roots fail in the Rust author's own PR rather than
-# degrading a platform two layers away. Default-deny: an unrecognised payload
-# type is a FAILURE, not a pass.
+# Assert no error payload crossing the FFI carries a runtime String nobody
+# has vouched for (#474, #480, #486). RecordError::DuplicateKey formatted a
+# decrypted CBOR field name, which is why both platforms once redacted whole
+# error arms. Four scan roots (`core/src/**`, the FFI bridge, and the two
+# binding wrapper crates) under five rules: E1 data-free-by-construction
+# declarations (all four roots); E2 six PINNED gated field names; E3 gated
+# construction sites must be a string literal, a call into that root's
+# sanctioned `detail::*` module, a same-name re-wrap, or (wrapper roots
+# only) a single-hop DTO pass-through — nothing else (bridge + both
+# wrapper roots); E4 `impl GatedDetail` pinned to one file
+# (bridge-only); E5 `format!` confined to each wrapper crate's own detail.rs
+# (wrapper-only). Default-deny: an unrecognised payload type is a FAILURE,
+# not a pass.
 uv run scripts/check-error-payload-hygiene.py --self-test
 uv run scripts/check-error-payload-hygiene.py
 ```
@@ -305,66 +306,191 @@ one of three reviewed shapes.
   the vault folder. These are reviewed, individually justified allowlist
   entries, not a structural exemption.
 
-The guard is [`scripts/check-error-payload-hygiene.py`](scripts/check-error-payload-hygiene.py)
+The guard is now a package, [`scripts/payload_guard/`](scripts/payload_guard/),
+entered via [`scripts/check-error-payload-hygiene.py`](scripts/check-error-payload-hygiene.py)
 (see the Commands block above), and it fails closed: an unrecognised payload
-type is a FAILURE, not a pass. Its allowlist
+type is a FAILURE, not a pass. It covers **four scan roots**, each described
+as data in [`payload_guard/roots.py`](scripts/payload_guard/roots.py)'s
+`SCAN_ROOTS` — `core/src/**`, `ffi/secretary-ffi-bridge/src/**` (#480), and,
+as of #486, the two binding wrapper crates `ffi/secretary-ffi-py/src/**` and
+`ffi/secretary-ffi-uniffi/src/**` — with **five rules**: `E1` (a variant's
+payload type must be data-free by construction; all four roots), `E2` (a
+bridge/wrapper `String` field is permitted only under one of six PINNED names
+— `detail`, `uuid_hex`, `block_uuid_hex`, `recipient_fingerprint_hex`,
+`expected_fingerprint_hex`, `got_fingerprint_hex`), `E3` (every CONSTRUCTION
+SITE of a gated field must build its value from a sanctioned source — bridge
+and both wrapper roots), `E4` (every `impl GatedDetail for X` must live in
+[`ffi/secretary-ffi-bridge/src/error/detail.rs`](ffi/secretary-ffi-bridge/src/error/detail.rs)
+and name a type the guard scans — **bridge-only**, `GatedDetail` is
+`pub(crate)` there so no wrapper crate can implement it), and `E5` (**wrapper-
+only**: `format!` is confined to each wrapper crate's own sanctioned
+`detail.rs` — the bridge is excluded because most of its `format!` sites
+build filenames, a legitimate non-error use). Gated-field construction is
+therefore CI-enforced across the bridge and both wrapper crates: a new
+producer that hand-rolls a `format!` into a gated field fails in the Rust
+author's own PR — the same sink-pinning move `SecretaryLog` (#472) and
+`diagnosticDetail` (#467) make for their own platforms. Its allowlist
 ([`scripts/error-payload-hygiene-allowlist.txt`](scripts/error-payload-hygiene-allowlist.txt))
 is sectioned by review weight; the highest-weight section (Section 3) holds
-**construction-site claims the guard structurally cannot verify** — it sees
-DECLARATIONS (a field's type), not producers (what every call site actually
-passes into that field), so an entry there is a point-in-time claim, verified
-by reading every current constructor, that no producer interpolates vault
-plaintext. Re-verify it whenever a producer changes. #480 closed #478 the
-broad way: the guard's scan roots now also cover
-`ffi/secretary-ffi-bridge/src/**`, via three more rules (`E2`/`E3`/`E4`).
-`E2` permits a bridge error's `String` field only under one of six PINNED
-names (`detail`, `uuid_hex`, `block_uuid_hex`, `recipient_fingerprint_hex`,
-`expected_fingerprint_hex`, `got_fingerprint_hex`); `E3` requires every
-construction site of a gated field to be a literal or a call into
-[`ffi/secretary-ffi-bridge/src/error/detail.rs`](ffi/secretary-ffi-bridge/src/error/detail.rs);
-`E4` pins every `impl GatedDetail for X` enabling such a call to that one
-file, naming a type this guard can see. Gated-field construction is
-therefore CI-enforced: a new bridge producer that hand-rolls a `format!`
-into a gated field fails in the Rust author's own PR — the same sink-pinning
-move `SecretaryLog` (#472) and `diagnosticDetail` (#467) make for their own
-platforms.
+**construction-site claims the guard structurally cannot verify** under
+`core/src/**`, where `E1` sees only DECLARATIONS (a field's type), not
+producers — an entry there is a point-in-time claim, verified by reading
+every current constructor, that no producer interpolates vault plaintext.
+Re-verify it whenever a producer changes.
 
-That does not mean every byte reaching a gated field is CI-verified from
-here to its ultimate source — three named residuals are documented LIMITS in
-the guard's own docstring and allowlist, not silent gaps:
+#486/#487/#488 closed the three residuals a prior version of this paragraph
+named as open, all structurally:
 
-- **`io::Error` payloads minted from a runtime string.** A bridge site can
-  synthesize a `std::io::Error` from a `format!(...)` and hand it to `core`'s
-  `VaultError::Io { source }`, which then reaches a gated field via the
-  allowlisted `impl GatedDetail for std::io::Error` — `E3` gates the
-  *bridge's* initializer expression, not what feeds `core`'s. One production
-  site exists today
-  ([`ffi/secretary-ffi-bridge/src/repair/orchestration.rs:137-147`](ffi/secretary-ffi-bridge/src/repair/orchestration.rs) —
-  content disclosed today: a `StateError` Display plus the state-dir path); a
-  second site of the same shape, unreachable from any gated fold since the
-  bridge imports only `secretary_cli::{state, pipeline}`, is
-  [`cli/src/daemon.rs:424`](cli/src/daemon.rs). Tracked by #487.
-- **The three documented laundering shapes.** `E3` is a syntactic match on
-  initializer position and field name; a local `let detail = format!(...)`
-  re-wrapped via field shorthand, `detail: detail`, or a post-construction
-  `x.detail = ...` assignment is invisible to it. Closing this needs local
-  dataflow analysis. Tracked by #488.
-- **Macro-generated code and trait aliasing.** Like `E1`, this guard reads
-  text, not expanded macros — a `macro_rules!`-generated `#[error(...)]` or
-  `impl GatedDetail for X` is invisible, and so is
-  `use detail::GatedDetail as GD;`-style aliasing of the trait's own name.
+- **#487 — the `io::Error` payload position.** `E3` now reads a FOURTH
+  candidate position, beyond a gated field's initializer/`let`/assignment:
+  the payload argument of `io::Error::new(kind, PAYLOAD)` /
+  `io::Error::other(PAYLOAD)`. The in-tree production site
+  ([`ffi/secretary-ffi-bridge/src/repair/orchestration.rs`](ffi/secretary-ffi-bridge/src/repair/orchestration.rs))
+  now routes through `detail::io_gated_with_path_and_advice`. (#496
+  renamed it: the first spelling put the call site's remediation advice in
+  `context` position, i.e. at the HEAD of the message, so the composed
+  string read "if that file exists … must be fixed instead: No such file
+  or directory; state file path: /…" — the clause preceding the only
+  mention of the file. #487's `io_gated`/`io_gated_with_path` pair had no
+  other caller and was retired.)
+- **#488 — the laundering shapes.** A local `let detail = format!(...)`
+  re-wrap and a post-construction `x.detail = ...` assignment are now
+  candidates in their own right (`E3`'s second and third forms).
+- **#486 — the wrapper-crate boundary.** `ffi/secretary-ffi-py/src/**` and
+  `ffi/secretary-ffi-uniffi/src/**` are now scan roots under `E1`/`E2`/`E3`
+  plus the new `E5`; previously a review-only trust boundary, now CI-enforced
+  under the rule set `roots.py` records for each root (not identical to the
+  bridge's — see the paragraph above: the wrapper roots get an extra `E3`
+  acceptance the bridge is denied, and do not take `E4` at all).
+- **DEFERRED-INIT regression, found in this branch's own final review.** A
+  type-annotated `let` with NO initializer (`let detail: String;`, its
+  value written on a later, separate `detail = <expr>;` statement) reads to
+  `GATED_INIT_RE` exactly like a genuine declaration, and once #488 added
+  `;` as an `initializer_end` terminator its extracted slice went from a
+  garbled, accidentally-denied mess to a clean bare `String` — which arm
+  3's declaration acceptance then waved through, a real regression against
+  the pre-#488 guard (DENIED at merge-base `7fa210c`; ZERO findings before
+  this fix). Closed by denying arm 3's bare-`String` acceptance whenever its
+  terminator is `;`: none of the three genuine declaration positions
+  (struct field, enum field, fn parameter) is ever itself `;`-terminated —
+  only a `let` statement is. Pinned by `BP44`.
 
-The binding wrapper crates (`ffi/secretary-ffi-py`, `ffi/secretary-ffi-uniffi`)
-remain entirely unscanned by `E1`-`E4`. Both wrap already-gated bridge values
-only — fixed literals, verbatim field-to-field copies (`uuid_hex: a.uuid_hex`),
-or a `format!` that COMBINES two-or-more already-gated fields into a new
-string (`ffi-py`'s `errors.rs` does this for `NotAuthor`/`RepairRejected`) —
-never a brand-new unreviewed value. Censused 2026-08-05, corrected on
-re-review (an earlier pass of this census wrongly claimed `ffi-py` had zero
-such sites). That is a review-only trust boundary today, not a CI one —
-tracked by #486, whose corrected inventory also flags that the `format!`
--combination shape doesn't fit any of E3's three accepted construction-site
-shapes, unlike a straight pass-through.
+What is genuinely **not** closed — stated precisely, not dropped, because the
+single most repeated review finding on this branch was documentation
+claiming more coverage than the code delivers:
+
+- **Macro-generated code.** Every rule here reads TEXT, not expanded
+  macros: a `macro_rules!`-generated `#[error(...)]` is invisible. Inherent
+  to a text-based guard. The `GatedDetail` half of this bullet is NO LONGER
+  open — #496 made the trait SEALED (`private::Sealed` in
+  [`error/detail.rs`](ffi/secretary-ffi-bridge/src/error/detail.rs), nameable
+  only from that file), so a macro-generated or alias-spelled
+  `impl GatedDetail for X` outside it is a COMPILE error, not merely an E4
+  finding. `E4` stays as defence in depth and to check the other half of its
+  rule (an impl inside `detail.rs` must name a type the guard scans).
+- **`E3`'s remaining laundering shapes.** #488 closed the SIMPLE `let` and
+  plain-assignment forms only. Still open and pinned by nothing:
+  PATTERN-DESTRUCTURING binds of a gated name (tuple, tuple-struct, struct,
+  slice), `if let` / `while let` / `for` bindings, BUILD-THEN-MUTATE through
+  a method call (`let mut d = "".to_string(); d.push_str(&format!(..));`),
+  the function-PARAMETER case, and DOTLESS LOCAL REASSIGNMENT — `detail =
+  <expr>;` in statement position, reassigning a local bound WITHOUT a `let`
+  this rule can see (a function parameter, or a type-less `let detail;`).
+  `GATED_ASSIGN_RE` requires a RECEIVER DOT before the name (it exists for
+  `x.detail = <expr>`, a write to a FIELD); a bare local has no receiver, so
+  the regex was never scoped to see it. **Two of these shapes are in daily
+  use** — a prior version of this bullet claimed "no live producer in the
+  tree today", which #496 found to be wrong and is the same overclaim class
+  this branch kept re-finding. The pattern-bind form has THREE live
+  producers (`error/conversions.rs:25`, `:27`, `error/vault/mod.rs:558`) and
+  the function-parameter form is what every shipped re-wrap site is. All are
+  legitimate re-wraps of already-gated values, verified by reading each — but
+  "unwatched position in daily use" is a different risk posture from
+  "theoretical", and a future producer adopting the shape for an ungated
+  value would be invisible. (The DEFERRED-INIT shape that used
+  to share this bullet — `let detail: String;` with the value assigned
+  later — is a DIFFERENT gap, and is now closed; see above.) Closing any of
+  these needs local dataflow / interprocedural analysis this construction-
+  site guard does not do. There is also a documented FALSE POSITIVE,
+  fail-closed but worth knowing before reaching for the allowlist: a
+  type-annotated legitimate re-wrap (`let detail: String = detail::gated(e);`)
+  is itself denied, by the interaction of two rules rather than by design.
+- **The `use std::io::Error;` aliasing blind spot**, specific to the NEW
+  `io::Error` payload position: the rule matches the type spelled out
+  (`io::Error::new(...)`), so an aliased import is invisible to it — the same
+  blind spot `E4` has for `GatedDetail`.
+- **`E5` covers `format!` only, and that scope is a census finding, not a
+  claim that `format!` is the only construct CAPABLE of composing a runtime
+  string from several parts.** It is not: `push_str`, `write!`/`writeln!`,
+  the `+` operator on an owned `String`, and `.join()` can all do the same
+  thing, and none of them is a site `E5` inspects — a producer using any of
+  them to build a gated-field argument passes silently. Re-running
+  `grep -rnE "push_str|write!\s*\(|\.join\s*\(|String::from\s*\("
+  ffi/secretary-ffi-py/src ffi/secretary-ffi-uniffi/src` today returns seven
+  hits and zero live composition sites: three are `String::from\s*\(`
+  matching as a substring of `SecretString::from(`, and four are
+  `core_test_data_dir().join(...)` — `Path::join`, not `str`/`String`
+  `.join()`, all four inside `#[cfg(test)]`. `push_str` / `write!` /
+  `writeln!` do not appear at all; `+` string concatenation isn't
+  census-able by grep and is named here on its construction merits alone.
+  Separately, `.to_string()` — which by itself only ever RENDERS one value —
+  IS censused across every production receiver in both wrapper crates: the
+  receiver is always one of two shapes that cannot carry runtime secret
+  content, an already-gated bridge error type's `Display` or a compile-time
+  string literal. Leaving all five constructs out of `E5`'s scope is a
+  reviewed, point-in-time decision, not a structural guarantee — if any
+  census stops holding, `E5` widens to cover it. **Two spellings of
+  `format!` itself also evade it** (found in #496, no live producer): a
+  macro RENAME (`use std::format as fmt2;` then `fmt2!(...)`), which is the
+  same alias blind spot `E4` has, and `std::fmt::format(format_args!(..))`,
+  which is what `format!` expands to. `E5` also SKIPS `#[cfg(test)]` spans —
+  ten live sites depend on that, and `WN3` is the only thing pinning it.
+- **The `&str` exceptions in `E3`'s signature gate** (#496). The
+  sanctioned-constructor registry now reads SIGNATURES, not just names —
+  before that it was self-authorising, deriving its allowlist from the very
+  file it constrains, so one `pub(crate) fn passthrough(x: &str)` added to a
+  `detail.rs` sanctioned an arbitrary runtime string at every call site with
+  the guard green. Every parameter type must now sit in `SAFE_PARAM_TYPES`.
+  But `STR_PARAM_CTOR_EXCEPTIONS` pins two ffi-py constructors
+  (`fingerprint_mismatch`, `uuid_prefixed`) that legitimately take `&str`
+  because they only COMBINE already-gated bridge values — a point-in-time
+  review claim of exactly the kind Section 3 of the allowlist holds. A
+  third `&str` constructor fails the guard until someone edits that set;
+  nothing verifies what the two existing ones are passed.
+- **`E3`'s shape 5 accepts an ARBITRARY single-hop receiver** on the wrapper
+  roots — `<anything>.detail`, not just a bridge DTO. The recorded
+  justification ("the source is a bridge DTO whose fields `E2`/`E3` gate")
+  is a property of the four LIVE sites, not of the shape the rule accepts.
+- **`&'static str` is not leak-proof, and several rules lean on it.** Safe,
+  stable Rust mints one from runtime data via `Box::leak(s.into_boxed_str())`
+  or `String::leak()`, and `#![forbid(unsafe_code)]` does not stop either. So
+  a `&'static str` in a gated position — `SAFE_PARAM_TYPES`, a sanctioned
+  constructor's `context`/`field`/`advice`, a `core` payload's map-level
+  hint — DISCOURAGES a runtime string rather than making one
+  unrepresentable. Every live site passes a literal; nothing enforces it.
+- **The out-of-root `io::Error` mint.** `cli/src/daemon.rs:424` synthesizes
+  a `std::io::Error` from a `format!` in a tree no scan root covers. Not a
+  live exposure — the bridge imports only `secretary_cli::{state, pipeline}`,
+  never `daemon` — but tracked by **#494**, and dropped from this list
+  entirely in an earlier draft.
+
+What #496 CLOSED, all fail-open holes in the guard's own wiring rather than
+in any scanned source: a scan root whose path moved contributed zero files
+silently (`Path.rglob` does not raise), so the bridge and both wrapper roots
+could go unscanned with CI green; three of `roots.py`'s five rule flags were
+read by nothing, so `E3`/`E4`/`E5` could each be switched off tree-wide with
+`--self-test` green; the permissive `#[cfg(...test...)]` matcher was used as
+a SKIP LIST by `E2`/`E3`/`E5`, where an over-match is fail-OPEN, so
+`#[cfg(not(test))]` or any `#[cfg_attr(test, ...)]` silenced a violation in
+one line; a raw C string (`cr#"a " b"#`, Rust 1.77+) desynced the lexer and
+blanked the rest of the file; and a typo'd `ControlExpectation` key silently
+degraded a control to "something fired".
+
+Read the guard's own module docstring's LIMITS section
+([`scripts/check-error-payload-hygiene.py`](scripts/check-error-payload-hygiene.py))
+for the authoritative, current version of this list — this paragraph
+summarizes it and will drift if the guard changes without a matching edit
+here.
 
 ### Memory hygiene: zeroize discipline
 

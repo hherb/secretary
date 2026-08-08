@@ -187,10 +187,9 @@ pub(crate) fn preview_repair_with_device_secret(
 ) -> PyResult<RepairPreview> {
     if device_uuid.len() != 16 {
         device_secret.zeroize();
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "device_uuid must be 16 bytes, got {}",
-            device_uuid.len()
-        )));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            crate::detail::arg_len("device_uuid", 16, device_uuid.len()),
+        ));
     }
     if device_secret.len() != 32 {
         // Capture the length BEFORE zeroize(): `Vec::zeroize()` calls
@@ -199,9 +198,9 @@ pub(crate) fn preview_repair_with_device_secret(
         // length (mirrors `repair::repair_with_device_secret`).
         let got = device_secret.len();
         device_secret.zeroize();
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "device_secret must be 32 bytes, got {got}"
-        )));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            crate::detail::arg_len("device_secret", 32, got),
+        ));
     }
 
     let folder_str = std::str::from_utf8(folder_path).map_err(|_| {

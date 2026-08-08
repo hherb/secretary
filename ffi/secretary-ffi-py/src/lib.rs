@@ -49,6 +49,7 @@ use pyo3::prelude::*;
 
 mod block_crud;
 mod contacts;
+mod detail;
 mod device;
 mod errors;
 mod identity;

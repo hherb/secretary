@@ -91,9 +91,10 @@ pub(crate) fn write_settings(
     let device_uuid = uuid_array_or_value_error(&device_uuid, "device_uuid")?;
     let bridge_settings = secretary_ffi_bridge::Settings::from(settings);
     secretary_ffi_bridge::validate_save_settings(&bridge_settings).map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(format!(
-            "settings out of range: [{}, {}]",
-            e.min, e.max
+        pyo3::exceptions::PyValueError::new_err(crate::detail::range(
+            "settings out of range",
+            e.min,
+            e.max,
         ))
     })?;
     secretary_ffi_bridge::write_settings(

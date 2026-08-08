@@ -227,10 +227,9 @@ pub(crate) fn read_block(
     include_deleted: bool,
 ) -> PyResult<BlockReadOutput> {
     if block_uuid.len() != 16 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "block_uuid must be 16 bytes, got {}",
-            block_uuid.len()
-        )));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            crate::detail::arg_len("block_uuid", 16, block_uuid.len()),
+        ));
     }
     let mut uuid_array = [0u8; 16];
     uuid_array.copy_from_slice(&block_uuid);

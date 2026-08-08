@@ -278,13 +278,7 @@ pub fn read_block(
     block_uuid: Vec<u8>,
     include_deleted: bool,
 ) -> Result<std::sync::Arc<BlockReadOutput>, VaultError> {
-    if block_uuid.len() != 16 {
-        return Err(VaultError::InvalidArgument {
-            detail: format!("block_uuid must be 16 bytes, got {}", block_uuid.len()),
-        });
-    }
-    let mut uuid_array = [0u8; 16];
-    uuid_array.copy_from_slice(&block_uuid);
+    let uuid_array = uuid_from_vec(&block_uuid, "block_uuid")?;
     secretary_ffi_bridge::read_block(&identity.0, &manifest.0, &uuid_array, include_deleted)
         .map(|b| std::sync::Arc::new(BlockReadOutput(b)))
         .map_err(VaultError::from)
@@ -598,27 +592,10 @@ pub fn open_with_device_secret(
     device_uuid: Vec<u8>,
     device_secret: &[u8],
 ) -> Result<OpenVaultOutput, VaultError> {
-    if device_uuid.len() != 16 {
-        return Err(VaultError::InvalidArgument {
-            detail: format!("device_uuid must be 16 bytes, got {}", device_uuid.len()),
-        });
-    }
-    if device_secret.len() != 32 {
-        return Err(VaultError::InvalidArgument {
-            detail: format!(
-                "device_secret must be 32 bytes, got {}",
-                device_secret.len()
-            ),
-        });
-    }
-
-    let uuid_arr: [u8; 16] = device_uuid
-        .as_slice()
-        .try_into()
-        .expect("len checked above");
+    let uuid_arr = uuid_from_vec(&device_uuid, "device_uuid")?;
     // `mut` so the [u8; 32] stack copy is zeroized IN PLACE below — a
     // re-binding `let mut` would copy the array and wipe only the copy.
-    let mut secret_arr: [u8; 32] = device_secret.try_into().expect("len checked above");
+    let mut secret_arr = array32_from_vec(device_secret, "device_secret")?;
 
     let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
         match std::str::from_utf8(&folder_path) {
@@ -669,19 +646,64 @@ pub fn remove_device_slot(folder_path: Vec<u8>, device_uuid: Vec<u8>) -> Result<
 
 /// Validate a 16-byte UUID slice; surface wrong length as
 /// [`VaultError::InvalidArgument`] with the field name in the detail.
-pub(crate) fn uuid_from_vec(bytes: &[u8], field: &str) -> Result<[u8; 16], VaultError> {
+///
+/// `field` is `&'static str`, not `&str` (#486): the detail string reaches
+/// both platform UIs and their logs, so the parameter must be incapable of
+/// carrying a runtime value. One caller ([`super::repair::convert_approvals`])
+/// used to pass a `&format!(...)`; it now calls [`uuid_from_vec_at`] instead.
+pub(crate) fn uuid_from_vec(bytes: &[u8], field: &'static str) -> Result<[u8; 16], VaultError> {
     bytes.try_into().map_err(|_| VaultError::InvalidArgument {
-        detail: format!("{field} must be 16 bytes, got {}", bytes.len()),
+        detail: crate::detail::arg_len(field, 16, bytes.len()),
     })
 }
 
 /// Validate a 32-byte slice (e.g. an `ApprovedWidening.file_fingerprint`);
 /// surface wrong length as [`VaultError::InvalidArgument`] with the field
 /// name in the detail. Mirrors [`uuid_from_vec`] exactly, for the 32-byte
-/// case. (#374)
-pub(crate) fn array32_from_vec(bytes: &[u8], field: &str) -> Result<[u8; 32], VaultError> {
+/// case. (#374; `&'static str` tightening #486)
+pub(crate) fn array32_from_vec(bytes: &[u8], field: &'static str) -> Result<[u8; 32], VaultError> {
     bytes.try_into().map_err(|_| VaultError::InvalidArgument {
-        detail: format!("{field} must be 32 bytes, got {}", bytes.len()),
+        detail: crate::detail::arg_len(field, 32, bytes.len()),
+    })
+}
+
+/// [`uuid_from_vec`] for an element of a caller-supplied list. The index is
+/// an integer this crate computed while iterating; it never becomes
+/// caller-supplied text. (#486)
+pub(crate) fn uuid_from_vec_at(
+    bytes: &[u8],
+    field: &'static str,
+    index: usize,
+) -> Result<[u8; 16], VaultError> {
+    bytes.try_into().map_err(|_| VaultError::InvalidArgument {
+        detail: crate::detail::indexed_arg_len(field, index, 16, bytes.len()),
+    })
+}
+
+/// [`array32_from_vec`] for an element of a caller-supplied list. (#486)
+pub(crate) fn array32_from_vec_at(
+    bytes: &[u8],
+    field: &'static str,
+    index: usize,
+) -> Result<[u8; 32], VaultError> {
+    bytes.try_into().map_err(|_| VaultError::InvalidArgument {
+        detail: crate::detail::indexed_arg_len(field, index, 32, bytes.len()),
+    })
+}
+
+/// [`uuid_from_vec`] for an element of a list nested inside another
+/// caller-supplied list (`approvals[i].added_recipients[j]`). Both `outer`
+/// and `inner` are integers this crate computed while iterating — see
+/// [`crate::detail::nested_indexed_arg_len`] for why neither needs to
+/// collapse into the other. (#486)
+pub(crate) fn uuid_from_vec_nested_at(
+    bytes: &[u8],
+    field: &'static str,
+    outer: usize,
+    inner: usize,
+) -> Result<[u8; 16], VaultError> {
+    bytes.try_into().map_err(|_| VaultError::InvalidArgument {
+        detail: crate::detail::nested_indexed_arg_len(field, outer, inner, 16, bytes.len()),
     })
 }
 
@@ -817,7 +839,7 @@ pub fn write_settings(
     let bridge_settings = secretary_ffi_bridge::Settings::from(settings);
     secretary_ffi_bridge::validate_save_settings(&bridge_settings).map_err(|e| {
         VaultError::InvalidArgument {
-            detail: format!("settings out of range: [{}, {}]", e.min, e.max),
+            detail: crate::detail::range("settings out of range", e.min, e.max),
         }
     })?;
     secretary_ffi_bridge::write_settings(

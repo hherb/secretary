@@ -54,6 +54,7 @@ use secretary_core::vault::{
     repair_vault, ApprovedWidening, RepairPolicy, Unlocker, VaultError, VectorClockEntry,
 };
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::repair::types::FfiApprovedWidening;
 use crate::vault::orchestration::{split_core_open_vault, OpenVaultOutput};
@@ -137,12 +138,14 @@ pub(super) fn baseline_provider(
                 let path = secretary_cli::state::state_file_path(state_dir, *vault_uuid);
                 Err(VaultError::Io {
                     context: "§10 rollback baseline state could not be read",
-                    source: std::io::Error::new(
+                    // The advice TRAILS the failure (#496): it is written to
+                    // be read after the error and the path it refers to, and
+                    // `io_gated_with_path`'s `context` position put it first.
+                    source: detail::io_gated_with_path_and_advice(
                         std::io::ErrorKind::InvalidData,
-                        format!(
-                            "{e}; state file path: {}; if that file exists, deleting it resets this device's rollback history (crypto-design §10's documented reset) — then retry the repair; if it does not exist, the state directory itself is inaccessible (permissions, or a path component that is not a directory) and must be fixed instead",
-                            path.display()
-                        ),
+                        &path,
+                        "if that file exists, deleting it resets this device's rollback history (crypto-design §10's documented reset) — then retry the repair; if it does not exist, the state directory itself is inaccessible (permissions, or a path component that is not a directory) and must be fixed instead",
+                        &e,
                     ),
                 })
             }

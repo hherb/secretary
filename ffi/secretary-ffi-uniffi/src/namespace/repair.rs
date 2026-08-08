@@ -34,14 +34,19 @@ use crate::errors::VaultError;
 use crate::wrappers::repair::{ApprovedWidening, RepairPreview};
 use crate::wrappers::vault::{OpenVaultManifest, OpenVaultOutput};
 
-use super::{array32_from_vec, uuid_from_vec};
+use super::{
+    array32_from_vec, array32_from_vec_at, uuid_from_vec, uuid_from_vec_at, uuid_from_vec_nested_at,
+};
 
 /// Convert a caller-supplied `Vec<ApprovedWidening>` into the bridge-side
 /// `Vec<FfiApprovedWidening>`, length-validating every byte field first.
 ///
 /// Field names in the returned [`VaultError::InvalidArgument`] detail are
-/// indexed (`approvals[i].block_uuid`, `approvals[i].added_recipients[j]`)
-/// so a caller with multiple approvals can tell which entry failed.
+/// indexed (`approvals.block_uuid[i]`, `approvals.added_recipients[i][j]`)
+/// so a caller with multiple approvals can tell which entry failed. Every
+/// index is an integer this loop computed — never caller-supplied text
+/// (#486: `field` on the underlying validators is now `&'static str`, so a
+/// `format!(...)`-built field name can no longer even compile here).
 fn convert_approvals(
     approvals: Vec<ApprovedWidening>,
 ) -> Result<Vec<secretary_ffi_bridge::FfiApprovedWidening>, VaultError> {
@@ -49,20 +54,19 @@ fn convert_approvals(
         .into_iter()
         .enumerate()
         .map(|(idx, w)| {
-            let block_uuid = uuid_from_vec(&w.block_uuid, &format!("approvals[{idx}].block_uuid"))?;
-            let file_fingerprint = array32_from_vec(
-                &w.file_fingerprint,
-                &format!("approvals[{idx}].file_fingerprint"),
-            )?;
-            let committed_fingerprint = array32_from_vec(
+            let block_uuid = uuid_from_vec_at(&w.block_uuid, "approvals.block_uuid", idx)?;
+            let file_fingerprint =
+                array32_from_vec_at(&w.file_fingerprint, "approvals.file_fingerprint", idx)?;
+            let committed_fingerprint = array32_from_vec_at(
                 &w.committed_fingerprint,
-                &format!("approvals[{idx}].committed_fingerprint"),
+                "approvals.committed_fingerprint",
+                idx,
             )?;
             let added_recipients = w
                 .added_recipients
                 .iter()
                 .enumerate()
-                .map(|(j, r)| uuid_from_vec(r, &format!("approvals[{idx}].added_recipients[{j}]")))
+                .map(|(j, r)| uuid_from_vec_nested_at(r, "approvals.added_recipients", idx, j))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(secretary_ffi_bridge::FfiApprovedWidening {
                 block_uuid,
@@ -216,29 +220,12 @@ pub fn repair_with_device_secret(
     // InvalidArgument precedence pinned by the tests below is unchanged).
     let approvals = convert_approvals(approvals)?;
 
-    if device_uuid.len() != 16 {
-        return Err(VaultError::InvalidArgument {
-            detail: format!("device_uuid must be 16 bytes, got {}", device_uuid.len()),
-        });
-    }
-    if device_secret.len() != 32 {
-        return Err(VaultError::InvalidArgument {
-            detail: format!(
-                "device_secret must be 32 bytes, got {}",
-                device_secret.len()
-            ),
-        });
-    }
-
-    let uuid_arr: [u8; 16] = device_uuid
-        .as_slice()
-        .try_into()
-        .expect("len checked above");
+    let uuid_arr = uuid_from_vec(&device_uuid, "device_uuid")?;
     // `mut` so the [u8; 32] stack copy is zeroized IN PLACE below. Binding it
     // immutably and later doing `let mut secret_arr = secret_arr;` would COPY
     // the array (`[u8; 32]: Copy`) into a fresh slot and wipe only the copy,
     // leaving this original slot's 32 plaintext bytes as stack residue.
-    let mut secret_arr: [u8; 32] = device_secret.try_into().expect("len checked above");
+    let mut secret_arr = array32_from_vec(device_secret, "device_secret")?;
 
     let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
         match std::str::from_utf8(&folder_path) {
@@ -362,28 +349,11 @@ pub fn preview_repair_with_device_secret(
     // `[ByRef] bytes` (#307): `device_secret` is a zero-copy borrow of the
     // foreign buffer — no owned Vec, so the pre-0.32 early-return zeroize
     // choreography is gone.
-    if device_uuid.len() != 16 {
-        return Err(VaultError::InvalidArgument {
-            detail: format!("device_uuid must be 16 bytes, got {}", device_uuid.len()),
-        });
-    }
-    if device_secret.len() != 32 {
-        return Err(VaultError::InvalidArgument {
-            detail: format!(
-                "device_secret must be 32 bytes, got {}",
-                device_secret.len()
-            ),
-        });
-    }
-
-    let uuid_arr: [u8; 16] = device_uuid
-        .as_slice()
-        .try_into()
-        .expect("len checked above");
+    let uuid_arr = uuid_from_vec(&device_uuid, "device_uuid")?;
     // `mut` so the [u8; 32] stack copy is zeroized IN PLACE below — see
     // repair_with_device_secret for why a re-binding `let mut` would leave
     // stack residue.
-    let mut secret_arr: [u8; 32] = device_secret.try_into().expect("len checked above");
+    let mut secret_arr = array32_from_vec(device_secret, "device_secret")?;
 
     let result: Result<secretary_ffi_bridge::FfiRepairPreview, VaultError> =
         match std::str::from_utf8(&folder_path) {
@@ -462,12 +432,7 @@ mod tests {
     fn convert_approvals_rejects_wrong_length_block_uuid() {
         match convert_approvals(vec![bad_approval_wrong_block_uuid()]) {
             Err(VaultError::InvalidArgument { detail }) => {
-                assert!(
-                    detail.contains("approvals[0].block_uuid")
-                        && detail.contains("16 bytes")
-                        && detail.contains("got 15"),
-                    "detail did not name the failing field: {detail}"
-                );
+                assert_eq!(detail, "approvals.block_uuid[0] must be 16 bytes, got 15");
             }
             Err(other) => panic!("expected InvalidArgument, got {other:?}"),
             Ok(_) => panic!("expected Err for wrong-length block_uuid"),
@@ -478,11 +443,9 @@ mod tests {
     fn convert_approvals_rejects_wrong_length_file_fingerprint() {
         match convert_approvals(vec![bad_approval_wrong_file_fingerprint()]) {
             Err(VaultError::InvalidArgument { detail }) => {
-                assert!(
-                    detail.contains("approvals[0].file_fingerprint")
-                        && detail.contains("32 bytes")
-                        && detail.contains("got 31"),
-                    "detail did not name the failing field: {detail}"
+                assert_eq!(
+                    detail,
+                    "approvals.file_fingerprint[0] must be 32 bytes, got 31"
                 );
             }
             Err(other) => panic!("expected InvalidArgument, got {other:?}"),
@@ -494,11 +457,9 @@ mod tests {
     fn convert_approvals_rejects_wrong_length_committed_fingerprint() {
         match convert_approvals(vec![bad_approval_wrong_committed_fingerprint()]) {
             Err(VaultError::InvalidArgument { detail }) => {
-                assert!(
-                    detail.contains("approvals[0].committed_fingerprint")
-                        && detail.contains("32 bytes")
-                        && detail.contains("got 33"),
-                    "detail did not name the failing field: {detail}"
+                assert_eq!(
+                    detail,
+                    "approvals.committed_fingerprint[0] must be 32 bytes, got 33"
                 );
             }
             Err(other) => panic!("expected InvalidArgument, got {other:?}"),
@@ -508,13 +469,55 @@ mod tests {
 
     #[test]
     fn convert_approvals_rejects_wrong_length_added_recipient() {
+        // Pins BOTH indices surviving in the message (#486 controller
+        // amendment): the outer approval index (0) and the inner
+        // added_recipients index (0) are distinguishable, not collapsed.
         match convert_approvals(vec![bad_approval_wrong_added_recipient()]) {
             Err(VaultError::InvalidArgument { detail }) => {
-                assert!(
-                    detail.contains("approvals[0].added_recipients[0]")
-                        && detail.contains("16 bytes")
-                        && detail.contains("got 17"),
-                    "detail did not name the failing field: {detail}"
+                assert_eq!(
+                    detail,
+                    "approvals.added_recipients[0][0] must be 16 bytes, got 17"
+                );
+            }
+            Err(other) => panic!("expected InvalidArgument, got {other:?}"),
+            Ok(_) => panic!("expected Err for wrong-length added_recipients entry"),
+        }
+    }
+
+    #[test]
+    fn convert_approvals_rejects_wrong_length_added_recipient_at_nonzero_outer_index() {
+        // A single approval at index 0 can't distinguish "both indices
+        // preserved" from "the outer index was silently dropped and the
+        // inner one happens to read 0" — a two-approval list where a LATER
+        // entry's malformed recipient sits at a DIFFERENT inner offset can:
+        // if the outer index were lost (the plan's original, rejected
+        // "diagnostic reduction"), this would misreport `[0][2]`.
+        //
+        // The indices are deliberately ASYMMETRIC (#496): the earlier
+        // fixture asserted `[1][1]`, and swapping the two arguments at the
+        // `indexed_arg_len` call site left all tests passing — a symmetric
+        // expectation cannot tell outer from inner. `[1][2]` fails loudly if
+        // they are transposed. (`detail.rs`'s own
+        // `nested_indexed_arg_len_distinguishes_outer_from_inner` pins the
+        // CONSTRUCTOR; this pins the CALLER, which is a separate claim.)
+        let good = ApprovedWidening {
+            block_uuid: vec![1u8; 16],
+            file_fingerprint: vec![2u8; 32],
+            committed_fingerprint: vec![5u8; 32],
+            added_recipients: vec![vec![3u8; 16]],
+        };
+        let bad = ApprovedWidening {
+            block_uuid: vec![6u8; 16],
+            file_fingerprint: vec![7u8; 32],
+            committed_fingerprint: vec![8u8; 32],
+            // index 2 is wrong: must be 16
+            added_recipients: vec![vec![9u8; 16], vec![4u8; 16], vec![0u8; 15]],
+        };
+        match convert_approvals(vec![good, bad]) {
+            Err(VaultError::InvalidArgument { detail }) => {
+                assert_eq!(
+                    detail,
+                    "approvals.added_recipients[1][2] must be 16 bytes, got 15"
                 );
             }
             Err(other) => panic!("expected InvalidArgument, got {other:?}"),
@@ -559,7 +562,7 @@ mod tests {
             vec![bad_approval_wrong_block_uuid()],
         ) {
             Err(VaultError::InvalidArgument { detail }) => {
-                assert!(detail.contains("approvals[0].block_uuid"));
+                assert!(detail.contains("approvals.block_uuid[0]"));
             }
             Err(other) => panic!("expected InvalidArgument, got {other:?}"),
             Ok(_) => panic!("expected Err for wrong-length approval"),
@@ -576,7 +579,7 @@ mod tests {
             vec![bad_approval_wrong_file_fingerprint()],
         ) {
             Err(VaultError::InvalidArgument { detail }) => {
-                assert!(detail.contains("approvals[0].file_fingerprint"));
+                assert!(detail.contains("approvals.file_fingerprint[0]"));
             }
             Err(other) => panic!("expected InvalidArgument, got {other:?}"),
             Ok(_) => panic!("expected Err for wrong-length approval"),
@@ -594,7 +597,7 @@ mod tests {
             vec![bad_approval_wrong_added_recipient()],
         ) {
             Err(VaultError::InvalidArgument { detail }) => {
-                assert!(detail.contains("approvals[0].added_recipients[0]"));
+                assert!(detail.contains("approvals.added_recipients[0][0]"));
             }
             Err(other) => panic!("expected InvalidArgument, got {other:?}"),
             Ok(_) => panic!("expected Err for wrong-length approval"),

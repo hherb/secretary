@@ -141,8 +141,9 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::NotAuthor {
             expected_fingerprint_hex,
             got_fingerprint_hex,
-        } => VaultNotAuthor::new_err(format!(
-            "expected={expected_fingerprint_hex}, got={got_fingerprint_hex}",
+        } => VaultNotAuthor::new_err(crate::detail::fingerprint_mismatch(
+            &expected_fingerprint_hex,
+            &got_fingerprint_hex,
         )),
         FfiVaultError::RecipientAlreadyPresent => {
             VaultRecipientAlreadyPresent::new_err(e.to_string())
@@ -199,17 +200,41 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::RepairRejected {
             block_uuid_hex,
             detail,
-        } => VaultRepairRejected::new_err(format!("{block_uuid_hex}: {detail}")),
+        } => VaultRepairRejected::new_err(crate::detail::uuid_prefixed(&block_uuid_hex, &detail)),
     }
 }
 
 /// Validate a 16-byte UUID slice; surface wrong length as `ValueError`
-/// with the field name embedded in the message.
-pub(crate) fn uuid_array_or_value_error(bytes: &[u8], field: &str) -> PyResult<[u8; 16]> {
+/// with the field name embedded in the message. `field` is `&'static str`
+/// (rule E5, #486): every live caller names a fixed field, and the one
+/// caller that used to need a runtime-computed name
+/// (`ApprovedWidening::new`'s `added_recipients[idx]`) now goes through
+/// [`indexed_uuid_array_or_value_error`] instead.
+pub(crate) fn uuid_array_or_value_error(bytes: &[u8], field: &'static str) -> PyResult<[u8; 16]> {
     bytes.try_into().map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err(format!(
-            "{field} must be 16 bytes, got {}",
-            bytes.len()
+        pyo3::exceptions::PyValueError::new_err(crate::detail::arg_len(field, 16, bytes.len()))
+    })
+}
+
+/// [`uuid_array_or_value_error`] for an element of a caller-supplied list,
+/// naming the field as `<field>[<index>]` (`ApprovedWidening::new`'s
+/// `added_recipients`). `field` stays `&'static str` here too — only the
+/// INDEX varies at runtime, and it is an integer this crate already has in
+/// hand from the enclosing `enumerate()`, not a runtime string. Before rule
+/// E5 (#486) this call site instead built the field name via
+/// `&format!("added_recipients[{idx}]")`, exactly the hand-rolled
+/// composition E5 exists to confine to `detail.rs`.
+pub(crate) fn indexed_uuid_array_or_value_error(
+    bytes: &[u8],
+    field: &'static str,
+    index: usize,
+) -> PyResult<[u8; 16]> {
+    bytes.try_into().map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(crate::detail::indexed_arg_len(
+            field,
+            index,
+            16,
+            bytes.len(),
         ))
     })
 }
@@ -219,11 +244,8 @@ pub(crate) fn uuid_array_or_value_error(bytes: &[u8], field: &str) -> PyResult<[
 /// Sibling of [`uuid_array_or_value_error`] for the one non-16-byte
 /// fixed-size field on the FFI seam so far (#374's
 /// `ApprovedWidening.file_fingerprint`).
-pub(crate) fn array32_or_value_error(bytes: &[u8], field: &str) -> PyResult<[u8; 32]> {
+pub(crate) fn array32_or_value_error(bytes: &[u8], field: &'static str) -> PyResult<[u8; 32]> {
     bytes.try_into().map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err(format!(
-            "{field} must be 32 bytes, got {}",
-            bytes.len()
-        ))
+        pyo3::exceptions::PyValueError::new_err(crate::detail::arg_len(field, 32, bytes.len()))
     })
 }

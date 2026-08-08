@@ -16,7 +16,26 @@
 //! or key bytes. Every impl outside this file fails CI (guard rule E4);
 //! keeping all of them here means one file review covers the entire
 //! allowlist rather than trusting it to stay implicit across the crate.
-pub(crate) trait GatedDetail: std::fmt::Display {}
+use std::path::Path;
+
+/// Sealing module (#496). `Sealed` is nameable only from inside `detail.rs`,
+/// so an `impl GatedDetail for X` written in ANY other module of this crate
+/// fails to compile with "the trait bound `X: Sealed` is not satisfied".
+///
+/// Guard rule E4 already denies such an impl, but E4 reads TEXT — it is
+/// blind to a `macro_rules!`-generated impl and to `use detail::GatedDetail
+/// as GD;` spelling the trait under an alias, both disclosed in the guard's
+/// LIMITS. Sealing closes the whole class in the compiler, and aliasing the
+/// trait name does not help: the alias still cannot reach `Sealed`. E4
+/// remains as defence in depth and for the cross-file review story.
+///
+/// `pub(crate)` on the trait already stopped OTHER CRATES implementing it;
+/// this stops other MODULES of this crate.
+mod private {
+    pub(crate) trait Sealed {}
+}
+
+pub(crate) trait GatedDetail: std::fmt::Display + private::Sealed {}
 
 // Core error enums: safe by recursion — scripts/check-error-payload-hygiene.py
 // gates each one's payloads at its own definition (rule E1).
@@ -77,6 +96,98 @@ pub(crate) fn counted(context: &'static str, n: usize) -> String {
     format!("{context}: {n}")
 }
 
+/// Append a disclosed filesystem path after an already-gated value (#487).
+///
+/// `path` is the ALREADY-DISCLOSED class (allowlist Section 2, mirroring
+/// `core/src/vault/mod.rs`'s `Io { source }` arm): anyone with read access
+/// to the vault folder / state directory can already enumerate every path
+/// directly, so echoing one here discloses nothing an attacker with folder
+/// access doesn't already have. `e` must already be gated — this fn adds no
+/// gating of its own for whatever `e` carries, it only appends the path.
+pub(crate) fn gated_with_path(e: &impl GatedDetail, path: &Path) -> String {
+    format!("{e}; state file path: {}", path.display())
+}
+
+/// [`gated_with_path`] plus a TRAILING remediation sentence (#496).
+///
+/// `advice` is `&'static str` — a fixed sentence written at the call site,
+/// never runtime content — and it goes LAST on purpose. Routing the §10
+/// rollback-baseline diagnostic through `io_gated_with_path` put its
+/// remediation advice in `context` position, i.e. at the HEAD, which
+/// composed to `"if that file exists, deleting it resets … must be fixed
+/// instead: No such file or directory; state file path: /…"` — the clause
+/// "if that file exists" preceding the only mention of the file, and the
+/// source error reading as a suffix of the advice. The advice was written to
+/// be read after the failure it explains, so a constructor that preserves
+/// that order is the fix rather than a reworded sentence.
+pub(crate) fn gated_with_path_and_advice(
+    e: &impl GatedDetail,
+    path: &Path,
+    advice: &'static str,
+) -> String {
+    format!(
+        "{}; {advice}",
+        crate::error::detail::gated_with_path(e, path)
+    )
+}
+
+/// Build a `std::io::Error` whose payload is gated, appending a disclosed
+/// path and a trailing remediation sentence (#487, reordered in #496).
+///
+/// `std::io::Error` is allowlisted for `GatedDetail` as a CARRIER: its
+/// `Display` renders whatever it was constructed with, so — unlike
+/// `ParseIntError` — its safety is a claim about every construction site,
+/// not about the type. Guard rule E3 treats the payload argument of
+/// `io::Error::new` / `io::Error::other` as a construction site for exactly
+/// that reason, and this is the sanctioned way to satisfy it. It is the ONLY
+/// such constructor, because the tree has exactly one production io mint
+/// (`repair::orchestration`'s §10 baseline read); #487's `io_gated` /
+/// `io_gated_with_path` pair was retired in #496 once that site moved off
+/// the leading-context ordering and nothing else called them.
+///
+/// The payload is built through the fully-qualified `crate::error::detail::
+/// gated_with_path_and_advice(...)` rather than the bare in-module call. That
+/// is not stylistic: guard rule E3's io-payload gate accepts only a string
+/// literal or a call whose text is literally `detail::<name>(...)` (its
+/// synthetic field name `<io::Error payload>` is deliberately not a valid
+/// identifier, so the "same name" re-wrap arm every other gated field can
+/// use is structurally unreachable here — see `IO_PAYLOAD_FIELD`'s docstring
+/// in `scripts/payload_guard/rules/e3.py`). This file IS the `detail`
+/// module, so an unqualified call has no `detail::` text in front of it and
+/// would deny under the guard's own real scan (verified by execution) —
+/// self-qualifying is the only shape that is both correct Rust and a
+/// sanctioned construction site.
+pub(crate) fn io_gated_with_path_and_advice(
+    kind: std::io::ErrorKind,
+    path: &Path,
+    advice: &'static str,
+    e: &impl GatedDetail,
+) -> std::io::Error {
+    std::io::Error::new(
+        kind,
+        crate::error::detail::gated_with_path_and_advice(e, path, advice),
+    )
+}
+
+// Sealing impls (#496), one per `GatedDetail` impl above. Kept as a block so
+// adding a `GatedDetail` impl without a matching `Sealed` impl is a compile
+// error that points here, and so the reviewed allowlist above stays readable
+// as a single list.
+impl private::Sealed for secretary_core::vault::VaultError {}
+impl private::Sealed for secretary_core::vault::block::BlockError {}
+impl private::Sealed for secretary_core::unlock::UnlockError {}
+impl private::Sealed for secretary_core::unlock::mnemonic::MnemonicError {}
+impl private::Sealed for secretary_core::unlock::vault_toml::VaultTomlError {}
+impl private::Sealed for secretary_core::identity::card::CardError {}
+impl private::Sealed for secretary_core::crypto::sig::SigError {}
+impl private::Sealed for secretary_core::sync::SyncError {}
+impl private::Sealed for crate::vault::manifest::ReplaceManifestError {}
+impl private::Sealed for crate::settings::parse::SettingsParseError {}
+impl private::Sealed for std::io::Error {}
+impl private::Sealed for std::num::ParseIntError {}
+impl private::Sealed for std::str::ParseBoolError {}
+impl private::Sealed for secretary_cli::state::StateError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +202,50 @@ mod tests {
     fn gated_with_context_prefixes() {
         let e = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
         assert_eq!(gated_with_context("read foo", &e), "read foo: gone");
+    }
+
+    #[test]
+    fn gated_with_path_appends_disclosed_path() {
+        let e = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        let msg = gated_with_path(&e, std::path::Path::new("/tmp/state/x.state.cbor"));
+        assert_eq!(msg, "gone; state file path: /tmp/state/x.state.cbor");
+    }
+
+    #[test]
+    fn gated_with_path_and_advice_puts_the_advice_last() {
+        // The ORDER is the whole point of this constructor (#496): the
+        // source error first, then the path it refers to, then the advice
+        // that talks about that path. A regression here reads as
+        // "…must be fixed instead: No such file or directory".
+        let e = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        let msg = gated_with_path_and_advice(
+            &e,
+            std::path::Path::new("/tmp/state/x.state.cbor"),
+            "if that file exists, deleting it resets this device's rollback history",
+        );
+        assert_eq!(
+            msg,
+            "gone; state file path: /tmp/state/x.state.cbor; if that file \
+             exists, deleting it resets this device's rollback history"
+        );
+        // Belt and braces: the advice must not PRECEDE the source error.
+        assert!(msg.find("gone").unwrap() < msg.find("if that file exists").unwrap());
+    }
+
+    #[test]
+    fn io_gated_with_path_and_advice_renders_display_path_then_advice() {
+        let inner = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        let e = io_gated_with_path_and_advice(
+            std::io::ErrorKind::InvalidData,
+            std::path::Path::new("/tmp/state/x.state.cbor"),
+            "then retry the repair",
+            &inner,
+        );
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            e.to_string(),
+            "gone; state file path: /tmp/state/x.state.cbor; then retry the repair"
+        );
     }
 
     #[test]
