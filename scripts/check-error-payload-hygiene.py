@@ -314,278 +314,28 @@ from __future__ import annotations
 import bisect
 import re
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-SCAN_ROOT = REPO_ROOT / "core" / "src"
-# #480: the FFI bridge builds its own detail strings with `format!` and was,
-# until rules E2/E3/E4, entirely unscanned. Bridge files get their OWN
-# discovery pass (`bridge_mode`) rather than being folded into `SCAN_ROOT`'s:
-# a bridge-local alias/const/enum must not vouch for a core field, or vice
-# versa.
-BRIDGE_SCAN_ROOT = REPO_ROOT / "ffi" / "secretary-ffi-bridge" / "src"
-# #480 rule E4: the ONE file permitted to declare `impl GatedDetail for X`.
-# Repo-relative and POSIX-spelled, matching `run_real_scan`'s `path_label`
-# (`str(path.relative_to(REPO_ROOT))`); compared via `is_detail_module`.
-DETAIL_MODULE_REL = "ffi/secretary-ffi-bridge/src/error/detail.rs"
-ALLOWLIST_PATH = REPO_ROOT / "scripts" / "error-payload-hygiene-allowlist.txt"
+# `core/tests/error_payload_hygiene_parity.rs` loads this file directly via
+# `importlib.util.spec_from_file_location`, which does NOT add this file's
+# own directory to `sys.path` the way running it as a script does. Without
+# this line the `payload_guard` import below raises `ModuleNotFoundError`
+# under that loader while both documented `uv run` invocations stay green —
+# a split that would be invisible to this task's own verification commands.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Types whose every value is a compile-time constant or a pure number, and so
-# cannot carry runtime content. Everything else denies.
-DATA_FREE_TYPES: frozenset[str] = frozenset(
-    {
-        "&'static str",
-        "bool",
-        "char",
-        "usize",
-        "isize",
-        "u8", "u16", "u32", "u64", "u128",
-        "i8", "i16", "i32", "i64", "i128",
-        # The #474 classification type: a fieldless kind plus a byte offset.
-        "CborFault",
-        "crate::cbor::CborFault",
-    }
+from payload_guard.config import (
+    ALLOWLIST_PATH, BRIDGE_SCAN_ROOT, DATA_FREE_TYPES, DETAIL_MODULE_REL,
+    GATED_FIELD_NAMES, LOCAL_USE_ROOTS, REPO_ROOT, SCAN_ROOT,
 )
-
-# #480/rule E2: field NAMES whose construction site rule E3 gates. A bridge
-# field under one of these names, declared EXACTLY `String`,
-# is not a structural finding — its VALUE is checked at the construction
-# site instead of being denied outright by TYPE. Pinned to this exact set
-# (spec §3.2): `record_uuid_hex` / `device_uuid_hex` are deliberately NOT
-# members — those are DTO-carrying fields (sync/dto.rs, sync/status.rs), not
-# diagnostic text, and gating them here would launder real payload data
-# through a name that merely LOOKS like the diagnostic-hex convention.
-GATED_FIELD_NAMES: frozenset[str] = frozenset(
-    {
-        "detail",
-        "uuid_hex",
-        "block_uuid_hex",
-        "recipient_fingerprint_hex",
-        "expected_fingerprint_hex",
-        "got_fingerprint_hex",
-    }
+from payload_guard.lexer import (
+    LEXER_SAMPLE, balanced_braces, balanced_slice, discovery_view, lex_spans,
+    render_view, string_literal_token_ends, strip_comments,
 )
-
-# `[u8; 16]`, `[u8; RECORD_UUID_LEN]` — fixed-size numeric arrays.
-ARRAY_RE = re.compile(r"^\[[ui](?:8|16|32|64|128|size);[^\]]+\]$")
-# `Option<T>` is data-free exactly when `T` is.
-OPTION_RE = re.compile(r"^Option<(.+)>$")
-# A field-level attribute prefix (`#[from]`, `#[source]`) glued onto the raw
-# type text by `parse_fields`, which does not separate attributes from types.
-FIELD_ATTR_RE = re.compile(r"^#\[[^\]]*\]\s*")
-# A field-level VISIBILITY modifier: `pub`, `pub(crate)`, `pub(super)`,
-# `pub(self)`, `pub(in some::path)`. Requires either a parenthesised
-# restriction or trailing whitespace, so it never bites an identifier that
-# merely STARTS with `pub` (`pub_key`, `published`).
-VISIBILITY_RE = re.compile(r"^pub(?:\s*\([^)]*\))?(?:\s+|(?=\s*$))")
-
-
-def strip_visibility(text: str) -> str:
-    """Strip a leading field-level visibility modifier.
-
-    A `thiserror` error's fields may be `pub` — nothing in the language or
-    in `thiserror` forbids it, and a struct-shaped error whose fields the
-    crate exposes is ordinary Rust. `parse_fields` split on the first `:`
-    and took the name side verbatim, so `pub struct X { pub index: usize }`
-    produced a field literally named `"pub index"`; the `{index}` capture
-    then matched nothing and the attribute fell through to a spurious
-    `UNPARSED`. Fail-closed, so not a leak — but a guard that cries wolf on
-    valid code is a guard whose findings get waved through.
-    """
-    text = text.strip()
-    m = VISIBILITY_RE.match(text)
-    return text[m.end() :].strip() if m else text
-
-
-def normalize_type(ty: str) -> str:
-    """Collapse whitespace and strip a leading field-level attribute, then a
-    leading visibility modifier.
-
-    `parse_fields` hands back the raw text after the field's `:` — for
-    `Record(#[from] RecordError)` that is `"#[from] RecordError"`, not
-    `"RecordError"`. A TUPLE field's visibility lands on the same side
-    (`pub struct E(pub String)` -> `"pub String"`), so it is stripped here;
-    a STRUCT field's lands on the name side and is stripped by `parse_fields`
-    instead. Path qualification (`crate::unlock::UnlockError`,
-    `device_file::DeviceFileError`) is deliberately left untouched: it is
-    exactly the signal `discover_declarations`'s spellings rely on to tell a
-    `core`-local reference from a foreign one (`std::io::Error`) apart —
-    collapsing to the bare final segment would make the two indistinguishable
-    and let a foreign type piggyback on a same-named local one.
-    """
-    ty = " ".join(ty.split())
-    m = FIELD_ATTR_RE.match(ty)
-    if m:
-        ty = ty[m.end() :]
-    return strip_visibility(ty)
-
-
-def strip_field_attrs(text: str) -> str:
-    """Strip any number of leading `#[...]` field-level attributes (and
-    surrounding whitespace) from `text`.
-
-    A struct field's attribute precedes its NAME (`#[source]\\n source: T`);
-    a tuple field's attribute precedes its TYPE (`#[from] T`, handled by
-    `normalize_type` instead). `parse_fields` calls this on the NAME side of
-    a struct field — CRITICAL round-2 finding 1: `parse_fields` used to split
-    on the first `:` and take the name side VERBATIM, so
-    `#[source]\\n    source: std::io::Error` produced a field literally named
-    `"#[source]\\n    source"`. The placeholder `{source}` then never matched
-    any parsed field name, and the whole variant silently passed — live at
-    `core/src/vault/mod.rs:157` and `core/src/sync/error.rs:35`.
-    """
-    text = text.strip()
-    while True:
-        m = FIELD_ATTR_RE.match(text)
-        if not m:
-            return text
-        text = text[m.end() :].strip()
-
-
-def _is_data_free_core(
-    ty: str,
-    local_error_enums: frozenset[str],
-    denied: frozenset[str] = frozenset(),
-) -> bool:
-    """Tiers 1 and 2 only: literal data-free types, and `core`-local error
-    enums this guard itself scans. Deliberately excludes tier 3 (alias
-    resolution) — it is the target `is_data_free` calls an alias's
-    right-hand side through, so an alias chain (`type A = B; type B = C;`)
-    gets exactly one hop of credit, not an unbounded one.
-
-    `denied` is checked FIRST and denies unconditionally, at EVERY tier and
-    through the `Option<T>` recursion. Two independent sources feed it, both
-    of which mean "this spelling does not resolve to the thing the tier
-    below assumes":
-
-    1. `foreign_use_names` — a bare spelling this file `use`s from outside
-       the crate is not the local type that happens to share its name.
-    2. `alias_shadowed_names` — a spelling a discovered `type X = Y;` alias
-       shadows out of tier 1 or tier 2.
-    """
-    ty = normalize_type(ty)
-    if ty in denied:
-        return False
-    if ty in DATA_FREE_TYPES:
-        return True
-    if ARRAY_RE.match(ty.replace(" ", "")):
-        return True
-    inner = OPTION_RE.match(ty)
-    if inner:
-        return _is_data_free_core(inner.group(1), local_error_enums, denied)
-    return ty in local_error_enums
-
-
-def alias_shadowed_names(
-    aliases: dict[str, str] | None, local_error_enums: frozenset[str]
-) -> frozenset[str]:
-    """Spellings that a discovered `type X = Y;` alias SHADOWS out of an
-    independent credit tier, and which must therefore stop being trusted.
-
-    `DATA_FREE_TYPES` (tier 1) and `local_error_enums` (tier 2) are keyed on
-    the type name AS WRITTEN. `is_data_free` consults them BEFORE the alias
-    table, so a `type` alias that reuses one of their names was — until this
-    drop existed — invisible: the tier-1/2 hit answered "safe" and the alias
-    was never looked up.
-
-        type CborFault = String;          // one file, no collision, no
-        ...                               // ordering dependence
-        Bad { fault: CborFault },         // credited by tier 1. Zero findings.
-
-    That is a one-line, single-file, lint-clean bypass of the whole guard.
-    `type usize = String;` is the same shape, and it is the ONLY half rustc
-    happens to catch for us (`non_camel_case_types`, a `-D warnings` error in
-    this workspace); `CborFault` is already CamelCase and compiles silently.
-    Tier 2 has the identical hole (`type RecordError = String;` beside some
-    other module's real `enum RecordError`), so both sets are intersected.
-
-    Dropping — rather than resolving through the alias — is the same
-    collision-drop discipline `run_real_scan` applies to a spelling with two
-    different right-hand sides and `resolve_consts` applies to a colliding
-    `const`: a name that means two things has not been RESOLVED, and a guard
-    that guesses which meaning is "real" is a guard that can be aimed.
-    Dropping costs a fail-closed finding a human then reads.
-    """
-    if not aliases:
-        return frozenset()
-    return frozenset(
-        name
-        for name in aliases
-        if name in DATA_FREE_TYPES or name in local_error_enums
-    )
-
-
-def is_data_free(
-    ty: str,
-    local_error_enums: frozenset[str] = frozenset(),
-    aliases: dict[str, str] | None = None,
-    foreign_names: frozenset[str] = frozenset(),
-) -> bool:
-    """True when a value of `ty` provably cannot carry runtime content.
-
-    Three tiers, all fail-closed — see the module docstring's THE RULE
-    section for the design rationale:
-
-    1. A literal entry in `DATA_FREE_TYPES`, a fixed-size numeric array, or
-       an `Option<T>` of one.
-    2. A `thiserror`-derived enum this guard itself scans somewhere under
-       `core/src/**` (recognised by name via `discover_declarations` —
-       bare, `<parent-module>::Name`, or `crate::<path>::Name`).
-    3. A one-level `type X = Y;` alias whose RHS clears tier 1 or 2. An alias
-       to something unresolvable — including a chain through a SECOND alias
-       — still denies; see `_is_data_free_core`'s docstring.
-
-    Two independent DENY sets are unioned and applied before any tier:
-
-    - `foreign_names` — tiers 2 and 3 recognise BARE spellings tree-globally,
-      so any bare name the SCANNED FILE imports from outside the crate denies
-      outright, whichever tier would otherwise have credited it
-      (`foreign_use_names`).
-    - `alias_shadowed_names` — a name in tier 1's or tier 2's set that a
-      discovered `type` alias also declares is a SHADOW, and is dropped
-      rather than resolved. Note this denies even when the alias's own RHS
-      would have cleared a tier: the claim being made is a name-resolution
-      claim, and the shadow is the evidence that it does not hold.
-    """
-    denied = foreign_names | alias_shadowed_names(aliases, local_error_enums)
-    if _is_data_free_core(ty, local_error_enums, denied):
-        return True
-    if aliases:
-        base = normalize_type(ty)
-        if base in denied:
-            return False
-        if base in aliases:
-            return _is_data_free_core(aliases[base], local_error_enums, denied)
-    return False
-
-
-def is_bridge_field_safe(
-    name: str,
-    ty: str,
-    local_error_enums: frozenset[str] = frozenset(),
-    aliases: dict[str, str] | None = None,
-    foreign_names: frozenset[str] = frozenset(),
-) -> bool:
-    """True when a BRIDGE field is safe under rule E2's carve-out (#480).
-
-    Either it independently clears `is_data_free` — the ordinary tiers,
-    data-free by TYPE, exactly as core requires — or its declared type is
-    EXACTLY `String` under a name in `GATED_FIELD_NAMES`: data-free by
-    CONSTRUCTION SITE instead, which rule E3 gates. `normalize_type`
-    is applied to `ty` for the exact-`String` comparison so a field-level
-    `#[from]` / visibility prefix does not defeat the match; `Option<String>`,
-    `&str`, or any other near-miss spelling still denies — the carve-out is
-    for the literal named type, not "close enough."
-
-    Shared by BOTH of rule E2's uses: the `bridge_mode` carve-out on the
-    ordinary interpolated-field scan (`scan_source`), and the structural
-    all-fields sweep (`bridge_declaration_findings`) that also checks fields
-    the `#[error(...)]` message never mentions.
-    """
-    if is_data_free(ty, local_error_enums, aliases, foreign_names):
-        return True
-    return normalize_type(ty) == "String" and name in GATED_FIELD_NAMES
+from payload_guard.types import (
+    Finding, alias_shadowed_names, is_bridge_field_safe, is_data_free,
+    normalize_type, strip_field_attrs, strip_visibility,
+)
 
 
 # `enum Name` — used only to find enum bodies for `discover_declarations`;
@@ -849,11 +599,6 @@ def resolve_consts(declared: list[str], shadows: frozenset[str]) -> frozenset[st
     )
 
 
-# `use ...;` — the per-file name bindings that make a BARE spelling mean
-# something other than what tree-global discovery assumed. Roots that stay
-# inside this crate; anything else (`std`, `core`, a third-party crate) binds
-# a name this guard does not scan and therefore cannot vouch for.
-LOCAL_USE_ROOTS: frozenset[str] = frozenset({"crate", "super", "self"})
 USE_HEAD_RE = re.compile(r"\buse\s+")
 # `mod name;` / `mod name { ... }`. Rust 2018 UNIFORM PATHS let a `use` start
 # at a module declared in the CURRENT module, with no `crate::`/`self::`
@@ -1189,263 +934,6 @@ def discover_declarations(
     return frozenset(local_error_enums), aliases, consts, frozenset(const_shadows)
 
 
-# ---------------------------------------------------------------------------
-# ONE lexical pass. Every view below is derived from it.
-# ---------------------------------------------------------------------------
-#
-# Rounds 1-4 grew a family of hand-rolled scanners, each patched for the shape
-# that had just defeated it. Round 5's review broke four of them at once, and
-# every break was the same bug in a different costume: the scanner did not
-# actually know where Rust literals begin and end.
-#
-#   - `r#"a" const ZZ: usize = 1; "b"#` -- a raw string with an odd number of
-#     internal quotes re-exposed its own contents as code, so an author could
-#     self-authorise a placeholder from inside a message again (the CRITICAL
-#     this branch supposedly closed in round 4).
-#   - `let c = '}';` inside a `fn` popped the function's own brace, promoting
-#     every following declaration in that body to "module scope".
-#   - `fn q() -> char { '"' }` desynced the string scanner across the next
-#     `use` statement, which RESTORED a withdrawn credit (see
-#     `foreign_use_names` for why that direction is the dangerous one).
-#
-# So: classify every byte ONCE, correctly, and derive the views from that.
-# Anything a future round needs is a new view over the same classification,
-# never a fifth bespoke scanner.
-
-KIND_COMMENT = "#"
-KIND_DELIM = "d"  # a literal's delimiter bytes (quotes, `r##` prefix, ...)
-KIND_LITERAL = "s"  # a literal's CONTENT bytes
-
-# `r"`, `r#"`, `r##"`, and the byte-string forms `br"`, `br#"`, ...
-RAW_STRING_START_RE = re.compile(r"(?:b?r)(?P<hashes>#*)\"")
-# `'x'`, `'\n'`, `'\''`, `'\\'`, `'\u{1F600}'`, and the byte forms `b'x'`.
-# Deliberately NOT matched: `'static` / `'a` / `'outer` -- a `'` that is not
-# closed by a matching `'` two-ish characters later is a LIFETIME or a loop
-# label, not a char literal. `&'static str` is the shape that makes this
-# ambiguity unavoidable, and it is everywhere in this codebase.
-CHAR_LITERAL_RE = re.compile(r"b?'(?:\\u\{[0-9a-fA-F_]{1,6}\}|\\.|[^\\'\n])'")
-
-
-def _ident_char(ch: str) -> bool:
-    return ch.isalnum() or ch == "_"
-
-
-def lex_spans(src: str) -> list[tuple[int, int, str]]:
-    r"""Classify `src` into ordered, non-overlapping, non-CODE spans.
-
-    Returns `(start, end, kind)` for every comment and every string / char
-    literal, in source order; anything not covered is code. Handles:
-
-    - line comments, and block comments WITH NESTING (Rust's `/* /* */ */`
-      nests, unlike C's -- an inner `/*` that a non-nesting scanner ignores
-      makes the outer comment end early);
-    - ordinary and byte strings with escapes, including the `\` + newline
-      line continuation;
-    - RAW strings with a variable `#` run (`r"..."`, `r#"..."#`, `r##"..."##`,
-      `br#"..."#`), where `"` inside the body is an ordinary character;
-    - char and byte-char literals, including `'"'`, `'{'`, `'}'`, `'\''`,
-      `'\\'`;
-    - the lifetime-vs-char ambiguity (`&'static str` is code, not a literal).
-
-    Unterminated constructs run to end-of-input, which is the conservative
-    reading: the tail is classified as literal/comment rather than code, so
-    discovery loses credits (a finding) rather than gaining them.
-    """
-    spans: list[tuple[int, int, str]] = []
-    n = len(src)
-    i = 0
-    while i < n:
-        ch = src[i]
-        nxt = src[i + 1] if i + 1 < n else ""
-
-        if ch == "/" and nxt == "/":
-            end = src.find("\n", i)
-            end = n if end == -1 else end
-            spans.append((i, end, KIND_COMMENT))
-            i = end
-            continue
-
-        if ch == "/" and nxt == "*":
-            depth, j = 0, i
-            while j < n:
-                if src[j] == "/" and j + 1 < n and src[j + 1] == "*":
-                    depth += 1
-                    j += 2
-                    continue
-                if src[j] == "*" and j + 1 < n and src[j + 1] == "/":
-                    depth -= 1
-                    j += 2
-                    if depth == 0:
-                        break
-                    continue
-                j += 1
-            j = min(j, n)
-            spans.append((i, j, KIND_COMMENT))
-            i = j
-            continue
-
-        # `r` / `b` / `br` are literal prefixes only when they are not the
-        # tail of a longer identifier (`membr"` is not a thing in valid Rust,
-        # but refusing to guess costs nothing).
-        if ch in "rb" and (i == 0 or not _ident_char(src[i - 1])):
-            m = RAW_STRING_START_RE.match(src, i)
-            if m:
-                closer = '"' + m.group("hashes")
-                body = m.end()
-                j = src.find(closer, body)
-                if j == -1:
-                    spans.append((i, body, KIND_DELIM))
-                    spans.append((body, n, KIND_LITERAL))
-                    i = n
-                    continue
-                spans.append((i, body, KIND_DELIM))
-                spans.append((body, j, KIND_LITERAL))
-                spans.append((j, j + len(closer), KIND_DELIM))
-                i = j + len(closer)
-                continue
-            if ch == "b":
-                m = CHAR_LITERAL_RE.match(src, i)
-                if m:
-                    spans.append((i, i + 2, KIND_DELIM))
-                    spans.append((i + 2, m.end() - 1, KIND_LITERAL))
-                    spans.append((m.end() - 1, m.end(), KIND_DELIM))
-                    i = m.end()
-                    continue
-                if nxt == '"':
-                    i, added = _lex_quoted(src, i, 2, spans)
-                    if added:
-                        continue
-
-        if ch == '"':
-            i, added = _lex_quoted(src, i, 1, spans)
-            if added:
-                continue
-
-        if ch == "'":
-            m = CHAR_LITERAL_RE.match(src, i)
-            if m:
-                spans.append((i, i + 1, KIND_DELIM))
-                spans.append((i + 1, m.end() - 1, KIND_LITERAL))
-                spans.append((m.end() - 1, m.end(), KIND_DELIM))
-                i = m.end()
-                continue
-            # A lifetime or a loop label. Code.
-
-        i += 1
-    return spans
-
-
-def _lex_quoted(
-    src: str, start: int, prefix_len: int, spans: list[tuple[int, int, str]]
-) -> tuple[int, bool]:
-    r"""Lex an ordinary (or byte) string literal at `src[start]`, appending its
-    spans. `\` consumes the next character whatever it is, which is what makes
-    both `\"` and the `\` + newline continuation come out right.
-    """
-    n = len(src)
-    body = start + prefix_len
-    j = body
-    while j < n:
-        if src[j] == "\\":
-            j += 2
-            continue
-        if src[j] == '"':
-            break
-        j += 1
-    body_end = min(j, n)
-    spans.append((start, body, KIND_DELIM))
-    spans.append((body, body_end, KIND_LITERAL))
-    if body_end < n:
-        spans.append((body_end, body_end + 1, KIND_DELIM))
-        return body_end + 1, True
-    return n, True
-
-
-def render_view(src: str, blank_kinds: str) -> str:
-    r"""Blank the requested span kinds, preserving LENGTH and LINE COUNT.
-
-    Every blanked byte becomes a space, except a newline which stays a
-    newline. Both invariants are structural here rather than a special case
-    that has to be remembered -- an earlier round shipped a `\` + newline
-    continuation that emitted a space for the newline and silently shifted
-    every subsequent reported line number in the file.
-    """
-    out: list[str] = []
-    pos = 0
-    for start, end, kind in lex_spans(src):
-        if kind not in blank_kinds:
-            continue
-        out.append(src[pos:start])
-        out.append("".join("\n" if c == "\n" else " " for c in src[start:end]))
-        pos = end
-    out.append(src[pos:])
-    return "".join(out)
-
-
-def strip_comments(src: str) -> str:
-    """Blank `//` and `/* */` comments; leave literals verbatim.
-
-    This is the view `scan_source` reads: locating `#[error(` attributes and
-    extracting their message text needs the strings INTACT.
-    """
-    return render_view(src, KIND_COMMENT)
-
-
-def discovery_view(raw: str) -> str:
-    """The DECLARATION-DISCOVERY view: comments AND literal contents blanked,
-    delimiters left in place.
-
-    This is a security control. `find_consts`, `find_type_aliases` and
-    `ENUM_RE` all answer "what names may this file vouch for?", and text
-    inside an `#[error("...")]` MESSAGE declares nothing. Reading declarations
-    from a view with string contents intact let an author self-authorise the
-    very placeholder under test:
-
-        #[error("leaked field name: {SELF_AUTH} const SELF_AUTH: usize = 1;")]
-        SelfAuthorised,
-
-    passed silently, in one file, with no collision and no file-ordering
-    dependence. So did the raw-string form `r#"a" const ... "b"#`, which
-    survived round 4 because that round blanked strings with a scanner that
-    did not know what a raw string was.
-
-    Char literal CONTENTS are blanked for the same reason braces matter:
-    `let c = '}';` inside a `fn` body used to pop that function's own brace in
-    `non_module_block_spans`, promoting the rest of the body to module scope.
-
-    FAIL-CLOSED ONLY FOR CREDIT-GRANTING PASSES. Blanking can only ever HIDE
-    text. For the three registries this view feeds -- local error enums, type
-    aliases, consts -- hiding a declaration LOSES a credit, which produces a
-    finding, so a lexer bug there degrades toward noise. That argument does
-    NOT transfer to a WITHDRAWAL pass: `foreign_use_names` removes credits, so
-    hiding a `use` there would RESTORE one. It therefore does not read this
-    view at all -- see its docstring. Getting this backwards is exactly the
-    kind of unchecked correctness claim this guard exists to eliminate.
-    """
-    return render_view(raw, KIND_COMMENT + KIND_LITERAL)
-
-
-
-@dataclass(frozen=True)
-class Finding:
-    path: str
-    line: int
-    source_line: str
-    variant: str
-    field: str
-    field_type: str
-    # The allowlist's rule column. `E1` (interpolated-field scan, `core/src/**`
-    # and — under `bridge_mode` — the FFI bridge) is the default; rule `E2`
-    # (#480: the bridge's structural all-fields declaration sweep) is set
-    # explicitly by its two producers, `bridge_declaration_findings`. The
-    # column exists so the file format is byte-identical to the two shell
-    # guards' allowlists, which lets `scripts/lib/hygiene-allowlist.sh
-    # ::allowlisted` parse this file unchanged —
-    # `core/tests/error_payload_hygiene_parity.rs` exercises exactly that
-    # claim.
-    rule: str = "E1"
-
-
 ERROR_ATTR_RE = re.compile(r"#\[error\(", re.MULTILINE)
 # `.index` in a trailing format argument, e.g. `, .index + 1)`.
 ARG_FIELD_RE = re.compile(r"\.([A-Za-z_][A-Za-z0-9_]*)")
@@ -1455,29 +943,6 @@ VARIANT_RE = re.compile(r"^\s*([A-Z][A-Za-z0-9_]*)\s*(\{|\(|,|$)")
 # ... }` / `pub struct Name(...);` rather than to a variant. Not used in
 # `core/src` today, but nothing in the language prevents it.
 STRUCT_RE = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)")
-
-
-def balanced_slice(src: str, start: int) -> tuple[str, int]:
-    """Return the `(...)`-balanced text starting at `src[start] == '('`."""
-    depth, i, in_string = 0, start, False
-    while i < len(src):
-        ch = src[i]
-        if in_string:
-            if ch == "\\":
-                i += 2
-                continue
-            if ch == '"':
-                in_string = False
-        elif ch == '"':
-            in_string = True
-        elif ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                return src[start : i + 1], i + 1
-        i += 1
-    return src[start:], len(src)
 
 
 def skip_attributes(text: str) -> str:
@@ -2399,42 +1864,6 @@ DETAIL_CALL_RE = re.compile(
 )
 
 
-def string_literal_token_ends(raw: str) -> dict[int, int]:
-    r"""Map the START offset of every complete STRING literal token in `raw`
-    to the offset just past its closing delimiter.
-
-    Built from `lex_spans`, which emits a terminated literal as exactly three
-    contiguous spans — opening `KIND_DELIM`, `KIND_LITERAL` content, closing
-    `KIND_DELIM`. Three properties are load-bearing for rule E3:
-
-    - An UNTERMINATED literal emits no closing delimiter span, so it is
-      absent from this map and every acceptance test against it fails
-      closed.
-    - A CHAR literal (`'x'`) has the same three-span shape, so the opening
-      delimiter's text must END in `"` — that admits `"`, `r#"`, `b"`,
-      `br##"` and rejects `'`.
-    - The map is keyed on the literal's own start, so "the expression IS a
-      single string literal" is decided by an EXACT offset match, not by a
-      prefix test. If a lexer desync ever swallowed half a file into one
-      "literal", the expression span would not coincide with that token's
-      span and the acceptance would fail rather than widen.
-    """
-    ends: dict[int, int] = {}
-    spans = lex_spans(raw)
-    for i in range(len(spans) - 2):
-        (s0, e0, k0) = spans[i]
-        (s1, e1, k1) = spans[i + 1]
-        (s2, e2, k2) = spans[i + 2]
-        if (k0, k1, k2) != (KIND_DELIM, KIND_LITERAL, KIND_DELIM):
-            continue
-        if e0 != s1 or e1 != s2:
-            continue
-        if not raw[s0:e0].endswith('"'):
-            continue
-        ends[s0] = e2
-    return ends
-
-
 def initializer_end(view: str, start: int) -> int:
     """The offset at which the initializer expression beginning at `start`
     ends: the first `,` at top-level nesting, or the first `)`, `]` or `}`
@@ -2973,29 +2402,6 @@ def discover_error_struct_names(raw: str) -> frozenset[str]:
     NAME-only projection acquired a security-relevant consumer.
     """
     return frozenset(name for name, _, _ in discover_error_struct_declarations(raw))
-
-
-def balanced_braces(src: str) -> tuple[str, int]:
-    """Return the `{...}`-balanced text starting at `src[0] == '{'`."""
-    depth, i, in_string = 0, 0, False
-    while i < len(src):
-        ch = src[i]
-        if in_string:
-            if ch == "\\":
-                i += 2
-                continue
-            if ch == '"':
-                in_string = False
-        elif ch == '"':
-            in_string = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return src[: i + 1], i + 1
-        i += 1
-    return src, len(src)
 
 
 def load_allowlist(path: Path) -> set[str]:
@@ -4701,30 +4107,6 @@ def _finding_matches(f: Finding, expect: ControlExpectation) -> bool:
     if "rule" in expect and f.rule != expect["rule"]:
         return False
     return True
-
-
-#  A synthetic source carrying every lexical shape the guard has ever been
-#  broken by, plus the ones it has not: nested block comments, a `\` + newline
-#  continuation, raw strings with a `#` run and internal quotes, byte and raw
-#  byte strings, char literals holding a quote / a brace / an escaped quote,
-#  and a lifetime. Used by `check_view_invariants` — see there.
-LEXER_SAMPLE = (
-    '#[error("continued \\\n        message: {a}")]\n'
-    "/* block\n   comment /* nested */ still comment */ const A: usize = 1;\n"
-    "// line comment\n"
-    'let s = "quote \\" inside";\n'
-    'let r = r#"raw " with quote and /* not a comment */"#;\n'
-    'let r2 = r##"raw "# inner"##;\n'
-    'let b = b"bytes \\x00";\n'
-    'let br = br#"raw " bytes"#;\n'
-    "let q = '\"';\n"
-    "let ob = '{';\n"
-    "let cb = '}';\n"
-    "let esc = '\\'';\n"
-    "let bs = '\\\\';\n"
-    "let bc = b'x';\n"
-    "fn f<'a>(x: &'a str) -> &'static str { x }\n"
-)
 
 
 def check_view_invariants() -> list[str]:
