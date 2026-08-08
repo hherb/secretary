@@ -50,6 +50,44 @@ from payload_guard.types import Finding
 # and P14 were both in that state.
 ControlExpectation = dict[str, object]
 
+# Every key `_finding_matches` understands. A key outside this set is a TYPO,
+# and `_finding_matches` ignores what it does not recognise — so before #496
+# writing `{"feild": "uuid_hex"}` instead of `{"field": ...}` silently
+# degraded that control back to "something fired", the exact vacuity the
+# comment above records for P12/P14, while `--self-test` printed OK
+# (verified by execution). `_check_expectation_keys` makes it a failure.
+_EXPECTATION_KEYS = frozenset(
+    {"unparsed", "variant", "field", "field_type", "field_type_prefix", "rule"}
+)
+
+
+def _check_expectation_keys() -> list[str]:
+    """Every `ControlExpectation` key must be one `_finding_matches` reads.
+
+    Cheap structural stand-in for the dataclass this dict wants to be: a
+    typo'd key cannot silently weaken the control it belongs to.
+    """
+    failures: list[str] = []
+    corpora = (
+        ("POSITIVE", POSITIVE_CONTROLS),
+        ("BRIDGE POSITIVE", BRIDGE_POSITIVE_CONTROLS),
+        ("WRAPPER POSITIVE", WRAPPER_POSITIVE_CONTROLS),
+    )
+    for corpus_name, corpus in corpora:
+        for entry in corpus:
+            if len(entry) < 3 or not isinstance(entry[2], dict):
+                continue
+            unknown = set(entry[2]) - _EXPECTATION_KEYS
+            if unknown:
+                failures.append(
+                    f"CONTROL EXPECTATION KEY: {corpus_name} control "
+                    f"{entry[0]} carries unrecognised key(s) "
+                    f"{sorted(unknown)} — _finding_matches ignores unknown "
+                    "keys, so this control asserts less than it appears to. "
+                    f"Known keys: {sorted(_EXPECTATION_KEYS)}"
+                )
+    return failures
+
 
 def _finding_matches(f: Finding, expect: ControlExpectation) -> bool:
     is_unparsed = f.field_type.startswith("UNPARSED:")
@@ -186,6 +224,79 @@ def scan_control(src: str) -> list[Finding]:
 _ROOTS_BY_LABEL = {r.label: r for r in SCAN_ROOTS}
 
 
+# The REVIEWED rule matrix (#496). `roots.py` decides which rules run over
+# which tree, and until #496 nothing read four of its five booleans: flipping
+# `construction_sites`, `gated_detail_impls` or `format_confinement` to
+# `False` disabled rule E3, E4 or E5 tree-wide while BOTH `--self-test` and
+# the real scan stayed green (verified by execution).
+#
+# Two independent mechanisms close that, because they fail differently:
+#
+#  1. This table — a tripwire naming the expected value of every flag, so a
+#     `roots.py` edit produces ONE legible failure that says which flag moved.
+#     It is deliberately a hardcoded duplicate: changing the rule matrix is
+#     meant to be a two-file, reviewed edit, not a one-line one.
+#  2. `scan_bridge_control` / `scan_wrapper_control` now DISPATCH off the
+#     same flags `run_real_scan` reads, so a flag flip also drops the
+#     corresponding controls — proving the flags are load-bearing rather
+#     than merely declared. This is the discipline the `_ROOTS_BY_LABEL`
+#     comment above already states for `allow_field_access`, carried to the
+#     other four.
+_EXPECTED_ROOT_FLAGS: dict[str, dict[str, bool]] = {
+    "core": {
+        "bridge_mode": False, "construction_sites": False,
+        "gated_detail_impls": False, "format_confinement": False,
+        "allow_field_access": False,
+    },
+    "bridge": {
+        "bridge_mode": True, "construction_sites": True,
+        "gated_detail_impls": True, "format_confinement": False,
+        "allow_field_access": False,
+    },
+    "ffi-py": {
+        "bridge_mode": True, "construction_sites": True,
+        "gated_detail_impls": False, "format_confinement": True,
+        "allow_field_access": True,
+    },
+    "ffi-uniffi": {
+        "bridge_mode": True, "construction_sites": True,
+        "gated_detail_impls": False, "format_confinement": True,
+        "allow_field_access": True,
+    },
+}
+
+
+def _check_root_rule_flags() -> list[str]:
+    """Assert `SCAN_ROOTS` still matches the reviewed rule matrix (#496).
+
+    See `_EXPECTED_ROOT_FLAGS`. Also pins the SET of root labels, so
+    deleting a root — which would otherwise surface as a raw `KeyError`
+    traceback out of `_ROOTS_BY_LABEL`, loud in the wrong way for a CI
+    security gate — is reported as a normal harness failure.
+    """
+    failures: list[str] = []
+    actual_labels = {r.label for r in SCAN_ROOTS}
+    expected_labels = set(_EXPECTED_ROOT_FLAGS)
+    if actual_labels != expected_labels:
+        return [
+            "SCAN ROOT SET: payload_guard.roots.SCAN_ROOTS labels "
+            f"{sorted(actual_labels)} != reviewed {sorted(expected_labels)} — "
+            "adding or removing a scan root is a reviewed change; update "
+            "_EXPECTED_ROOT_FLAGS in the same edit"
+        ]
+    for root in SCAN_ROOTS:
+        for flag, expected in _EXPECTED_ROOT_FLAGS[root.label].items():
+            got = getattr(root, flag)
+            if got is not expected:
+                failures.append(
+                    f"SCAN ROOT FLAG: {root.label}.{flag} is {got}, reviewed "
+                    f"value is {expected} — this flag decides whether a whole "
+                    "RULE runs over that tree; if the change is intended, "
+                    "update _EXPECTED_ROOT_FLAGS in the same commit"
+                )
+    return failures
+
+
 def _check_wrapper_roots_agree() -> list[str]:
     """The design's premise (`payload_guard.roots` module docstring) is a
     single shared wrapper-root rule set, not two independently configurable
@@ -199,17 +310,41 @@ def _check_wrapper_roots_agree() -> list[str]:
     wrong way for a CI security gate. Wired into `run_self_test` alongside
     `check_view_invariants` / `check_bridge_key_distinctness`.
     """
-    values = {
-        label: _ROOTS_BY_LABEL[label].allow_field_access
-        for label in ("ffi-py", "ffi-uniffi")
-    }
-    if len(set(values.values())) != 1:
-        return [
-            "WRAPPER ROOT AGREEMENT: ffi-py and ffi-uniffi disagree on "
-            f"allow_field_access ({values}) — scan_wrapper_control assumes "
-            "one shared wrapper-root rule set"
-        ]
-    return []
+    failures: list[str] = []
+    # Widened in #496 from `allow_field_access` alone to every RULE-SELECTING
+    # flag: `scan_wrapper_control` now dispatches off all of them, so a
+    # disagreement on any one makes "the wrapper-root rule set" ambiguous.
+    for flag in (
+        "bridge_mode", "construction_sites", "gated_detail_impls",
+        "format_confinement", "allow_field_access",
+    ):
+        values = {
+            label: getattr(_ROOTS_BY_LABEL[label], flag)
+            for label in ("ffi-py", "ffi-uniffi")
+        }
+        if len(set(values.values())) != 1:
+            failures.append(
+                "WRAPPER ROOT AGREEMENT: ffi-py and ffi-uniffi disagree on "
+                f"{flag} ({values}) — scan_wrapper_control assumes one shared "
+                "wrapper-root rule set"
+            )
+    return failures
+
+
+def _wrapper_flag(flag: str) -> bool:
+    """The value of a rule-selecting flag across BOTH wrapper roots.
+
+    `all(...)` rather than either root's value alone, for the reason
+    `_wrapper_allow_field_access` gives: if the two ever disagree, the
+    fail-closed reading of an ACCEPTANCE is "not uniformly authorised".
+    For a rule-ENABLING flag the same `all(...)` turns a disagreement into
+    "the rule does not run in the harness", which drops that rule's controls
+    and fails the self-test loudly — the direction that gets noticed.
+    `_check_wrapper_roots_agree` reports the disagreement itself.
+    """
+    return all(
+        getattr(_ROOTS_BY_LABEL[label], flag) for label in ("ffi-py", "ffi-uniffi")
+    )
 
 
 def _wrapper_allow_field_access() -> bool:
@@ -262,24 +397,34 @@ def scan_bridge_control(
     every existing bridge control's behaviour is unchanged; `BP43` proves
     shape 5 stays denied here even when a WRAPPER root grants it elsewhere.
     """
+    root = _ROOTS_BY_LABEL["bridge"]
     enums, aliases, declared_consts, shadows = discover_declarations(src)
     consts = resolve_consts(declared_consts, shadows)
     foreign = foreign_use_names(src)
+    # Every rule below dispatches off the SAME `ScanRoot` flags `run_real_scan`
+    # reads (#496) — see `_EXPECTED_ROOT_FLAGS`. Calling them unconditionally
+    # is what let E3/E4 be switched off tree-wide with the self-test green.
     found = scan_source(
-        path_label, src, enums, aliases, consts, foreign, bridge_mode=True
+        path_label, src, enums, aliases, consts, foreign,
+        bridge_mode=root.bridge_mode,
     )
-    found += scan_bridge_plain_declarations(path_label, src, enums, aliases, foreign)
-    found += scan_bridge_construction_sites(
-        path_label,
-        src,
-        sanctioned_constructor_names(detail_src),
-        allow_field_access=_ROOTS_BY_LABEL["bridge"].allow_field_access,
-    )
-    found += scan_bridge_gated_detail_impls(
-        path_label,
-        src,
-        discover_scanned_error_type_names([], [(path_label, src)], enums, enums),
-    )
+    if root.bridge_mode:
+        found += scan_bridge_plain_declarations(
+            path_label, src, enums, aliases, foreign
+        )
+    if root.construction_sites:
+        found += scan_bridge_construction_sites(
+            path_label,
+            src,
+            sanctioned_constructor_names(detail_src),
+            allow_field_access=root.allow_field_access,
+        )
+    if root.gated_detail_impls:
+        found += scan_bridge_gated_detail_impls(
+            path_label,
+            src,
+            discover_scanned_error_type_names([], [(path_label, src)], enums, enums),
+        )
     return found
 
 
@@ -330,19 +475,27 @@ def scan_wrapper_control(
     enums, aliases, declared_consts, shadows = discover_declarations(src)
     consts = resolve_consts(declared_consts, shadows)
     foreign = foreign_use_names(src)
+    # Same flag-driven dispatch as `scan_bridge_control` (#496), read off BOTH
+    # wrapper roots via `_wrapper_flag`.
     found = scan_source(
-        path_label, src, enums, aliases, consts, foreign, bridge_mode=True
+        path_label, src, enums, aliases, consts, foreign,
+        bridge_mode=_wrapper_flag("bridge_mode"),
     )
-    found += scan_bridge_plain_declarations(path_label, src, enums, aliases, foreign)
-    found += scan_bridge_construction_sites(
-        path_label,
-        src,
-        sanctioned_constructor_names(detail_src),
-        allow_field_access=_wrapper_allow_field_access(),
-    )
-    found += scan_wrapper_format_confinement(
-        path_label, src, _WRAPPER_DETAIL_MODULE_REL_FOR_SELFTEST
-    )
+    if _wrapper_flag("bridge_mode"):
+        found += scan_bridge_plain_declarations(
+            path_label, src, enums, aliases, foreign
+        )
+    if _wrapper_flag("construction_sites"):
+        found += scan_bridge_construction_sites(
+            path_label,
+            src,
+            sanctioned_constructor_names(detail_src),
+            allow_field_access=_wrapper_allow_field_access(),
+        )
+    if _wrapper_flag("format_confinement"):
+        found += scan_wrapper_format_confinement(
+            path_label, src, _WRAPPER_DETAIL_MODULE_REL_FOR_SELFTEST
+        )
     return found
 
 
@@ -427,7 +580,9 @@ def check_bridge_key_distinctness() -> list[str]:
 
 def run_self_test() -> int:
     failures: list[str] = check_view_invariants()
+    failures += _check_root_rule_flags()
     failures += _check_wrapper_roots_agree()
+    failures += _check_expectation_keys()
     for entry in POSITIVE_CONTROLS:
         label, src = entry[0], entry[1]
         expect: ControlExpectation | None = entry[2] if len(entry) > 2 else None

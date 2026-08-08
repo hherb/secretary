@@ -1,6 +1,9 @@
 """Rule E1: every `#[error]` variant/struct's interpolated fields must be
-data-free. Scans BOTH roots (`core/src/**` and the bridge, the latter via
-`bridge_mode`). Moved out of the former single-file
+data-free. Scans ALL FOUR roots — `core/src/**`, the FFI bridge, and (since
+#486) both binding wrapper crates, the latter three via `bridge_mode`. The
+"BOTH roots" this docstring claimed until #496 was stale from before the
+wrapper roots landed; `payload_guard/roots.py`'s `SCAN_ROOTS` is the
+authority, and `scan.py` runs `scan_source` for every entry in it. Moved out of the former single-file
 `scripts/check-error-payload-hygiene.py` in #486 (task 4). Read the entry
 point's module docstring first for the WHY and THE RULE.
 """
@@ -191,6 +194,7 @@ def scan_source(
                     variant=variant,
                     field=field,
                     field_type=f"UNPARSED: {reason}",
+                    rule="E1",
                 )
             )
 
@@ -386,6 +390,7 @@ def scan_source(
                         variant=variant,
                         field=fname,
                         field_type=ftype,
+                        rule="E1",
                     )
                 )
     return findings

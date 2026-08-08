@@ -14,16 +14,20 @@ class Finding:
     variant: str
     field: str
     field_type: str
-    # The allowlist's rule column. `E1` (interpolated-field scan, `core/src/**`
-    # and — under `bridge_mode` — the FFI bridge) is the default; rule `E2`
-    # (#480: the bridge's structural all-fields declaration sweep) is set
-    # explicitly by its two producers, `bridge_declaration_findings`. The
-    # column exists so the file format is byte-identical to the two shell
+    # The allowlist's rule column, REQUIRED (#496 — it used to default to
+    # `"E1"`). The allowlist key is `f"{path}\t{rule}\t{source_line}"`, so
+    # the column is what scopes an exception to the rule that raised it. A
+    # default silently undid that: a future rule module forgetting
+    # `rule="E6"` would report under E1's wording AND be matchable — hence
+    # silenceable — by an existing **E1** allowlist entry on the same path
+    # and text. Every producer now names its own rule.
+    #
+    # The column also keeps the file format byte-identical to the two shell
     # guards' allowlists, which lets `scripts/lib/hygiene-allowlist.sh
     # ::allowlisted` parse this file unchanged —
     # `core/tests/error_payload_hygiene_parity.rs` exercises exactly that
     # claim.
-    rule: str = "E1"
+    rule: str
 
 
 # `[u8; 16]`, `[u8; RECORD_UUID_LEN]` — fixed-size numeric arrays.

@@ -26,7 +26,53 @@ from payload_guard.rules.e5 import scan_wrapper_format_confinement
 from payload_guard.types import Finding
 
 
+def _check_roots_resolve() -> list[str]:
+    """Every `ScanRoot.path` must exist and contain at least one `.rs` file
+    (#496).
+
+    `Path.rglob` on a NON-EXISTENT directory returns an empty generator, not
+    an error. Without this check a root that moved — a crate rename, a
+    refactor, a merge-conflict resolution in `roots.py` — silently
+    contributed zero files, and the guard printed `error-payload hygiene: OK`
+    with an entire crate unscanned under every rule that applied to it.
+    Verified by execution: `mv ffi/secretary-ffi-py ffi/secretary-py` took a
+    planted, otherwise-caught violation from exit 1 to exit 0.
+
+    Only `core` failed closed before this, and only by ACCIDENT — rule E4's
+    registry is built from core + bridge types, so an empty `core` made every
+    `impl GatedDetail` target unscannable and E4 denied. The bridge and both
+    wrapper roots, which between them hold every gated construction site,
+    failed OPEN.
+
+    A hard failure rather than a `Finding`: this is not a property of any
+    scanned source, it is the guard being unable to do its job, and it must
+    not be allowlistable.
+    """
+    problems: list[str] = []
+    for r in SCAN_ROOTS:
+        if not r.path.is_dir():
+            problems.append(
+                f"SCAN ROOT MISSING: {r.label} -> {r.path} is not a directory. "
+                "If the tree moved, update payload_guard/roots.py; the guard "
+                "will NOT scan a root it cannot find."
+            )
+            continue
+        if not any(r.path.rglob("*.rs")):
+            problems.append(
+                f"SCAN ROOT EMPTY: {r.label} -> {r.path} contains no *.rs "
+                "files. A root that contributes zero files silently exempts "
+                "a whole crate."
+            )
+    return problems
+
+
 def run_real_scan() -> int:
+    root_problems = _check_roots_resolve()
+    if root_problems:
+        print("error-payload hygiene: FAIL\n", file=sys.stderr)
+        for p in root_problems:
+            print(f"  {p}", file=sys.stderr)
+        return 1
     allowlist = load_allowlist(ALLOWLIST_PATH)
     sources: dict[str, list[tuple[str, str]]] = {
         r.label: [
