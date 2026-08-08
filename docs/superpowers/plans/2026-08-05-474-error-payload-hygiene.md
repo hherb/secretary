@@ -1224,7 +1224,15 @@ LIMITS (stated, not hidden)
   are regular (thiserror derives); an exotic macro-generated error enum would
   be invisible. `--self-test` pins the shapes that do occur.
 """
+```
 
+> **Correction (2026-08-08, #486):** this passage predates PR #479/#489.
+> #478 was closed the broad way by #480 — `ffi/secretary-ffi-bridge/src/**`
+> is a scan root, gated by rules E2/E3/E4. The remaining unscanned crates
+> were the two BINDING WRAPPERS, which #486 closes. This plan is a
+> historical execution artifact; it is not updated in place.
+
+```python
 from __future__ import annotations
 
 import re
@@ -2438,6 +2446,12 @@ Rewrite the audit KDoc above it. The `NOTE:` paragraph currently warns that an a
      * strings and is not scanned; see #478.
 ```
 
+> **Correction (2026-08-08, #486):** this passage predates PR #479/#489.
+> #478 was closed the broad way by #480 — `ffi/secretary-ffi-bridge/src/**`
+> is a scan root, gated by rules E2/E3/E4. The remaining unscanned crates
+> were the two BINDING WRAPPERS, which #486 closes. This plan is a
+> historical execution artifact; it is not updated in place.
+
 - [ ] **Step 4: Update `BrowseMapping.kt:27`**
 
 If that line applies its own redaction to `SaveCryptoFailure`, remove it so the raw detail is carried. If it merely maps the arm, leave it and delete only the stale comment about the redaction.
@@ -2529,6 +2543,12 @@ uv run scripts/check-error-payload-hygiene.py
 - [ ] **Step 3: Add a CLAUDE.md architecture section**
 
 After the Kotlin log-hygiene section, add a short section — *"Rust error payloads: data-free by construction (#474)"* — covering: the three groups; that `core/src/cbor.rs` is the only place the `ciborium` message is seen; that the allowlist's Section 2 entries are construction-site claims the guard cannot verify; and that the guard scans `core/src/**` only, leaving the bridge's own detail strings to #478.
+
+> **Correction (2026-08-08, #486):** this passage predates PR #479/#489.
+> #478 was closed the broad way by #480 — `ffi/secretary-ffi-bridge/src/**`
+> is a scan root, gated by rules E2/E3/E4. The remaining unscanned crates
+> were the two BINDING WRAPPERS, which #486 closes. This plan is a
+> historical execution artifact; it is not updated in place.
 
 - [ ] **Step 4: Decide on README / ROADMAP by precedent grep**
 

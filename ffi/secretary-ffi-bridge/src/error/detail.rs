@@ -16,6 +16,8 @@
 //! or key bytes. Every impl outside this file fails CI (guard rule E4);
 //! keeping all of them here means one file review covers the entire
 //! allowlist rather than trusting it to stay implicit across the crate.
+use std::path::Path;
+
 pub(crate) trait GatedDetail: std::fmt::Display {}
 
 // Core error enums: safe by recursion — scripts/check-error-payload-hygiene.py
@@ -77,6 +79,68 @@ pub(crate) fn counted(context: &'static str, n: usize) -> String {
     format!("{context}: {n}")
 }
 
+/// Build a `std::io::Error` whose payload is gated (#487).
+///
+/// `std::io::Error` is allowlisted for `GatedDetail` as a CARRIER: its
+/// `Display` renders whatever it was constructed with, so — unlike
+/// `ParseIntError` — its safety is a claim about every construction site,
+/// not about the type. Guard rule E3 treats the payload argument of
+/// `io::Error::new` / `io::Error::other` as a construction site for exactly
+/// that reason, and this is the sanctioned way to satisfy it.
+///
+/// The payload is built through the fully-qualified `crate::error::detail::
+/// gated_with_context(...)` rather than the bare in-module call. That is not
+/// stylistic: guard rule E3's io-payload gate accepts only a string literal
+/// or a call whose text is literally `detail::<name>(...)` (its synthetic
+/// field name `<io::Error payload>` is deliberately not a valid identifier,
+/// so the "same name" re-wrap arm every other gated field can use is
+/// structurally unreachable here — see `IO_PAYLOAD_FIELD`'s docstring in
+/// `scripts/payload_guard/rules/e3.py`). This file IS the `detail` module,
+/// so an unqualified `gated_with_context(...)` call has no `detail::` text
+/// in front of it and would deny under the guard's own real scan (verified
+/// by execution while writing this function) — self-qualifying is the only
+/// shape that is both correct Rust and a sanctioned construction site.
+pub(crate) fn io_gated(
+    kind: std::io::ErrorKind,
+    context: &'static str,
+    e: &impl GatedDetail,
+) -> std::io::Error {
+    std::io::Error::new(kind, crate::error::detail::gated_with_context(context, e))
+}
+
+/// Append a disclosed filesystem path after an already-gated value (#487).
+///
+/// `path` is the ALREADY-DISCLOSED class (allowlist Section 2, mirroring
+/// `core/src/vault/mod.rs`'s `Io { source }` arm): anyone with read access
+/// to the vault folder / state directory can already enumerate every path
+/// directly, so echoing one here discloses nothing an attacker with folder
+/// access doesn't already have. `e` must already be gated — this fn adds no
+/// gating of its own for whatever `e` carries, it only appends the path.
+pub(crate) fn gated_with_path(e: &impl GatedDetail, path: &Path) -> String {
+    format!("{e}; state file path: {}", path.display())
+}
+
+/// Build a `std::io::Error` whose payload gates a `GatedDetail` value AND
+/// appends a disclosed filesystem path (#487) — the two-runtime-value
+/// sibling of [`io_gated`] for sites (like `repair::orchestration`'s §10
+/// baseline read) whose diagnostic needs a path alongside the error. Layered
+/// on `io_gated` itself (not a parallel hand-rolled `format!`): the
+/// `{context}: {e}` half is gated exactly the same way, and layering is
+/// what keeps `io_gated` a genuine, exercised production constructor rather
+/// than a helper only its own unit test calls.
+pub(crate) fn io_gated_with_path(
+    kind: std::io::ErrorKind,
+    context: &'static str,
+    path: &Path,
+    e: &impl GatedDetail,
+) -> std::io::Error {
+    let with_context = io_gated(kind, context, e);
+    std::io::Error::new(
+        kind,
+        crate::error::detail::gated_with_path(&with_context, path),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,6 +155,37 @@ mod tests {
     fn gated_with_context_prefixes() {
         let e = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
         assert_eq!(gated_with_context("read foo", &e), "read foo: gone");
+    }
+
+    #[test]
+    fn io_gated_renders_context_and_display() {
+        let inner = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        let e = io_gated(std::io::ErrorKind::InvalidData, "read state", &inner);
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(e.to_string(), "read state: gone");
+    }
+
+    #[test]
+    fn gated_with_path_appends_disclosed_path() {
+        let e = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        let msg = gated_with_path(&e, std::path::Path::new("/tmp/state/x.state.cbor"));
+        assert_eq!(msg, "gone; state file path: /tmp/state/x.state.cbor");
+    }
+
+    #[test]
+    fn io_gated_with_path_renders_context_display_and_path() {
+        let inner = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        let e = io_gated_with_path(
+            std::io::ErrorKind::InvalidData,
+            "read state",
+            std::path::Path::new("/tmp/state/x.state.cbor"),
+            &inner,
+        );
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            e.to_string(),
+            "read state: gone; state file path: /tmp/state/x.state.cbor"
+        );
     }
 
     #[test]

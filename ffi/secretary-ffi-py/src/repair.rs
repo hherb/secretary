@@ -41,7 +41,10 @@
 use pyo3::prelude::*;
 use zeroize::Zeroize;
 
-use crate::errors::{array32_or_value_error, ffi_vault_error_to_pyerr, uuid_array_or_value_error};
+use crate::errors::{
+    array32_or_value_error, ffi_vault_error_to_pyerr, indexed_uuid_array_or_value_error,
+    uuid_array_or_value_error,
+};
 use crate::identity::UnlockedIdentity;
 use crate::vault::{OpenVaultManifest, OpenVaultOutput};
 
@@ -93,7 +96,7 @@ impl ApprovedWidening {
         let added_recipients = added_recipients
             .iter()
             .enumerate()
-            .map(|(idx, r)| uuid_array_or_value_error(r, &format!("added_recipients[{idx}]")))
+            .map(|(idx, r)| indexed_uuid_array_or_value_error(r, "added_recipients", idx))
             .collect::<PyResult<Vec<_>>>()?;
         Ok(Self {
             block_uuid,
@@ -170,10 +173,9 @@ pub(crate) fn repair_with_password(
 ) -> PyResult<OpenVaultOutput> {
     if device_uuid.len() != 16 {
         password.zeroize();
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "device_uuid must be 16 bytes, got {}",
-            device_uuid.len()
-        )));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            crate::detail::arg_len("device_uuid", 16, device_uuid.len()),
+        ));
     }
 
     let folder_str = std::str::from_utf8(folder_path).map_err(|_| {
@@ -233,10 +235,9 @@ pub(crate) fn repair_with_recovery(
 ) -> PyResult<OpenVaultOutput> {
     if device_uuid.len() != 16 {
         mnemonic.zeroize();
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "device_uuid must be 16 bytes, got {}",
-            device_uuid.len()
-        )));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            crate::detail::arg_len("device_uuid", 16, device_uuid.len()),
+        ));
     }
 
     let folder_str = std::str::from_utf8(folder_path).map_err(|_| {
@@ -298,10 +299,9 @@ pub(crate) fn repair_with_device_secret(
     // Length pre-checks: zeroize device_secret before every early return.
     if device_uuid.len() != 16 {
         device_secret.zeroize();
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "device_uuid must be 16 bytes, got {}",
-            device_uuid.len()
-        )));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            crate::detail::arg_len("device_uuid", 16, device_uuid.len()),
+        ));
     }
     if device_secret.len() != 32 {
         // Capture the length BEFORE zeroize(): `Vec::zeroize()` calls
@@ -310,9 +310,9 @@ pub(crate) fn repair_with_device_secret(
         // rather than the actual wrong length.
         let got = device_secret.len();
         device_secret.zeroize();
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "device_secret must be 32 bytes, got {got}"
-        )));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            crate::detail::arg_len("device_secret", 32, got),
+        ));
     }
 
     let folder_str = std::str::from_utf8(folder_path).map_err(|_| {
