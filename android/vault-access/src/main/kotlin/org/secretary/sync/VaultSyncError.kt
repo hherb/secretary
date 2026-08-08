@@ -42,19 +42,23 @@ import org.secretary.diagnostics.SecretFreeThrowable
  *   clocks and device UUIDs only, never vault plaintext. `cli/src/state.rs`'s `StateError` is
  *   a thin wrapper: it carries the core `SyncError` unchanged and adds the file-I/O side (the
  *   `<state-dir>/<vault_uuid_hex>.state.cbor` read/write), not any of the CBOR codec itself.
- * - [InvalidArgument] is NOT #480-gated. Rules E2/E3/E4 stop at everything under
- *   `ffi/secretary-ffi-bridge/src/`; this arm's sole producer,
- *   `ffi/secretary-ffi-uniffi/src/namespace/sync.rs:22`, calls the WRAPPER crate's own
- *   `uuid_from_vec` helper (`namespace/mod.rs:672-675`), which builds `detail` with
- *   `format!("{field} must be 16 bytes, got {}", bytes.len())` — a hand-rolled `format!` in a
- *   crate this guard does not scan at all (#486). It is safe TODAY by PRODUCER TRACE, not by
- *   construction: THIS arm's sole call site passes `uuid_from_vec` the fixed literal
- *   `"vault_uuid"` as `field` (never decrypted content), and `bytes.len()` is a length, never
- *   content. That is a claim about `sync.rs:22` specifically, not about `uuid_from_vec` in
- *   general — `field` is NOT always a literal across its callers: `namespace/repair.rs:52,65`
- *   pass `format!("approvals[{idx}].block_uuid")` (a safe loop index, not a fixed literal),
- *   though that is a different arm's producer, not this one's. Nothing enforces that a future
- *   producer of THIS arm keeps `field` a literal, unlike [Failed]/[StateCorrupt] above.
+ * - [InvalidArgument] IS gated at construction as of #486 — this bullet described deleted
+ *   code until #496 corrected it, and understated the enforcement in four separate ways.
+ *   Rules E1/E2/E3 (plus the wrapper-only E5) now cover
+ *   `ffi/secretary-ffi-uniffi/src/**` and `ffi/secretary-ffi-py/src/**` as scan roots, so
+ *   "a crate this guard does not scan at all" is no longer true. This arm's sole producer,
+ *   `ffi/secretary-ffi-uniffi/src/namespace/sync.rs:22`, calls the wrapper crate's own
+ *   `uuid_from_vec` helper, which no longer hand-rolls a `format!` — it routes through
+ *   `crate::detail::arg_len`, in the one file rule E5 confines `format!` to. `arg_len` takes
+ *   `field: &'static str`, so "nothing enforces that a future producer keeps `field` a
+ *   literal" is now enforced BY THE COMPILER for this arm. And the cited counter-example is
+ *   gone: `namespace/repair.rs`'s call sites no longer pass
+ *   `format!("approvals[{idx}].block_uuid")` — `convert_approvals` uses `uuid_from_vec_at`
+ *   with a `&'static str` field name and separate integer indices.
+ *   TWO RESIDUALS keep this weaker than a proof (see the guard's LIMITS section):
+ *   `&'static str` discourages a runtime string rather than forbidding one — safe Rust can
+ *   mint one via `Box::leak` (#498) — and rule E5's `format!`-only scope is a census, not a
+ *   structural guarantee (#499). Both are tree-wide caveats, not specific to this arm.
  *   `VaultSyncErrorMapping.kt`'s Kotlin side adds no further risk on top: exactly ONE
  *   producer, no Kotlin-side interpolation. Unlike its browse-surface namesake
  *   ([org.secretary.browse.VaultBrowseError.InvalidArgument], REDACTED because

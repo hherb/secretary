@@ -260,4 +260,26 @@ core/src/sync/error.rs	E1	#[error("SyncState CBOR encode failed: {detail}")]	Syn
 core/src/sync/error.rs	E1	#[error("invalid argument: {detail}")]	producers pass literals, block_uuid arrays, or format!({e}) over the core-gated, clean ConflictError
 core/src/vault/mod.rs	E1	#[error("trashed block {block_uuid:?} failed verification: {detail}")]	producers pass literals plus format!({e}) over other core-gated, already-scanned errors
 core/src/vault/mod.rs	E1	#[error("repair rejected for block {block_uuid:02x?}: {detail}")]	producers pass literals plus format!({e}) over other core-gated, already-scanned errors
-ffi/secretary-ffi-bridge/src/repair/tests/mod.rs	E3	uuid_hex: format_uuid_hyphenated(&block_uuid)	TEST-ONLY FILE: `mod tests` is #[cfg(test)]-gated in the PARENT (repair/mod.rs), which this guard cannot see from inside — the remedy its own per-file cfg(test) LIMIT prescribes. The RHS is format_uuid_hyphenated(&block_uuid), a data-free renderer over a [u8; 16] (hex digits and hyphens only). Never reaches a platform.
+# =============================================================================
+# SECTION 4 — TEST-ONLY FILES THE PER-FILE cfg(test) LIMIT CANNOT SEE
+#
+# A file whose `mod` declaration is #[cfg(test)]-gated in its PARENT is a
+# whole test-only file this guard has no way to recognise from inside, so its
+# contents are scanned like shipped code. That is the fail-closed direction,
+# and the entry point's LIMITS section prescribes exactly this remedy.
+#
+# MATERIALLY LOWER review weight than Section 3. A Section 3 entry is a claim
+# about what every PRODUCER of a shipped variant passes; an entry here is a
+# claim about ONE fact a reader can check in seconds — that the named file is
+# genuinely gated in its parent, and therefore ships in no binary. Split out
+# in #496: this entry sat in Section 3 purely by file position, and #486 had
+# just narrowed Section 3's stated scope to `core/src/**` E1 declaration
+# claims, so its presence there made the highest-weight section look like it
+# held a class it does not. Keeping Section 3 short is what keeps its entries
+# meaningful — the same discipline CLAUDE.md states for the iOS/Android
+# allowlists.
+#
+# Verify on edit: the parent's `#[cfg(test)] mod <name>;` still exists.
+# =============================================================================
+
+ffi/secretary-ffi-bridge/src/repair/tests/mod.rs	E3	uuid_hex: format_uuid_hyphenated(&block_uuid)	TEST-ONLY FILE: `mod tests` is #[cfg(test)]-gated in the PARENT (repair/mod.rs:22), which this guard cannot see from inside. The RHS is format_uuid_hyphenated(&block_uuid), a data-free renderer over a [u8; 16] (hex digits and hyphens only). Never reaches a platform. NEWLY REPORTED, not newly written: the source line is unchanged since #449; #488 made a `let` binding to a gated name an E3 candidate position, which is what first surfaced it.

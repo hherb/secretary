@@ -95,8 +95,10 @@ bash android/scripts/check-log-hygiene.sh
 # error arms. Four scan roots (`core/src/**`, the FFI bridge, and the two
 # binding wrapper crates) under five rules: E1 data-free-by-construction
 # declarations (all four roots); E2 six PINNED gated field names; E3 gated
-# construction sites must route through a sanctioned `detail::*` helper
-# (bridge + both wrapper roots); E4 `impl GatedDetail` pinned to one file
+# construction sites must be a string literal, a call into that root's
+# sanctioned `detail::*` module, a same-name re-wrap, or (wrapper roots
+# only) a single-hop DTO pass-through — nothing else (bridge + both
+# wrapper roots); E4 `impl GatedDetail` pinned to one file
 # (bridge-only); E5 `format!` confined to each wrapper crate's own detail.rs
 # (wrapper-only). Default-deny: an unrecognised payload type is a FAILURE,
 # not a pass.
@@ -344,7 +346,13 @@ named as open, all structurally:
   the payload argument of `io::Error::new(kind, PAYLOAD)` /
   `io::Error::other(PAYLOAD)`. The in-tree production site
   ([`ffi/secretary-ffi-bridge/src/repair/orchestration.rs`](ffi/secretary-ffi-bridge/src/repair/orchestration.rs))
-  now routes through `detail::io_gated_with_path`.
+  now routes through `detail::io_gated_with_path_and_advice`. (#496
+  renamed it: the first spelling put the call site's remediation advice in
+  `context` position, i.e. at the HEAD of the message, so the composed
+  string read "if that file exists … must be fixed instead: No such file
+  or directory; state file path: /…" — the clause preceding the only
+  mention of the file. #487's `io_gated`/`io_gated_with_path` pair had no
+  other caller and was retired.)
 - **#488 — the laundering shapes.** A local `let detail = format!(...)`
   re-wrap and a post-construction `x.detail = ...` assignment are now
   candidates in their own right (`E3`'s second and third forms).
@@ -371,14 +379,17 @@ What is genuinely **not** closed — stated precisely, not dropped, because the
 single most repeated review finding on this branch was documentation
 claiming more coverage than the code delivers:
 
-- **Macro-generated code and trait aliasing.** Every rule here reads TEXT,
-  not expanded macros: a `macro_rules!`-generated `#[error(...)]` or
-  `impl GatedDetail for X` is invisible, and `use detail::GatedDetail as GD;`
-  followed by `impl GD for X {}` spells the trait under an alias and is
-  invisible the same way. Inherent to a text-based guard.
+- **Macro-generated code.** Every rule here reads TEXT, not expanded
+  macros: a `macro_rules!`-generated `#[error(...)]` is invisible. Inherent
+  to a text-based guard. The `GatedDetail` half of this bullet is NO LONGER
+  open — #496 made the trait SEALED (`private::Sealed` in
+  [`error/detail.rs`](ffi/secretary-ffi-bridge/src/error/detail.rs), nameable
+  only from that file), so a macro-generated or alias-spelled
+  `impl GatedDetail for X` outside it is a COMPILE error, not merely an E4
+  finding. `E4` stays as defence in depth and to check the other half of its
+  rule (an impl inside `detail.rs` must name a type the guard scans).
 - **`E3`'s remaining laundering shapes.** #488 closed the SIMPLE `let` and
-  plain-assignment forms only. Still open, pinned by nothing, and with no
-  live producer in the tree today (verified by reading every current one):
+  plain-assignment forms only. Still open and pinned by nothing:
   PATTERN-DESTRUCTURING binds of a gated name (tuple, tuple-struct, struct,
   slice), `if let` / `while let` / `for` bindings, BUILD-THEN-MUTATE through
   a method call (`let mut d = "".to_string(); d.push_str(&format!(..));`),
@@ -387,7 +398,16 @@ claiming more coverage than the code delivers:
   this rule can see (a function parameter, or a type-less `let detail;`).
   `GATED_ASSIGN_RE` requires a RECEIVER DOT before the name (it exists for
   `x.detail = <expr>`, a write to a FIELD); a bare local has no receiver, so
-  the regex was never scoped to see it. (The DEFERRED-INIT shape that used
+  the regex was never scoped to see it. **Two of these shapes are in daily
+  use** — a prior version of this bullet claimed "no live producer in the
+  tree today", which #496 found to be wrong and is the same overclaim class
+  this branch kept re-finding. The pattern-bind form has THREE live
+  producers (`error/conversions.rs:25`, `:27`, `error/vault/mod.rs:558`) and
+  the function-parameter form is what every shipped re-wrap site is. All are
+  legitimate re-wraps of already-gated values, verified by reading each — but
+  "unwatched position in daily use" is a different risk posture from
+  "theoretical", and a future producer adopting the shape for an ungated
+  value would be invisible. (The DEFERRED-INIT shape that used
   to share this bullet — `let detail: String;` with the value assigned
   later — is a DIFFERENT gap, and is now closed; see above.) Closing any of
   these needs local dataflow / interprocedural analysis this construction-
@@ -419,7 +439,52 @@ claiming more coverage than the code delivers:
   content, an already-gated bridge error type's `Display` or a compile-time
   string literal. Leaving all five constructs out of `E5`'s scope is a
   reviewed, point-in-time decision, not a structural guarantee — if any
-  census stops holding, `E5` widens to cover it.
+  census stops holding, `E5` widens to cover it. **Two spellings of
+  `format!` itself also evade it** (found in #496, no live producer): a
+  macro RENAME (`use std::format as fmt2;` then `fmt2!(...)`), which is the
+  same alias blind spot `E4` has, and `std::fmt::format(format_args!(..))`,
+  which is what `format!` expands to. `E5` also SKIPS `#[cfg(test)]` spans —
+  ten live sites depend on that, and `WN3` is the only thing pinning it.
+- **The `&str` exceptions in `E3`'s signature gate** (#496). The
+  sanctioned-constructor registry now reads SIGNATURES, not just names —
+  before that it was self-authorising, deriving its allowlist from the very
+  file it constrains, so one `pub(crate) fn passthrough(x: &str)` added to a
+  `detail.rs` sanctioned an arbitrary runtime string at every call site with
+  the guard green. Every parameter type must now sit in `SAFE_PARAM_TYPES`.
+  But `STR_PARAM_CTOR_EXCEPTIONS` pins two ffi-py constructors
+  (`fingerprint_mismatch`, `uuid_prefixed`) that legitimately take `&str`
+  because they only COMBINE already-gated bridge values — a point-in-time
+  review claim of exactly the kind Section 3 of the allowlist holds. A
+  third `&str` constructor fails the guard until someone edits that set;
+  nothing verifies what the two existing ones are passed.
+- **`E3`'s shape 5 accepts an ARBITRARY single-hop receiver** on the wrapper
+  roots — `<anything>.detail`, not just a bridge DTO. The recorded
+  justification ("the source is a bridge DTO whose fields `E2`/`E3` gate")
+  is a property of the four LIVE sites, not of the shape the rule accepts.
+- **`&'static str` is not leak-proof, and several rules lean on it.** Safe,
+  stable Rust mints one from runtime data via `Box::leak(s.into_boxed_str())`
+  or `String::leak()`, and `#![forbid(unsafe_code)]` does not stop either. So
+  a `&'static str` in a gated position — `SAFE_PARAM_TYPES`, a sanctioned
+  constructor's `context`/`field`/`advice`, a `core` payload's map-level
+  hint — DISCOURAGES a runtime string rather than making one
+  unrepresentable. Every live site passes a literal; nothing enforces it.
+- **The out-of-root `io::Error` mint.** `cli/src/daemon.rs:424` synthesizes
+  a `std::io::Error` from a `format!` in a tree no scan root covers. Not a
+  live exposure — the bridge imports only `secretary_cli::{state, pipeline}`,
+  never `daemon` — but tracked by **#494**, and dropped from this list
+  entirely in an earlier draft.
+
+What #496 CLOSED, all fail-open holes in the guard's own wiring rather than
+in any scanned source: a scan root whose path moved contributed zero files
+silently (`Path.rglob` does not raise), so the bridge and both wrapper roots
+could go unscanned with CI green; three of `roots.py`'s five rule flags were
+read by nothing, so `E3`/`E4`/`E5` could each be switched off tree-wide with
+`--self-test` green; the permissive `#[cfg(...test...)]` matcher was used as
+a SKIP LIST by `E2`/`E3`/`E5`, where an over-match is fail-OPEN, so
+`#[cfg(not(test))]` or any `#[cfg_attr(test, ...)]` silenced a violation in
+one line; a raw C string (`cr#"a " b"#`, Rust 1.77+) desynced the lexer and
+blanked the rest of the file; and a typo'd `ControlExpectation` key silently
+degraded a control to "something fired".
 
 Read the guard's own module docstring's LIMITS section
 ([`scripts/check-error-payload-hygiene.py`](scripts/check-error-payload-hygiene.py))

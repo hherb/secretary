@@ -12,8 +12,12 @@
 //!
 //! `format!(...)` there is a function ARGUMENT to `PyErr::new_err`, not an
 //! initializer E3's model can see. So rule E5 gates the SOURCE instead of
-//! the sink: `format!` — the only construct in this crate that COMPOSES a
-//! new string from runtime parts — is confined to this one file. Same move
+//! the sink: `format!` — today the only construct in this crate that
+//! composes a new string from runtime parts, a CENSUS finding rather than a
+//! structural one (`push_str`, `write!`/`writeln!`, `+` on an owned
+//! `String` and `.join()` would all do the same and none is inspected; see
+//! `scripts/payload_guard/rules/e5.py`, which retracts this exact
+//! phrasing at length) — is confined to this one file. Same move
 //! `ffi/secretary-ffi-uniffi/src/detail.rs` makes for uniffi (#486 task 10),
 //! `error/detail.rs` for the bridge (#480), `SecretaryLog` for Android
 //! logcat (#472), and `diagnosticDetail` for iOS `privacy: .public` (#467):

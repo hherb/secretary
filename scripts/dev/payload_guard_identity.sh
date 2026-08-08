@@ -12,6 +12,17 @@
 # plants one violation per rule into a scratch copy of the tree and records
 # the guard's full stderr — exercising the finding formatter, line numbers,
 # allowlist keys and rule routing.
+#
+# SCOPE, stated precisely (#496 review): the plants below cover rules E1-E5
+# across all FOUR scan roots. They do NOT cover the discovery/withdrawal
+# tiers, the allowlist-matching path, or any individual rule ARM — a
+# mutation to `foreign_use_names`' withdrawal pass, for instance, leaves
+# every line of this transcript byte-identical. Read it as "each rule is
+# still wired to each root it applies to", not as proof of identity.
+#
+# Until #496 it planted E1-E4 only, and nothing in either wrapper root — so
+# it could not have detected E5 being switched off, nor a wrapper root
+# dropping out of SCAN_ROOTS, which were two of that review's findings.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -45,6 +56,21 @@ PLANT_E3='fn zz_probe(e: &std::io::Error) -> crate::error::vault::FfiVaultError 
 PLANT_E4_FILE="ffi/secretary-ffi-bridge/src/zz_identity_probe_e4.rs"
 PLANT_E4='impl crate::error::detail::GatedDetail for secretary_core::vault::VaultError {}
 '
+# E5 (#496): a format! outside a wrapper crate's own detail.rs. Wrapper-only
+# rule, so this is also the ONLY plant that proves the ffi-py root is being
+# scanned at all.
+PLANT_E5_FILE="ffi/secretary-ffi-py/src/zz_identity_probe_e5.rs"
+PLANT_E5='pub fn zz_probe(a: &str) -> String {
+    format!("planted E5: {a}")
+}
+'
+# E3 in the OTHER wrapper root (#496): proves ffi-uniffi is scanned too, and
+# that the wrapper roots take E3 as well as E5.
+PLANT_E3W_FILE="ffi/secretary-ffi-uniffi/src/zz_identity_probe_e3w.rs"
+PLANT_E3W='fn zz_probe(s: &str) -> crate::error::vault::FfiVaultError {
+    crate::error::vault::FfiVaultError::CorruptVault { detail: s.to_owned() }
+}
+'
 
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
@@ -75,8 +101,10 @@ cp -R "$REPO_ROOT/ffi/." "$scratch/ffi/"
   printf '%s' "$PLANT_E2" > "$scratch/$PLANT_E2_FILE"
   printf '%s' "$PLANT_E3" > "$scratch/$PLANT_E3_FILE"
   printf '%s' "$PLANT_E4" > "$scratch/$PLANT_E4_FILE"
+  printf '%s' "$PLANT_E5" > "$scratch/$PLANT_E5_FILE"
+  printf '%s' "$PLANT_E3W" > "$scratch/$PLANT_E3W_FILE"
 
-  echo "=== real scan, four planted violations ==="
+  echo "=== real scan, six planted violations (E1-E5, all four roots) ==="
   set +e
   out="$(cd "$scratch" && uv run "$GUARD" 2>&1)"
   rc=$?

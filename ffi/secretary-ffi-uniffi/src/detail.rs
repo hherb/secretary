@@ -9,12 +9,22 @@
 //! indices — but the SIGNATURE admitted a decrypted field name, which is
 //! structurally what #481 was, one layer out from where #480 closed it.
 //!
-//! Every constructor here takes `&'static str` and integers only; there is
-//! no parameter through which a runtime string can enter. Guard rule E3
-//! enforces that this module is the only source of these strings
-//! (`scripts/check-error-payload-hygiene.py`); a missing/unreadable file
-//! yields an EMPTY sanctioned set, so every `detail::*` call denies until
-//! this module exists — the guard's fail-closed hinge, not an oversight.
+//! Every constructor here takes `&'static str` and integers only, so there
+//! is no parameter through which a runtime string can enter — today. That is
+//! a property of the signatures below, and guard rule E3 checks it as of
+//! #496 (`SAFE_PARAM_TYPES`): a constructor with a parameter outside the
+//! reviewed set is DROPPED from the sanctioned set and its call sites deny.
+//! Note `&'static str` discourages rather than forbids: safe Rust can mint
+//! one from runtime data with `Box::leak` / `String::leak`, so this remains
+//! a review surface, not a proof. See the entry point's LIMITS.
+//!
+//! Rule **E5** is what makes this module the only SOURCE of composed
+//! strings — `format!` is confined here (#486 task 11). Rule E3 gates the
+//! gated-field INITIALIZERS that consume them, and accepts a bare string
+//! literal just as readily, so E3 alone never established confinement; this
+//! paragraph credited it until #496. E3 does own the fail-closed hinge: a
+//! missing/unreadable file yields an EMPTY sanctioned set, so every
+//! `detail::*` call denies until this module exists.
 
 /// `<field> must be <expected> bytes, got <got>`.
 pub(crate) fn arg_len(field: &'static str, expected: usize, got: usize) -> String {
