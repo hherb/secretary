@@ -7,19 +7,28 @@ from outside the crate" -- the tree-global facts `is_data_free`
 (`payload_guard.types`) and the scan passes in the entry point classify
 fields against. Read the entry point's module docstring first for the WHY.
 
-Four names below (`ERROR_ATTR_RE`, `STRUCT_RE`, `skip_attributes`,
-`split_top_level`) are not part of this module's own "discovery" vocabulary
-and are not literally what task 3's brief listed as this module's exports.
-They were pulled in anyway, verbatim, because two exported functions need
-them (`discover_error_struct_declarations` needs `ERROR_ATTR_RE` /
-`STRUCT_RE` / `skip_attributes`; `_use_bound_names` needs
-`split_top_level`) and Python resolves a function's free variables against
-ITS OWN module's globals, not its caller's -- so once the function moved
-here, its dependencies had to move with it. The entry point (which also
-uses all four, for `scan_source` and friends) imports them back from here;
-the reverse direction is not possible, since the entry point's filename is
-not a valid module name for a plain `import` statement. See
-`check-error-payload-hygiene.py`'s own import block.
+Two names below (`ERROR_ATTR_RE`, `STRUCT_RE`) are not part of this module's
+own "discovery" vocabulary and are not literally what task 3's brief listed
+as this module's exports. They were pulled in anyway, verbatim, because
+`discover_error_struct_declarations` needs them, and Python resolves a
+function's free variables against ITS OWN module's globals, not its
+caller's -- so once that function moved here, its dependencies had to move
+with it. `rules/e1.py`'s `scan_source` (#486 task 4) is the only outside
+consumer, and imports them back from here; the reverse direction is not
+possible, since `discovery.py` sits below `rules/*` in this package's
+dependency order (`config` -> `lexer`, `parsing` -> `types` -> `discovery`
+-> `rules/*` -> `scan`).
+
+Task 3 pulled in two MORE names for the same reason -- `skip_attributes` and
+`split_top_level` -- but both moved on again in task 4, to
+`payload_guard.parsing`. Unlike `ERROR_ATTR_RE`/`STRUCT_RE`, both are also
+needed by a rule module (`rules/e1.py`'s `scan_source` AND
+`rules/e2.py`'s `_bridge_plain_enum_variant_findings`), and a rule module
+importing them from HERE would invert the layering above -- `discovery.py`
+sits below `rules/*`, not beside it. `parsing.py` sits below both, so this
+module now imports them back from there, same as any other consumer; see
+`_use_bound_names` (`split_top_level`) and
+`discover_error_struct_declarations` (`skip_attributes`).
 """
 
 from __future__ import annotations
@@ -32,6 +41,7 @@ from payload_guard.config import LOCAL_USE_ROOTS
 from payload_guard.lexer import (
     balanced_braces, balanced_slice, discovery_view, strip_comments,
 )
+from payload_guard.parsing import skip_attributes, split_top_level
 
 
 # `enum Name` — used only to find enum bodies for `discover_declarations`;
@@ -630,28 +640,6 @@ def discover_declarations(
     return frozenset(local_error_enums), aliases, consts, frozenset(const_shadows)
 
 
-# Needed by `_use_bound_names` above (#486 task 3: moved here verbatim
-# because it moved; the entry point's `parse_fields` imports it back).
-def split_top_level(text: str) -> list[str]:
-    """Split on commas that are not nested inside <>, (), [] or {}."""
-    parts: list[str] = []
-    depth = 0
-    cur: list[str] = []
-    for ch in text:
-        if ch in "<([{":
-            depth += 1
-        elif ch in ">)]}":
-            depth -= 1
-        if ch == "," and depth == 0:
-            parts.append("".join(cur))
-            cur = []
-        else:
-            cur.append(ch)
-    if cur:
-        parts.append("".join(cur))
-    return parts
-
-
 def enclosing_enum_names(raw: str) -> list[tuple[int, int, str]]:
     """`[(body_start, body_end, enum_name)]` for every `enum NAME { ... }`
     body span in `raw` (#480 review finding 2).
@@ -731,8 +719,12 @@ def discovery_cfg_test_spans(raw: str) -> list[tuple[int, int]]:
 
 
 # Needed by `discover_error_struct_declarations` below (#486 task 3: moved
-# here verbatim because it moved; the entry point's `scan_source` /
-# `_bridge_plain_enum_variant_findings` import all three back).
+# here verbatim because it moved). `STRUCT_RE`, defined just below, stays
+# here for the same reason. Only `rules/e1.py`'s `scan_source` imports these
+# two back (#486 task 4) — `_bridge_plain_enum_variant_findings`
+# (`rules/e2.py`) does not use either; it uses `skip_attributes` /
+# `split_top_level` instead, which moved to `payload_guard.parsing` in the
+# same task (see this module's own docstring for why).
 ERROR_ATTR_RE = re.compile(r"#\[error\(", re.MULTILINE)
 
 # A `thiserror` error can also be a STRUCT — one shape, not an enum with
@@ -740,54 +732,6 @@ ERROR_ATTR_RE = re.compile(r"#\[error\(", re.MULTILINE)
 # ... }` / `pub struct Name(...);` rather than to a variant. Not used in
 # `core/src` today, but nothing in the language prevents it.
 STRUCT_RE = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)")
-
-
-def skip_attributes(text: str) -> str:
-    """Skip leading whitespace and any number of `#[...]`-attribute spans at
-    the front of `text`.
-
-    Without this, an intervening attribute between `#[error(...)]` and the
-    variant/struct it decorates defeats the guard entirely: `VARIANT_RE`
-    cannot match a line starting with `#`, and the old code only ever looked
-    at the FIRST non-blank line after the `#[error(...)]` attribute, so
-
-        #[error("leak: {detail}")]
-        #[cfg(all())]
-        Leaky { detail: String },
-
-    found no variant at all and silently skipped — proven live for
-    `#[cfg(...)]`, `#[allow(...)]`, and `#[doc = "..."]`. Brackets are
-    balanced so a multi-line or argument-bearing attribute is consumed as a
-    unit, not just cut off at its own first `]`.
-    """
-    i, n = 0, len(text)
-    while True:
-        while i < n and text[i] in " \t\r\n":
-            i += 1
-        if i + 1 < n and text[i] == "#" and text[i + 1] == "[":
-            depth, j, in_string = 0, i + 1, False
-            while j < n:
-                ch = text[j]
-                if in_string:
-                    if ch == "\\":
-                        j += 2
-                        continue
-                    if ch == '"':
-                        in_string = False
-                elif ch == '"':
-                    in_string = True
-                elif ch == "[":
-                    depth += 1
-                elif ch == "]":
-                    depth -= 1
-                    if depth == 0:
-                        j += 1
-                        break
-                j += 1
-            i = j
-            continue
-        break
-    return text[i:]
 
 
 def discover_error_struct_declarations(raw: str) -> list[tuple[str, int, int]]:
