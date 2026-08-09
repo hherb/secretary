@@ -673,7 +673,7 @@ pub(crate) fn uuid_from_vec(bytes: &[u8], field: &'static str) -> Result<[u8; 16
 ///
 /// The indexed sibling [`array32_from_vec_at`] still returns by value. That is
 /// deliberate and NOT an oversight: its callers are `ApprovedWidening`
-/// fingerprints (`repair.rs:59`, `:60`), which are not secret, so there is
+/// fingerprints (`repair.rs:60`, `:61`), which are not secret, so there is
 /// nothing to wipe and an out-parameter would only read worse.
 ///
 /// `out` is left UNTOUCHED when `bytes` is the wrong length.
@@ -1024,7 +1024,11 @@ mod tests {
         array32_from_vec_into(&src, &mut out, "device_secret").expect("32 bytes is valid");
         assert_eq!(out.to_vec(), src);
 
-        let mut out2 = [0u8; 32];
+        // A non-zero sentinel: `out2 == [0u8; 32]` would be indistinguishable
+        // between "untouched" and "wiped-then-rejected" (the #496-class bug
+        // this test exists to catch), so the assertion below only proves the
+        // claim if the sentinel isn't the value a wipe would also produce.
+        let mut out2 = [0xA5u8; 32];
         let err = array32_from_vec_into(&[1u8, 2, 3], &mut out2, "device_secret")
             .expect_err("3 bytes must be rejected");
         match err {
@@ -1033,6 +1037,9 @@ mod tests {
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
-        assert_eq!(out2, [0u8; 32], "the out slot must be untouched on error");
+        assert_eq!(
+            out2, [0xA5u8; 32],
+            "the out slot must be untouched on error"
+        );
     }
 }
