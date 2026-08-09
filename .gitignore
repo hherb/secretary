@@ -178,6 +178,13 @@ tempCodeRunnerFile.py
 # the duration of a brainstorming session.
 .superpowers/
 
+# `scripts/payload_guard/selftest.py`'s BP57 (#500 fix round 2) writes this
+# exact file transiently to prove `run_real_scan`'s OWN production wiring
+# of `shadowed_type_names` is live, then deletes it in a `finally` block —
+# the PRIMARY guarantee against residue. This entry is belt-and-suspenders
+# only, in case that block is ever interrupted (e.g. SIGKILL) before it runs.
+/ffi/secretary-ffi-bridge/src/error/__selftest_shadow_wiring_probe.rs
+
 # Tauri 2 desktop client (D.1.x). Frontend deps, Vite output, and the
 # Cargo target dir for `secretary-desktop` (Tauri's build dir lives at
 # desktop/src-tauri/target, distinct from the workspace target at

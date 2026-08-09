@@ -962,6 +962,45 @@ def discover_local_detail_decoys(
     Returns `frozenset({"Detail"})` the moment ANY qualifying match is
     found (short-circuits — `LOCAL_DETAIL_TYPE_RE` names exactly one
     spelling today), else `frozenset()`.
+
+    LIMITS (#500 fix round 2 review) — four shapes this function does NOT
+    catch, all defence-in-depth gaps rather than live leaks: in every one,
+    rule E3's construction-site gate independently denies the actual
+    CONSTRUCTION of a value from the decoy, because the decoy's own
+    constructor (if any) still has to survive `SAFE_PARAM_TYPES`/
+    `sanctioned_constructor_names`'s signature gate to be usable at all —
+    verified by execution, not merely reasoned about.
+
+    1. **Decoy and the field referencing it both inside `#[cfg(test)]`.**
+       Excluded on purpose (see above) — the decoy is non-shippable code,
+       so nothing crosses the FFI regardless of what E2 does with it here.
+    2. **Decoy and the referencing field both inside ONE function body.**
+       `non_module_block_spans` excludes it on purpose too — a fn-local
+       `struct`/`enum`/`union`/`type` cannot be named from outside that
+       function, so it cannot reach an FFI error type's field declaration
+       (which is always module-scope) regardless of this function's
+       verdict.
+    3. **Decoy declared in a `mod` NESTED INSIDE the exempt file itself**
+       (`error/detail.rs`'s own submodule, e.g. `mod inner { pub struct
+       Detail(pub String); }`). `exempt_label` is a PATH match on the
+       whole FILE, not a scope match on the module inside it — a
+       genuinely different type at `crate::error::detail::inner::Detail`
+       is invisible to a spelling-only carve-out exactly like an IMPORTED
+       decoy is (see the module's own RESIDUAL paragraph on
+       `LOCAL_DETAIL_TYPE_RE`'s `use`-blind spot): reaching it from a
+       gated field elsewhere in the root needs a `use`, which this
+       function does not resolve any more than `SAFE_PARAM_TYPES` does.
+    4. **`pub struct r#Detail(pub String);`** — a RAW IDENTIFIER. This
+       compiles (rustc-verified), and `r#Detail` names the exact same
+       identifier `Detail` does as far as rustc's name resolution is
+       concerned — the `r#` prefix is purely an ESCAPE for using a
+       keyword-shaped token as an identifier, invisible to anything that
+       actually resolves the name. `LOCAL_DETAIL_TYPE_RE` is a TEXTUAL
+       match on the four bare keyword-plus-`Detail` shapes and has no
+       notion of the `r#` escape, so it does not fire on this spelling —
+       the one shape here that would surprise a reader, since the claim
+       above is specifically about NAMES, and rustc agrees this name
+       matches.
     """
     for label, raw in sources:
         if exempt_label is not None and label.replace("\\", "/") == exempt_label:

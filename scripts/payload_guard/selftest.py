@@ -13,9 +13,12 @@ dependency order, alongside `controls/*`, consuming
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import io
 import sys
 
+from payload_guard.config import REPO_ROOT
 from payload_guard.controls.bridge import (
     BRIDGE_NEGATIVE_CONTROLS, BRIDGE_POSITIVE_CONTROLS, SELF_TEST_DETAIL_SRC,
 )
@@ -36,6 +39,7 @@ from payload_guard.rules.e3 import (
 )
 from payload_guard.rules.e4 import scan_bridge_gated_detail_impls
 from payload_guard.rules.e5 import scan_wrapper_format_confinement
+from payload_guard.scan import run_real_scan
 from payload_guard.types import Finding
 
 # `(variant, field, field_type, field_type_prefix)` claims a POSITIVE control
@@ -987,6 +991,134 @@ def check_wrapper_alias_collision_isolated_from_decoy_check() -> list[str]:
     return []
 
 
+# `BP57`'s planted-decoy target (#500 fix round 2, review finding "the
+# Important that matters more than either T4-I1/T4-I2"). Deliberately
+# unmistakable — no real PR would ever choose this name — and additionally
+# listed in `.gitignore` as belt-and-suspenders; the PRIMARY guarantee that
+# no residue survives is `check_real_scan_shadow_wiring_is_live`'s own
+# `finally` block, not the gitignore entry.
+_SHADOW_WIRING_PROBE_REL = (
+    "ffi/secretary-ffi-bridge/src/error/__selftest_shadow_wiring_probe.rs"
+)
+
+
+def check_real_scan_shadow_wiring_is_live() -> list[str]:
+    r"""`BP57` (#500 fix round 2 review): `run_real_scan`'s OWN per-root
+    computation of `shadowed_type_names` —
+
+        shadowed_type_names = alias_candidate_names | discover_local_detail_decoys(
+            sources[root.label], root.detail_module_rel
+        )
+
+    in `scan.py` — is pinned by NOTHING. Every self-test control
+    (`BP54`/`BP55`/`BN29`/`BP56`/`WP9`, and `scan_bridge_control` /
+    `scan_wrapper_control` generally) computes its OWN shadow set from its
+    OWN fixture; not one of them reads that line. Severing it to
+    `shadowed_type_names = frozenset()` was verified (by the reviewer, then
+    re-verified here) to leave `--self-test` FULLY green — every count
+    unchanged — and the real scan green too, because today's tree has no
+    live decoy for an empty shadow set to fail to catch. `T4-I1`/`T4-I2`'s
+    fixes can be switched off tree-wide, undetectably, right up until an
+    attacker actually plants the decoy the protection exists to catch —
+    at which point the protection has already failed.
+
+    This is the same class #496 closed for `roots.py`'s rule-selecting
+    booleans ("three of `roots.py`'s five rule flags were read by nothing,
+    so `E3`/`E4`/`E5` could each be switched off tree-wide with
+    `--self-test` green" — CLAUDE.md's guard section). That fix made
+    `scan_bridge_control`/`scan_wrapper_control` DISPATCH off the SAME
+    `ScanRoot` flags `run_real_scan` reads. The same move does NOT close
+    THIS hole: `shadowed_type_names` is not `ScanRoot` DATA a control could
+    dispatch off, it is an EXPRESSION inside `run_real_scan`'s own function
+    body, and a control that independently RECOMPUTES that expression —
+    which is exactly what `BP56`/`WP9` already do — provably does not
+    observe a mutation to the call site itself: both stayed GREEN in
+    review when this exact line was severed, because they call
+    `discover_local_detail_decoys`/`_discover_tier_inputs` directly, never
+    `run_real_scan`. The "shared helper" alternative considered and
+    rejected for the same reason: routing `scan_bridge_control` through a
+    shared helper would catch a bug IN the helper, but not a severed CALL
+    to it at the one production site — the exact mutation demonstrated.
+
+    The only way to observe a mutation INSIDE `run_real_scan`'s own body
+    is to run `run_real_scan` — end to end, against the real filesystem
+    tree, the SAME "plant / observe / revert" discipline this task's own
+    Step 5 already used to demonstrate the `Detail` newtype's compile-time
+    guarantee (`error/vault/mod.rs`, reverted by exact-text edit, `git
+    diff` checked empty afterward).
+
+    Three assertions, in order:
+
+    1. The UNTOUCHED tree scans OK. This alone pins `gated_field_types`'s
+       PRE-EXISTING, IDENTICAL wiring hole for free (mitigating context
+       from review): severing `gated_field_types=root.gated_field_types`
+       denies every one of the ~27 real `detail: Detail` fields
+       immediately, no decoy needed — so a clean-tree baseline assertion
+       catches it without a line of code written specifically for it.
+    2. Planting a decoy `pub struct Detail(pub String);` — a throwaway
+       `.rs` file under the bridge root, needing NO gated field of its own
+       (the ~27 EXISTING real ones are what a LIVE shadow set catches) —
+       makes the scan FAIL. This is what pins `shadowed_type_names`
+       specifically: an EMPTY (severed) shadow set has nothing to catch on
+       today's clean tree, so only a POSITIVE probe like this observes it;
+       step 1 alone would not (a severed shadow set and a live one behave
+       identically when there is no decoy to disagree about).
+    3. Removing the decoy (`finally` — runs even if 1 or 2 raise) restores
+       a clean scan. Proves the probe leaves no residue, and that the
+       decoy specifically — not some unrelated cause — was what tripped
+       step 2.
+
+    `run_real_scan`'s own stdout/stderr are captured and discarded: this
+    check's OWN pass/fail reporting is what `--self-test` surfaces, not a
+    second copy of the real scan's violation listing.
+    """
+    decoy_path = REPO_ROOT / _SHADOW_WIRING_PROBE_REL
+    if decoy_path.exists():
+        return [
+            f"REAL SCAN WIRING PROBE: {_SHADOW_WIRING_PROBE_REL} already "
+            "exists — refusing to overwrite; remove it by hand and re-run"
+        ]
+
+    def _quiet_real_scan() -> int:
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            return run_real_scan()
+
+    baseline = _quiet_real_scan()
+    if baseline != 0:
+        return [
+            "REAL SCAN WIRING PROBE (BP57 step 1): the untouched tree does "
+            f"not scan OK (exit {baseline}) — cannot run the decoy probe on "
+            "top of an already-failing baseline. This also means "
+            "gated_field_types' own real-scan wiring may be severed"
+        ]
+
+    failures: list[str] = []
+    try:
+        decoy_path.write_text("pub struct Detail(pub String);\n", encoding="utf-8")
+        planted = _quiet_real_scan()
+        if planted == 0:
+            failures.append(
+                "REAL SCAN WIRING (BP57 step 2): planting a decoy `Detail` "
+                f"declaration at {_SHADOW_WIRING_PROBE_REL} did not fail "
+                "the real scan — run_real_scan's OWN shadowed_type_names "
+                "computation (scan.py) may be severed from what "
+                "BP54/BP55/BN29/BP56/WP9 independently recompute"
+            )
+    finally:
+        decoy_path.unlink(missing_ok=True)
+
+    if not failures:
+        cleaned = _quiet_real_scan()
+        if cleaned != 0:
+            failures.append(
+                "REAL SCAN WIRING PROBE (BP57 step 3): removing the decoy "
+                f"did not restore a clean scan (exit {cleaned}) — the probe "
+                "left residue, or the tree was already broken"
+            )
+    return failures
+
+
 def run_self_test() -> int:
     failures: list[str] = check_view_invariants()
     failures += _check_root_rule_flags()
@@ -1039,6 +1171,7 @@ def run_self_test() -> int:
     failures += check_bridge_key_distinctness()
     failures += check_cross_file_alias_collision_still_denies()
     failures += check_wrapper_alias_collision_isolated_from_decoy_check()
+    failures += check_real_scan_shadow_wiring_is_live()
     for entry in WRAPPER_POSITIVE_CONTROLS:
         label, src = entry[0], entry[1]
         wrapper_expect: ControlExpectation | None = entry[2] if len(entry) > 2 else None
