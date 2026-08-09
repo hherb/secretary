@@ -121,7 +121,9 @@ git rebase --exec 'uv run scripts/check-error-payload-hygiene.py' main   # every
 
 **Verified at `175e74c`:** guard self-test **41/18/54/32/8/3** · real scan OK across four roots · placement guard 22/22 + OK (11 manifests) · `cargo build --release --workspace` clean · workspace **1846 tests** passing · bridge **334/334 in both feature configurations** · clippy with *and* without `--tests` clean · rustdoc clean · `.udl` diff empty.
 
-**Not yet verified:** the full non-Rust sweep (conformance.py, the three other hygiene guards, desktop `pnpm test`, Gradle `:kit`) since Task 3 — Tasks 3 and 4 touched only Rust and Python, but run them before shipping. CI has never run on this branch (nothing pushed yet). `git rebase --exec` not yet run.
+**Also verified at `175e74c`:** `conformance.py` **PASS** · iOS log hygiene 21/9 · Android log hygiene 27/14 · lean-binding 3/3 — all self-test-first.
+
+**Not yet verified:** desktop `pnpm test` + `svelte-check` and Gradle `:kit` (no TypeScript/Kotlin changed on this branch, but run them before shipping); `git rebase --exec` over every commit; `core/fuzz` compile (workspace-excluded, nightly). **CI has never run on this branch — nothing is pushed yet.**
 
 ---
 
