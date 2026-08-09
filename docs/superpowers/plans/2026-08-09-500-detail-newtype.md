@@ -1282,8 +1282,24 @@ EOF
 ### Task 7: #503 — the second `[u8; 32]` stack frame
 
 **Files:**
-- Modify: `ffi/secretary-ffi-uniffi/src/namespace/mod.rs` (add the sibling near `array32_from_vec` at line 664; fix the doc comment at 580-581; call site at 598)
+- Modify: `ffi/secretary-ffi-uniffi/src/namespace/mod.rs` (add the sibling near `array32_from_vec` at line 664; **delete `array32_from_vec`**; fix the doc comment at 580-581; call site at 598)
 - Modify: `ffi/secretary-ffi-uniffi/src/namespace/repair.rs:228`, `:356`
+- Modify: `scripts/error-payload-hygiene-allowlist.txt:352` (justification only — the key text is unchanged)
+
+> **AMENDMENT (ruled by the human before dispatch).** This task's original text
+> said the by-value `array32_from_vec` "stays for the non-secret 32-byte
+> fingerprint callers". **That premise was false, verified by census:**
+> `array32_from_vec` has exactly THREE call sites (`namespace/mod.rs:598`,
+> `namespace/repair.rs:228`, `:356`) and all three are `device_secret` — the
+> very sites this task moves. The fingerprint / `ApprovedWidening` callers use a
+> DIFFERENT function, `array32_from_vec_at` (`repair.rs:59`, `:60`), which this
+> task does not touch.
+>
+> Left as written, Step 5 would strand `array32_from_vec` with zero callers and
+> `cargo clippy --release --workspace -- -D warnings` would fail on `dead_code`,
+> breaking this plan's own Global Constraint. **Ruling: delete it.** That also
+> keeps exactly ONE reviewed allowlist row for the shared construction text —
+> see Step 5b and Step 7b.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1324,19 +1340,20 @@ Expected: FAIL — `cannot find function array32_from_vec_into`.
 In `ffi/secretary-ffi-uniffi/src/namespace/mod.rs`, immediately after `array32_from_vec` (line 664-668):
 
 ```rust
-/// [`array32_from_vec`] for a SECRET 32-byte input, writing through the
-/// caller's slot instead of returning by value (#503).
+/// Copy a SECRET 32-byte input into the caller's slot (#503).
 ///
-/// `array32_from_vec` materializes its `[u8; 32]` in its OWN frame and
-/// returns it; the caller zeroizes only the copy it received. Release-mode
-/// inlining will usually collapse the two frames, but the helper is not
-/// `#[inline]` and CLAUDE.md's zeroize discipline is explicit about not
-/// resting on codegen. Writing through `out` means the array exists in
-/// exactly one place as a SOURCE-LEVEL fact.
+/// This replaces a by-value predecessor (`array32_from_vec`, deleted in the
+/// same commit) that materialized its `[u8; 32]` in its OWN frame and returned
+/// it: the caller zeroized only the copy it received, leaving the callee's
+/// frame un-wiped. Release-mode inlining will usually collapse the two frames,
+/// but the helper was not `#[inline]` and CLAUDE.md's zeroize discipline is
+/// explicit about not resting on codegen. Writing through `out` means the
+/// array exists in exactly one place as a SOURCE-LEVEL fact.
 ///
-/// Use this for a device secret. The by-value [`array32_from_vec`] stays for
-/// non-secret 32-byte inputs (an `ApprovedWidening.file_fingerprint`), where
-/// there is nothing to protect and an out-parameter reads worse.
+/// The indexed sibling [`array32_from_vec_at`] still returns by value. That is
+/// deliberate and NOT an oversight: its callers are `ApprovedWidening`
+/// fingerprints (`repair.rs:59`, `:60`), which are not secret, so there is
+/// nothing to wipe and an out-parameter would only read worse.
 ///
 /// `out` is left UNTOUCHED when `bytes` is the wrong length.
 pub(crate) fn array32_from_vec_into(
@@ -1374,6 +1391,30 @@ Expected: PASS.
 ```
 Apply the same shape at `namespace/repair.rs:228` and `:356`. Read each site first — the surrounding zeroize placement differs and must be preserved.
 
+- [ ] **Step 5b: Delete `array32_from_vec` (the amendment)**
+
+After Step 5 the by-value helper has ZERO callers. Delete the whole function
+(`namespace/mod.rs:664-668`) rather than suppressing the lint.
+
+Then prove nothing else referenced it — including doc comments, where a stale
+intra-doc link `[array32_from_vec]` to a deleted item FAILS the
+`RUSTDOCFLAGS="-D warnings" cargo doc` gate (#92), which is the failure mode
+most likely to be missed here:
+
+```bash
+cd /Users/hherb/src/secretary/.worktrees/500-detail-newtype
+grep -rn "array32_from_vec\b" --include='*.rs' ffi/ desktop/ core/ cli/
+grep -rn "array32_from_vec\b" --include='*.md' docs/ *.md
+```
+Expected after the edit: every remaining hit is `array32_from_vec_into` or
+`array32_from_vec_at` (both `\b`-distinct from the deleted name only by their
+suffix, so read each hit — do NOT trust the count). Zero bare
+`array32_from_vec` references anywhere, in code or prose.
+
+**Do not delete `array32_from_vec_at`.** It is a different function, it keeps
+its two live fingerprint callers, and its own allowlist row (line 354) stays
+exactly as it is.
+
 - [ ] **Step 6: Fix the stale doc comment**
 
 `namespace/mod.rs:580-581` currently reads "the transient `[u8; 32]` stack copy made here is zeroized on all paths" — singular, and describing the shape that is now gone. Replace:
@@ -1392,7 +1433,39 @@ Apply the same shape at `namespace/repair.rs:228` and `:356`. Read each site fir
 cd /Users/hherb/src/secretary/.worktrees/500-detail-newtype
 grep -rn "array32_from_vec(" --include='*.rs' ffi/secretary-ffi-uniffi/src/
 ```
-Expected: only non-secret callers (fingerprint / `ApprovedWidening`) remain. Any `device_secret` hit is a missed site.
+Expected under the amendment: **ZERO hits.** The function is gone and all three
+`device_secret` sites now call `array32_from_vec_into`. (Note this pattern ends
+in `(`, so it does not match `array32_from_vec_into(` or `array32_from_vec_at(`.)
+
+- [ ] **Step 7b: Re-justify the allowlist row (the amendment's second half)**
+
+`scripts/error-payload-hygiene-allowlist.txt:352` is keyed on the EXACT
+construction-site text `detail: crate::detail::arg_len(field, 32, bytes.len())`
+in `namespace/mod.rs`. The new `array32_from_vec_into` emits that text
+**byte-identically**, so the row keeps matching and the real scan stays GREEN —
+while its recorded justification ("`field` is **`array32_from_vec`**'s own
+`&'static str` parameter … its 3 call sites") silently becomes false. A green
+scan over a false justification in a security allowlist is precisely the
+overclaim class this branch keeps re-finding, so fix it in the SAME commit:
+
+- Rewrite the justification to name `array32_from_vec_into`, and re-verify its
+  three call sites by running the grep the row cites rather than copying the
+  old list forward.
+- Do **not** change the key text (column 3) — it is unchanged by design.
+- The row COUNT stays 22. This is a re-justification, not a new entry.
+
+Had `array32_from_vec` been kept (the rejected option), TWO functions in one
+file would have emitted identical construction text and this single reviewed row
+would have covered BOTH — a reviewed claim widened without review, and one the
+allowlist's `(file, rule, text)` keying cannot even express. Deleting the
+predecessor is what keeps the row one-to-one with its subject.
+
+Confirm the scan is green *and* that the row is still load-bearing:
+
+```bash
+uv run scripts/check-error-payload-hygiene.py --self-test | tail -3
+uv run scripts/check-error-payload-hygiene.py | tail -3
+```
 
 - [ ] **Step 8: Full sweep and commit**
 
@@ -1401,20 +1474,31 @@ cargo fmt --all
 cargo test --release --workspace 2>&1 | tail -5
 cargo clippy --release --workspace --tests -- -D warnings 2>&1 | tail -3
 cargo clippy --release --workspace -- -D warnings 2>&1 | tail -3
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace 2>&1 | tail -3
 git add -A
 git commit -m "$(cat <<'EOF'
 fix(ffi-uniffi): no second un-zeroized [u8; 32] frame for a device secret (#503)
 
-`array32_from_vec` materializes its `[u8; 32]` inside its own frame and
-returns it by value; only the caller's copy was zeroized, and the helper is
+`array32_from_vec` materialized its `[u8; 32]` inside its own frame and
+returned it by value; only the caller's copy was zeroized, and the helper was
 not `#[inline]`. Release-mode inlining will usually collapse the frames — but
 this repo's zeroize discipline is explicit about not resting on codegen.
 
 Adds `array32_from_vec_into`, which writes through the caller's slot, and
 moves the three `device_secret` sites to it. The array now exists in exactly
-one place as a source-level fact. The by-value helper stays for the
-non-secret 32-byte fingerprint callers, where an out-parameter buys nothing
-and reads worse.
+one place as a source-level fact.
+
+The by-value helper is DELETED rather than kept. Its three call sites were
+the three `device_secret` sites this commit moves, so keeping it would have
+stranded a zero-caller function and failed `clippy -D warnings`. The plan's
+original text claimed it also served the non-secret fingerprint callers; a
+census showed those use `array32_from_vec_at`, a different function, which is
+untouched here and still returns by value because its inputs are not secret.
+
+Deleting it also keeps allowlist row 352 one-to-one with its subject: the new
+helper emits byte-identical construction text in the same file, so had both
+functions survived, one reviewed row would have silently covered two sites.
+The row's justification is re-verified here; its key text is unchanged.
 
 Also fixes the doc comment at namespace/mod.rs:580, which said "the transient
 stack copy" — singular — while there were two.
