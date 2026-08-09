@@ -67,8 +67,9 @@ jobs:
       # WITH dev-dependency features unified, so a production call to the
       # `test-support`-gated `Detail::for_test` compiles clean through
       # `cargo test`, `cargo clippy --tests` AND the rustdoc gate (verified by
-      # execution, #500). Only a non-test build catches it. Without this step
-      # the feature gate is decorative.
+      # execution, #500; on a synthetic two-crate probe, re-verified on this
+      # workspace in Task 3). Only a non-test build catches it. Without this
+      # step the feature gate is decorative.
       - name: cargo build --release --workspace
         run: cargo build --release --workspace
       # Mirrors the documented local command in CLAUDE.md. The

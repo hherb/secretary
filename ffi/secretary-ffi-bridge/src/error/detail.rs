@@ -62,7 +62,8 @@ impl Detail {
     /// this function DOES NOT EXIST in `cargo build --release`. That is
     /// enforced by `cargo build --release --workspace` in CI — verified by
     /// execution that `cargo test`, `cargo clippy --tests` and the rustdoc
-    /// gate all compile a production call to it CLEAN.
+    /// gate all compile a production call to it CLEAN (verified on a
+    /// synthetic two-crate probe; re-verified on this workspace in Task 3).
     #[cfg(feature = "test-support")]
     pub fn for_test(s: &str) -> Detail {
         Detail(s.to_string())
