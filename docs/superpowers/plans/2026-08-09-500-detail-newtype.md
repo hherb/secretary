@@ -42,36 +42,44 @@ The type lands first with **no field using it yet**, so the feature-gate guarant
 
 - [ ] **Step 1: Write the failing test**
 
+> **AMENDED before execution (pre-flight finding PF1).** An earlier version of
+> this task also changed `detail::gated`'s return type to `Detail` and appended
+> `.into_string()` at its call sites as temporary scaffolding, undone in Task 3.
+> That REDS the real guard scan — rule E3 accepts a sanctioned-constructor call
+> only when the call is the WHOLE initializer, so `detail::gated(e).into_string()`
+> is denied (proven with `payload_guard.selftest.scan_bridge_control`). It would
+> have violated this plan's own Global Constraint that every commit leaves the
+> scan green. **Task 1 now changes NO constructor and NO field.** `Detail` lands
+> standalone; all ten constructors move together in Task 3, in the same commit as
+> the fields, so a sanctioned call is never momentarily wrapped.
+
 Append to the `mod tests` block at the bottom of `ffi/secretary-ffi-bridge/src/error/detail.rs` (it starts at line 191, `#[cfg(test)] mod tests {`):
 
 ```rust
-    #[test]
-    fn detail_renders_and_unwraps() {
-        let d = gated(&std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
-        assert_eq!(d.as_str(), "gone");
-        assert_eq!(format!("{d}"), "gone");
-        assert_eq!(d.clone().into_string(), "gone");
-    }
-
+    // `Detail`'s own behaviour. Every constructor still returns `String` at
+    // this point (Task 3 moves them), so `for_test` is the only way to build
+    // one — which is exactly the property under test: the type has no public
+    // construction path outside `detail.rs`.
     #[cfg(feature = "test-support")]
     #[test]
-    fn for_test_builds_a_detail_from_a_runtime_string() {
+    fn detail_renders_borrows_and_unwraps() {
         let runtime = String::from("built at runtime");
-        assert_eq!(Detail::for_test(&runtime).as_str(), "built at runtime");
+        let d = Detail::for_test(&runtime);
+        assert_eq!(d.as_str(), "built at runtime");
+        assert_eq!(format!("{d}"), "built at runtime");
+        assert_eq!(d.clone().into_string(), "built at runtime");
     }
 ```
-
-Note the first test calls `gated(...)` and expects a `Detail` back — it will not compile until Step 3, which is the point.
 
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
 cd /Users/hherb/src/secretary/.worktrees/500-detail-newtype
-cargo test --release -p secretary-ffi-bridge --lib detail 2>&1 | tail -20
+cargo test --release -p secretary-ffi-bridge --features test-support --lib detail 2>&1 | tail -20
 ```
-Expected: FAIL to compile — `cannot find type Detail in this scope` (and `as_str` on a `String` returning `&str` will actually succeed, which is why Step 3 changes `gated`'s return type too).
+Expected: FAIL to compile — `cannot find type Detail in this scope` (and `error: none of the package's features are named test-support`, until Step 5 adds it). Both are expected; Steps 3 and 5 resolve them.
 
-- [ ] **Step 3: Add the type and change `gated` to return it**
+- [ ] **Step 3: Add the type — and change no constructor**
 
 In `ffi/secretary-ffi-bridge/src/error/detail.rs`, immediately after the `use std::path::Path;` line (line 19), insert:
 
@@ -134,41 +142,18 @@ impl std::fmt::Display for Detail {
 }
 ```
 
-Then change ONLY `gated`'s signature and body (line 63-65) to:
-
-```rust
-pub(crate) fn gated(e: &impl GatedDetail) -> Detail {
-    Detail(e.to_string())
-}
-```
-
-Leave the other ten constructors returning `String` for now — Task 3 moves them.
-
-Fix the one now-broken existing test, `gated_renders_display` (line 195-199):
-
-```rust
-    #[test]
-    fn gated_renders_display() {
-        let e = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
-        assert_eq!(gated(&e).as_str(), "gone");
-    }
-```
-
-`gated_with_context` (line 67-69) calls nothing that changed, but any in-tree caller of `gated` now receives a `Detail`. Find them and append `.into_string()` at each:
-
-```bash
-grep -rn "detail::gated(" --include='*.rs' ffi/secretary-ffi-bridge/src/ | grep -v "error/detail.rs"
-```
-For each hit, change `detail::gated(&e)` to `detail::gated(&e).into_string()`. These `.into_string()` calls are REMOVED again in Task 3 when the fields become `Detail`; they exist only to keep this commit compiling.
+**Change nothing else.** All eleven constructors keep their current signatures, all 27 field declarations stay `String`, and no call site is touched. Task 3 moves them together. Adding `Detail` alone cannot break a build or the guard scan — nothing references it yet except its own test.
 
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
 cd /Users/hherb/src/secretary/.worktrees/500-detail-newtype
-cargo test --release -p secretary-ffi-bridge --lib detail 2>&1 | tail -15
 cargo test --release -p secretary-ffi-bridge --features test-support --lib detail 2>&1 | tail -15
+cargo test --release -p secretary-ffi-bridge --lib detail 2>&1 | tail -15
 ```
-Expected: both PASS. The second runs one extra test (`for_test_builds_a_detail_from_a_runtime_string`).
+Expected: the first PASSES and includes `detail_renders_borrows_and_unwraps`. The second also passes but SKIPS that test (the feature is off, so it is not compiled) — confirm by comparing the two test counts. Run Step 5 first if `--features test-support` errors with "none of the package's features are named test-support".
+
+A `dead_code` warning on `as_str` / `into_string` is expected at this point — nothing calls them until Task 3. `-D warnings` would turn that into an error, so add `#[allow(dead_code)]`? **No** — do not silence it. `Detail` is `pub` and re-exported in Step 6, so it is part of the crate's public API and `dead_code` does not fire on public items. If a warning does appear, it means the re-export in Step 6 is missing or wrong; fix the export rather than the warning.
 
 - [ ] **Step 5: Add the Cargo feature**
 
@@ -646,15 +631,23 @@ error/vault/mod.rs  219 recipient_fingerprint_hex  repair/preview.rs  53  pub bl
 error/vault/mod.rs  231 detail
 ```
 
-- [ ] **Step 1: Change the nine remaining constructor return types**
+- [ ] **Step 1: Change all ten constructor return types**
 
-In `ffi/secretary-ffi-bridge/src/error/detail.rs`, change `-> String` to `-> Detail` and wrap each body's final expression in `Detail(...)`, for: `gated_with_context` (67), `uuid_hex` (71), `uuid_hyphenated` (75), `fingerprint_hex` (79), `gated_for_uuid` (83), `literal_for_uuid` (91), `counted` (95), `gated_with_path` (107), `gated_with_path_and_advice` (123). Example:
+Task 1 deliberately changed none of them (pre-flight finding PF1 — a half-moved constructor reds the guard scan, because rule E3 accepts a sanctioned call only as the WHOLE initializer and the interim `.into_string()` wrapper is not that shape). They all move here, in the same commit as the fields.
+
+In `ffi/secretary-ffi-bridge/src/error/detail.rs`, change `-> String` to `-> Detail` and wrap each body's final expression in `Detail(...)`, for: `gated` (63), `gated_with_context` (67), `uuid_hex` (71), `uuid_hyphenated` (75), `fingerprint_hex` (79), `gated_for_uuid` (83), `literal_for_uuid` (91), `counted` (95), `gated_with_path` (107), `gated_with_path_and_advice` (123). Examples:
 
 ```rust
+pub(crate) fn gated(e: &impl GatedDetail) -> Detail {
+    Detail(e.to_string())
+}
+
 pub(crate) fn gated_with_context(context: &'static str, e: &impl GatedDetail) -> Detail {
     Detail(format!("{context}: {e}"))
 }
 ```
+
+The existing `detail.rs` unit tests assert on `String` return values (e.g. `assert_eq!(gated(&e), "gone")` at line 198). Each needs `.as_str()` inserted: `assert_eq!(gated(&e).as_str(), "gone")`. Work through all of them — `gated_renders_display`, `gated_with_context_prefixes`, `gated_with_path_appends_disclosed_path`, `gated_with_path_and_advice_puts_the_advice_last`, `uuid_renderers`, `uuid_composites`, `counted_renders_index`. `io_gated_with_path_and_advice_renders_display_path_then_advice` asserts on an `io::Error` and needs no change.
 
 `gated_with_path_and_advice` composes another constructor, so unwrap the inner value:
 
@@ -707,19 +700,18 @@ Change to:
 ```
 Find them all: `grep -n 'detail: String\|as a `String`' ffi/secretary-ffi-bridge/src/error/vault/mod.rs`.
 
-- [ ] **Step 4: Rebuild; remove the Task 1 scaffolding**
-
-The `.into_string()` calls appended to `detail::gated(...)` sites in Task 1 Step 3 are now wrong — the field wants a `Detail`. Remove them:
+- [ ] **Step 4: Get the bridge compiling on its own**
 
 ```bash
 cd /Users/hherb/src/secretary/.worktrees/500-detail-newtype
-grep -rn "detail::gated(.*)\.into_string()" --include='*.rs' ffi/secretary-ffi-bridge/src/
+cargo build --release -p secretary-ffi-bridge 2>&1 | grep -E "^(error|  -->)" | head -40
 ```
-Delete the `.into_string()` from each. Then:
+Iterate until this reports zero errors before touching the wrapper crates — a bridge that compiles alone makes the remaining errors unambiguously wrapper-side.
+
+**A sanctioned call must remain the WHOLE initializer.** If a site tempts you into `detail::gated(&e).into_string()` or any other trailing transform, that is the PF1 shape and rule E3 denies it (verified: `accepted | detail::gated(e)` vs `DENIED | detail::gated(e).into_string()`). The field is a `Detail` now, so the bare call is both correct and the only accepted shape. Check as you go:
 ```bash
-cargo build --release -p secretary-ffi-bridge 2>&1 | grep -cE "^error"
+grep -rnE "detail::[a-z_]+\([^)]*\)\s*\." --include='*.rs' ffi/secretary-ffi-bridge/src/   # expect no hits
 ```
-Expected: `0`. Iterate until the bridge compiles alone before touching the wrappers.
 
 - [ ] **Step 5: Fix the wrapper projection arms**
 
