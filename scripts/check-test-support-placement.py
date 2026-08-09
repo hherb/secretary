@@ -71,15 +71,14 @@ simultaneously, the fixed-point closure of which `[features]` keys
 transitively reach `test-support` — via a direct listing, a same-crate
 bare-name reference to an already-reached feature, or a `<crate>/<feature>`
 forwarding reference into another crate's own closure. The closure is
-monotonic (a feature is only ever ADDED to a crate's reachable set, never
-removed), so the fixed point always exists and the iteration always
-terminates without separate cycle bookkeeping — `a = ["b"], b = ["a"]`
-simply never grows past empty unless one of them also reaches
-`test-support` some other way. The three call sites that used to compare
-against the literal string `"test-support"` (the `default` check, the
-dependency-edge `features = [...]` check, and the cross-crate forwarding
-check) now consult this closure instead, so an alias is exactly as visible
-as the literal name.
+monotonic (a feature is only ever ADDED to a reachable set, never removed),
+so the fixed point always exists and the iteration always terminates
+without separate cycle bookkeeping — `a = ["b"], b = ["a"]` simply never
+grows past empty unless one of them also reaches `test-support` some other
+way. The three call sites that used to compare against the literal string
+`"test-support"` (the `default` check, the dependency-edge `features = [...]`
+check, and the cross-crate forwarding check) now consult this closure
+instead, so an alias is exactly as visible as the literal name.
 
 Finding C (Minor, fixed): `ffi/secretary-ffi-bridge/Cargo.toml`'s
 `[features]` comment pointed at the now-deleted `.sh` script; repointed at
@@ -94,15 +93,99 @@ captured (see `_quiet_scan_rc`), and only replay the capture if the
 sub-check's own assertion fails, so a passing self-test's transcript is
 just the self-test's own PASS/FAIL lines.
 
-PARKED, NOT FIXED (lower severity, explicitly out of scope this round —
-tracked so they are not silently forgotten):
+FIX ROUND 4 — two more Important findings; both are the closure keying on
+the WRONG THING, at opposite ends of a dependency edge
+------------------------------------------------------------------------
+Finding R1 (a REGRESSION round 3 introduced). Round 2 checked
+`default = [...]` with a per-manifest literal compare. Round 3 routed that
+check through the new GLOBAL closure map, which was keyed on
+`[package].name` and merged every same-named manifest's `[features]` table
+with last-writer-wins (`table[fname] = ...`). A second scanned manifest
+declaring the SAME package name and REDECLARING the feature therefore
+ERASED the first one's definition:
+
+    # aa_bridge/Cargo.toml            # zz_shadow/Cargo.toml
+    [package]                         [package]
+    name = "secretary-ffi-bridge"     name = "secretary-ffi-bridge"
+    [features]                        [features]
+    default = ["test-support"]        default = []
+    test-support = []
+
+    round 3: OK (2 manifests scanned)   rc=0        <-- hatch ships
+
+Order-dependent (denies if the shadow sorts first, passes if it sorts
+last), and exploitable in-tree: scan roots are walked in `DEFAULT_ROOTS`
+order, non-workspace-members ARE scanned (`core/fuzz` is one), so a shadow
+manifest parked under the workspace `exclude` list keeps `cargo build
+--release --workspace` green. It also bit as a FALSE POSITIVE — in the
+order that did deny, BOTH manifests were flagged, including the innocent
+one.
+
+Fixed on two independent axes, deliberately belt-and-braces because either
+one alone leaves a residue:
+
+  1. The closure is now keyed by MANIFEST PATH. Nothing merges, so nothing
+     can be erased, and the `default` check consults the reaches-set of the
+     manifest it is reporting on — which also ends the mis-attribution.
+     Cross-crate lookups (a dependency edge, a `<crate>/<feature>` forward)
+     resolve a NAME rather than a path, so for those the guard takes the
+     UNION over every manifest declaring that name: fail-closed, since a
+     shadow that redeclares an alias as empty must not be able to mask a
+     sibling that defines it as reaching (that is R1 again, one level out —
+     see the `r1_dup_name_shadow_cross_crate` control).
+  2. A duplicate `[package].name` among the scanned manifests is ITSELF
+     denied. FAIL-CLOSED was chosen over silently unioning: with two
+     manifests claiming one crate name the guard cannot tell which of them
+     a dependency edge resolves to, and Cargo cannot either within one
+     workspace. The real tree has eleven manifests and eleven distinct
+     names (one virtual root with no `[package]`), so this denies a shape
+     that does not legitimately occur here. Union (1) still runs, so the
+     closure stays correct even if a future allowlist ever exempts a
+     duplicate.
+
+Finding R2 (dependency RENAMING evades the closure). Cargo dependency
+edges and `dep/feat` forwarding strings key on the DEPENDENCY KEY, which
+`package = "..."` renames. The closure keyed on `[package].name`, so both
+of these passed:
+
+    mybridge = { path = "...", package = "secretary-ffi-bridge",
+                 features = ["hatch"] }
+    x = ["mybridge/hatch"]        # in a [features] table
+
+Fixed: `build_rename_map` reads `package = "..."` out of EVERY dependency
+table in a manifest (dev included — this is name RESOLUTION, not a policy
+decision about which section is sanctioned) and `resolve_dep_names`
+resolves a dependency key to its candidate package names before any lookup
+into the closure. The key itself always stays in the candidate set, so an
+alias that shadows a real crate name is checked BOTH ways (fail-closed).
+
+Self-found while fixing R1: making a duplicate `[package].name` a DENIAL
+introduced a false positive of its own, because `iter_manifests` had no
+reason to de-duplicate before. Two OVERLAPPING scan roots (`… core
+core/fuzz`) read one manifest twice, which then read as two manifests
+declaring the same package name. `iter_manifests` now de-duplicates by
+resolved path; the `overlapping-root` self-test sub-check pins it, and
+mutation M17 confirms that sub-check is not vacuous.
+
+LIMITS (round 4 — stated precisely, because the most repeated review
+finding on this branch was documentation claiming more than the code does)
+------------------------------------------------------------------------
   - `Path.rglob` does not follow directory symlinks, so a symlinked crate
-    directory would be invisible to the scan.
+    directory is invisible to the scan. Unchanged since round 2.
   - Any path component literally named `target` is excluded wholesale by
     `iter_manifests`, which would also exclude a hypothetical real crate
-    directory that happened to be named `target`.
-Neither is touched by this round's changes; `iter_manifests`'s `target`
-exclusion and its use of `rglob` are structurally unchanged from round 2.
+    directory named `target`. Unchanged since round 2.
+  - The scan reads MANIFESTS, not `cargo metadata`. A feature enabled by a
+    manifest OUTSIDE `DEFAULT_ROOTS` (a path dependency pointing out of the
+    repo, a `[patch]` redirect, a git dependency) is not seen. The roots
+    are the trust boundary; `find_missing_roots` is what keeps them honest.
+  - `[workspace.dependencies]` is treated as non-dev. Cargo has no
+    `[workspace.dev-dependencies]`, so an entry there that ONLY a
+    `[dev-dependencies] foo.workspace = true` inherits would be a false
+    positive. Deliberate, fail-closed, unchanged since round 2.
+  - Feature values are matched as TEXT. Cargo's `dep:` activation prefix
+    carries no feature name and is ignored; a future syntax the guard does
+    not know would be read as an ordinary bare name.
 
 USAGE
 -----
@@ -117,9 +200,16 @@ import contextlib
 import io
 import sys
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 FEATURE = "test-support"
+
+# Appended to every PLACEMENT violation. Structural violations (a TOML parse
+# error, a duplicate package name) carry their own explanation instead, so
+# the remedy clause is attached at the message site rather than blanket-
+# applied when printing.
+REMEDY = f"— '{FEATURE}' may only be enabled from [dev-dependencies]"
 
 # Sections where declaring `features = [..., "test-support", ...]` (or an
 # ALIAS that reaches it — see `build_feature_graph`) on a dependency puts
@@ -127,6 +217,13 @@ FEATURE = "test-support"
 # `target.*.dev-dependencies`) are deliberately ABSENT from this set — that
 # is the one sanctioned place to enable the feature.
 DENIED_DEP_SECTIONS = ("dependencies", "build-dependencies")
+
+# Every dependency-table kind, dev included. Used ONLY for name resolution
+# (`build_rename_map`) — reading a `package = "..."` rename out of a
+# dev-dependency is not a policy statement about that section, it is how the
+# guard learns what `mybridge/hatch` refers to. Violations are still filtered
+# to `DENIED_DEP_SECTIONS`.
+ALL_DEP_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
 
 # Explicit, hardcoded scan roots (#500 M7) — never the ambient repo root.
 # Every workspace member Cargo.toml lives under one of these directories
@@ -165,194 +262,355 @@ def iter_manifests(roots: list[Path]) -> list[Path]:
     governs. A missing root silently contributes nothing here — callers
     that need to know WHY must pair this with `find_missing_roots`; `scan`
     below does exactly that.
+
+    The result is DE-DUPLICATED by resolved path, first occurrence winning.
+    `DEFAULT_ROOTS` are disjoint, but a custom invocation can nest one root
+    inside another, and since round 4 a manifest seen twice would be read as
+    two manifests declaring the same `[package].name` — i.e. an overlapping
+    root would manufacture a duplicate-name denial out of one innocent file.
     """
-    manifests: list[Path] = []
+    manifests: dict[Path, Path] = {}
+
+    def add(path: Path) -> None:
+        manifests.setdefault(path.resolve(), path)
+
     for root in roots:
         if not root.exists():
             continue
         if root.is_file():
-            manifests.append(root)
+            add(root)
             continue
         for path in sorted(root.rglob("Cargo.toml")):
             if "target" in path.relative_to(root).parts:
                 continue
-            manifests.append(path)
-    return manifests
+            add(path)
+    return list(manifests.values())
 
 
-def _crate_name(data: dict, manifest: Path) -> str:
-    """The name a dependency edge would use to refer to this manifest's
-    crate, i.e. `[package].name`. A manifest with no `[package]` table (a
-    virtual workspace-only `Cargo.toml`, or a bare self-test fixture that
-    only cares about ITS OWN closure) defines no crate identity that any
-    OTHER manifest could depend on; it gets a synthetic, per-path key so it
-    still participates in its own same-file closure without ever being
-    mistaken for a real crate by a `<crate>/<feature>` forwarding lookup.
+def package_name(data: dict) -> str | None:
+    """`[package].name`, or None for a manifest that declares no package.
+
+    The name is the ONLY handle another manifest has on this one: a
+    dependency edge and a `<crate>/<feature>` forwarding string both name a
+    crate, never a path. A manifest with no `[package]` table (a virtual
+    workspace-only `Cargo.toml`, or a bare self-test fixture) is therefore
+    unreachable from any other manifest — it still gets its own per-manifest
+    closure, it just contributes nothing that a cross-crate lookup can find.
     """
     pkg = data.get("package")
     if isinstance(pkg, dict) and isinstance(pkg.get("name"), str):
         return pkg["name"]
-    return f"<no-package:{manifest}>"
+    return None
 
 
-def build_feature_graph(parsed: list[tuple[Path, dict]]) -> dict[str, set[str]]:
-    """Fixed-point closure, computed over ALL scanned manifests together:
-    for every crate, which of ITS OWN `[features]` keys transitively enable
-    `test-support` (#500 Finding B).
+def iter_dep_sections(data: dict) -> list[tuple[str, str, dict]]:
+    """Every dependency table in a manifest as `(label, kind, table)`.
 
-    A feature `F` defined in crate `C`'s `[features]` table is added to
-    `reaches[C]` if any one of its listed values is:
-      - the literal string `test-support` (the base case), or
-      - a bare name (no `/`) that is ALREADY in `reaches[C]` — a same-crate
-        reference to a feature that itself reaches, or
-      - `<other_crate>/<other_feature>` (Cargo's forwarding syntax, `?`
-        weak-dependency prefix stripped) where `other_feature` is
-        `test-support` itself or is already in `reaches[other_crate]`.
-
-    This only ever ADDS members to a set, never removes one, so repeating
-    the pass until nothing changes always reaches a fixed point — a mutual
-    reference (`a = ["b"], b = ["a"]`) just never grows past empty unless
-    one of them separately reaches `test-support`, with no special cycle
-    detection required.
+    `kind` is the bare section kind (`dependencies` / `dev-dependencies` /
+    `build-dependencies`) so callers can filter on policy; `label` is the
+    human-readable path to it (`target.cfg(unix).dependencies`, …).
     """
-    crate_features: dict[str, dict[str, list[str]]] = {}
-    for manifest, data in parsed:
-        name = _crate_name(data, manifest)
-        features = data.get("features")
-        if not isinstance(features, dict):
-            continue
-        table = crate_features.setdefault(name, {})
-        for fname, values in features.items():
-            if isinstance(values, list):
-                table[fname] = [v for v in values if isinstance(v, str)]
+    out: list[tuple[str, str, dict]] = []
 
-    reaches: dict[str, set[str]] = {name: set() for name in crate_features}
-    changed = True
-    while changed:
-        changed = False
-        for crate, feats in crate_features.items():
-            for fname, values in feats.items():
-                if fname in reaches[crate]:
-                    continue
-                for value in values:
-                    if value == FEATURE:
-                        reaches[crate].add(fname)
-                        changed = True
-                        break
-                    if "/" in value:
-                        dep_crate, _, dep_feat = value.partition("/")
-                        dep_crate = dep_crate.rstrip("?")
-                        if dep_feat == FEATURE or dep_feat in reaches.get(dep_crate, set()):
-                            reaches[crate].add(fname)
-                            changed = True
-                            break
-                    elif value in reaches[crate]:
-                        reaches[crate].add(fname)
-                        changed = True
-                        break
-    return reaches
+    def add(label: str, kind: str, table: object) -> None:
+        if isinstance(table, dict):
+            out.append((label, kind, table))
 
-
-def _feature_hits(spec: object, reaches: dict[str, set[str]], dep_name: str) -> list[str]:
-    """Which of a dependency entry's requested `features` are `test-support`
-    itself, or reach it via `dep_name`'s own closure (#500 Finding B)."""
-    if not isinstance(spec, dict):
-        return []
-    requested = spec.get("features")
-    if not isinstance(requested, list):
-        return []
-    dep_reaches = reaches.get(dep_name, set())
-    return [
-        f for f in requested
-        if isinstance(f, str) and (f == FEATURE or f in dep_reaches)
-    ]
-
-
-def find_dependency_violations(
-    data: dict, label: str, reaches: dict[str, set[str]]
-) -> list[str]:
-    """`features = [...]` on a non-dev dependency edge that names
-    `test-support` directly OR names an alias whose closure reaches it.
-
-    Covers top-level `[dependencies]` / `[build-dependencies]`,
-    `[workspace.dependencies]`, and `[target.<spec>.dependencies]` /
-    `[target.<spec>.build-dependencies]`. `[dev-dependencies]` and
-    `[target.<spec>.dev-dependencies]` are intentionally never checked here
-    — that is the sanctioned section.
-    """
-    hits: list[str] = []
-
-    def scan_section(section: object, section_label: str) -> None:
-        if not isinstance(section, dict):
-            return
-        for name, spec in section.items():
-            hit_feats = _feature_hits(spec, reaches, name)
-            if hit_feats:
-                hits.append(
-                    f"{label}: [{section_label}] {name} requests {hit_feats!r} "
-                    f"(reaches '{FEATURE}')"
-                )
-
-    for section_name in DENIED_DEP_SECTIONS:
-        scan_section(data.get(section_name), section_name)
+    for kind in ALL_DEP_SECTIONS:
+        add(kind, kind, data.get(kind))
 
     workspace = data.get("workspace")
     if isinstance(workspace, dict):
-        scan_section(workspace.get("dependencies"), "workspace.dependencies")
+        # Cargo has no `[workspace.dev-dependencies]`; the one workspace
+        # table feeds both, so it is treated as non-dev (fail-closed).
+        add("workspace.dependencies", "dependencies", workspace.get("dependencies"))
 
     target = data.get("target")
     if isinstance(target, dict):
         for spec_key, spec_val in target.items():
             if not isinstance(spec_val, dict):
                 continue
-            for section_name in DENIED_DEP_SECTIONS:
-                scan_section(
-                    spec_val.get(section_name), f"target.{spec_key}.{section_name}"
-                )
+            for kind in ALL_DEP_SECTIONS:
+                add(f"target.{spec_key}.{kind}", kind, spec_val.get(kind))
+
+    return out
+
+
+def build_rename_map(data: dict) -> dict[str, set[str]]:
+    """Dependency KEY -> the package names it can refer to (#500 R2).
+
+    `mybridge = { package = "secretary-ffi-bridge" }` makes `mybridge` the
+    name every dependency edge and every `mybridge/feat` forwarding string
+    in THIS manifest uses, while the crate it resolves to — the thing the
+    feature closure is keyed on — is `secretary-ffi-bridge`. Without this
+    map the closure lookup misses entirely.
+
+    The key itself is ALWAYS kept in the candidate set alongside any
+    rename: fail-closed, so an alias that happens to shadow a real crate
+    name is checked both ways rather than only one.
+    """
+    renames: dict[str, set[str]] = {}
+    for _label, _kind, table in iter_dep_sections(data):
+        for key, spec in table.items():
+            if not isinstance(key, str):
+                continue
+            candidates = renames.setdefault(key, {key})
+            if isinstance(spec, dict) and isinstance(spec.get("package"), str):
+                candidates.add(spec["package"])
+    return renames
+
+
+def resolve_dep_names(renames: dict[str, set[str]], key: str) -> set[str]:
+    """Candidate package names for a dependency key (see `build_rename_map`).
+
+    A key with no dependency entry in this manifest — a forwarding string
+    naming a crate that is not declared here — resolves to itself.
+    """
+    return renames.get(key, {key})
+
+
+def build_feature_graph(
+    parsed: list[tuple[Path, dict]],
+) -> tuple[dict[Path, set[str]], dict[str, set[str]]]:
+    """Fixed-point closure of "which `[features]` keys reach `test-support`",
+    computed over ALL scanned manifests together (#500 Finding B, R1, R2).
+
+    Returns `(by_manifest, by_name)`:
+      - `by_manifest[path]` — that ONE manifest's own reaching features.
+        Keyed by PATH, never by package name, so a second manifest claiming
+        the same `[package].name` cannot erase this one's `[features]`
+        table (#500 R1) and a violation is attributed to the manifest that
+        actually declares it.
+      - `by_name[crate]` — the UNION of `by_manifest` over every manifest
+        declaring `crate`. Cross-crate lookups (a dependency edge, a
+        `<crate>/<feature>` forward) have only a name to go on, and a
+        shadow manifest redeclaring an alias as empty must not mask a
+        sibling that defines it as reaching, so the union is the
+        fail-closed resolution of that ambiguity. A duplicate name is
+        separately DENIED outright by `find_duplicate_package_names`.
+
+    A feature `F` of manifest `M` is added to `by_manifest[M]` if any listed
+    value is:
+      - the literal string `test-support` (the base case), or
+      - a bare name (no `/`) already in `by_manifest[M]` — a same-manifest
+        reference to a feature that itself reaches, or
+      - `<dep_key>/<feature>` (Cargo's forwarding syntax, `?` weak-dependency
+        prefix stripped) where `<feature>` is `test-support` itself or is
+        already reachable under ANY package name `<dep_key>` resolves to.
+
+    This only ever ADDS members to a set, never removes one, so repeating
+    the pass until nothing changes always reaches a fixed point — a mutual
+    reference (`a = ["b"], b = ["a"]`) just never grows past empty unless
+    one of them separately reaches `test-support`, with no special cycle
+    detection required. `cycle_reaching` / `cycle_not_reaching` pin both
+    directions of that claim.
+    """
+    nodes: list[Path] = []
+    features_of: dict[Path, dict[str, list[str]]] = {}
+    renames_of: dict[Path, dict[str, set[str]]] = {}
+    nodes_by_name: dict[str, list[Path]] = {}
+
+    for manifest, data in parsed:
+        nodes.append(manifest)
+        renames_of[manifest] = build_rename_map(data)
+        table: dict[str, list[str]] = {}
+        features = data.get("features")
+        if isinstance(features, dict):
+            for fname, values in features.items():
+                if isinstance(fname, str) and isinstance(values, list):
+                    table[fname] = [v for v in values if isinstance(v, str)]
+        features_of[manifest] = table
+        name = package_name(data)
+        if name is not None:
+            nodes_by_name.setdefault(name, []).append(manifest)
+
+    by_manifest: dict[Path, set[str]] = {m: set() for m in nodes}
+
+    def name_reaches(name: str) -> set[str]:
+        """Live union over every manifest declaring `name` — recomputed on
+        each lookup so growth propagates within a single pass."""
+        out: set[str] = set()
+        for m in nodes_by_name.get(name, ()):
+            out |= by_manifest[m]
+        return out
+
+    changed = True
+    while changed:
+        changed = False
+        for manifest in nodes:
+            renames = renames_of[manifest]
+            reached = by_manifest[manifest]
+            for fname, values in features_of[manifest].items():
+                if fname in reached:
+                    continue
+                for value in values:
+                    if value == FEATURE:
+                        reached.add(fname)
+                        changed = True
+                        break
+                    if "/" in value:
+                        dep_key, _, dep_feat = value.partition("/")
+                        dep_key = dep_key.rstrip("?")
+                        candidates = resolve_dep_names(renames, dep_key)
+                        if dep_feat == FEATURE or any(
+                            dep_feat in name_reaches(c) for c in candidates
+                        ):
+                            reached.add(fname)
+                            changed = True
+                            break
+                    elif value in reached:
+                        reached.add(fname)
+                        changed = True
+                        break
+
+    by_name = {name: name_reaches(name) for name in nodes_by_name}
+    return by_manifest, by_name
+
+
+def find_duplicate_package_names(parsed: list[tuple[Path, dict]]) -> list[str]:
+    """Two scanned manifests claiming one `[package].name` (#500 R1).
+
+    FAIL-CLOSED rather than silently tolerated: with two manifests claiming
+    one crate name, neither this guard nor Cargo can say which of them a
+    dependency edge resolves to, and the shape is exactly the shadowing
+    exploit R1 demonstrated. The union in `build_feature_graph` keeps the
+    closure correct anyway, so this check is the second of two independent
+    defences, not the only one.
+    """
+    by_name: dict[str, list[Path]] = {}
+    for manifest, data in parsed:
+        name = package_name(data)
+        if name is not None:
+            by_name.setdefault(name, []).append(manifest)
+
+    hits: list[str] = []
+    for name, paths in sorted(by_name.items()):
+        if len(paths) > 1:
+            joined = ", ".join(str(p) for p in sorted(paths))
+            hits.append(
+                f"duplicate [package].name {name!r} declared by {len(paths)} "
+                f"scanned manifests ({joined}) — a second manifest claiming an "
+                f"existing crate name can shadow the first's [features] table, "
+                f"and no dependency edge can be attributed to one of them; give "
+                f"every scanned manifest a distinct package name"
+            )
+    return hits
+
+
+def _feature_hits(
+    spec: object, reaches_by_name: dict[str, set[str]], candidates: set[str]
+) -> list[str]:
+    """Which of a dependency entry's requested `features` are `test-support`
+    itself, or reach it via the closure of ANY package name the entry
+    resolves to (#500 Finding B, R2)."""
+    if not isinstance(spec, dict):
+        return []
+    requested = spec.get("features")
+    if not isinstance(requested, list):
+        return []
+    pool: set[str] = set()
+    for candidate in candidates:
+        pool |= reaches_by_name.get(candidate, set())
+    return [
+        f for f in requested
+        if isinstance(f, str) and (f == FEATURE or f in pool)
+    ]
+
+
+def find_dependency_violations(
+    data: dict, label: str, reaches_by_name: dict[str, set[str]]
+) -> list[str]:
+    """`features = [...]` on a non-dev dependency edge that names
+    `test-support` directly, names an alias whose closure reaches it, or
+    does either through a `package = "..."` RENAME (#500 R2).
+
+    Covers top-level `[dependencies]` / `[build-dependencies]`,
+    `[workspace.dependencies]`, and `[target.<spec>.dependencies]` /
+    `[target.<spec>.build-dependencies]`. `[dev-dependencies]` and
+    `[target.<spec>.dev-dependencies]` are intentionally never reported here
+    — that is the sanctioned section — though they DO feed the rename map.
+    """
+    hits: list[str] = []
+    renames = build_rename_map(data)
+
+    for section_label, kind, table in iter_dep_sections(data):
+        if kind not in DENIED_DEP_SECTIONS:
+            continue
+        for dep_key, spec in table.items():
+            if not isinstance(dep_key, str):
+                continue
+            candidates = resolve_dep_names(renames, dep_key)
+            hit_feats = _feature_hits(spec, reaches_by_name, candidates)
+            if not hit_feats:
+                continue
+            alias = (
+                ""
+                if candidates == {dep_key}
+                else f" (resolves to {' / '.join(sorted(candidates))})"
+            )
+            hits.append(
+                f"{label}: [{section_label}] {dep_key}{alias} requests "
+                f"{hit_feats!r} (reaches '{FEATURE}') {REMEDY}"
+            )
 
     return hits
 
 
 def find_feature_table_violations(
-    data: dict, label: str, crate_name: str, reaches: dict[str, set[str]]
+    data: dict,
+    label: str,
+    manifest_reaches: set[str],
+    reaches_by_name: dict[str, set[str]],
 ) -> list[str]:
     """`[features]` entries that turn `test-support` on without a consumer
     ever writing `[dev-dependencies]` at all (#500 I2, generalized to
-    aliases by Finding B).
+    aliases by Finding B, to shadowed manifests by R1 and to renamed
+    dependencies by R2).
 
     1. `default`'s closure reaching `test-support` — directly or via any
-       chain of same-crate / cross-crate aliases. Only load-bearing on
+       chain of same-manifest / cross-crate aliases. Read from THIS
+       manifest's own closure (`manifest_reaches`), never a name-keyed one,
+       so a same-named sibling can neither erase the finding (#500 R1) nor
+       collect the blame for it. Only load-bearing on
        `secretary-ffi-bridge`'s own manifest, but checked on every manifest
        for the same fail-closed reason as round 2: a coincidentally-named
        feature elsewhere costs a one-line allowlist entry, not a missed
        real bypass.
-    2. Any feature list value using `<crate>/<feature>` forwarding syntax
-       where `<feature>` is `test-support` itself or reaches it via
-       `<crate>`'s own closure — regardless of whether the forwarding
-       feature is itself reachable from `default`, matching round 2's
-       original scope (a non-default, explicitly-requested forward is
-       still a bypass of the "only `[dev-dependencies]`" rule).
+    2. Any feature list value using `<dep>/<feature>` forwarding syntax
+       where `<feature>` is `test-support` itself or reaches it via the
+       closure of any package name `<dep>` resolves to — regardless of
+       whether the forwarding feature is itself reachable from `default`,
+       matching round 2's original scope (a non-default, explicitly-
+       requested forward is still a bypass of the "only `[dev-dependencies]`"
+       rule).
     """
     hits: list[str] = []
     features = data.get("features")
     if not isinstance(features, dict):
         return hits
 
-    if "default" in reaches.get(crate_name, set()):
-        hits.append(f"{label}: [features] default's closure reaches '{FEATURE}'")
+    if "default" in manifest_reaches:
+        hits.append(
+            f"{label}: [features] default's closure reaches '{FEATURE}' {REMEDY}"
+        )
 
+    renames = build_rename_map(data)
     for feature_name, values in features.items():
         if not isinstance(values, list):
             continue
         for value in values:
             if not isinstance(value, str) or "/" not in value:
                 continue
-            dep_crate, _, dep_feat = value.partition("/")
-            dep_crate = dep_crate.rstrip("?")
-            if dep_feat == FEATURE or dep_feat in reaches.get(dep_crate, set()):
+            dep_key, _, dep_feat = value.partition("/")
+            dep_key = dep_key.rstrip("?")
+            candidates = resolve_dep_names(renames, dep_key)
+            pool: set[str] = set()
+            for candidate in candidates:
+                pool |= reaches_by_name.get(candidate, set())
+            if dep_feat == FEATURE or dep_feat in pool:
                 hits.append(
-                    f"{label}: [features] {feature_name} forwards '{value}' "
-                    f"(reaches '{FEATURE}')"
+                    f"{label}: [features] {feature_name} forwards {value!r} "
+                    f"(reaches '{FEATURE}') {REMEDY}"
                 )
 
     return hits
@@ -369,18 +627,23 @@ def scan(roots: list[Path]) -> tuple[list[str], int, list[Path]]:
         try:
             data = tomllib.loads(manifest.read_text())
         except tomllib.TOMLDecodeError as exc:
-            violations.append(f"{manifest}: TOML PARSE ERROR — {exc}")
+            violations.append(
+                f"{manifest}: TOML PARSE ERROR — {exc}; an unparseable manifest "
+                f"is unscannable, which must never read as clean"
+            )
             continue
         parsed.append((manifest, data))
 
-    reaches = build_feature_graph(parsed)
+    reaches_by_manifest, reaches_by_name = build_feature_graph(parsed)
+    violations.extend(find_duplicate_package_names(parsed))
 
     for manifest, data in parsed:
         label = str(manifest)
-        crate_name = _crate_name(data, manifest)
-        violations.extend(find_dependency_violations(data, label, reaches))
+        violations.extend(find_dependency_violations(data, label, reaches_by_name))
         violations.extend(
-            find_feature_table_violations(data, label, crate_name, reaches)
+            find_feature_table_violations(
+                data, label, reaches_by_manifest[manifest], reaches_by_name
+            )
         )
 
     return violations, len(manifest_paths), missing
@@ -409,8 +672,7 @@ def run_real_scan(roots: list[Path]) -> int:
 
     if violations:
         for v in violations:
-            print(f"DENIED: {v} — '{FEATURE}' may only be enabled from "
-                  f"[dev-dependencies]")
+            print(f"DENIED: {v}")
         fail = True
 
     if fail:
@@ -438,112 +700,366 @@ def _quiet_scan_rc(roots: list[Path]) -> tuple[int, str]:
 # --self-test
 # ---------------------------------------------------------------------------
 
-# Positive controls: each MUST be denied. `dict[case] = {relative_path: toml
-# text}` so a case can span more than one manifest (needed for Finding B's
-# cross-crate alias controls).
-POSITIVE_FIXTURES: dict[str, dict[str, str]] = {
-    "base_normal_dependency": {
-        "Cargo.toml": """
+
+@dataclass
+class Control:
+    """One self-test fixture plus what its verdict must SAY.
+
+    `files` maps a relative path to TOML text, so a case can span several
+    manifests (needed for every cross-crate control). `expect` / `forbid`
+    are substrings matched against the joined violation text.
+
+    A positive control with an EMPTY `expect` is itself a self-test failure:
+    asserting only "something fired" is the vacuity #496 found in the
+    sibling payload guard, where a mistyped expectation silently degraded a
+    control to a presence check. `forbid` is how a control pins the ABSENCE
+    of a finding — mis-attribution to an innocent manifest, or a spurious
+    denial on a benign shape.
+    """
+
+    files: dict[str, str]
+    expect: tuple[str, ...] = ()
+    forbid: tuple[str, ...] = ()
+
+
+# Reusable fixture text. A bridge manifest whose `hatch` alias reaches the
+# hatch, and one that redeclares `hatch` as empty under the SAME package
+# name (the R1 shadow).
+_BRIDGE_WITH_HATCH = """
+[package]
+name = "secretary-ffi-bridge"
+
+[features]
+hatch = ["test-support"]
+test-support = []
+"""
+
+_BRIDGE_SHADOW_EMPTY_HATCH = """
+[package]
+name = "secretary-ffi-bridge"
+
+[features]
+hatch = []
+test-support = []
+"""
+
+# Positive controls: each MUST be denied, AND must say what `expect` says.
+POSITIVE_CONTROLS: dict[str, Control] = {
+    "base_normal_dependency": Control(
+        files={
+            "Cargo.toml": """
 [dependencies]
 secretary-ffi-bridge = { path = "..", features = ["test-support"] }
 """,
-    },
-    "default_feature_list": {
-        "Cargo.toml": """
+        },
+        expect=("[dependencies] secretary-ffi-bridge requests ['test-support']",),
+    ),
+    "default_feature_list": Control(
+        files={
+            "Cargo.toml": """
 [features]
 default = ["test-support"]
 test-support = []
 """,
-    },
-    "crate_forwarded_feature": {
-        "Cargo.toml": """
+        },
+        expect=("[features] default's closure reaches 'test-support'",),
+    ),
+    "crate_forwarded_feature": Control(
+        files={
+            "Cargo.toml": """
 [dependencies]
 secretary-ffi-bridge = { path = ".." }
 
 [features]
 extra = ["secretary-ffi-bridge/test-support"]
 """,
-    },
-    "multiline_inline_table_array": {
-        "Cargo.toml": """
+        },
+        expect=("[features] extra forwards 'secretary-ffi-bridge/test-support'",),
+    ),
+    "multiline_inline_table_array": Control(
+        files={
+            "Cargo.toml": """
 [dependencies]
 secretary-ffi-bridge = { path = "..", features = [
   "test-support",
 ] }
 """,
-    },
-    "indented_table_header": {
-        "Cargo.toml": """
+        },
+        expect=("[dependencies] secretary-ffi-bridge requests ['test-support']",),
+    ),
+    "indented_table_header": Control(
+        files={
+            "Cargo.toml": """
   [dependencies]
 secretary-ffi-bridge = { path = "..", features = ["test-support"] }
 """,
-    },
+        },
+        expect=("[dependencies] secretary-ffi-bridge requests ['test-support']",),
+    ),
     # --- Finding B: alias-of-test-support bypasses ---
-    "alias_default_reaches": {
+    "alias_default_reaches": Control(
         # (a) One file, no consumer needed: `default` reaches `test-support`
-        # through a same-crate alias hop (`hatch`).
-        "Cargo.toml": """
+        # through a same-manifest alias hop (`hatch`).
+        files={
+            "Cargo.toml": """
 [features]
 default = ["hatch"]
 hatch = ["test-support"]
 test-support = []
 """,
-    },
-    "alias_requested_by_dependent": {
+        },
+        expect=("[features] default's closure reaches 'test-support'",),
+    ),
+    "alias_requested_by_dependent": Control(
         # (b) A consumer requests the ALIAS (not `test-support` itself) on
         # a plain `[dependencies]` edge; the bridge's own manifest defines
         # the alias. Two files, one shared scan root.
-        "bridge/Cargo.toml": """
-[package]
-name = "secretary-ffi-bridge"
-
-[features]
-hatch = ["test-support"]
-test-support = []
-""",
-        "consumer/Cargo.toml": """
+        files={
+            "bridge/Cargo.toml": _BRIDGE_WITH_HATCH,
+            "consumer/Cargo.toml": """
 [dependencies]
 secretary-ffi-bridge = { path = "../bridge", features = ["hatch"] }
 """,
-    },
-    "alias_forwarded_by_dependent": {
+        },
+        expect=("[dependencies] secretary-ffi-bridge requests ['hatch']",),
+    ),
+    "alias_forwarded_by_dependent": Control(
         # Finding B names THREE sites needing the closure treatment: the
         # `default` check, the dependency-edge check (control above), and
         # the cross-crate `<crate>/<feature>` FORWARDING check. This is the
         # dedicated control for the third: a consumer forwards the ALIAS
         # (not `test-support` itself) through its own `[features]` table,
         # never requesting it directly on the dependency edge.
-        "bridge/Cargo.toml": """
-[package]
-name = "secretary-ffi-bridge"
-
-[features]
-hatch = ["test-support"]
-test-support = []
-""",
-        "consumer/Cargo.toml": """
+        files={
+            "bridge/Cargo.toml": _BRIDGE_WITH_HATCH,
+            "consumer/Cargo.toml": """
 [dependencies]
 secretary-ffi-bridge = { path = "../bridge" }
 
 [features]
 extra = ["secretary-ffi-bridge/hatch"]
 """,
-    },
+        },
+        expect=("[features] extra forwards 'secretary-ffi-bridge/hatch'",),
+    ),
+    # --- Round 3 mechanisms, previously verified ad hoc, now pinned ---
+    "transitive_chain": Control(
+        # `default` reaches only on the THIRD closure pass. Round 3's
+        # mutation G5 (single pass instead of a fixed point) was verified by
+        # hand; this control makes the iteration permanently load-bearing.
+        files={
+            "Cargo.toml": """
+[features]
+default = ["hop_a"]
+hop_a = ["hop_b"]
+hop_b = ["test-support"]
+test-support = []
+""",
+        },
+        expect=("[features] default's closure reaches 'test-support'",),
+    ),
+    "cycle_reaching": Control(
+        # A mutual reference that DOES reach. Must terminate and deny; the
+        # closure's monotonicity is what makes cycle bookkeeping unnecessary.
+        files={
+            "Cargo.toml": """
+[features]
+default = ["ping"]
+ping = ["pong"]
+pong = ["ping", "test-support"]
+test-support = []
+""",
+        },
+        expect=("[features] default's closure reaches 'test-support'",),
+    ),
+    "cross_crate_two_hop": Control(
+        # bridge -> mid -> consumer, forwarding the alias at each hop.
+        files={
+            "bridge/Cargo.toml": _BRIDGE_WITH_HATCH,
+            "mid/Cargo.toml": """
+[package]
+name = "mid-crate"
+
+[dependencies]
+secretary-ffi-bridge = { path = "../bridge" }
+
+[features]
+midfeat = ["secretary-ffi-bridge/hatch"]
+""",
+            "consumer/Cargo.toml": """
+[dependencies]
+mid-crate = { path = "../mid", features = ["midfeat"] }
+""",
+        },
+        expect=(
+            "mid/Cargo.toml: [features] midfeat forwards "
+            "'secretary-ffi-bridge/hatch'",
+            "consumer/Cargo.toml: [dependencies] mid-crate requests ['midfeat']",
+        ),
+    ),
+    "weak_dep_forward": Control(
+        # Cargo's weak-dependency `?` prefix must not hide the forward.
+        files={
+            "bridge/Cargo.toml": _BRIDGE_WITH_HATCH,
+            "consumer/Cargo.toml": """
+[dependencies]
+secretary-ffi-bridge = { path = "../bridge", optional = true }
+
+[features]
+extra = ["secretary-ffi-bridge?/hatch"]
+""",
+        },
+        expect=("[features] extra forwards 'secretary-ffi-bridge?/hatch'",),
+    ),
+    # --- R1: a same-named manifest shadowing another's [features] table ---
+    "r1_dup_name_shadow_last": Control(
+        # The reviewer's exact repro. Round 3 keyed the closure on
+        # `[package].name` with last-writer-wins, so the shadow SORTING
+        # LAST erased the real declaration and the scan read "OK".
+        files={
+            "aa_bridge/Cargo.toml": """
+[package]
+name = "secretary-ffi-bridge"
+
+[features]
+default = ["test-support"]
+test-support = []
+""",
+            "zz_shadow/Cargo.toml": """
+[package]
+name = "secretary-ffi-bridge"
+
+[features]
+default = []
+""",
+        },
+        expect=(
+            "aa_bridge/Cargo.toml: [features] default's closure reaches",
+            "duplicate [package].name 'secretary-ffi-bridge'",
+        ),
+        # The shadow declares `default = []`. Blaming it too was round 3's
+        # false-positive half of R1; per-manifest keying is what ends it.
+        forbid=("zz_shadow/Cargo.toml: [features] default's closure reaches",),
+    ),
+    "r1_dup_name_shadow_first": Control(
+        # Same exploit, opposite path ordering. Round 3 DENIED this one —
+        # but flagged BOTH manifests, the false-positive half of R1.
+        files={
+            "aa_shadow/Cargo.toml": """
+[package]
+name = "secretary-ffi-bridge"
+
+[features]
+default = []
+""",
+            "zz_bridge/Cargo.toml": """
+[package]
+name = "secretary-ffi-bridge"
+
+[features]
+default = ["test-support"]
+test-support = []
+""",
+        },
+        expect=(
+            "zz_bridge/Cargo.toml: [features] default's closure reaches",
+            "duplicate [package].name 'secretary-ffi-bridge'",
+        ),
+        forbid=("aa_shadow/Cargo.toml: [features] default's closure reaches",),
+    ),
+    "r1_dup_name_benign": Control(
+        # R1's FALSE-POSITIVE shape: two same-named manifests, NEITHER
+        # reaching the hatch. Fail-closed was chosen over union-and-shrug,
+        # so this IS denied — but only for the duplicate name. It must not
+        # manufacture a placement finding out of two innocent manifests.
+        files={
+            "a/Cargo.toml": """
+[package]
+name = "benign-dup"
+
+[features]
+foo = []
+""",
+            "b/Cargo.toml": """
+[package]
+name = "benign-dup"
+
+[features]
+bar = []
+""",
+        },
+        expect=("duplicate [package].name 'benign-dup'",),
+        forbid=("reaches 'test-support'", "requests ", "forwards "),
+    ),
+    "r1_dup_name_shadow_cross_crate": Control(
+        # R1 one level out: the shadow redeclares the ALIAS as empty rather
+        # than `default`, so a name-keyed last-writer-wins closure loses the
+        # reaching definition and the consumer's edge goes unnoticed. Pins
+        # the by-name UNION, not just the per-manifest keying.
+        files={
+            "aa_bridge/Cargo.toml": _BRIDGE_WITH_HATCH,
+            "zz_bridge/Cargo.toml": _BRIDGE_SHADOW_EMPTY_HATCH,
+            "consumer/Cargo.toml": """
+[dependencies]
+secretary-ffi-bridge = { path = "../aa_bridge", features = ["hatch"] }
+""",
+        },
+        expect=(
+            "consumer/Cargo.toml: [dependencies] secretary-ffi-bridge "
+            "requests ['hatch']",
+            "duplicate [package].name 'secretary-ffi-bridge'",
+        ),
+    ),
+    # --- R2: `package = "..."` renames the dependency key ---
+    "r2_renamed_dep_requests_alias": Control(
+        # The edge names `mybridge`; the closure is keyed on the real
+        # package name. Without rename resolution the lookup misses and the
+        # hatch ships.
+        files={
+            "bridge/Cargo.toml": _BRIDGE_WITH_HATCH,
+            "consumer/Cargo.toml": """
+[dependencies]
+mybridge = { path = "../bridge", package = "secretary-ffi-bridge", features = ["hatch"] }
+""",
+        },
+        expect=(
+            "[dependencies] mybridge (resolves to mybridge / "
+            "secretary-ffi-bridge) requests ['hatch']",
+        ),
+    ),
+    "r2_renamed_dep_forwards_alias": Control(
+        # Same rename, reached through the consumer's own `[features]`
+        # forwarding string instead of the dependency edge.
+        files={
+            "bridge/Cargo.toml": _BRIDGE_WITH_HATCH,
+            "consumer/Cargo.toml": """
+[dependencies]
+mybridge = { path = "../bridge", package = "secretary-ffi-bridge" }
+
+[features]
+x = ["mybridge/hatch"]
+""",
+        },
+        expect=("[features] x forwards 'mybridge/hatch'",),
+    ),
 }
 
-# Negative controls: each MUST pass.
-NEGATIVE_FIXTURES: dict[str, dict[str, str]] = {
-    "legit_dev_dependency": {
-        "Cargo.toml": """
+# Negative controls: each MUST pass with zero violations.
+NEGATIVE_CONTROLS: dict[str, Control] = {
+    "legit_dev_dependency": Control(
+        files={
+            "Cargo.toml": """
 [dev-dependencies]
 secretary-ffi-bridge = { path = "..", features = ["test-support"] }
 """,
-    },
+        },
+    ),
     # Finding B's false-positive guard: an alias chain that does NOT reach
     # `test-support` must not be flagged, even in the same two-file shape
     # as the positive `alias_requested_by_dependent` control above.
-    "alias_chain_not_reaching": {
-        "bridge/Cargo.toml": """
+    "alias_chain_not_reaching": Control(
+        files={
+            "bridge/Cargo.toml": """
 [package]
 name = "secretary-ffi-bridge"
 
@@ -551,11 +1067,44 @@ name = "secretary-ffi-bridge"
 unrelated = []
 test-support = []
 """,
-        "consumer/Cargo.toml": """
+            "consumer/Cargo.toml": """
 [dependencies]
 secretary-ffi-bridge = { path = "../bridge", features = ["unrelated"] }
 """,
-    },
+        },
+    ),
+    # R2's false-positive guard: a LEGITIMATE rename whose requested feature
+    # does not reach the hatch. Resolving the rename must not, by itself,
+    # manufacture a finding.
+    "r2_renamed_dep_not_reaching": Control(
+        files={
+            "bridge/Cargo.toml": """
+[package]
+name = "secretary-ffi-bridge"
+
+[features]
+unrelated = []
+test-support = []
+""",
+            "consumer/Cargo.toml": """
+[dependencies]
+mybridge = { path = "../bridge", package = "secretary-ffi-bridge", features = ["unrelated"] }
+""",
+        },
+    ),
+    # The closure must TERMINATE on a mutual reference that never reaches —
+    # the other half of `cycle_reaching`. A hang here fails the whole run.
+    "cycle_not_reaching": Control(
+        files={
+            "Cargo.toml": """
+[features]
+default = ["ping"]
+ping = ["pong"]
+pong = ["ping"]
+test-support = []
+""",
+        },
+    ),
 }
 
 
@@ -576,27 +1125,45 @@ def self_test() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
 
-        for name, files in POSITIVE_FIXTURES.items():
+        for name, control in POSITIVE_CONTROLS.items():
             case_dir = tmp_path / name
             case_dir.mkdir()
-            _write_fixture(case_dir, files)
-            violations, count, missing = scan([case_dir])
+            _write_fixture(case_dir, control.files)
+            violations, count, _missing = scan([case_dir])
+            joined = "\n".join(violations)
             if count == 0:
                 print(f"SELF-TEST FAIL: positive control {name!r} contributed "
                       f"zero manifests (fixture bug)")
+                fails += 1
+            elif not control.expect:
+                print(f"SELF-TEST FAIL: positive control {name!r} declares no "
+                      f"`expect` — a control asserting only that SOMETHING "
+                      f"fired is vacuous")
                 fails += 1
             elif not violations:
                 print(f"SELF-TEST FAIL: known-positive control {name!r} was "
                       f"NOT denied")
                 fails += 1
             else:
-                positive_ok += 1
+                absent = [e for e in control.expect if e not in joined]
+                present = [f for f in control.forbid if f in joined]
+                if absent or present:
+                    print(f"SELF-TEST FAIL: known-positive control {name!r} "
+                          f"was denied, but for the wrong reason")
+                    for e in absent:
+                        print(f"    expected but ABSENT:  {e!r}")
+                    for f in present:
+                        print(f"    forbidden but PRESENT: {f!r}")
+                    print(f"    actual violations: {violations!r}")
+                    fails += 1
+                else:
+                    positive_ok += 1
 
-        for name, files in NEGATIVE_FIXTURES.items():
+        for name, control in NEGATIVE_CONTROLS.items():
             case_dir = tmp_path / name
             case_dir.mkdir()
-            _write_fixture(case_dir, files)
-            violations, count, missing = scan([case_dir])
+            _write_fixture(case_dir, control.files)
+            violations, count, _missing = scan([case_dir])
             if count == 0:
                 print(f"SELF-TEST FAIL: negative control {name!r} contributed "
                       f"zero manifests (fixture bug)")
@@ -613,7 +1180,7 @@ def self_test() -> int:
         # probed for, not a self-test failure (#500 Finding D).
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
-        violations, count, missing = scan([empty_dir])
+        violations, count, _missing = scan([empty_dir])
         if count != 0:
             print("SELF-TEST FAIL: empty-root fixture unexpectedly contributed "
                   "manifests (fixture bug)")
@@ -645,16 +1212,33 @@ def self_test() -> int:
             print(captured)
             fails += 1
 
-    total_controls = len(POSITIVE_FIXTURES) + len(NEGATIVE_FIXTURES)
+        # Round 4: OVERLAPPING scan roots must not read one manifest twice.
+        # Since duplicate `[package].name` became a denial, a double-read
+        # would manufacture a violation out of one innocent file — the
+        # false-positive mirror of R1, introduced by R1's own fix.
+        overlap_root = tmp_path / "overlap"
+        (overlap_root / "inner").mkdir(parents=True)
+        _write_fixture(
+            overlap_root / "inner",
+            {"Cargo.toml": '[package]\nname = "overlap-crate"\n'},
+        )
+        violations, count, _missing = scan([overlap_root, overlap_root / "inner"])
+        if count != 1 or violations:
+            print(f"SELF-TEST FAIL: overlapping scan roots read one manifest "
+                  f"{count} times and produced {violations!r} — a nested root "
+                  f"must not manufacture a duplicate-package-name denial")
+            fails += 1
+
+    total_controls = len(POSITIVE_CONTROLS) + len(NEGATIVE_CONTROLS)
     if fails:
         print(f"test-support placement self-test: FAILED "
-              f"({positive_ok}/{len(POSITIVE_FIXTURES)} positive, "
-              f"{negative_ok}/{len(NEGATIVE_FIXTURES)} negative)")
+              f"({positive_ok}/{len(POSITIVE_CONTROLS)} positive, "
+              f"{negative_ok}/{len(NEGATIVE_CONTROLS)} negative)")
         return 1
     print(f"test-support placement self-test: OK "
           f"({total_controls}/{total_controls} controls: "
           f"{positive_ok} positive, {negative_ok} negative; "
-          f"plus 1 zero-manifest and 1 missing-root fail-closed check)")
+          f"plus 1 zero-manifest, 1 missing-root and 1 overlapping-root check)")
     return 0
 
 
