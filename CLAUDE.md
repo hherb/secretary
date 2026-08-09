@@ -96,9 +96,10 @@ bash android/scripts/check-log-hygiene.sh
 # binding wrapper crates) under five rules: E1 data-free-by-construction
 # declarations (all four roots); E2 six PINNED gated field names; E3 gated
 # construction sites must be a string literal, a call into that root's
-# sanctioned `detail::*` module, a same-name re-wrap, or (wrapper roots
-# only) a single-hop DTO pass-through — nothing else (bridge + both
-# wrapper roots); E4 `impl GatedDetail` pinned to one file
+# sanctioned `detail::*` module, or a same-name re-wrap — nothing else
+# (bridge + both wrapper roots; a fifth shape, the wrapper-only single-hop
+# DTO pass-through, was retired in #497/#500 once all four of its sites
+# moved onto a sanctioned constructor); E4 `impl GatedDetail` pinned to one file
 # (bridge-only); E5 `format!` confined to each wrapper crate's own detail.rs
 # (wrapper-only). Default-deny: an unrecognised payload type is a FAILURE,
 # not a pass.
@@ -360,8 +361,10 @@ named as open, all structurally:
   `ffi/secretary-ffi-uniffi/src/**` are now scan roots under `E1`/`E2`/`E3`
   plus the new `E5`; previously a review-only trust boundary, now CI-enforced
   under the rule set `roots.py` records for each root (not identical to the
-  bridge's — see the paragraph above: the wrapper roots get an extra `E3`
-  acceptance the bridge is denied, and do not take `E4` at all).
+  bridge's — see the paragraph above: the wrapper roots take `E5`, which the
+  bridge does not, and do not take `E4` at all. They also used to get an
+  extra `E3` acceptance the bridge was denied — shape 5 — retired in
+  #497/#500).
 - **DEFERRED-INIT regression, found in this branch's own final review.** A
   type-annotated `let` with NO initializer (`let detail: String;`, its
   value written on a later, separate `detail = <expr>;` statement) reads to

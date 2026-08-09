@@ -191,11 +191,8 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   `payload_guard/roots.py`'s `SCAN_ROOTS`, with separate discovery per root
   (`payload_guard/scan.py`'s `run_real_scan` walks them independently) — a
   wrapper-local (or bridge-local) alias/const/enum must not vouch for a
-  field in a DIFFERENT root. The wrapper roots take rules E1/E2/E3, plus an
-  E3 ACCEPTANCE the bridge does not (`ScanRoot.allow_field_access`, rule
-  E3's "shape 5" — a SINGLE-HOP field access ending in the gated name, the
-  DTO pass-through `uuid_hex: a.uuid_hex`, not a multi-hop `a.b.uuid_hex`),
-  and rule E5 (#486 task 11, `payload_guard/rules/e5.py`), which the bridge
+  field in a DIFFERENT root. The wrapper roots take rules E1/E2/E3 and rule
+  E5 (#486 task 11, `payload_guard/rules/e5.py`), which the bridge
   does NOT take either — every `format!` in a wrapper crate outside its own
   `detail.rs` is a finding, gating the SOURCE (a hand-rolled `format!`)
   rather than the SINK (E3's gated-field initializer), since a wrapper's
@@ -375,9 +372,12 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   `fn launder(d: Detail) -> String`) once made
   `detail::launder(Detail(anything))` scan OK — verified by execution — and is
   now rejected wherever `ScanRoot.owns_detail_type` is False (only the bridge
-  declares the real type), pinned by `WP8`. An aliased IMPORT
-  (`use other_crate::X as Detail;`) remains invisible, the same aliasing blind
-  spot `E4` records for `GatedDetail`.
+  declares the real type), pinned by `WP8`. An IMPORT remains invisible in
+  BOTH its forms — the renaming `use other_crate::X as Detail;` and the plain
+  `use crate::evil::Detail;` that pulls a same-named decoy in from a sibling
+  file. Neither declares anything in the sanctioned module, so
+  `LOCAL_DETAIL_TYPE_RE` cannot see them; this is the same aliasing blind spot
+  `E4` records for `GatedDetail`.
   The same spelling caveat applies to `&secretary_core::vault::VaultError`,
   added in the #500 fix round for `detail::repair_rejection`. It grants
   nothing new — `&impl GatedDetail` is already in the set and `VaultError` is

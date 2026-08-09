@@ -75,9 +75,11 @@ SANCTIONED_CTOR_RE = re.compile(r"pub\(crate\)\s+fn\s+([a-z_][a-z0-9_]*)\s*\(")
 # (`pub(crate) struct Detail(pub String);` in a wrapper's own detail.rs, which
 # once made `detail::launder(Detail(anything))` scan OK — verified by
 # execution) is now REJECTED on any root whose `ScanRoot.owns_detail_type` is
-# False; see `LOCAL_DETAIL_TYPE_RE`, pinned by `WP8`. An aliased IMPORT
-# (`use other_crate::X as Detail;`) is still invisible — the same blind spot
-# rule E4 records for `GatedDetail`.
+# False; see `LOCAL_DETAIL_TYPE_RE`, pinned by `WP8`. An IMPORT is still
+# invisible in BOTH forms — the renaming `use other_crate::X as Detail;` and
+# the plain `use crate::evil::Detail;` naming a same-named decoy in a sibling
+# file — since neither DECLARES anything in the sanctioned module. Same blind
+# spot rule E4 records for `GatedDetail`.
 #
 # `&secretary_core::vault::VaultError` (#500 fix round 1) grants NOTHING the
 # set did not already admit: `&impl GatedDetail` is below, and `VaultError` is
@@ -134,11 +136,13 @@ STR_PARAM_CTOR_EXCEPTIONS = frozenset({"fingerprint_mismatch", "uuid_prefixed"})
 # `Detail` from the accepted parameter types, dropping every constructor that
 # takes one — the same fail-closed direction a missing `detail.rs` takes.
 #
-# RESIDUAL: this catches a local DECLARATION, not an aliased IMPORT
-# (`use other_crate::Detail;`, or `use other_crate::X as Detail;`). That is the
-# same aliasing blind spot rule E4 records for `GatedDetail`, and it is why the
-# LIMITS section states the structural guarantee as conditional on the name
-# resolving to `secretary_ffi_bridge::Detail`.
+# RESIDUAL: this catches a local DECLARATION only. An IMPORT evades it in both
+# forms — the renaming `use other_crate::X as Detail;` and the plain
+# `use crate::evil::Detail;` pulling a same-named decoy in from a sibling file
+# — because neither declares a type HERE. That is the same aliasing blind spot
+# rule E4 records for `GatedDetail`, and it is why the LIMITS section states
+# the structural guarantee as conditional on the name resolving to
+# `secretary_ffi_bridge::Detail`.
 LOCAL_DETAIL_TYPE_RE = re.compile(
     r"\b(?:struct|enum|union)\s+Detail\b|\btype\s+Detail\s*[=<]"
 )
@@ -582,9 +586,10 @@ def initializer_is_gated(
        TRUSTS
        THE NAME TOO, one level deeper than arm 4: it claims that a field
        named `uuid_hex` on some OTHER type was gated where THAT type
-       declared it. For the four live sites that claim holds (the source is
-       a bridge DTO whose fields rules E2/E3 already gate), but it is a
-       trust RELATION, not provenance — the same honesty arm 4's docstring
+       declared it. For the four sites that once justified it that claim
+       held (the source was a bridge DTO whose fields rules E2/E3 already
+       gate) — all four now go through `detail::project(...)` instead — but
+       it is a trust RELATION, not provenance — the same honesty arm 4's docstring
        insists on. Scoped OUT of the bridge root on purpose: nothing there
        needs it, and granting it anyway would be a laundering door opened
        for free (`BP43` pins the bridge still denying the identical
@@ -641,12 +646,16 @@ def initializer_is_gated(
     #
     #     THIS ARM TRUSTS A NAME, one level deeper than arm 4 does: it claims
     #     that a field spelled `uuid_hex` on some OTHER type was gated where
-    #     THAT type declared it. For the four live sites that claim holds —
-    #     the source is a bridge DTO whose field rules E2/E3 gate — but it is
-    #     a trust RELATION, not provenance, and this comment says so rather
-    #     than dressing it up. It is scoped to the wrapper roots because all
-    #     four sites are there; granting it in the bridge would open the same
-    #     door for nothing in return (BP43 pins that).
+    #     THAT type declared it. For the four sites that once justified it
+    #     that claim held — the source was a bridge DTO whose field rules
+    #     E2/E3 gate — but it is a trust RELATION, not provenance, and this
+    #     comment says so rather than dressing it up.
+    #
+    #     UNREACHABLE TODAY (#497/#500): `allow_field_access` is False on
+    #     every root, because those four sites moved to
+    #     `detail::project(...)` and an acceptance with no users is a
+    #     laundering door for free. `WP7` pins the denial; BP43 pins that the
+    #     bridge denied the identical expression even while wrappers did not.
     if allow_field_access and FIELD_ACCESS_RE.match(stripped):
         if stripped.split(".")[-1].strip() == name:
             return True

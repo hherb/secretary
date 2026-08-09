@@ -13,6 +13,7 @@ dependency order, alongside `controls/*`, consuming
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 
 from payload_guard.controls.bridge import (
@@ -27,7 +28,7 @@ from payload_guard.discovery import (
     resolve_consts,
 )
 from payload_guard.lexer import LEXER_SAMPLE, discovery_view, lex_spans, strip_comments
-from payload_guard.roots import SCAN_ROOTS
+from payload_guard.roots import SCAN_ROOTS, ScanRoot
 from payload_guard.rules.e1 import scan_source
 from payload_guard.rules.e2 import scan_bridge_plain_declarations
 from payload_guard.rules.e3 import (
@@ -226,10 +227,11 @@ def scan_control(src: str) -> list[Finding]:
 # `scan_wrapper_control`: a control corpus that hardcodes the very flag it
 # exists to test cannot catch a `roots.py` edit that changes it. Mutating
 # `ScanRoot.allow_field_access` must be OBSERVABLE through `--self-test` —
-# that is exactly what `BP43` (bridge, must stay denied) and `WN1` (wrapper,
-# must stay accepted) exist to prove, and neither proves anything if the
-# value under test is a literal sitting beside them instead of the one
-# `run_real_scan` itself reads.
+# that is exactly what `BP43` (bridge, must stay denied) and `WP7` (wrapper,
+# must stay denied too now that the flag is OFF everywhere — it was `WN1`,
+# "must stay accepted", until #497/#500 retired shape 5) exist to prove, and
+# neither proves anything if the value under test is a literal sitting beside
+# them instead of the one `run_real_scan` itself reads.
 _ROOTS_BY_LABEL = {r.label: r for r in SCAN_ROOTS}
 
 
@@ -328,12 +330,62 @@ def _check_root_rule_flags() -> list[str]:
     return failures
 
 
-def _check_wrapper_roots_agree() -> list[str]:
+# Fields that are LEGITIMATELY per-crate and must NOT be compared between the
+# two wrapper roots: the root's own identity and the paths into its crate.
+# EVERYTHING ELSE must agree, and the list is DERIVED from `ScanRoot` rather
+# than spelled out (#500 fix round 2).
+#
+# It used to be a hardcoded 5-tuple whose comment claimed it covered "every
+# RULE-SELECTING flag: `scan_wrapper_control` now dispatches off all of them".
+# That claim decayed twice. `gated_field_types` (#500 Task 2) was never added
+# — the plan's parked minor P6 — and `owns_detail_type` (#500 fix round 1) was
+# dispatched on by `scan_wrapper_control` while missing here, so setting it
+# asymmetrically WITH `_EXPECTED_ROOT_FLAGS` updated to match left the
+# self-test green: the harness then ran strict (`_wrapper_flag`'s `all(...)`)
+# while the real scan ran permissive on the exempted root, and rule E3's
+# local-`Detail` decoy laundered unflagged there.
+#
+# Deriving inverts the default. A new `ScanRoot` field is compared unless
+# someone deliberately exempts it here, so forgetting is fail-CLOSED (a
+# spurious agreement failure) instead of fail-open (a silent divergence).
+# `_check_wrapper_agreement_is_live` proves the check actually fires for every
+# flag it claims to cover.
+_WRAPPER_AGREEMENT_EXEMPT = frozenset({"label", "path", "detail_module_rel"})
+
+# The reviewed answer to "which `ScanRoot` fields must the two wrapper roots
+# agree on". Duplicated from the derivation on purpose, exactly as
+# `_EXPECTED_ROOT_FLAGS` duplicates `roots.py`'s values: the derivation is the
+# MECHANISM and this is the REVIEW, and a check that reads only the mechanism
+# cannot notice the mechanism being narrowed.
+_WRAPPER_AGREEMENT_FLAGS_REVIEWED: tuple[str, ...] = (
+    "bridge_mode",
+    "gated_field_types",
+    "construction_sites",
+    "gated_detail_impls",
+    "format_confinement",
+    "owns_detail_type",
+    "allow_field_access",
+)
+
+
+def _wrapper_agreement_flags() -> tuple[str, ...]:
+    """Every `ScanRoot` field the two wrapper roots must agree on."""
+    return tuple(
+        f.name
+        for f in dataclasses.fields(ScanRoot)
+        if f.name not in _WRAPPER_AGREEMENT_EXEMPT
+    )
+
+
+def _check_wrapper_roots_agree(
+    roots: dict[str, ScanRoot] | None = None,
+) -> list[str]:
     """The design's premise (`payload_guard.roots` module docstring) is a
     single shared wrapper-root rule set, not two independently configurable
     ones — a control corpus that silently tolerated the two wrapper roots
-    drifting apart on `allow_field_access` would be testing less than it
-    claims to. This surfaces that disagreement as a NORMAL harness failure
+    drifting apart on any policy field would be testing less than it claims
+    to. The compared set is DERIVED (`_wrapper_agreement_flags`), not listed,
+    because the listed version fell behind twice. This surfaces that disagreement as a NORMAL harness failure
     (review finding, task 9): the check used to be a bare `assert` inside
     `_wrapper_allow_field_access`, and `run_self_test` is not wrapped at its
     call site, so a real disagreement would have escaped as a raw Python
@@ -342,15 +394,10 @@ def _check_wrapper_roots_agree() -> list[str]:
     `check_view_invariants` / `check_bridge_key_distinctness`.
     """
     failures: list[str] = []
-    # Widened in #496 from `allow_field_access` alone to every RULE-SELECTING
-    # flag: `scan_wrapper_control` now dispatches off all of them, so a
-    # disagreement on any one makes "the wrapper-root rule set" ambiguous.
-    for flag in (
-        "bridge_mode", "construction_sites", "gated_detail_impls",
-        "format_confinement", "allow_field_access",
-    ):
+    roots = roots if roots is not None else _ROOTS_BY_LABEL
+    for flag in _wrapper_agreement_flags():
         values = {
-            label: getattr(_ROOTS_BY_LABEL[label], flag)
+            label: getattr(roots[label], flag)
             for label in ("ffi-py", "ffi-uniffi")
         }
         if len(set(values.values())) != 1:
@@ -358,6 +405,77 @@ def _check_wrapper_roots_agree() -> list[str]:
                 "WRAPPER ROOT AGREEMENT: ffi-py and ffi-uniffi disagree on "
                 f"{flag} ({values}) — scan_wrapper_control assumes one shared "
                 "wrapper-root rule set"
+            )
+    return failures
+
+
+def _perturb(value: object) -> object:
+    """A value guaranteed different from `value`, for the agreement probe."""
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, frozenset):
+        return frozenset(value | {"<probe>"})
+    if isinstance(value, str):
+        return value + "<probe>"
+    return object()
+
+
+def _check_wrapper_agreement_is_live() -> list[str]:
+    """`_check_wrapper_roots_agree` must actually FIRE for every field
+    `_wrapper_agreement_flags` claims to cover (#500 fix round 2).
+
+    This is the non-vacuity proof the hardcoded tuple never had, and the
+    reason it decayed twice unnoticed (see `_WRAPPER_AGREEMENT_EXEMPT`). It
+    perturbs ONE field at a time on a COPY of the two wrapper roots and
+    asserts the disagreement is reported and NAMES that field — so a future
+    edit that drops a field from the compared set, or exempts one, fails here
+    rather than silently widening what the two roots may disagree about.
+
+    Copies only: `SCAN_ROOTS` is never mutated, and `ScanRoot` is a frozen
+    dataclass, so `dataclasses.replace` is the only way to vary one anyway.
+    """
+    failures: list[str] = []
+    flags = _wrapper_agreement_flags()
+    # PIN the SET first. The per-flag probe below derives its list from the
+    # same function it is testing, so it can only prove that the fields
+    # CURRENTLY compared are live — it is structurally blind to a field being
+    # dropped from the set, which is the precise failure being fixed here
+    # (verified: adding `owns_detail_type` to `_WRAPPER_AGREEMENT_EXEMPT`
+    # leaves the probe loop green, because the loop never visits it). Pinning
+    # against a reviewed literal closes both directions: exempting a field, or
+    # `ScanRoot` gaining one nobody classified, fails until someone edits this
+    # tuple — the same review-checkpoint move `_EXPECTED_ROOT_FLAGS` and
+    # `STR_PARAM_CTOR_EXCEPTIONS` make for their own registries.
+    if set(flags) != set(_WRAPPER_AGREEMENT_FLAGS_REVIEWED):
+        failures.append(
+            "WRAPPER AGREEMENT SET: the wrapper roots are compared on "
+            f"{sorted(flags)}, reviewed set is "
+            f"{sorted(_WRAPPER_AGREEMENT_FLAGS_REVIEWED)} — a ScanRoot field "
+            "is compared unless deliberately exempted, so both adding a field "
+            "and exempting one are reviewed changes; update "
+            "_WRAPPER_AGREEMENT_FLAGS_REVIEWED in the same commit"
+        )
+    if not flags:
+        return failures + [
+            "WRAPPER AGREEMENT LIVENESS: _wrapper_agreement_flags() is EMPTY "
+            "— the agreement check would compare nothing and pass vacuously"
+        ]
+    for flag in flags:
+        base_py = _ROOTS_BY_LABEL["ffi-py"]
+        probe = {
+            "ffi-py": dataclasses.replace(
+                base_py, **{flag: _perturb(getattr(base_py, flag))}
+            ),
+            "ffi-uniffi": _ROOTS_BY_LABEL["ffi-uniffi"],
+        }
+        reported = _check_wrapper_roots_agree(probe)
+        if not any(flag in msg for msg in reported):
+            failures.append(
+                "WRAPPER AGREEMENT LIVENESS: the two wrapper roots were made "
+                f"to disagree on {flag!r} and _check_wrapper_roots_agree did "
+                "NOT report it — that field is dispatched on but unguarded, "
+                "which is exactly how owns_detail_type and gated_field_types "
+                "each slipped through"
             )
     return failures
 
@@ -500,7 +618,8 @@ def scan_wrapper_control(
     detail_src: str = SELF_TEST_DETAIL_SRC,
 ) -> list[Finding]:
     """`scan_bridge_control`, but for a WRAPPER ROOT (#486): `bridge_mode=True`
-    plus rules E2/E3, with rule E3's `allow_field_access` (shape 5) turned ON,
+    plus rules E2/E3, with rule E3's `allow_field_access` (shape 5) read off
+    the roots — OFF since #497/#500 —
     plus rule E5 (`format!` confinement, task 11) — and NO rule E4 at all.
 
     `gated_detail_impls` is `False` on both wrapper `ScanRoot`s
@@ -515,9 +634,13 @@ def scan_wrapper_control(
 
     Rule E3's `allow_field_access` (shape 5) is read from BOTH wrapper
     `ScanRoot`s via `_wrapper_allow_field_access()`, not hardcoded — see the
-    module-level comment above `_ROOTS_BY_LABEL` for why. It is `True` today;
-    `WN1` proves the DTO pass-through stays accepted, and flipping either
-    wrapper root's flag to `False` in `roots.py` must make `WN1` fire.
+    module-level comment above `_ROOTS_BY_LABEL` for why. It is `False`
+    today (#497/#500: shape 5's four DTO pass-through sites all moved to
+    `detail::project(...)`, leaving the acceptance with no users); `WP7`
+    proves the DTO pass-through now DENIES, and flipping either wrapper
+    root's flag back to `True` in `roots.py` must make `WP7` STOP firing.
+    Both the value and the direction of that mutation are the reverse of
+    what this paragraph said before the flag was retired.
 
     Rule E5's `detail_module_rel` is read the same way, off ONE wrapper root
     (`_WRAPPER_DETAIL_MODULE_REL_FOR_SELFTEST`) — see that constant's
@@ -643,6 +766,7 @@ def run_self_test() -> int:
     failures: list[str] = check_view_invariants()
     failures += _check_root_rule_flags()
     failures += _check_wrapper_roots_agree()
+    failures += _check_wrapper_agreement_is_live()
     failures += _check_expectation_keys()
     for entry in POSITIVE_CONTROLS:
         label, src = entry[0], entry[1]

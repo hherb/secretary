@@ -66,9 +66,14 @@
 //! - `detail` (bridge-private, #480; the `Detail` newtype, #500) — the ONLY
 //!   place in the bridge permitted to build a detail string: the `Detail`
 //!   type itself (private inner field, so it is unconstructible elsewhere),
-//!   the `GatedDetail` trait, and the sanctioned `literal`/`gated*`/`uuid_*`/
-//!   `fingerprint_hex`/`counted`/`repair_rejection` constructors that every
-//!   gated payload above must be built through.
+//!   the `GatedDetail` trait, and the thirteen sanctioned constructors that
+//!   every gated payload above must be built through, enumerated rather than
+//!   globbed so a new one cannot hide behind a wildcard: `literal`,
+//!   `literal_for_uuid`, `counted`, `uuid_hex`, `uuid_hyphenated`,
+//!   `fingerprint_hex`, `gated`, `gated_for_uuid`, `gated_with_context`,
+//!   `gated_with_path`, `gated_with_path_and_advice`, `repair_rejection`,
+//!   and `io_gated_with_path_and_advice` (the only one returning
+//!   `std::io::Error` rather than a `Detail`).
 
 pub mod conversions;
 pub(crate) mod detail;
