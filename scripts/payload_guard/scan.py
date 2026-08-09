@@ -120,10 +120,12 @@ def run_real_scan() -> int:
             findings = scan_source(
                 label, raw, enums, aliases, consts, foreign,
                 bridge_mode=root.bridge_mode,
+                gated_field_types=root.gated_field_types,
             )
             if root.bridge_mode:
                 findings += scan_bridge_plain_declarations(
-                    label, raw, enums, aliases, foreign
+                    label, raw, enums, aliases, foreign,
+                    gated_field_types=root.gated_field_types,
                 )
             if root.construction_sites:
                 findings += scan_bridge_construction_sites(

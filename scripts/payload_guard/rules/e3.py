@@ -383,13 +383,31 @@ def initializer_is_gated(
        consuming the WHOLE expression. Requiring the whole expression is
        deliberately stricter than "starts with a sanctioned call":
        `detail::gated(&e) + leak()` starts with one too.
-    3. The exact token `String` — a DECLARATION's type position (a struct
-       field, an enum variant field, a function parameter), not a value.
-       Rule E2 already decides whether a `String` DECLARATION under a gated
-       name is acceptable; E3 is about construction, and a declaration is
-       not a construction. `String::new()` is NOT this shape and denies,
-       which is what keeps the acceptance from becoming "any expression
-       starting with String".
+    3. The exact token `String` OR `Detail` (#500) — a DECLARATION's type
+       position (a struct field, an enum variant field, a function
+       parameter), not a value. Rule E2 already decides whether a `String`
+       or `Detail` DECLARATION under a gated name is acceptable (per-root,
+       `ScanRoot.gated_field_types`); E3 is about construction, and a
+       declaration is not a construction. `String::new()` / `Detail::new()`
+       are NOT this shape and deny, which is what keeps the acceptance from
+       becoming "any expression starting with String/Detail".
+
+       `Detail` joins this arm UNCONDITIONALLY, not read from
+       `ScanRoot.gated_field_types` or threaded per-root: unlike E2, this arm
+       makes no claim about which TYPES are policy-acceptable under a gated
+       name on a given root — it only tells a declaration's type position
+       apart from a construction expression, and `GATED_INIT_RE` matches
+       `<name>:` regardless of root. E2 remains the sole per-root gate
+       (wrapper roots' `gated_field_types` stays `{"String"}`, never
+       `Detail`, so a wrapper declaration reading `field: Detail` still
+       produces an E1/E2 finding — this arm merely keeps E3 from ALSO
+       misreporting that same declaration as an unsanctioned construction
+       site). Found live: without this, `pub enum FooError { #[error("boom:
+       {detail}")] Boom { detail: Detail }, }` — an ordinary DECLARATION,
+       the exact shape Task 3 (#500) is about to introduce across the bridge
+       — read to `GATED_INIT_RE` identically to a construction site and
+       produced a spurious E3 finding (`BN28`), which would have reddened
+       the real scan the moment Task 3 landed a single `Detail`-typed field.
 
        GATED BEHIND THE TERMINATOR (regression fix, found in final review):
        a genuine declaration's type position is always closed by `)` (a
@@ -493,11 +511,13 @@ def initializer_is_gated(
     if stripped == name:
         return True
     # (3) declaration type position — DENIED when `terminator` is `;`: the
-    # only construct that extracts a bare `String` up to a depth-zero `;`
-    # is a type-annotated `let` with NO initializer (`let detail: String;`,
-    # #488/regression fix, `BP44`), never a struct field, enum field, or
-    # function parameter — those are always closed by `)`, `,`, or `}`.
-    if stripped == "String" and terminator != ";":
+    # only construct that extracts a bare `String`/`Detail` up to a
+    # depth-zero `;` is a type-annotated `let` with NO initializer (`let
+    # detail: String;`, #488/regression fix, `BP44`), never a struct field,
+    # enum field, or function parameter — those are always closed by `)`,
+    # `,`, or `}`. `Detail` (#500) is accepted alongside `String`
+    # unconditionally, not per-root — see the docstring's arm 3 for why.
+    if stripped in ("String", "Detail") and terminator != ";":
         return True
     # (1) a single string literal, optionally `.into()` / `.to_string()`.
     lit_end = literal_ends.get(start)

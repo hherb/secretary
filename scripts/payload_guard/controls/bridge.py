@@ -503,6 +503,21 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         {"rule": "E3", "field": "detail"},
         {"detail_src": SELF_TEST_DETAIL_SRC_WITH_UNSAFE_CTOR},
     ),
+    (
+        "BP50 #500: a gated field declared with a NEAR-MISS spelling still "
+        "denies — ScanRoot.gated_field_types's carve-out is for the LITERAL "
+        "named types (`String`, `Detail`), not 'close enough'; "
+        "`normalize_type` strips attribute/visibility noise but does not "
+        "unwrap a generic",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: Option<Detail> },
+        }
+        ''',
+        {"rule": "E2", "field": "detail"},
+    ),
 ]
 
 BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
@@ -704,6 +719,22 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
         ''' fn f(e: &impl GatedDetail) -> FfiVaultError {
                 FfiVaultError::Boom { detail: detail::gated(e) }
             } ''',
+    ),
+    (
+        "BN28 #500: a gated field declared `Detail` must be ACCEPTED on the "
+        "bridge and must NOT fire. Before the newtype (#500 task 1) the only "
+        "spelling `is_bridge_field_safe` accepted under a GATED_FIELD_NAMES "
+        "name was the hardcoded literal `String`; `ScanRoot.gated_field_types` "
+        "now widens the bridge root to {'String', 'Detail'} for the duration "
+        "of the migration — Task 4 narrows it back to `Detail` alone once "
+        "every bridge declaration has moved off `String`",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: Detail },
+        }
+        ''',
     ),
 ]
 

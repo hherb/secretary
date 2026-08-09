@@ -202,11 +202,20 @@ def scan_control(src: str) -> list[Finding]:
     discovery pass — no real file path, hence no `path_label` — exercises the
     real discovery, collision-drop and import-shadow code paths rather than a
     hardcoded name list.
+
+    `gated_field_types` is read off the `core` `ScanRoot` (`_ROOTS_BY_LABEL`,
+    defined below) rather than hardcoded as `frozenset()` here — same
+    discipline the module comment above `_ROOTS_BY_LABEL` gives for
+    `allow_field_access`: a control corpus that hardcodes the very value it
+    exists to test cannot catch a `roots.py` edit that changes it. `core`'s
+    `bridge_mode=False` means this value is never actually consulted by
+    `is_bridge_field_safe`, but `scan_source` requires it regardless (#500).
     """
     enums, aliases, declared_consts, shadows = discover_declarations(src)
     consts = resolve_consts(declared_consts, shadows)
     return scan_source(
-        "<self-test>", src, enums, aliases, consts, foreign_use_names(src)
+        "<self-test>", src, enums, aliases, consts, foreign_use_names(src),
+        gated_field_types=_ROOTS_BY_LABEL["core"].gated_field_types,
     )
 
 
@@ -242,26 +251,38 @@ _ROOTS_BY_LABEL = {r.label: r for r in SCAN_ROOTS}
 #     than merely declared. This is the discipline the `_ROOTS_BY_LABEL`
 #     comment above already states for `allow_field_access`, carried to the
 #     other four.
-_EXPECTED_ROOT_FLAGS: dict[str, dict[str, bool]] = {
+#
+# `gated_field_types` (#500) joins the table as a SIXTH flag, and it is not
+# a `bool` — it is `ScanRoot`'s per-root frozenset of type spellings E2's
+# carve-out accepts. `_check_root_rule_flags` used to compare with `is not`,
+# which is correct only by ACCIDENT for the five booleans (`True`/`False`
+# are interned singletons, so `is not` and `!=` agree for them) — it is
+# WRONG for a frozenset: two separately-constructed frozensets with equal
+# content are never the same object, so `is not` would report every root's
+# `gated_field_types` as a mismatch even when it exactly matches the
+# reviewed value below (verified: `frozenset({"x"}) is frozenset({"x"})` is
+# `False` in CPython). Fixed to `!=`, which is correct for both.
+_EXPECTED_ROOT_FLAGS: dict[str, dict[str, object]] = {
     "core": {
         "bridge_mode": False, "construction_sites": False,
         "gated_detail_impls": False, "format_confinement": False,
-        "allow_field_access": False,
+        "allow_field_access": False, "gated_field_types": frozenset(),
     },
     "bridge": {
         "bridge_mode": True, "construction_sites": True,
         "gated_detail_impls": True, "format_confinement": False,
         "allow_field_access": False,
+        "gated_field_types": frozenset({"String", "Detail"}),
     },
     "ffi-py": {
         "bridge_mode": True, "construction_sites": True,
         "gated_detail_impls": False, "format_confinement": True,
-        "allow_field_access": True,
+        "allow_field_access": True, "gated_field_types": frozenset({"String"}),
     },
     "ffi-uniffi": {
         "bridge_mode": True, "construction_sites": True,
         "gated_detail_impls": False, "format_confinement": True,
-        "allow_field_access": True,
+        "allow_field_access": True, "gated_field_types": frozenset({"String"}),
     },
 }
 
@@ -287,7 +308,10 @@ def _check_root_rule_flags() -> list[str]:
     for root in SCAN_ROOTS:
         for flag, expected in _EXPECTED_ROOT_FLAGS[root.label].items():
             got = getattr(root, flag)
-            if got is not expected:
+            # `!=`, not `is not` (#500) — see the comment above
+            # `_EXPECTED_ROOT_FLAGS` for why identity comparison silently
+            # broke once a non-singleton value (`frozenset`) joined the table.
+            if got != expected:
                 failures.append(
                     f"SCAN ROOT FLAG: {root.label}.{flag} is {got}, reviewed "
                     f"value is {expected} — this flag decides whether a whole "
@@ -396,6 +420,11 @@ def scan_bridge_control(
     level comment above `_ROOTS_BY_LABEL` for why. It is `False` today, so
     every existing bridge control's behaviour is unchanged; `BP43` proves
     shape 5 stays denied here even when a WRAPPER root grants it elsewhere.
+
+    Rule E2's `gated_field_types` (#500) is read the same way, off the same
+    `ScanRoot`: today `frozenset({"String", "Detail"})`, so a bridge control
+    exercises the WIDENED carve-out `is_bridge_field_safe` grants for the
+    duration of the #500 migration.
     """
     root = _ROOTS_BY_LABEL["bridge"]
     enums, aliases, declared_consts, shadows = discover_declarations(src)
@@ -407,10 +436,12 @@ def scan_bridge_control(
     found = scan_source(
         path_label, src, enums, aliases, consts, foreign,
         bridge_mode=root.bridge_mode,
+        gated_field_types=root.gated_field_types,
     )
     if root.bridge_mode:
         found += scan_bridge_plain_declarations(
-            path_label, src, enums, aliases, foreign
+            path_label, src, enums, aliases, foreign,
+            gated_field_types=root.gated_field_types,
         )
     if root.construction_sites:
         found += scan_bridge_construction_sites(
@@ -443,6 +474,17 @@ def scan_bridge_control(
 _WRAPPER_DETAIL_MODULE_REL_FOR_SELFTEST = _ROOTS_BY_LABEL["ffi-py"].detail_module_rel
 
 
+# Rule E2's `gated_field_types` (#500), read the same single-root way and for
+# the same reason: unlike `detail_module_rel`, the two wrapper roots' values
+# ARE meant to agree (`frozenset({"String"})`, no `Detail` — the wrapper
+# crates keep `String` because uniffi's UDL must project a `string` and PyO3
+# exceptions take a message), and that agreement is already pinned
+# independently by `_EXPECTED_ROOT_FLAGS`/`_check_root_rule_flags`, which
+# checks EACH wrapper root against the same literal — so picking one root's
+# value here does not weaken what is enforced elsewhere.
+_WRAPPER_GATED_FIELD_TYPES_FOR_SELFTEST = _ROOTS_BY_LABEL["ffi-py"].gated_field_types
+
+
 def scan_wrapper_control(
     src: str,
     path_label: str = "<self-test-wrapper>",
@@ -471,6 +513,12 @@ def scan_wrapper_control(
     Rule E5's `detail_module_rel` is read the same way, off ONE wrapper root
     (`_WRAPPER_DETAIL_MODULE_REL_FOR_SELFTEST`) — see that constant's
     comment for why one root suffices here.
+
+    Rule E2's `gated_field_types` (#500) is read the same single-root way,
+    off `_WRAPPER_GATED_FIELD_TYPES_FOR_SELFTEST` — today
+    `frozenset({"String"})`, unchanged by the #500 migration (see that
+    constant's comment for why the two wrapper roots' agreement is already
+    enforced elsewhere).
     """
     enums, aliases, declared_consts, shadows = discover_declarations(src)
     consts = resolve_consts(declared_consts, shadows)
@@ -480,10 +528,12 @@ def scan_wrapper_control(
     found = scan_source(
         path_label, src, enums, aliases, consts, foreign,
         bridge_mode=_wrapper_flag("bridge_mode"),
+        gated_field_types=_WRAPPER_GATED_FIELD_TYPES_FOR_SELFTEST,
     )
     if _wrapper_flag("bridge_mode"):
         found += scan_bridge_plain_declarations(
-            path_label, src, enums, aliases, foreign
+            path_label, src, enums, aliases, foreign,
+            gated_field_types=_WRAPPER_GATED_FIELD_TYPES_FOR_SELFTEST,
         )
     if _wrapper_flag("construction_sites"):
         found += scan_bridge_construction_sites(

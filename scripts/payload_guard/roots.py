@@ -35,6 +35,17 @@ class ScanRoot:
     bridge_mode: bool
     """Rule E1's carve-out plus rule E2's two declaration sweeps."""
 
+    gated_field_types: frozenset[str]
+    """Type spellings accepted under a `GATED_FIELD_NAMES` field name on this
+    root (#500). The BRIDGE moved its gated fields to the `Detail` newtype,
+    whose private inner field makes a runtime `String` unrepresentable in the
+    position; the two WRAPPER crates keep `String` because uniffi's UDL must
+    project a `string` and PyO3 exceptions take a message, so their posture is
+    unchanged and rules E2/E3/E5 remain their only enforcement.
+
+    Empty for `core`, which has no gated-name carve-out at all — every field
+    there must clear `is_data_free` on its own."""
+
     construction_sites: bool
     """Rule E3."""
 
@@ -62,6 +73,7 @@ SCAN_ROOTS: tuple[ScanRoot, ...] = (
         path=REPO_ROOT / "core" / "src",
         detail_module_rel=None,
         bridge_mode=False,
+        gated_field_types=frozenset(),
         construction_sites=False,
         gated_detail_impls=False,
         format_confinement=False,
@@ -72,6 +84,9 @@ SCAN_ROOTS: tuple[ScanRoot, ...] = (
         path=REPO_ROOT / "ffi" / "secretary-ffi-bridge" / "src",
         detail_module_rel="ffi/secretary-ffi-bridge/src/error/detail.rs",
         bridge_mode=True,
+        # DURING THE #500 MIGRATION this accepts both `String` and `Detail`;
+        # Task 4 narrows it to `Detail` alone once every declaration has moved.
+        gated_field_types=frozenset({"String", "Detail"}),
         construction_sites=True,
         gated_detail_impls=True,
         format_confinement=False,
@@ -82,6 +97,7 @@ SCAN_ROOTS: tuple[ScanRoot, ...] = (
         path=REPO_ROOT / "ffi" / "secretary-ffi-py" / "src",
         detail_module_rel="ffi/secretary-ffi-py/src/detail.rs",
         bridge_mode=True,
+        gated_field_types=frozenset({"String"}),
         construction_sites=True,
         gated_detail_impls=False,
         format_confinement=True,
@@ -92,6 +108,7 @@ SCAN_ROOTS: tuple[ScanRoot, ...] = (
         path=REPO_ROOT / "ffi" / "secretary-ffi-uniffi" / "src",
         detail_module_rel="ffi/secretary-ffi-uniffi/src/detail.rs",
         bridge_mode=True,
+        gated_field_types=frozenset({"String"}),
         construction_sites=True,
         gated_detail_impls=False,
         format_confinement=True,

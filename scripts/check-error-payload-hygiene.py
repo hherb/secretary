@@ -91,8 +91,14 @@ gated_detail_impls`'s docstring for why). The rule id is the allowlist's
 second column, so an exception is scoped to the rule that raised it.
 
 `E2` — DECLARATIONS. Every field of a bridge error declaration must be
-data-free by `E1`'s tiers, OR be declared EXACTLY `String` under one of the
-six names in `GATED_FIELD_NAMES`. The sweep covers EVERY field, not just the
+data-free by `E1`'s tiers, OR be declared EXACTLY one of `ScanRoot.
+gated_field_types` under one of the six names in `GATED_FIELD_NAMES` — a
+PER-ROOT set (#500), not a single hardcoded spelling: the two wrapper roots
+accept `String` only (uniffi's UDL must project a `string`, PyO3 exceptions
+take a message), while the bridge accepts `String` OR `Detail` for the
+duration of the #500 migration to the `Detail` newtype (Task 4 narrows the
+bridge to `Detail` alone once every declaration has moved). The sweep covers
+EVERY field, not just the
 interpolated ones, because uniffi and PyO3 project every field regardless of
 what `Display` renders — a `String` the message never mentions still crosses
 to the platform. It also covers PLAIN-derive `enum`/`struct` declarations
@@ -111,11 +117,17 @@ record data through a name.
 `E3` — CONSTRUCTION SITES, the other half of E2's carve-out. Wherever a gated
 name appears in initializer position (`detail: <expr>`), the expression must
 be a string LITERAL (optionally `.into()` / `.to_string()`), a call into
-`detail::*`, the exact token `String`, or the field's own name. The
-`String`-token acceptance is what keeps a DECLARATION (`detail: String` in an
-enum body, or a function parameter) from being read as a construction: E2
-already decides whether that declaration is acceptable, and a declaration
-declares no value. `String::new()` is NOT that shape and denies. On the two
+`detail::*`, the exact token `String` OR `Detail` (#500), or the field's own
+name. The bare-token acceptance is what keeps a DECLARATION (`detail: String`
+/ `detail: Detail` in an enum body, or a function parameter) from being read
+as a construction: E2 already decides whether that declaration is acceptable
+PER ROOT (`ScanRoot.gated_field_types`), and a declaration declares no value.
+Unlike E2, this acceptance is NOT read per-root — `Detail` is recognised as a
+declaration-position token on every `bridge_mode` root, wrapper roots
+included, because it is a purely structural distinction (declaration vs.
+construction) and E2 remains the sole gate on which TYPES are policy-
+acceptable where. `String::new()` / `Detail::new()` are NOT that shape and
+deny. On the two
 WRAPPER roots only (#486), a FIFTH shape is also accepted: a SINGLE-HOP
 field access ending in the gated name (`uuid_hex: a.uuid_hex`, not a
 multi-hop `a.b.uuid_hex`) — the DTO pass-through all four live wrapper

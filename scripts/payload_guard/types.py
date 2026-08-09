@@ -226,26 +226,30 @@ def is_data_free(
 def is_bridge_field_safe(
     name: str,
     ty: str,
-    local_error_enums: frozenset[str] = frozenset(),
-    aliases: dict[str, str] | None = None,
-    foreign_names: frozenset[str] = frozenset(),
+    local_error_enums: frozenset[str],
+    aliases: dict[str, str] | None,
+    foreign_names: frozenset[str],
+    gated_field_types: frozenset[str],
 ) -> bool:
-    """True when a BRIDGE field is safe under rule E2's carve-out (#480).
+    """True when a BRIDGE- or WRAPPER-root field is safe under rule E2's
+    carve-out (#480, per-root types #500).
 
     Either it independently clears `is_data_free` — the ordinary tiers,
     data-free by TYPE, exactly as core requires — or its declared type is
-    EXACTLY `String` under a name in `GATED_FIELD_NAMES`: data-free by
-    CONSTRUCTION SITE instead, which rule E3 gates. `normalize_type`
-    is applied to `ty` for the exact-`String` comparison so a field-level
-    `#[from]` / visibility prefix does not defeat the match; `Option<String>`,
-    `&str`, or any other near-miss spelling still denies — the carve-out is
-    for the literal named type, not "close enough."
+    EXACTLY one of `gated_field_types` under a name in `GATED_FIELD_NAMES`:
+    data-free by CONSTRUCTION SITE instead.
 
-    Shared by BOTH of rule E2's uses: the `bridge_mode` carve-out on the
-    ordinary interpolated-field scan (`scan_source`), and the structural
-    all-fields sweep (`bridge_declaration_findings`) that also checks fields
-    the `#[error(...)]` message never mentions.
+    `gated_field_types` is per-root (`ScanRoot.gated_field_types`) and has NO
+    DEFAULT on purpose. It used to be the hardcoded literal `"String"`, and a
+    default here would let a future caller inherit whichever spelling happened
+    to be listed first — the permissive outcome — without naming it. Callers
+    state which root they are scanning.
+
+    `normalize_type` is applied for the comparison so a field-level `#[from]`
+    or visibility prefix does not defeat the match; `Option<Detail>`, `&str`,
+    or any other near-miss spelling still denies — the carve-out is for the
+    literal named types, not "close enough."
     """
     if is_data_free(ty, local_error_enums, aliases, foreign_names):
         return True
-    return normalize_type(ty) == "String" and name in GATED_FIELD_NAMES
+    return normalize_type(ty) in gated_field_types and name in GATED_FIELD_NAMES

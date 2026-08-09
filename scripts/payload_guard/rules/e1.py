@@ -103,6 +103,8 @@ def scan_source(
     consts: frozenset[str] = frozenset(),
     foreign_names: frozenset[str] = frozenset(),
     bridge_mode: bool = False,
+    *,
+    gated_field_types: frozenset[str],
 ) -> list[Finding]:
     """Find every `#[error]` variant/struct that interpolates a non-data-free
     field, PLUS every `#[error(...)]` attribute whose structure this guard
@@ -143,6 +145,15 @@ def scan_source(
        uniffi/PyO3 project every field regardless of what the `#[error(...)]`
        message actually renders. This is what catches a platform-projected
        `String` the `Display` text never mentions.
+
+    `gated_field_types` (#500) is the per-root set of type spellings
+    `is_bridge_field_safe` accepts under a `GATED_FIELD_NAMES` name —
+    `ScanRoot.gated_field_types`. It is a REQUIRED keyword-only argument with
+    NO DEFAULT, even though it is read only when `bridge_mode=True`: a
+    default would let a future non-bridge caller inherit an unnamed,
+    possibly-permissive spelling. Callers that never exercise `bridge_mode`
+    (the `core` root) still pass `frozenset()`, matching `core`'s own
+    `ScanRoot.gated_field_types`.
 
     Note `strip_comments`, NOT `discovery_view`: locating `#[error(`
     attributes and reading their message text needs the strings INTACT.
@@ -266,6 +277,7 @@ def scan_source(
                     local_error_enums,
                     aliases,
                     foreign_names,
+                    gated_field_types,
                 )
             )
 
@@ -377,7 +389,9 @@ def scan_source(
             # HERE (rule E3 gates its construction site instead).
             # Everything else denies exactly as core's E1 does today.
             field_is_safe = (
-                is_bridge_field_safe(fname, ftype, local_error_enums, aliases, foreign_names)
+                is_bridge_field_safe(
+                    fname, ftype, local_error_enums, aliases, foreign_names, gated_field_types
+                )
                 if bridge_mode
                 else is_data_free(ftype, local_error_enums, aliases, foreign_names)
             )
