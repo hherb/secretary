@@ -894,6 +894,21 @@ EOF
 
 ---
 
+> **LABEL NAMESPACE — corrected after Task 2.** An earlier version of this plan
+> said "the highest existing control label is BP44" and handed out BP45-BP48.
+> That was wrong: `BP45`, `BP47`, `BP48` and `BP49` already existed from #496.
+> Labels live in `scripts/payload_guard/controls/{bridge,core,wrapper}.py`, not
+> in `selftest.py`. The convention is **BP = expects a finding** (positive
+> control), **BN = expects NO finding** (negative control). Task 2 used the next
+> free pair, `BP50` and `BN28`. Before adding a control, re-derive the
+> high-water mark rather than trusting this plan:
+>
+> ```bash
+> grep -rhoE '"(BP|BN|WP|WN|P)[0-9]+ ' scripts/payload_guard/controls/*.py \
+>   | tr -d '" ' | sed -E 's/([A-Z]+)([0-9]+)/\1 \2/' \
+>   | sort -k1,1 -k2,2nr | awk '!seen[$1]++ {print $1 " highest = " $2}'
+> ```
+
 ### Task 4: Guard tightens — `String` under a gated bridge field now DENIES
 
 The security-relevant half of the guard change, reviewable on its own now that the tree has moved.
@@ -904,11 +919,11 @@ The security-relevant half of the guard change, reviewable on its own now that t
 
 - [ ] **Step 1: Write the failing control**
 
-Add to the bridge control list in `selftest.py`, same shape as BP45/BP46:
+Add to the bridge POSITIVE control list in `scripts/payload_guard/controls/bridge.py`, same shape as BP50:
 
 ```python
     (
-        "BP47",
+        "BP51",
         # After #500 a gated bridge field declared `String` DENIES. The
         # carve-out that accepted it existed only while the tree still used
         # it; leaving it accepted would mean a new error type could opt out
@@ -926,7 +941,7 @@ Add to the bridge control list in `selftest.py`, same shape as BP45/BP46:
 ```bash
 uv run scripts/check-error-payload-hygiene.py --self-test 2>&1 | tail -12
 ```
-Expected: FAIL — BP47 expects an E2 finding, but the bridge set still accepts `String`.
+Expected: FAIL — BP51 expects an E2 finding, but the bridge set still accepts `String`.
 
 - [ ] **Step 3: Narrow the bridge's accepted set**
 
@@ -950,7 +965,7 @@ Update `_EXPECTED_ROOT_FLAGS`'s `"bridge"` entry to `frozenset({"Detail"})` in t
 uv run scripts/check-error-payload-hygiene.py --self-test 2>&1 | tail -8
 uv run scripts/check-error-payload-hygiene.py 2>&1 | tail -8
 ```
-Expected: self-test PASSES (BP47 now fires as expected, BP45 still accepted); real scan **OK across four roots**.
+Expected: self-test PASSES (BP51 now fires as expected, BN28 still accepted); real scan **OK across four roots**.
 
 - [ ] **Step 5: Demonstrate the compile error — do not merely assert it**
 
@@ -1001,7 +1016,7 @@ dotless reassignment) all now fail to typecheck in the bridge, along with
 every shape nobody has thought of. E3 keeps running there as defence in depth
 and remains the ONLY enforcement on the two wrapper roots.
 
-Control BP47.
+Control BP51.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 EOF
@@ -1033,11 +1048,11 @@ Any line printed is a call whose FIRST argument is neither a string literal nor 
 
 - [ ] **Step 2: Write the failing control**
 
-Add to the bridge control list in `selftest.py`:
+Add to the bridge POSITIVE control list in `scripts/payload_guard/controls/bridge.py`:
 
 ```python
     (
-        "BP48",
+        "BP52",
         # #498: a `&'static str` hint is NOT leak-proof — safe stable Rust
         # mints one from runtime data via `Box::leak`. The hint position must
         # be a string LITERAL, not merely a `&'static str`-typed expression.
@@ -1054,7 +1069,7 @@ Add to the bridge control list in `selftest.py`:
 ```bash
 uv run scripts/check-error-payload-hygiene.py --self-test 2>&1 | tail -12
 ```
-Expected: FAIL — E3 currently accepts any `detail::` call without inspecting arguments, so BP48 reports no finding where one is expected.
+Expected: FAIL — E3 currently accepts any `detail::` call without inspecting arguments, so BP52 reports no finding where one is expected.
 
 - [ ] **Step 4: Implement the literal check**
 
@@ -1098,7 +1113,7 @@ does not remove it. A text rule cannot make a leaked `&'static str`
 unrepresentable the way the `Detail` newtype does for the payload itself.
 Only #498's closed-`enum Context` option would, and #498 stays OPEN for it.
 
-Control BP48.
+Control BP52.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 EOF
