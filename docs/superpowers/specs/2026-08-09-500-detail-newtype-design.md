@@ -62,9 +62,26 @@ because they bound the review surface; the exact set is enumerated by the
 compiler during implementation, which is the point of the change.
 
 Two of the 27 declarations (`repair/preview.rs:35`, `:53`) sit on a DTO
-struct rather than an error enum. They are in scope: they carry the same
-content class, rule E2 already gates them, and excluding them would leave the
-bridge in exactly the mixed-mechanism state this design exists to end.
+struct — `FfiAddedRecipient`, `FfiWideningReport` — rather than an error enum.
+**Rule E2 does not sweep them**, and an earlier draft of this spec wrongly said
+it did: sweep 1 anchors on a `#[error(` attribute these plain
+`#[derive(Debug, Clone)]` structs do not have, and sweep 2 keys on the
+`*Error`/`*Warning` NAME convention neither matches. Only rule E3 gates them
+today, at their construction sites.
+
+They are still in scope, and the correction strengthens rather than weakens
+the case: for these two fields the newtype is the **only** declaration-level
+enforcement available, because E2's inversion (§6) structurally cannot reach
+them.
+
+One caveat to carry into implementation. These DTOs deliberately carry
+decrypted plaintext in *sibling* fields — `FfiAddedRecipient::display_name`,
+`FfiWideningReport::block_name` ("the block's plaintext name, for display") —
+which stay `String` and must. So after this change the two structs hold a mix
+of `Detail` and plaintext `String` fields. That is correct but reads as
+inconsistent, so `Detail`'s docstring must say what the type actually claims:
+*produced by a sanctioned constructor*, *not* *this struct carries no
+secrets*. Conflating the two would be an overclaim on exactly these structs.
 
 ### 1.2 Who actually needs the test hatch — corrected by execution
 
