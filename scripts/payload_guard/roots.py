@@ -108,9 +108,13 @@ SCAN_ROOTS: tuple[ScanRoot, ...] = (
         path=REPO_ROOT / "ffi" / "secretary-ffi-bridge" / "src",
         detail_module_rel="ffi/secretary-ffi-bridge/src/error/detail.rs",
         bridge_mode=True,
-        # DURING THE #500 MIGRATION this accepts both `String` and `Detail`;
-        # Task 4 narrows it to `Detail` alone once every declaration has moved.
-        gated_field_types=frozenset({"String", "Detail"}),
+        # #500: the bridge's gated fields are the `Detail` newtype, whose
+        # private inner field makes a runtime `String` UNREPRESENTABLE in the
+        # position. `String` is no longer accepted here — a new bridge error
+        # type cannot opt out of the newtype by declaring the old spelling.
+        # The wrapper roots still take `String`; see the spec's §4 for why
+        # that boundary is real and not an oversight.
+        gated_field_types=frozenset({"Detail"}),
         construction_sites=True,
         gated_detail_impls=True,
         format_confinement=False,

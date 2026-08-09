@@ -521,16 +521,59 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         ''',
         {"rule": "E2", "field": "detail"},
     ),
+    (
+        "BP51 #500: after the bridge narrows ScanRoot.gated_field_types to "
+        "{'Detail'} alone, a gated field still declared bare `String` must "
+        "DENY. The carve-out accepted `String` only for the duration of the "
+        "migration off it; leaving it accepted afterward would let a new "
+        "bridge error type opt out of the `Detail` newtype simply by "
+        "declaring the old spelling",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: String },
+        }
+        ''',
+        {"rule": "E2", "field": "detail"},
+    ),
+    (
+        "BP53 #500: a gated field spelled `Detail` still DENIES when THIS "
+        "file also declares a local `type Detail = String;` — is_bridge_"
+        "field_safe compares the SPELLING only and never resolves an alias, "
+        "so without this fix a one-line local alias reintroduces a plain, "
+        "unwrapped `String` under the newtype's own name the instant the "
+        "bridge narrows to {'Detail'} alone (BP51). Mirrors "
+        "`alias_shadowed_names`'s drop-don't-resolve discipline, applied to "
+        "the gated-field carve-out — a THIRD credit tier with the identical "
+        "hole and, until now, no equivalent guard",
+        '''
+        type Detail = String;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: Detail },
+        }
+        ''',
+        {"rule": "E2", "field": "detail"},
+    ),
 ]
 
 BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
     (
-        "BN1 detail: String under a gated name passes the declaration scan",
+        "BN1 detail: Detail under a gated name passes the declaration scan "
+        "— retargeted from `String` to `Detail` by #500 (task 4), which "
+        "narrowed the bridge's accepted spelling to the newtype alone; "
+        "`BN28` already covered the `Detail` acceptance shape, but this "
+        "control's OWN claim ('the canonical gated-field declaration "
+        "passes') would otherwise silently start asserting something false "
+        "for the bridge root",
         '''
         #[derive(thiserror::Error, Debug)]
         pub enum E {
             #[error("sync failed: {detail}")]
-            SyncFailed { detail: String },
+            SyncFailed { detail: Detail },
         }
         ''',
     ),
@@ -584,9 +627,10 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
         ''' fn f(e: X) -> E { E::V { detail: detail::gated(&e) } } ''',
     ),
     (
-        "BN9 declaration shape `detail: String` is not an E3 finding — E2 "
-        "owns declarations (brief BN8)",
-        ''' pub enum E { #[error("x: {detail}")] V { detail: String } } ''',
+        "BN9 declaration shape `detail: Detail` is not an E3 finding — E2 "
+        "owns declarations (brief BN8; retargeted from `String` to `Detail` "
+        "by #500 task 4, which narrowed the bridge's accepted spelling)",
+        ''' pub enum E { #[error("x: {detail}")] V { detail: Detail } } ''',
     ),
     (
         "BN10 detail: detail passthrough (brief BN9)",
@@ -727,10 +771,11 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
         "BN28 #500: a gated field declared `Detail` must be ACCEPTED on the "
         "bridge and must NOT fire. Before the newtype (#500 task 1) the only "
         "spelling `is_bridge_field_safe` accepted under a GATED_FIELD_NAMES "
-        "name was the hardcoded literal `String`; `ScanRoot.gated_field_types` "
-        "now widens the bridge root to {'String', 'Detail'} for the duration "
-        "of the migration — Task 4 narrows it back to `Detail` alone once "
-        "every bridge declaration has moved off `String`",
+        "name was the hardcoded literal `String`; task 4 narrowed "
+        "`ScanRoot.gated_field_types` for the bridge to `{'Detail'}` alone "
+        "now that every bridge declaration has moved off `String` — see "
+        "`BP51` for the mirror-image control pinning that `String` now "
+        "denies",
         '''
         #[derive(thiserror::Error, Debug)]
         pub enum FooError {

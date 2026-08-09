@@ -284,7 +284,9 @@ _EXPECTED_ROOT_FLAGS: dict[str, dict[str, object]] = {
         "bridge_mode": True, "construction_sites": True,
         "gated_detail_impls": True, "format_confinement": False,
         "allow_field_access": False,
-        "gated_field_types": frozenset({"String", "Detail"}),
+        # #500 (task 4): narrowed from {"String", "Detail"} now that every
+        # bridge declaration has moved off `String` — see roots.py.
+        "gated_field_types": frozenset({"Detail"}),
     },
     # `allow_field_access` is False on BOTH wrapper roots as of #497/#500:
     # E3 shape 5's four DTO pass-through sites all moved to
@@ -573,9 +575,10 @@ def scan_bridge_control(
     denial.
 
     Rule E2's `gated_field_types` (#500) is read the same way, off the same
-    `ScanRoot`: today `frozenset({"String", "Detail"})`, so a bridge control
-    exercises the WIDENED carve-out `is_bridge_field_safe` grants for the
-    duration of the #500 migration.
+    `ScanRoot`: today `frozenset({"Detail"})` — narrowed from the migration-
+    duration `{"String", "Detail"}` by task 4 now that every bridge
+    declaration has moved off `String`, so a bridge control exercises the
+    NARROWED carve-out `is_bridge_field_safe` grants.
     """
     root = _ROOTS_BY_LABEL["bridge"]
     enums, aliases, declared_consts, shadows = discover_declarations(src)

@@ -249,7 +249,33 @@ def is_bridge_field_safe(
     or visibility prefix does not defeat the match; `Option<Detail>`, `&str`,
     or any other near-miss spelling still denies — the carve-out is for the
     literal named types, not "close enough."
+
+    A spelling SHADOWED by a locally-discovered `type X = Y;` alias DENIES
+    here too, before the `gated_field_types` membership check runs (#500,
+    closing the door found in the Task 2 review). `is_data_free`'s
+    `alias_shadowed_names` already applies this discipline to tiers 1/2
+    (`DATA_FREE_TYPES`, `local_error_enums`): a name that means two things
+    has not been RESOLVED, and a guard that guesses which meaning is "real"
+    is a guard that can be aimed. The gated-field carve-out is a THIRD credit
+    tier with the identical hole and had no equivalent guard:
+
+        type Detail = String;             // one file, no collision
+        ...
+        Boom { detail: Detail },          // credited by the carve-out once
+                                           // `gated_field_types` narrows to
+                                           // {"Detail"} alone. Zero findings.
+
+    is a one-line bypass that reintroduces a plain, unwrapped `String` under
+    the newtype's own name — exactly the shape #500 exists to make
+    unrepresentable. The check is unconditional: it denies even for a root
+    whose `gated_field_types` does not currently accept the shadowed
+    spelling (e.g. a wrapper root's `type String = Vec<u8>;`), since the
+    claim being made is a name-resolution claim and the shadow is the
+    evidence it does not hold — not a claim about any one root's carve-out.
     """
     if is_data_free(ty, local_error_enums, aliases, foreign_names):
         return True
-    return normalize_type(ty) in gated_field_types and name in GATED_FIELD_NAMES
+    normalized = normalize_type(ty)
+    if aliases and normalized in aliases:
+        return False
+    return normalized in gated_field_types and name in GATED_FIELD_NAMES
