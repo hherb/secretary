@@ -582,24 +582,32 @@ def initializer_is_gated(
        laundering door for free — the exact rule this arm's own scoping
        paragraph states — so it was switched off rather than left dormant.
        `WP7` pins that a wrapper single-hop access now DENIES. The rest of
-       this entry describes the behaviour if it is ever re-enabled. THIS ARM
-       TRUSTS
-       THE NAME TOO, one level deeper than arm 4: it claims that a field
-       named `uuid_hex` on some OTHER type was gated where THAT type
-       declared it. For the four sites that once justified it that claim
-       held (the source was a bridge DTO whose fields rules E2/E3 already
-       gate) — all four now go through `detail::project(...)` instead — but
-       it is a trust RELATION, not provenance — the same honesty arm 4's docstring
-       insists on. Scoped OUT of the bridge root on purpose: nothing there
-       needs it, and granting it anyway would be a laundering door opened
-       for free (`BP43` pins the bridge still denying the identical
-       expression). A field access whose LAST segment is NOT the gated
-       name — `uuid_hex: a.some_other_field` — is not this shape and denies
-       (`WP1`). ONE HOP ONLY, not an arbitrary-depth chain: `a.b.uuid_hex`
-       is a claim about an INTERMEDIATE value (`a.b`) this rule has no way
-       to vouch for, is not the shape any live site takes, and denies
-       (`WP3`) — a review finding on the first version of this arm, which
-       accepted any depth.
+       this entry describes the behaviour if it is ever re-enabled.
+
+       THIS ARM TRUSTS THE NAME TOO, one level deeper than arm 4: it claims
+       that a field named `uuid_hex` on some OTHER type was gated where
+       THAT type declared it. For the four sites that once justified it
+       that claim held — the source was a bridge DTO whose fields rules
+       E2/E3 already gate, and all four now go through
+       `detail::project(...)` instead — but it is a trust RELATION, not
+       provenance, the same honesty arm 4's docstring insists on.
+
+       It was granted to the WRAPPER roots only, never the bridge, because
+       nothing in the bridge needed it and an acceptance granted where it
+       is not required is a laundering door for free. That asymmetry is
+       gone: with the flag off everywhere, `BP43` (bridge) and `WP7`
+       (wrapper) pin the SAME expression denying on their own root, and
+       neither contrasts with a grant on the other.
+
+       If re-enabled, two narrowings apply. A field access whose LAST
+       segment is NOT the gated name — `uuid_hex: a.some_other_field` — is
+       not this shape and denies (`WP1`). ONE HOP ONLY, not an
+       arbitrary-depth chain: `a.b.uuid_hex` is a claim about an
+       INTERMEDIATE value (`a.b`) this rule has no way to vouch for, is not
+       a shape any site ever took, and denies (`WP3`) — a review finding on
+       the first version of this arm, which accepted any depth. Both
+       controls deny at the FLAG today rather than at the test they name;
+       see #508.
 
     Note what is NOT covered, and cannot be by a construction-site matcher:
     a value reaching a gated field through a PATTERN bind (tuple,
@@ -639,10 +647,21 @@ def initializer_is_gated(
         if after <= end and not view[after:end].strip():
             return True
     # (5) a SINGLE-HOP field access ending in the gated name — the DTO
-    #     pass-through (#486). WRAPPER ROOTS ONLY. `FIELD_ACCESS_RE` accepts
-    #     EXACTLY ONE DOT, not an arbitrary-depth chain — `a.b.uuid_hex`
-    #     denies (`WP3`), since it is a claim about an intermediate value
-    #     this rule cannot vouch for and no live site takes that shape.
+    #     pass-through (#486). UNREACHABLE TODAY: `allow_field_access` is
+    #     False on EVERY root (#497/#500), so this arm never runs; both
+    #     `WP7` (wrapper) and `BP43` (bridge) pin the expression
+    #     `E::V { uuid_hex: a.uuid_hex }` DENYING, on their own root, with
+    #     no acceptance anywhere to contrast against. Everything below
+    #     describes the behaviour if the flag is ever turned back on.
+    #
+    #     It was granted to the WRAPPER roots only, and retired once its
+    #     four DTO pass-through sites moved to `detail::project(...)` —
+    #     an acceptance with no users is a laundering door for free.
+    #     `FIELD_ACCESS_RE` accepts EXACTLY ONE DOT, not an arbitrary-depth
+    #     chain: `a.b.uuid_hex` is a claim about an intermediate value this
+    #     rule cannot vouch for, and no site ever took that shape. (`WP3`
+    #     pins that chain denying, though today it denies at the flag
+    #     rather than at the depth test — see #508.)
     #
     #     THIS ARM TRUSTS A NAME, one level deeper than arm 4 does: it claims
     #     that a field spelled `uuid_hex` on some OTHER type was gated where
@@ -650,12 +669,6 @@ def initializer_is_gated(
     #     that claim held — the source was a bridge DTO whose field rules
     #     E2/E3 gate — but it is a trust RELATION, not provenance, and this
     #     comment says so rather than dressing it up.
-    #
-    #     UNREACHABLE TODAY (#497/#500): `allow_field_access` is False on
-    #     every root, because those four sites moved to
-    #     `detail::project(...)` and an acceptance with no users is a
-    #     laundering door for free. `WP7` pins the denial; BP43 pins that the
-    #     bridge denied the identical expression even while wrappers did not.
     if allow_field_access and FIELD_ACCESS_RE.match(stripped):
         if stripped.split(".")[-1].strip() == name:
             return True
