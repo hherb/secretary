@@ -13,8 +13,8 @@ import re
 
 from payload_guard.config import GATED_FIELD_NAMES
 from payload_guard.discovery import (
-    LOCAL_DETAIL_TYPE_RE, _inside, discovery_cfg_test_spans,
-    discovery_cfg_test_spans_strict,
+    LOCAL_DETAIL_TYPE_RE, LOCAL_GATED_DETAIL_TRAIT_RE, _inside,
+    discovery_cfg_test_spans, discovery_cfg_test_spans_strict,
 )
 from payload_guard.lexer import (
     balanced_slice, discovery_view, strip_comments, string_literal_token_ends,
@@ -152,22 +152,55 @@ STR_PARAM_CTOR_EXCEPTIONS: frozenset[str] = frozenset()
 
 
 def _ctor_params_are_safe(
-    name: str, params_text: str, *, detail_param_ok: bool = True
+    name: str,
+    params_text: str,
+    *,
+    detail_param_ok: bool = True,
+    gated_detail_param_ok: bool = True,
 ) -> bool:
     """Every parameter of a candidate sanctioned constructor must carry a
     type from `SAFE_PARAM_TYPES` (or be one of the reviewed `&str`
     exceptions named in `STR_PARAM_CTOR_EXCEPTIONS` — currently EMPTY, see
     there, #504). An unparseable parameter is NOT safe — default-deny.
 
-    `detail_param_ok=False` withdraws BOTH the by-value `Detail` spelling
-    and the by-reference `&Detail` spelling (#504 fix: the original
-    withdrawal subtracted only `{"Detail"}`, so a wrapper root's decoy
-    `struct Detail` beside a BY-REFERENCE constructor sanctioned it while
-    the by-value form correctly denied — verified by execution, pinned by
-    `WP9`) — see `LOCAL_DETAIL_TYPE_RE`."""
+    `detail_param_ok=False` withdraws every `Detail`-NAMING spelling in
+    `allowed`, matched by `\\bDetail\\b` rather than hand-listed (#504
+    review R1 fix): a hand-maintained literal (the original fix's
+    `allowed - {"Detail", "&Detail"}`) is the IDENTICAL drift risk #504
+    itself just closed one level up — someone adds a `Detail`-naming member
+    to `SAFE_PARAM_TYPES` (a future `&'static Detail`, `Option<&Detail>`,
+    …), forgets to also list the new spelling here, and the wrapper-decoy
+    hole reopens with `--self-test` green, because `WP8`/`WP10` only pin the
+    two spellings that exist today. The derived form cannot drift from
+    `SAFE_PARAM_TYPES` because there is no second list to forget.
+
+    `\\bDetail\\b` matches `Detail` and `&Detail` but NOT `&impl
+    GatedDetail` — there is no word boundary between `Gated` and `Detail`
+    (verified by execution) — so `&impl GatedDetail` is untouched by THIS
+    withdrawal. That is deliberate scope, not an oversight: `&impl
+    GatedDetail` is the SAME class of decoy hole one level over (#504
+    review R3), closed by the SEPARATE `gated_detail_param_ok` withdrawal
+    below rather than folded into this one via a wider regex — the two
+    decoys (`struct/enum/union/type Detail` vs `trait GatedDetail`) are
+    independent local declarations, so keeping their withdrawals
+    independent means a decoy of one kind can never accidentally paper
+    over a missing withdrawal for the other. See `LOCAL_DETAIL_TYPE_RE`.
+
+    `gated_detail_param_ok=False` withdraws every `GatedDetail`-NAMING
+    spelling the same way — matched by `\\bGatedDetail\\b`, currently just
+    `&impl GatedDetail`. A wrapper crate cannot implement the BRIDGE's
+    `pub(crate)` (sealed) `GatedDetail`, but nothing stops one declaring its
+    OWN local `trait GatedDetail`, implementing it for e.g. `String`, and
+    writing `pub(crate) fn launder(d: &impl GatedDetail) -> String` — which
+    reproduces the exact `Detail`/`&Detail` decoy bypass one type over
+    (verified by execution; zero live wrapper constructors take `&impl
+    GatedDetail` today, so this closes with no call-site fallout — `WP11`
+    pins the denial). See `LOCAL_GATED_DETAIL_TRAIT_RE`."""
     allowed = SAFE_PARAM_TYPES | ({"&str"} if name in STR_PARAM_CTOR_EXCEPTIONS else set())
     if not detail_param_ok:
-        allowed = allowed - {"Detail", "&Detail"}
+        allowed = allowed - {t for t in allowed if re.search(r"\bDetail\b", t)}
+    if not gated_detail_param_ok:
+        allowed = allowed - {t for t in allowed if re.search(r"\bGatedDetail\b", t)}
     inner = params_text.strip()
     if inner.startswith("(") and inner.endswith(")"):
         inner = inner[1:-1]
@@ -235,6 +268,12 @@ def sanctioned_constructor_names(
     type — see `LOCAL_DETAIL_TYPE_RE`. Defaults to `False`, the fail-closed
     reading for a caller that forgets to pass it.
 
+    The SAME flag also gates a `GatedDetail`-naming decoy (#504 review R3):
+    only the bridge declares the authentic `GatedDetail` trait, in the same
+    file, so `owns_detail_type` is reused rather than adding a second,
+    independent `ScanRoot` flag that would agree with it at every one of
+    today's four roots anyway — see `LOCAL_GATED_DETAIL_TRAIT_RE`.
+
     Read from the DISCOVERY VIEW (comments AND string CONTENTS blanked), not
     `strip_comments`. This registry GRANTS acceptance, so its fail-closed
     direction is to find FEWER names: a `pub(crate) fn evil(` written inside
@@ -281,6 +320,11 @@ def sanctioned_constructor_names(
     # A root that does not own the newtype must not let a locally-declared
     # decoy called `Detail` satisfy `SAFE_PARAM_TYPES`' spelling test.
     detail_param_ok = owns_detail_type or not LOCAL_DETAIL_TYPE_RE.search(view)
+    # Same reasoning, independent match, for a `trait GatedDetail` decoy
+    # (#504 review R3) — see `_ctor_params_are_safe`'s docstring.
+    gated_detail_param_ok = owns_detail_type or not LOCAL_GATED_DETAIL_TRAIT_RE.search(
+        view
+    )
     excluded = discovery_cfg_test_spans(detail_src)
     names: dict[str, frozenset[int]] = {}
     for m in SANCTIONED_CTOR_RE.finditer(view):
@@ -291,7 +335,10 @@ def sanctioned_constructor_names(
         # `m.end() - 1` is the opening paren `balanced_slice` needs.
         params_text, _ = balanced_slice(view, m.end() - 1)
         if not _ctor_params_are_safe(
-            name, params_text, detail_param_ok=detail_param_ok
+            name,
+            params_text,
+            detail_param_ok=detail_param_ok,
+            gated_detail_param_ok=gated_detail_param_ok,
         ):
             continue
         names[name] = _static_str_param_indexes(params_text)

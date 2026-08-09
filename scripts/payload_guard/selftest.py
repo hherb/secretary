@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import io
+import re
 import sys
 
 from payload_guard.config import REPO_ROOT
@@ -35,7 +36,8 @@ from payload_guard.roots import SCAN_ROOTS, ScanRoot
 from payload_guard.rules.e1 import scan_source
 from payload_guard.rules.e2 import scan_bridge_plain_declarations
 from payload_guard.rules.e3 import (
-    sanctioned_constructor_names, scan_bridge_construction_sites,
+    SAFE_PARAM_TYPES, _ctor_params_are_safe, sanctioned_constructor_names,
+    scan_bridge_construction_sites,
 )
 from payload_guard.rules.e4 import scan_bridge_gated_detail_impls
 from payload_guard.rules.e5 import scan_wrapper_format_confinement
@@ -991,6 +993,93 @@ def check_wrapper_alias_collision_isolated_from_decoy_check() -> list[str]:
     return []
 
 
+def check_detail_naming_param_types_are_all_withdrawn_under_decoy() -> list[str]:
+    r"""#504 review R1: `_ctor_params_are_safe`'s wrapper-decoy withdrawal
+    (`detail_param_ok=False`) must deny EVERY `SAFE_PARAM_TYPES` member
+    whose spelling names the `Detail` newtype, not just the two spellings
+    (`Detail`, `&Detail`) that happen to exist today.
+
+    Independent of HOW the production withdrawal is implemented — this
+    check computes its OWN `\bDetail\b`-naming subset of `SAFE_PARAM_TYPES`
+    directly, rather than importing whatever set/logic
+    `_ctor_params_are_safe` uses internally, so it is not tautological: a
+    regression that reverts the withdrawal to a hand-maintained literal (the
+    exact shape #504's own review caught — `allowed - {"Detail", "&Detail"}`
+    silently missing a THIRD future `Detail`-naming spelling) is caught here
+    even though the production code and this check independently agree
+    today. Mutation-verified: temporarily reverting
+    `_ctor_params_are_safe` to the pre-fix `allowed - {"Detail", "&Detail"}`
+    literal, with `"&'static Detail"` added to `SAFE_PARAM_TYPES` as a
+    stand-in for a plausible future member, reproduces a red result here
+    (`_ctor_params_are_safe` sanctions the synthetic member under
+    `detail_param_ok=False` when it should deny) — see the #504 review
+    fix-round commit for the transcript.
+
+    `\bDetail\b` deliberately does NOT match `&impl GatedDetail` (no word
+    boundary between `Gated` and `Detail`), so that spelling is correctly
+    excluded from this loop. `&impl GatedDetail`'s own wrapper-decoy
+    exposure was the SAME class of hole one type over (#504 review R3) and
+    is closed by a separate, independently-derived withdrawal
+    (`gated_detail_param_ok` in `_ctor_params_are_safe`) rather than folded
+    in here by a wider match — see
+    `check_gated_detail_naming_param_types_are_all_withdrawn_under_decoy`
+    below for its own coupling check, the `GatedDetail` analogue of this one.
+    """
+    failures: list[str] = []
+    detail_naming = {t for t in SAFE_PARAM_TYPES if re.search(r"\bDetail\b", t)}
+    if not detail_naming:
+        return [
+            "DETAIL WITHDRAWAL LIVENESS: no SAFE_PARAM_TYPES member matches "
+            r"\bDetail\b — this check would pass vacuously"
+        ]
+    for ty in sorted(detail_naming):
+        if _ctor_params_are_safe("x", f"(d: {ty})", detail_param_ok=False):
+            failures.append(
+                "DETAIL WITHDRAWAL INCOMPLETE: SAFE_PARAM_TYPES member "
+                f"{ty!r} is NOT denied by _ctor_params_are_safe under "
+                "detail_param_ok=False — a wrapper-root decoy `Detail` "
+                "would leave this spelling sanctioned"
+            )
+    return failures
+
+
+def check_gated_detail_naming_param_types_are_all_withdrawn_under_decoy() -> list[str]:
+    r"""#504 review R3: the `GatedDetail` analogue of
+    `check_detail_naming_param_types_are_all_withdrawn_under_decoy` directly
+    above — same coupling risk, same independent-computation fix, one type
+    over. `_ctor_params_are_safe`'s `gated_detail_param_ok=False` withdrawal
+    must deny EVERY `SAFE_PARAM_TYPES` member whose spelling names
+    `GatedDetail`, not just `&impl GatedDetail`, the one spelling that
+    exists today.
+
+    Computes its OWN `\bGatedDetail\b`-naming subset of `SAFE_PARAM_TYPES`
+    directly rather than reading whatever the production withdrawal uses
+    internally, for the same non-tautology reason the `Detail` check gives.
+    Mutation-verified the same way: temporarily reverting the withdrawal to
+    a hand-maintained `{"&impl GatedDetail"}` literal, with a synthetic
+    `"&'static impl GatedDetail"` added to `SAFE_PARAM_TYPES`, reproduces a
+    red result here.
+    """
+    failures: list[str] = []
+    gated_detail_naming = {
+        t for t in SAFE_PARAM_TYPES if re.search(r"\bGatedDetail\b", t)
+    }
+    if not gated_detail_naming:
+        return [
+            "GATED_DETAIL WITHDRAWAL LIVENESS: no SAFE_PARAM_TYPES member "
+            r"matches \bGatedDetail\b — this check would pass vacuously"
+        ]
+    for ty in sorted(gated_detail_naming):
+        if _ctor_params_are_safe("x", f"(d: {ty})", gated_detail_param_ok=False):
+            failures.append(
+                "GATED_DETAIL WITHDRAWAL INCOMPLETE: SAFE_PARAM_TYPES member "
+                f"{ty!r} is NOT denied by _ctor_params_are_safe under "
+                "gated_detail_param_ok=False — a wrapper-root decoy "
+                "`trait GatedDetail` would leave this spelling sanctioned"
+            )
+    return failures
+
+
 # `BP57`'s planted-decoy target (#500 fix round 2, review finding "the
 # Important that matters more than either T4-I1/T4-I2"). Deliberately
 # unmistakable — no real PR would ever choose this name — and additionally
@@ -1171,6 +1260,8 @@ def run_self_test() -> int:
     failures += check_bridge_key_distinctness()
     failures += check_cross_file_alias_collision_still_denies()
     failures += check_wrapper_alias_collision_isolated_from_decoy_check()
+    failures += check_detail_naming_param_types_are_all_withdrawn_under_decoy()
+    failures += check_gated_detail_naming_param_types_are_all_withdrawn_under_decoy()
     failures += check_real_scan_shadow_wiring_is_live()
     for entry in WRAPPER_POSITIVE_CONTROLS:
         label, src = entry[0], entry[1]

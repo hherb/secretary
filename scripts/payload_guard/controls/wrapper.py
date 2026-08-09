@@ -76,6 +76,28 @@ pub(crate) fn launder(d: &Detail) -> String {
 }
 '''
 
+# A wrapper `detail.rs` stand-in carrying a DECOY TRAIT called `GatedDetail`
+# (#504 review R3) — the same class of hole as the two fixtures above, one
+# type over. A wrapper crate cannot implement the BRIDGE's `pub(crate)`
+# (sealed) `GatedDetail`, but nothing stops it declaring its OWN local trait
+# of the same name and implementing it for `String`; before the fix this
+# sanctioned `detail::launder(&impl GatedDetail)` on any wrapper root.
+SELF_TEST_WRAPPER_DETAIL_SRC_WITH_GATED_DETAIL_DECOY = '''
+pub(crate) trait GatedDetail {
+    fn render(&self) -> String;
+}
+
+impl GatedDetail for String {
+    fn render(&self) -> String {
+        self.clone()
+    }
+}
+
+pub(crate) fn launder(d: &impl GatedDetail) -> String {
+    d.render()
+}
+'''
+
 WRAPPER_POSITIVE_CONTROLS: list[tuple] = [
     (
         "WP1 a field access whose last segment is NOT the gated field's own "
@@ -171,18 +193,43 @@ WRAPPER_POSITIVE_CONTROLS: list[tuple] = [
         {"detail_src": SELF_TEST_WRAPPER_DETAIL_SRC_WITH_DECOY},
     ),
     (
-        "WP9 #504: the BY-REFERENCE twin of WP8. Adding `&Detail` to "
+        # NOTE: labelled `WP10`, not `WP9` — `WP9` was already taken by
+        # `check_wrapper_alias_collision_isolated_from_decoy_check` in
+        # `selftest.py` (#500 fix round 2, "Important 1"), a DIFFERENT
+        # control (wrapper cross-file alias collision) that predates this
+        # one. Caught during this control's own review before it shipped
+        # with a colliding label.
+        "WP10 #504: the BY-REFERENCE twin of WP8. Adding `&Detail` to "
         "SAFE_PARAM_TYPES (for ffi-py's fingerprint_mismatch/uuid_prefixed) "
         "must not admit a wrapper decoy `&Detail` any more than the by-value "
-        "form does. `_ctor_params_are_safe`'s decoy withdrawal subtracted "
-        "only `{\"Detail\"}` from `allowed`, leaving `&Detail` sanctioned for "
-        "a locally-declared decoy beside a by-reference constructor "
-        "(verified by execution before the fix). Setting "
-        "`owns_detail_type=True` on a wrapper root must make this stop "
-        "firing, same as WP8",
+        "form does. `_ctor_params_are_safe`'s decoy withdrawal originally "
+        "subtracted only `{\"Detail\"}` from `allowed`, leaving `&Detail` "
+        "sanctioned for a locally-declared decoy beside a by-reference "
+        "constructor (verified by execution before the fix; the withdrawal "
+        "is now DERIVED via `\\bDetail\\b`, see `_ctor_params_are_safe`'s "
+        "own docstring). Setting `owns_detail_type=True` on a wrapper root "
+        "must make this stop firing, same as WP8",
         ''' fn f(x: String) -> E { E::V { detail: detail::launder(&Detail(x)) } } ''',
         {"rule": "E3", "field": "detail"},
         {"detail_src": SELF_TEST_WRAPPER_DETAIL_SRC_WITH_REF_DECOY},
+    ),
+    (
+        "WP11 #504 review R3: a LOCALLY-DECLARED decoy TRAIT named "
+        "`GatedDetail` reproduces the WP8/WP10 bypass one type over. A "
+        "wrapper crate cannot implement the BRIDGE's `pub(crate)` (sealed) "
+        "`GatedDetail`, but nothing stops it declaring its OWN local trait "
+        "of that name, implementing it for `String`, and writing "
+        "`fn launder(d: &impl GatedDetail) -> String` — before the fix this "
+        "sanctioned `detail::launder(&some_runtime_string)` on any wrapper "
+        "root (verified by execution). Census: zero live wrapper "
+        "constructors take `&impl GatedDetail` today, so closing this cost "
+        "no call-site fallout. Setting `owns_detail_type=True` on a "
+        "wrapper root must make this stop firing, same as WP8/WP10 — see "
+        "`sanctioned_constructor_names`'s docstring for why the SAME flag "
+        "gates both the `Detail` and `GatedDetail` decoys",
+        ''' fn f(x: String) -> E { E::V { detail: detail::launder(&x) } } ''',
+        {"rule": "E3", "field": "detail"},
+        {"detail_src": SELF_TEST_WRAPPER_DETAIL_SRC_WITH_GATED_DETAIL_DECOY},
     ),
 ]
 

@@ -70,6 +70,29 @@ TYPE_ALIAS_HEAD_RE = re.compile(r"\btype\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*")
 LOCAL_DETAIL_TYPE_RE = re.compile(
     r"\b(?:struct|enum|union)\s+Detail\b|\btype\s+Detail\s*[=<]"
 )
+
+# A LOCAL declaration of a TRAIT called `GatedDetail` (#504 review R3): a
+# wrapper root's `&impl GatedDetail` in `SAFE_PARAM_TYPES` was the sibling of
+# the `Detail`/`&Detail` decoy hole #504's own review found and fixed — a
+# wrapper crate cannot implement the BRIDGE's `pub(crate)` `GatedDetail` (it
+# is sealed, #496), but nothing stops one declaring its OWN same-named local
+# `trait GatedDetail`, implementing it for e.g. `String`, and writing
+# `pub(crate) fn launder(d: &impl GatedDetail) -> String`, which then
+# sanctions an arbitrary runtime string exactly like the `Detail` decoy did
+# (verified by execution; zero live constructors take `&impl GatedDetail` in
+# either wrapper crate today — census re-run at every guard scan via `WP11`).
+#
+# DELIBERATELY A SEPARATE REGEX, not a widened `LOCAL_DETAIL_TYPE_RE`: that
+# regex is SHARED with rule E2's `discover_local_detail_decoys`, whose return
+# value is a hardcoded `frozenset({"Detail"})` — folding a `GatedDetail`
+# trait match into it would make an unrelated `GatedDetail` decoy shadow the
+# "Detail" FIELD-type spelling for rule E2, a different rule with a different
+# job. Keeping this match independent means rule E3's `GatedDetail`
+# withdrawal (`rules/e3.py`'s `gated_detail_param_ok`) cannot perturb E2's
+# behaviour, and vice versa — the same single-responsibility split the two
+# rules already keep for `LOCAL_DETAIL_TYPE_RE` itself before this addition.
+LOCAL_GATED_DETAIL_TRAIT_RE = re.compile(r"\btrait\s+GatedDetail\b")
+
 # A `mod name {` block header, anchored at the END of the text preceding a
 # `{`. `non_module_block_spans` uses it to tell the ONE kind of brace block
 # that does not change an item's "is this declared at module scope?" status

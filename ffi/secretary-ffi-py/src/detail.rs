@@ -24,8 +24,8 @@
 //! do not police call sites, make the unsafe call unrepresentable and
 //! review the one file that defines what safe means.
 //!
-//! Every constructor below takes `&'static str`, an integer, or `&Detail`
-//! (#500/#504) — never a bare runtime `&str`. [`fingerprint_mismatch`] and
+//! Every constructor below takes `&'static str`, an integer, `Detail`, or
+//! `&Detail` (#500/#504) — never a bare runtime `&str`. [`fingerprint_mismatch`] and
 //! [`uuid_prefixed`] are the two that take `&Detail`: their inputs are not
 //! authored here, they are already bridge-owned values this crate only
 //! COMBINES into one message, never authoring new runtime content into
