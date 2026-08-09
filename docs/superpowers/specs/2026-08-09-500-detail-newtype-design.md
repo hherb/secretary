@@ -252,23 +252,67 @@ calling the hatch), on the pinned toolchain 1.97.0:
 |---|---|
 | `cargo test --release --workspace` | **compiles — NOT caught** |
 | `cargo clippy --release --workspace --tests` | **compiles — NOT caught** |
-| `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` | **compiles — NOT caught** (rustdoc does not type-check fn bodies) |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` | **caught** for the bridge — see §5.1.1 |
 | `cargo clippy --release --workspace` (no `--tests`) | `error[E0599]` — caught |
 | `cargo build --release --workspace` | `error[E0599]` — caught |
 
-**Every gate secretary's CI runs today misses it.** The feature gate is a real
-compile-time guarantee — the function does not exist in the shipped artifact —
-but only if a non-test build runs.
+**Two of the five gates secretary's CI runs today miss it**, and they are the
+two that run on every PR. The feature gate is a real compile-time guarantee —
+the function does not exist in the shipped artifact — but only if a non-test
+build runs.
+
+#### 5.1.1 The rustdoc row depends on the crate's position in the graph
+
+The rustdoc row was wrong in two earlier drafts of this spec, in both
+directions, and the correction is worth keeping because it is not obvious.
+
+Measured on the same throwaway workspace, cold `target/`, resolver 2, toolchain
+1.97.0, varying only WHERE the leaking call lives:
+
+| Leak lives in | `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` |
+|---|---|
+| a LEAF crate (nothing depends on it) | `rc=0` — compiles clean, a genuine blind spot |
+| a DEPENDED-UPON crate | `rc=101`, `error[E0599]` — caught |
+
+Rustdoc does not type-check the bodies of the crate it is *documenting*, which
+is why the leaf row is clean. But to document a crate's dependents, cargo must
+build the dependency's rmeta, and that build *is* a real compilation.
+
+`secretary-ffi-bridge` is depended on by `secretary-ffi-py`,
+`secretary-ffi-uniffi` and `desktop/src-tauri`, so it is the second row: a leak
+inside the bridge IS caught by the rustdoc gate. Do not generalise this to the
+wrapper crates — `secretary-ffi-py` and `secretary-ffi-uniffi` are leaves, so
+the same leak in either of them would be the first row.
+
+This narrows §5.2's justification but does not remove it: `cargo test` and
+`cargo clippy --tests` remain blind wherever the leak lives.
 
 ### 5.2 Required CI additions
 
 1. **`cargo build --release --workspace`** in `test.yml`. Without it the hatch
    is decorative.
-2. A grep asserting `test-support` appears **only** under `[dev-dependencies]`
-   in every `Cargo.toml`. Enabling it on a normal dependency line is the single
-   way to defeat the isolation, and it is a one-line change someone could make
-   for a plausible-sounding reason. Follows the house pattern: `--self-test`
-   first, proving the matcher fires on a known-positive control.
+2. A guard asserting `test-support` is reachable **only** from
+   `[dev-dependencies]`, in every `Cargo.toml`. Follows the house pattern:
+   `--self-test` first, proving the matcher fires on known-positive controls.
+
+   An earlier draft called a normal-dependency line "the single way to defeat
+   the isolation". Review found at least four, so the guard is a TOML parse
+   over the feature graph rather than a line matcher:
+
+   - a normal `[dependencies]` / `[build-dependencies]` /
+     `[target.'cfg(...)'.dependencies]` / `[workspace.dependencies]` entry
+     requesting the feature;
+   - `default = ["test-support"]` in the bridge's own `[features]`;
+   - cross-crate forwarding, `extra = ["secretary-ffi-bridge/test-support"]`;
+   - **an alias**, `hatch = ["test-support"]` plus `default = ["hatch"]` — the
+     feature graph reaches the hatch without the string `test-support` ever
+     appearing in a denied position. This one needs closure over the feature
+     graph, not a name match.
+
+   The guard must also fail closed on a scan root that does not exist. A root
+   whose path moved contributing zero files silently is the exact fail-open
+   #496 spent its final review closing in the payload guard; do not
+   reintroduce it here.
 
 ---
 

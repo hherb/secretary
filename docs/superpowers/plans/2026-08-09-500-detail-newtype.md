@@ -771,7 +771,7 @@ echo "--- cargo test --release --workspace (expect 0) ---"
 cargo test --release --workspace 2>&1 | grep -cE "^error"
 echo "--- cargo clippy --release --workspace --tests (expect 0) ---"
 cargo clippy --release --workspace --tests 2>&1 | grep -cE "^error"
-echo "--- rustdoc gate (expect 0) ---"
+echo "--- rustdoc gate (expect NON-ZERO: see note) ---"
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace 2>&1 | grep -cE "^error"
 
 python3 - <<'PY'
@@ -785,9 +785,23 @@ PY
 grep -c probe_launder ffi/secretary-ffi-bridge/src/error/detail.rs   # expect 0
 ```
 
-Expected: the first two print a non-zero count; the last three print `0`. **That is the whole justification for the `cargo build --release --workspace` CI step Task 1 added** — three of this repo's five existing gates compile a production call to the hatch clean.
+Expected, with the probe planted in the BRIDGE as written above:
 
-The rustdoc row is the one to watch: it was verified on a synthetic two-crate probe (cold `target/`, rc=0, both crates documented) but a Task 1 experiment using a self-referential dev-dependency reached the opposite conclusion. A self-dep is not a valid model of this wiring; this run is the authoritative one. **If the measured matrix differs from the expectation above, correct `detail.rs`'s `for_test` doc comment and the `test.yml` step comment in this same commit** — they currently assert the expected shape and carry a marker saying it is re-verified here. Do not leave a claim standing that this run contradicts.
+| Gate | Expect |
+|---|---|
+| `cargo build --release --workspace` | non-zero — caught |
+| `cargo clippy --release --workspace` (no `--tests`) | non-zero — caught |
+| `cargo test --release --workspace` | **`0` — the blind spot** |
+| `cargo clippy --release --workspace --tests` | **`0` — the blind spot** |
+| rustdoc gate | **non-zero — caught** (see below) |
+
+**Two of five gates are blind, and they are the two that matter** — that is the whole justification for the `cargo build --release --workspace` CI step Task 1 added.
+
+The rustdoc row expects **non-zero**, which is not obvious and was wrong in two earlier drafts. Rustdoc does not type-check the bodies of the crate it documents — so a leak in a LEAF crate scans clean — but to document a crate's *dependents* cargo must build its rmeta, and that is a real compilation. `secretary-ffi-bridge` is depended on by `ffi-py`, `ffi-uniffi` and `desktop/src-tauri`, so a leak planted there IS caught. Spec §5.1.1 carries the measured two-row table.
+
+**If the measured matrix differs from this table, correct `detail.rs`'s `for_test` doc comment and the `test.yml` step comment in this same commit** — both assert this exact shape and carry a marker saying it is re-verified here. Do not leave a claim standing that this run contradicts.
+
+If you want to see the leaf-crate behaviour too, plant a second probe in `ffi/secretary-ffi-uniffi/src/` (a leaf) and expect the rustdoc row to be `0` there. Optional; the bridge row is the one the comments claim.
 
 - [ ] **Step 7: Fix the bridge's own 29 test constructions**
 
