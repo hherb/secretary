@@ -4,7 +4,7 @@
 
 Full brainstorm → spec → 8-task plan → **subagent-driven execution with an independent review after every task and a scoped re-review after every fix round**. User decisions: all six gated names (not just `detail`); fold in **#498**'s cheaper half; **#503** via a secret-only out-param sibling; the test hatch as a `test-support` Cargo feature.
 
-**Tasks 1-4 of 8 are complete and reviewed. Tasks 5-8 and the whole-branch review remain.** This baton is written mid-plan on purpose — see §2.
+**Tasks 1-5 of 8 are complete and reviewed. Tasks 6, 7, 8 and the whole-branch review remain.** This baton is written mid-plan on purpose — see §2.
 
 ## Session-start state
 
@@ -14,7 +14,7 @@ Full brainstorm → spec → 8-task plan → **subagent-driven execution with an
 
 ## (1) What we shipped
 
-**21 commits, `ecd0ff1..564a2ce`, 73 files, +5600/-538.** No FFI surface change — `git diff main... -- ffi/secretary-ffi-uniffi/src/secretary.udl` is **empty**. No `core/` change, no on-disk format change, no KAT regeneration, no `#[error]` Display string altered.
+**26 commits, `ecd0ff1..175e74c` (plus this baton), 76 files changed.** No FFI surface change — `git diff main... -- ffi/secretary-ffi-uniffi/src/secretary.udl` is **empty**. No `core/` change, no on-disk format change, no KAT regeneration, no `#[error]` Display string altered.
 
 ### The idea
 
@@ -39,10 +39,12 @@ error[E0308]: mismatched types
 | `c4ffe5a` | **Task 2** — guard accepts `Detail` on the bridge (widening only) |
 | `4674065`…`ef22740` | **Task 3** — 27 fields → `Detail` across three crates (4 fix rounds) |
 | `37a318c`…`564a2ce` | **Task 4** — bridge narrowed to `Detail`-only, alias/decoy denies, wiring pin (2 fix rounds) |
+| `3a95c06` | the first version of this baton |
+| `d3d09d4` `a905c1b` `175e74c` | **Task 5** — #498's literal hint-argument rule; census correction (1 fix round) |
 
 ### What is closed
 
-- **#500** — the newtype itself, through Task 4. Tasks 5-8 remain.
+- **#500** — the newtype itself, through Task 5. Tasks 6-8 remain.
 - **#497** (E3 shape 5's unbounded single-hop receiver) — **closed as a side effect**. Task 3 moved all four live sites onto `detail::project(...)`, leaving the acceptance with zero users; `roots.py`'s own rule said granting it where nothing needs it "would open a laundering door for free", so it was switched off on every root rather than merely documented. `WP7` pins the denial.
 - **Plan parked minor P6** — `_check_wrapper_roots_agree`'s flag tuple had decayed twice; the compared set is now *derived* from `ScanRoot` minus an explicit exempt list, so a new field is compared unless deliberately exempted.
 
@@ -54,18 +56,19 @@ error[E0308]: mismatched types
 - Task 4: severing `run_real_scan`'s own `shadowed_type_names` line left `--self-test` **fully green**, the real scan green, and a live decoy went from 47 violations to `OK`. Every control built its own shadow set, so none observed the line production uses. `BP57` now runs `run_real_scan` end-to-end against a planted decoy.
 - Two implementers caught their *own* vacuous controls by mutation before any reviewer did.
 
+**Two censuses this branch inherited were wrong, both found only by re-running them.** #486's was wrong in four ways (recorded in the previous baton); #498's was wrong by five — it reported one non-literal hint argument where there are six, five of them predating the branch. A census is a measurement with a date on it, not a fact.
+
 **A silently empty grep is indistinguishable from a clean sweep.** A batched multi-file `grep -B/-A` returned nothing despite matches existing; it was caught only by counting per file. Do not trust a zero-result grep on this tree without a positive control.
 
 ---
 
 ## (2) What's next — concrete acceptance criteria
 
-**Resume with Task 5.** The plan is authoritative and already amended for everything found so far; the ledger at `.superpowers/sdd/2026-08-09-500-detail-newtype/progress.md` is the recovery map and names every parked item.
+**Resume with Task 6.** The plan is authoritative and already amended for everything found so far; the ledger at `.superpowers/sdd/2026-08-09-500-detail-newtype/progress.md` is the recovery map and names every parked item.
 
-- **Task 5 — #498's cheaper half.** E3 must require every hint-position argument at a sanctioned call site to be a **string literal**, not merely `&'static str`-typed. Control **`BP52`** (reserved; re-derive the high-water mark anyway — the plan has been wrong about labels once). **Step 1 re-runs #498's census before trusting it**; if a live non-literal producer exists, stop and report rather than allowlisting.
 - **Task 6 — #504.** ffi-py's `fingerprint_mismatch` / `uuid_prefixed` take `&Detail`; `STR_PARAM_CTOR_EXCEPTIONS` **empties**; add message-content and argument-order tests (they run under `cargo test`, unlike the pytest suite #501 covers).
-- **Task 7 — #503.** `array32_from_vec_into(bytes, &mut out, field)` at the three `device_secret` sites only; fix the now-wrong "the transient stack copy" comment at `namespace/mod.rs:580`.
-- **Task 8 — docs + identity harness.** The stale-doc list is enumerated in the ledger and is longer than the plan anticipated; **`check-error-payload-hygiene.py`'s LIMITS never mentions the alias-shadow deny or `discover_local_detail_decoys` at all**, and CLAUDE.md calls LIMITS authoritative. The identity harness will *not* diff empty — every changed line must be attributed to a named rule change, and a line no change predicts is a defect.
+- **Task 7 — #503.** `array32_from_vec_into(bytes, &mut out, field)` at the three `device_secret` sites only; fix the now-wrong "the transient stack copy" comment at `namespace/mod.rs:580`. **Cross-task hazard, added after Task 5:** the allowlist's Section 5 entries are keyed on *exact construction-site text*, and `array32_from_vec`'s key is `detail: crate::detail::arg_len(field, 32, bytes.len())`. Task 7 edits that function — update the entry in the **same commit** or the real scan reds.
+- **Task 8 — docs + identity harness.** The stale-doc list is enumerated in the ledger (**eight items**, longer than the plan anticipated; item 7 is already done). Two matter most: **LIMITS never mentions the alias-shadow deny or `discover_local_detail_decoys` at all**, and its `&'static str` bullet says *"Every live site passes a literal; nothing enforces it"* — **both halves are now false** (six live sites do not, and E3 now does). CLAUDE.md repeats that sentence, and calls LIMITS authoritative. The identity harness will *not* diff empty — every changed line must be attributed to a named rule change, and a line no change predicts is a defect.
 - **Then the whole-branch review** on the most capable model, with an **old-vs-new guard differential** (load the guard from `3775ef5` and from HEAD in one process, push fixtures through both). #496's real regression was invisible to every per-task review and surfaced only that way.
 
 **Definition of done** is spec §11: zero gated `String` in the bridge (holds now), the `E0308` demonstration (done), `cargo build --release --workspace` in CI (done), `test-support` only under `[dev-dependencies]` (enforced), `STR_PARAM_CTOR_EXCEPTIONS` empty (Task 6), UDL diff empty (holds), full gate sweep, and CLAUDE.md distinguishing **bridge-closed** from **wrapper-still-open** without flattening the two.
@@ -88,14 +91,14 @@ error[E0308]: mismatched types
 ```bash
 cd /Users/hherb/src/secretary/.worktrees/500-detail-newtype
 pwd && git branch --show-current && git status -s     # expect feature/500-detail-newtype, clean
-git log --oneline main..HEAD | head -3                # expect 564a2ce at the tip
+git log --oneline main..HEAD | head -3                # expect 175e74c at the tip
 
 # The recovery map — read this BEFORE re-dispatching anything:
 cat .superpowers/sdd/2026-08-09-500-detail-newtype/progress.md
 
-# Resume the plan at Task 5:
+# Resume the plan at Task 6:
 bash ~/.claude/plugins/cache/claude-plugins-official/superpowers/6.2.0/skills/subagent-driven-development/scripts/task-brief \
-  docs/superpowers/plans/2026-08-09-500-detail-newtype.md 5
+  docs/superpowers/plans/2026-08-09-500-detail-newtype.md 6
 
 # Gates for this slice:
 cargo build --release --workspace          # NEW and load-bearing: the only gate that
@@ -116,7 +119,7 @@ git diff main... -- ffi/secretary-ffi-uniffi/src/secretary.udl    # must be EMPT
 git rebase --exec 'uv run scripts/check-error-payload-hygiene.py' main   # every commit green
 ```
 
-**Verified at `564a2ce`:** guard self-test **41/18/53/29/8/3** · real scan OK across four roots · placement guard 22/22 + OK (11 manifests) · `cargo build --release --workspace` clean · workspace **1846 tests** passing · bridge **334/334 in both feature configurations** · clippy with *and* without `--tests` clean · rustdoc clean · `.udl` diff empty.
+**Verified at `175e74c`:** guard self-test **41/18/54/32/8/3** · real scan OK across four roots · placement guard 22/22 + OK (11 manifests) · `cargo build --release --workspace` clean · workspace **1846 tests** passing · bridge **334/334 in both feature configurations** · clippy with *and* without `--tests` clean · rustdoc clean · `.udl` diff empty.
 
 **Not yet verified:** the full non-Rust sweep (conformance.py, the three other hygiene guards, desktop `pnpm test`, Gradle `:kit`) since Task 3 — Tasks 3 and 4 touched only Rust and Python, but run them before shipping. CI has never run on this branch (nothing pushed yet). `git rebase --exec` not yet run.
 
@@ -128,6 +131,6 @@ git rebase --exec 'uv run scripts/check-error-payload-hygiene.py' main   # every
 
 ## Closing inventory
 
-- **State on close:** branch open, **not pushed**, 21 commits, Tasks 1-4 of 8 done and reviewed. Net: `Detail` newtype over all 27 gated bridge fields with a private inner field; ten sanctioned constructors returning it; `test-support` hatch absent from every shipped build and CI-enforced; a new `check-test-support-placement.py` guard (22 controls); the payload guard's bridge root narrowed to `Detail`-only with alias-shadow and decoy-declaration denies; and `run_real_scan`'s own wiring pinned. **Allowlist went DOWN, 17 → 16 rows.**
-- **Next:** Task 5 (#498) · Task 6 (#504) · Task 7 (#503) · Task 8 (docs + identity harness) · whole-branch review with an old-vs-new differential · push + PR.
+- **State on close:** branch open, **not pushed**, 24 commits, Tasks 1-5 of 8 done and reviewed. Net: `Detail` newtype over all 27 gated bridge fields with a private inner field; ten sanctioned constructors returning it; `test-support` hatch absent from every shipped build and CI-enforced; a new `check-test-support-placement.py` guard (22 controls); the payload guard's bridge root narrowed to `Detail`-only with alias-shadow and decoy-declaration denies; and `run_real_scan`'s own wiring pinned. Allowlist 17 → 16 → **22 rows**: Task 3 *deleted* a whole section by closing `from_core_gated` structurally, then Task 5 added six reviewed Section 5 entries for the inherited `&'static str` forwarders (kept deliberately over a wider shape rule — see spec §6.1).
+- **Next:** Task 6 (#504) · Task 7 (#503, mind the Section 5 key) · Task 8 (docs + identity harness) · whole-branch review with an old-vs-new differential · push + PR.
 - **NEXT_SESSION.md:** symlink → `docs/handoffs/2026-08-09-500-detail-newtype-shipped.md`.
