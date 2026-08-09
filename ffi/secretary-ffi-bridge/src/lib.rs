@@ -144,6 +144,11 @@ pub use edit::{
     append_record, create_block, edit_record, move_record, rename_block, resurrect_record,
     tombstone_record, RecordContent,
 };
+// `Detail` is re-exported out of the `pub(crate) mod detail` so downstream
+// crates can NAME and READ one (`as_str` / `into_string` / `Display`) while
+// remaining unable to CONSTRUCT one — the private inner field is the whole
+// mechanism (#500).
+pub use error::detail::Detail;
 pub use error::{FfiUnlockError, FfiVaultError};
 pub use identity::UnlockedIdentity;
 pub use purge::{empty_trash, purge_block, EmptyTrashReport, PurgeReport};

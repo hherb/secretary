@@ -46,6 +46,15 @@ zeroize = "=1.8.2"
 # usage (a runtime dep is visible to test targets), so no separate dev entry.
 tempfile = "=3.27.0"
 
+[features]
+# Test-only escape hatch for `Detail::for_test` (#500). NOT default, and
+# enabled ONLY under a `[dev-dependencies]` line — see
+# `scripts/check-test-support-placement.sh`, which fails CI if it ever
+# appears on a normal dependency. Under resolver v2 a dev-dependency feature
+# is not unified into a non-test build, so `cargo build --release` genuinely
+# does not contain `for_test`.
+test-support = []
+
 [dev-dependencies]
 # Match the version pinned in core/Cargo.toml so we share the lock entry.
 rand_chacha = "0.3"

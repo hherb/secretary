@@ -18,6 +18,63 @@
 //! allowlist rather than trusting it to stay implicit across the crate.
 use std::path::Path;
 
+/// A diagnostic string built by a sanctioned constructor in THIS module.
+///
+/// The inner field is private, so a `Detail` is constructible only from
+/// inside `detail.rs`. Every gated payload position in the bridge is declared
+/// `Detail`, which makes `detail: format!(…)` — and every other way of
+/// producing a `String`, including the pattern-bind, build-then-mutate,
+/// function-parameter and dotless-reassignment shapes rule E3 cannot see — a
+/// TYPE ERROR at every call site in this crate and in every downstream crate.
+///
+/// # What this type does and does not claim
+///
+/// It claims exactly one thing: **this string came out of a reviewed
+/// constructor below.** It does NOT claim that a struct holding one carries
+/// no secrets. `FfiAddedRecipient` and `FfiWideningReport`
+/// (`crate::repair::preview`) deliberately carry decrypted plaintext in
+/// sibling fields — `display_name`, `block_name` — which stay `String` and
+/// must. A `Detail` beside a plaintext `String` is correct, not an
+/// inconsistency to "clean up".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Detail(String);
+
+impl Detail {
+    /// Borrow the rendered text. The only read path a wrapper crate needs
+    /// that does not consume the value.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume into the owned `String` the binding wrapper crates project
+    /// across the FFI (uniffi's `VaultError` must carry a UDL `string`;
+    /// PyO3 exceptions take a message). This is a PROJECTION, not a gate —
+    /// see the spec's §4.
+    pub fn into_string(self) -> String {
+        self.0
+    }
+
+    /// Test-only escape hatch, absent from every non-test build.
+    ///
+    /// Wrapper-crate unit tests construct `FfiVaultError` values directly and
+    /// cannot otherwise obtain a `Detail`. Gated behind a non-default Cargo
+    /// feature that only `[dev-dependencies]` enables, so under resolver v2
+    /// this function DOES NOT EXIST in `cargo build --release`. That is
+    /// enforced by `cargo build --release --workspace` in CI — verified by
+    /// execution that `cargo test`, `cargo clippy --tests` and the rustdoc
+    /// gate all compile a production call to it CLEAN.
+    #[cfg(feature = "test-support")]
+    pub fn for_test(s: &str) -> Detail {
+        Detail(s.to_string())
+    }
+}
+
+impl std::fmt::Display for Detail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Sealing module (#496). `Sealed` is nameable only from inside `detail.rs`,
 /// so an `impl GatedDetail for X` written in ANY other module of this crate
 /// fails to compile with "the trait bound `X: Sealed` is not satisfied".
@@ -282,5 +339,19 @@ mod tests {
             counted("unknown settings field ignored; field index", 3),
             "unknown settings field ignored; field index: 3"
         );
+    }
+
+    // `Detail`'s own behaviour. Every constructor still returns `String` at
+    // this point (Task 3 moves them), so `for_test` is the only way to build
+    // one — which is exactly the property under test: the type has no public
+    // construction path outside `detail.rs`.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn detail_renders_borrows_and_unwraps() {
+        let runtime = String::from("built at runtime");
+        let d = Detail::for_test(&runtime);
+        assert_eq!(d.as_str(), "built at runtime");
+        assert_eq!(format!("{d}"), "built at runtime");
+        assert_eq!(d.clone().into_string(), "built at runtime");
     }
 }

@@ -63,6 +63,14 @@ jobs:
       # probe")` before a single assertion runs.
       - name: 'install uv'
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
+      # A NON-TEST build. Every other gate in this repo compiles the crate
+      # WITH dev-dependency features unified, so a production call to the
+      # `test-support`-gated `Detail::for_test` compiles clean through
+      # `cargo test`, `cargo clippy --tests` AND the rustdoc gate (verified by
+      # execution, #500). Only a non-test build catches it. Without this step
+      # the feature gate is decorative.
+      - name: cargo build --release --workspace
+        run: cargo build --release --workspace
       # Mirrors the documented local command in CLAUDE.md. The
       # differential-replay tests (which also shell out to `uv`) are behind an
       # opt-in Cargo feature and stay off here.
@@ -266,6 +274,10 @@ jobs:
         run: uv run scripts/check-error-payload-hygiene.py --self-test
       - name: 'check-error-payload-hygiene.py'
         run: uv run scripts/check-error-payload-hygiene.py
+      - name: 'check-test-support-placement.sh --self-test'
+        run: bash scripts/check-test-support-placement.sh --self-test
+      - name: 'check-test-support-placement.sh'
+        run: bash scripts/check-test-support-placement.sh
 
   android-host:
     name: android host (:vault-access:test)
