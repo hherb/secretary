@@ -340,21 +340,24 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   ten live sites depend on it — the `let rendered = format!("{err}")`
   assertions in `ffi/secretary-ffi-uniffi/src/errors/vault.rs` (9) and
   `errors/unlock.rs` (1). `WN3` is the only thing pinning it.
-- RULE E3's SANCTIONED-CONSTRUCTOR REGISTRY reads SIGNATURES as of #496,
-  but its two `&str` exceptions are review-only. Before #496 the registry
-  captured a constructor's NAME and nothing else, which made it
-  SELF-AUTHORISING: it derives its allowlist from the very file it
-  constrains, so `pub(crate) fn passthrough(x: &str) -> String` added to
-  any root's `detail.rs` sanctioned an arbitrary runtime string at every
-  call site, with the whole guard green (verified by execution; `BP49`
+- RULE E3's SANCTIONED-CONSTRUCTOR REGISTRY reads SIGNATURES as of #496.
+  Before #496 the registry captured a constructor's NAME and nothing else,
+  which made it SELF-AUTHORISING: it derives its allowlist from the very
+  file it constrains, so `pub(crate) fn passthrough(x: &str) -> String`
+  added to any root's `detail.rs` sanctioned an arbitrary runtime string at
+  every call site, with the whole guard green (verified by execution; `BP49`
   pins the fix). Every parameter type must now sit in `SAFE_PARAM_TYPES`.
-  The RESIDUAL: `STR_PARAM_CTOR_EXCEPTIONS` pins two ffi-py constructors
-  (`fingerprint_mismatch`, `uuid_prefixed`) that legitimately take `&str`
-  because they only COMBINE already-gated bridge values. That is a
-  point-in-time review claim of exactly the kind allowlist Section 3
-  holds — a third `&str` constructor fails the guard until someone edits
-  that set, which is the review checkpoint, but nothing verifies what the
-  two existing ones are actually passed.
+  ITS TWO `&str` EXCEPTIONS ARE CLOSED, not a residual any more (#504,
+  closed the same way SHAPE 5 below was). `STR_PARAM_CTOR_EXCEPTIONS` used
+  to pin two ffi-py constructors (`fingerprint_mismatch`, `uuid_prefixed`)
+  that legitimately took `&str` because they only COMBINE already-gated
+  bridge values — a point-in-time review claim of exactly the kind
+  allowlist Section 3 holds, verified by reading the two constructors but
+  not enforced: nothing checked what a given call site actually passed
+  there. Both now take `&Detail` instead, so `STR_PARAM_CTOR_EXCEPTIONS` is
+  EMPTY and a future `&str`-taking constructor fails this guard until
+  someone deliberately re-populates the set — the review checkpoint the
+  bare-name registry never had.
   `Detail` joined `SAFE_PARAM_TYPES` in #500 and is the one member that is
   NOT a residual of this kind: its inner field is private to the bridge's
   `error/detail.rs`, so the type system — not a review claim — establishes

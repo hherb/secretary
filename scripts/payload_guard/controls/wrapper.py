@@ -62,6 +62,20 @@ pub(crate) fn launder(d: Detail) -> String {
 }
 '''
 
+# The BY-REFERENCE twin of the fixture above (#504). `&Detail` joined
+# `SAFE_PARAM_TYPES` for ffi-py's `fingerprint_mismatch`/`uuid_prefixed`,
+# and `_ctor_params_are_safe`'s decoy withdrawal originally subtracted only
+# `{"Detail"}` from `allowed` — never `"&Detail"` — so a decoy declared
+# beside a BY-REFERENCE constructor sanctioned it while the by-value form
+# (WP8) correctly denied (verified by execution before the fix landed).
+SELF_TEST_WRAPPER_DETAIL_SRC_WITH_REF_DECOY = '''
+pub(crate) struct Detail(pub String);
+
+pub(crate) fn launder(d: &Detail) -> String {
+    d.0.clone()
+}
+'''
+
 WRAPPER_POSITIVE_CONTROLS: list[tuple] = [
     (
         "WP1 a field access whose last segment is NOT the gated field's own "
@@ -155,6 +169,20 @@ WRAPPER_POSITIVE_CONTROLS: list[tuple] = [
         ''' fn f(x: String) -> E { E::V { detail: detail::launder(Detail(x)) } } ''',
         {"rule": "E3", "field": "detail"},
         {"detail_src": SELF_TEST_WRAPPER_DETAIL_SRC_WITH_DECOY},
+    ),
+    (
+        "WP9 #504: the BY-REFERENCE twin of WP8. Adding `&Detail` to "
+        "SAFE_PARAM_TYPES (for ffi-py's fingerprint_mismatch/uuid_prefixed) "
+        "must not admit a wrapper decoy `&Detail` any more than the by-value "
+        "form does. `_ctor_params_are_safe`'s decoy withdrawal subtracted "
+        "only `{\"Detail\"}` from `allowed`, leaving `&Detail` sanctioned for "
+        "a locally-declared decoy beside a by-reference constructor "
+        "(verified by execution before the fix). Setting "
+        "`owns_detail_type=True` on a wrapper root must make this stop "
+        "firing, same as WP8",
+        ''' fn f(x: String) -> E { E::V { detail: detail::launder(&Detail(x)) } } ''',
+        {"rule": "E3", "field": "detail"},
+        {"detail_src": SELF_TEST_WRAPPER_DETAIL_SRC_WITH_REF_DECOY},
     ),
 ]
 

@@ -150,8 +150,8 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
             expected_fingerprint_hex,
             got_fingerprint_hex,
         } => VaultNotAuthor::new_err(crate::detail::fingerprint_mismatch(
-            expected_fingerprint_hex.as_str(),
-            got_fingerprint_hex.as_str(),
+            &expected_fingerprint_hex,
+            &got_fingerprint_hex,
         )),
         FfiVaultError::RecipientAlreadyPresent => {
             VaultRecipientAlreadyPresent::new_err(e.to_string())
@@ -216,10 +216,7 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::RepairRejected {
             block_uuid_hex,
             detail,
-        } => VaultRepairRejected::new_err(crate::detail::uuid_prefixed(
-            block_uuid_hex.as_str(),
-            detail.as_str(),
-        )),
+        } => VaultRepairRejected::new_err(crate::detail::uuid_prefixed(&block_uuid_hex, &detail)),
     }
 }
 

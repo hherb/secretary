@@ -24,20 +24,21 @@
 //! do not police call sites, make the unsafe call unrepresentable and
 //! review the one file that defines what safe means.
 //!
-//! Every constructor below takes `&'static str` and integers only, WITH ONE
-//! DELIBERATE EXCEPTION: [`fingerprint_mismatch`] and [`uuid_prefixed`] each
-//! take `&str`, because their inputs are not authored here — they are
-//! already bridge-owned `String`s this crate only COMBINES into one
-//! message, never authoring new runtime content into either. The PROVENANCE
-//! differs per parameter, though, and is NOT uniformly "E3-gated" — each
-//! constructor's own doc comment states exactly what backs its inputs
-//! (review finding, #486 task-11 follow-up: an earlier version of this
-//! paragraph claimed both constructors' inputs are "gated by rules E2/E3 at
-//! their construction site in the bridge crate," which is accurate for
-//! `fingerprint_mismatch` but not for `uuid_prefixed`'s `detail_part` — see
-//! there). Every other constructor's inputs are authored by THIS crate (a
-//! field name, a byte-length count, a bounds value), so they stay
-//! `&'static str`/integer-only, holding the line
+//! Every constructor below takes `&'static str`, an integer, or `&Detail`
+//! (#500/#504) — never a bare runtime `&str`. [`fingerprint_mismatch`] and
+//! [`uuid_prefixed`] are the two that take `&Detail`: their inputs are not
+//! authored here, they are already bridge-owned values this crate only
+//! COMBINES into one message, never authoring new runtime content into
+//! either. Before #504 both took `&str` and were admitted only by a
+//! review-only, point-in-time claim pinned by name in
+//! `STR_PARAM_CTOR_EXCEPTIONS` (`scripts/payload_guard/rules/e3.py`) —
+//! nothing verified what a given call site actually passed there. Taking
+//! `&Detail` converts that claim into a compile-time fact: `Detail`'s inner
+//! field is private to the bridge's own `error/detail.rs`, so a value of
+//! that type can only have come from a sanctioned constructor there, and
+//! the exception set is now empty. Every other constructor's inputs are
+//! authored by THIS crate (a field name, a byte-length count, a bounds
+//! value), so they stay `&'static str`/integer-only, holding the line
 //! `ffi/secretary-ffi-uniffi/src/detail.rs` set in task 10.
 //!
 //! Guard rule E5 enforces that this module is the only source of these
@@ -74,11 +75,14 @@ pub(crate) fn range(context: &'static str, min: u64, max: u64) -> String {
     format!("{context}: [{min}, {max}]")
 }
 
-/// `expected=<a>, got=<b>` — both arguments are already-gated bridge fields
-/// (`FfiVaultError::NotAuthor`'s two fingerprint hexes, gated by rules
-/// E2/E3 in the bridge). This crate composes them; it does not author them.
-pub(crate) fn fingerprint_mismatch(expected_hex: &str, got_hex: &str) -> String {
-    format!("expected={expected_hex}, got={got_hex}")
+/// `expected=<a>, got=<b>` — both arguments are `&Detail` (#504):
+/// `FfiVaultError::NotAuthor`'s two fingerprint hexes. A `Detail` is
+/// constructible only inside the bridge's own `error/detail.rs`, so
+/// provenance is gated by TYPE, not by a review claim about what this
+/// crate happens to pass. This crate composes the two values; it does not
+/// author them.
+pub(crate) fn fingerprint_mismatch(expected: &Detail, got: &Detail) -> String {
+    format!("expected={}, got={}", expected.as_str(), got.as_str())
 }
 
 /// `<uuid_part>: <detail_part>` — the collapsed `RepairRejected` message
@@ -87,37 +91,18 @@ pub(crate) fn fingerprint_mismatch(expected_hex: &str, got_hex: &str) -> String 
 /// separate). Python callers split on the first `": "`; a hyphenated UUID
 /// has no embedded `": "`, so that split is exact.
 ///
-/// PROVENANCE — the two parameters are NOT backed the same way, and an
-/// earlier version of this comment overclaimed that they were (review
-/// finding, #486 task-11 follow-up):
-///
-/// - `uuid_part` arrives as `FfiVaultError::RepairRejected.block_uuid_hex`,
-///   built at `ffi/secretary-ffi-bridge/src/error/vault/mod.rs` via
-///   `detail::uuid_hyphenated(&block_uuid)` — a sanctioned-constructor call
-///   rule E3 genuinely recognises and re-verifies at every scan.
-/// - `detail_part` arrives as that SAME variant's `detail` field, built at
-///   the SAME match arm via bare field-init SHORTHAND — `detail,` from a
-///   `VE::RepairRejected { block_uuid, detail } => FfiVaultError::
-///   RepairRejected { block_uuid_hex: detail::uuid_hyphenated(&block_uuid),
-///   detail, }` pattern binding. Shorthand produces no `:` token, no `let`,
-///   and no `.field =` — all three of rule E3's candidate positions miss
-///   it. This is the legitimate re-wrap shape the design deliberately
-///   preserves (E3's arm 4 trusts a same-named re-wrap BY NAME, not by
-///   re-deriving its provenance), not a defect — but it means E3 does NOT
-///   independently re-verify THIS construction site. `detail_part`'s
-///   safety instead rests on rule E2 (pins `RepairRejected.detail` to
-///   `String` under a `GATED_FIELD_NAMES` name — a type-level constraint)
-///   plus `core`'s own rule E1, which reviewed and allowlisted
-///   `VaultError::RepairRejected`'s `#[error(...)]` message at
-///   `core/src/vault/mod.rs` ("producers pass literals plus format!({e})
-///   over other core-gated, already-scanned errors") — not on E3
-///   re-verifying this specific site.
-///
-/// Both inputs are still already bridge-owned, already-reviewed `String`s
-/// either way; this crate composes them into one message and authors no
-/// new runtime content into either.
-pub(crate) fn uuid_prefixed(uuid_part: &str, detail_part: &str) -> String {
-    format!("{uuid_part}: {detail_part}")
+/// Both parameters are `&Detail` (#504). Before #504 this comment had to
+/// trace each parameter's provenance by hand — `uuid_part` via a
+/// sanctioned E3 constructor call, `detail_part` via rule E2 plus core's
+/// own E1 rather than E3, because rule E3 cannot see a bare field-init
+/// shorthand re-wrap — since both arrived as unadorned `&str` and nothing
+/// but that hand trace backed the claim. `Detail`'s inner field is private
+/// to the bridge's own `error/detail.rs`, so a value of that type can only
+/// have come from a sanctioned constructor there regardless of which
+/// syntactic shape produced it; provenance is now a compile-time fact, not
+/// a hand-traced one.
+pub(crate) fn uuid_prefixed(uuid_part: &Detail, detail_part: &Detail) -> String {
+    format!("{}: {}", uuid_part.as_str(), detail_part.as_str())
 }
 
 /// Project a bridge-gated [`Detail`] into the owned `String` this crate's
@@ -170,7 +155,7 @@ mod tests {
     #[test]
     fn fingerprint_mismatch_renders_expected_then_got() {
         assert_eq!(
-            fingerprint_mismatch("aabb", "ccdd"),
+            fingerprint_mismatch(&Detail::for_test("aabb"), &Detail::for_test("ccdd")),
             "expected=aabb, got=ccdd"
         );
     }
@@ -180,15 +165,18 @@ mod tests {
         // A regression this constructor exists to prevent: swapping the two
         // hexes must produce a DIFFERENT string, not silently collapse two
         // distinct mismatches to the same message.
-        let a = fingerprint_mismatch("aabb", "ccdd");
-        let b = fingerprint_mismatch("ccdd", "aabb");
+        let a = fingerprint_mismatch(&Detail::for_test("aabb"), &Detail::for_test("ccdd"));
+        let b = fingerprint_mismatch(&Detail::for_test("ccdd"), &Detail::for_test("aabb"));
         assert_ne!(a, b);
     }
 
     #[test]
     fn uuid_prefixed_renders_uuid_then_colon_space_detail() {
         assert_eq!(
-            uuid_prefixed("11223344-5566-7788-99aa-bbccddeeff00", "stale consent"),
+            uuid_prefixed(
+                &Detail::for_test("11223344-5566-7788-99aa-bbccddeeff00"),
+                &Detail::for_test("stale consent")
+            ),
             "11223344-5566-7788-99aa-bbccddeeff00: stale consent"
         );
     }
@@ -199,14 +187,34 @@ mod tests {
         // hyphenated UUID never embeds ": ", so splitting on the FIRST
         // occurrence recovers exactly the two original fields.
         let rendered = uuid_prefixed(
-            "11223344-5566-7788-99aa-bbccddeeff00",
-            "clock relation Concurrent: widening not approved",
+            &Detail::for_test("11223344-5566-7788-99aa-bbccddeeff00"),
+            &Detail::for_test("clock relation Concurrent: widening not approved"),
         );
         let (uuid_part, detail_part) = rendered.split_once(": ").expect("contains \": \"");
         assert_eq!(uuid_part, "11223344-5566-7788-99aa-bbccddeeff00");
         assert_eq!(
             detail_part,
             "clock relation Concurrent: widening not approved"
+        );
+    }
+
+    #[test]
+    fn fingerprint_mismatch_puts_expected_before_got() {
+        let expected = Detail::for_test("aaaa");
+        let got = Detail::for_test("bbbb");
+        let msg = fingerprint_mismatch(&expected, &got);
+        assert_eq!(msg, "expected=aaaa, got=bbbb");
+        assert!(msg.find("aaaa").unwrap() < msg.find("bbbb").unwrap());
+    }
+
+    #[test]
+    fn uuid_prefixed_puts_the_uuid_first() {
+        let uuid = Detail::for_test("11223344-5566-7788-99aa-bbccddeeff00");
+        let detail = Detail::for_test("residue rejected");
+        let msg = uuid_prefixed(&uuid, &detail);
+        assert_eq!(
+            msg,
+            "11223344-5566-7788-99aa-bbccddeeff00: residue rejected"
         );
     }
 }

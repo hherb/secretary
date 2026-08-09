@@ -95,6 +95,7 @@ SANCTIONED_CTOR_RE = re.compile(r"pub\(crate\)\s+fn\s+([a-z_][a-z0-9_]*)\s*\(")
 SAFE_PARAM_TYPES = frozenset(
     {
         "Detail",
+        "&Detail",
         "&secretary_core::vault::VaultError",
         "&'static str",
         "usize", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
@@ -105,20 +106,14 @@ SAFE_PARAM_TYPES = frozenset(
     }
 )
 
-# The two REVIEWED exceptions permitted a `&str` parameter, keyed on
-# constructor name (#496).
-#
-# Both live in `ffi/secretary-ffi-py/src/detail.rs` and both only COMBINE
-# values the bridge already owns and rules E2/E1 already gate — they author
-# no new runtime content. Their own doc comments state the per-parameter
-# provenance, including the one parameter (`uuid_prefixed`'s `detail_part`)
-# whose backing is E2 + core E1 rather than E3.
-#
-# This is a point-in-time review claim the guard cannot verify, deliberately
-# spelled as a SHORT pinned list rather than a blanket `&str` acceptance: a
-# THIRD `&str`-taking constructor fails this guard until someone edits this
-# set, which is the review checkpoint the bare-name registry never had.
-STR_PARAM_CTOR_EXCEPTIONS = frozenset({"fingerprint_mismatch", "uuid_prefixed"})
+# #504: EMPTY. Both entries (`fingerprint_mismatch`, `uuid_prefixed`) took
+# `&str` and were pinned here as a point-in-time review claim the guard could
+# not verify. They now take `&Detail`, so their inputs are gated by TYPE — a
+# `Detail` is constructible only inside the bridge's own `detail.rs`. Any
+# `&str`-taking constructor added to a `detail.rs` from here on fails the
+# guard until someone deliberately re-populates this set, which is the review
+# checkpoint the bare-name registry never had.
+STR_PARAM_CTOR_EXCEPTIONS: frozenset[str] = frozenset()
 
 
 # A LOCAL declaration of a type called `Detail` (#500 fix round 1).
@@ -160,14 +155,19 @@ def _ctor_params_are_safe(
     name: str, params_text: str, *, detail_param_ok: bool = True
 ) -> bool:
     """Every parameter of a candidate sanctioned constructor must carry a
-    type from `SAFE_PARAM_TYPES` (or be one of the two reviewed `&str`
-    exceptions). An unparseable parameter is NOT safe — default-deny.
+    type from `SAFE_PARAM_TYPES` (or be one of the reviewed `&str`
+    exceptions named in `STR_PARAM_CTOR_EXCEPTIONS` — currently EMPTY, see
+    there, #504). An unparseable parameter is NOT safe — default-deny.
 
-    `detail_param_ok=False` withdraws the `Detail` spelling — see
-    `LOCAL_DETAIL_TYPE_RE`."""
+    `detail_param_ok=False` withdraws BOTH the by-value `Detail` spelling
+    and the by-reference `&Detail` spelling (#504 fix: the original
+    withdrawal subtracted only `{"Detail"}`, so a wrapper root's decoy
+    `struct Detail` beside a BY-REFERENCE constructor sanctioned it while
+    the by-value form correctly denied — verified by execution, pinned by
+    `WP9`) — see `LOCAL_DETAIL_TYPE_RE`."""
     allowed = SAFE_PARAM_TYPES | ({"&str"} if name in STR_PARAM_CTOR_EXCEPTIONS else set())
     if not detail_param_ok:
-        allowed = allowed - {"Detail"}
+        allowed = allowed - {"Detail", "&Detail"}
     inner = params_text.strip()
     if inner.startswith("(") and inner.endswith(")"):
         inner = inner[1:-1]
@@ -250,8 +250,9 @@ def sanctioned_constructor_names(
     registry was self-authorising — it derived its allowlist from the very
     file it constrains and read only the name, so one `pub(crate) fn
     passthrough(anything: &str) -> String` added to `detail.rs` sanctioned an
-    arbitrary runtime string at every call site. The two reviewed `&str`
-    exceptions are pinned by name in `STR_PARAM_CTOR_EXCEPTIONS`.
+    arbitrary runtime string at every call site. Any reviewed `&str`
+    exception is pinned by name in `STR_PARAM_CTOR_EXCEPTIONS`, currently
+    EMPTY (#504) — see there for why.
 
     `#[cfg(test)]`-gated declarations are excluded, like every other
     discovery walk in this file. This one was missed on the first pass, and
