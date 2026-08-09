@@ -336,14 +336,43 @@ Every sanctioned constructor takes its hint in a `&'static str` parameter
 data in safe stable Rust, passes `#![forbid(unsafe_code)]`, and scans clean.
 
 E3 gains a requirement that every hint-position argument at a sanctioned call
-site be a **string literal**. #498's census reports the domain as entirely
-literal today — 26 distinct context literals across 112 bridge call sites, 14
-across the wrappers, with the only non-literal argument anywhere being
-`detail.rs`'s own internal re-forward — which would make this
-zero-false-positive on merge. That census is #498's, taken at `3775ef5`; it is
-**re-run as the first step of the task that implements this rule**, and if it
-no longer holds, the rule lands with the true count rather than the expected
-one.
+site be a **string literal**. Hint positions are derived from each
+constructor's own signature (its `&'static str` parameters), not from a
+hand-maintained name list.
+
+**The census was re-run at implementation time, and #498's was wrong by five.**
+#498 reported the domain as entirely literal apart from `detail.rs`'s own
+internal re-forward. There are **six** non-literal hint arguments: that one,
+plus five in `ffi/secretary-ffi-uniffi/src/namespace/mod.rs` —
+`uuid_from_vec`, `array32_from_vec`, `uuid_from_vec_at`,
+`array32_from_vec_at`, `uuid_from_vec_nested_at` — each forwarding its **own**
+`&'static str` parameter one hop. `git show 3775ef5:` confirms all five
+predate this branch, so it is an inherited undercount, not something this work
+introduced. All 54 call sites across the six enclosing functions were read and
+pass a literal.
+
+They are recorded as six individually-justified allowlist entries (Section 5),
+**not** waved through by widening the rule. A "shape rule" accepting any
+function that forwards its own `&'static str` parameter was considered and
+rejected: it is not enforcement but a strictly **wider acceptance** — nothing
+would check that function's callers, so it reopens #498's attack one frame up,
+permanently and unwatched, and it deletes a real checkpoint (a new *direct*
+forwarder currently fails CI). It would also need an enclosing-item concept
+this offset-and-regex guard has nowhere else — more parsing than anything in
+the package, to buy a weaker rule.
+
+Two evasions of the Section 5 entries scan clean today and are recorded in the
+allowlist header rather than left implicit: a **caller-side leak**
+(`uuid_from_vec(bytes, e.to_string().leak())`, which has no `format!` so E5
+also has nothing to say) and a **chain** (a new pass-through wrapper creates no
+gated-field construction site, so it produces no finding at all). The six
+entries are placeholders that #498's structural option deletes.
+
+**Honest limit:** this watches the door, it does not remove it. Unlike the
+newtype, a text rule cannot make a leaked `&'static str` unrepresentable.
+#498's structural option — a closed `enum Context`, or for the five uniffi
+cases a closed `enum ArgField` in that crate's own `detail.rs` — remains the
+only fix that would, and **#498 stays open** recording that.
 
 **Honest limit:** this watches the door, it does not remove it. Unlike the
 newtype, a text rule cannot make a leaked `&'static str` unrepresentable.
