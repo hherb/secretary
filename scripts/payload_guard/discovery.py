@@ -91,6 +91,20 @@ LOCAL_DETAIL_TYPE_RE = re.compile(
 # withdrawal (`rules/e3.py`'s `gated_detail_param_ok`) cannot perturb E2's
 # behaviour, and vice versa — the same single-responsibility split the two
 # rules already keep for `LOCAL_DETAIL_TYPE_RE` itself before this addition.
+#
+# RESIDUAL — IDENTICAL to `LOCAL_DETAIL_TYPE_RE`'s, restated here rather than
+# left to be inferred from the sibling (#500 Task 8). This matcher sees a
+# local DECLARATION of the trait and nothing else, so an IMPORT evades it in
+# both spellings: `use crate::zz_evil::GatedDetail;` written inside a wrapper
+# crate's own `detail.rs`, with the decoy trait declared in a SIBLING FILE of
+# that same crate, leaves `pub(crate) fn launder(d: &impl GatedDetail) ->
+# String` in the sanctioned set and the whole scan green — verified by
+# execution, zero findings. (The bridge is unaffected: its `GatedDetail` is
+# `pub(crate)` and SEALED, so no other crate can implement the REAL trait;
+# what the decoy exploits is that `SAFE_PARAM_TYPES` matches the SPELLING.)
+# That is parity with a documented blind spot rather than a regression, but
+# an unstated limit on a brand-new security control is how the next reader
+# stops checking, so it is written down.
 LOCAL_GATED_DETAIL_TRAIT_RE = re.compile(r"\btrait\s+GatedDetail\b")
 
 # A `mod name {` block header, anchored at the END of the text preceding a
@@ -1024,6 +1038,25 @@ def discover_local_detail_decoys(
        the one shape here that would surprise a reader, since the claim
        above is specifically about NAMES, and rustc agrees this name
        matches.
+    5. **AN IMPORT, in BOTH its spellings** — the renaming
+       `use std::string::String as Detail;` and the plain
+       `use some_other_crate::Detail;`. This is the residual that BREAKS
+       the pattern of 1-4, and it is stated last because it is the only
+       one where rule E3's construction-site gate does NOT independently
+       deny: verified by execution, `use std::string::String as Detail;`
+       in a bridge file, a new `#[error("{detail}")] Boom { detail:
+       Detail }`, and an E3 arm-4 parameter re-wrap
+       (`fn f(detail: Detail) -> E { E::Boom { detail } }`) together
+       produce ZERO findings — arm 4 accepts the same-name re-wrap
+       precisely because it trusts the DECLARED type, which here is a
+       `String` wearing the newtype's name. An import DECLARES nothing in
+       this root, so no textual matcher sited on declarations can see it;
+       closing it needs real name resolution. This is the same aliasing
+       blind spot rule E4 records for `GatedDetail`, and it is the reason
+       the entry point's "THE #500 NEWTYPE" section states the compiler
+       guarantee as PER DECLARATION rather than per root: the 27 fields
+       that ARE the bridge's real `Detail` cannot hold a `String`; a
+       28th, newly written against an aliased import, can.
     """
     for label, raw in sources:
         if exempt_label is not None and label.replace("\\", "/") == exempt_label:

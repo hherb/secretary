@@ -25,11 +25,12 @@
 //! review the one file that defines what safe means.
 //!
 //! Every constructor below takes `&'static str`, an integer, `Detail`, or
-//! `&Detail` (#500/#504) — never a bare runtime `&str`. [`fingerprint_mismatch`] and
-//! [`uuid_prefixed`] are the two that take `&Detail`: their inputs are not
-//! authored here, they are already bridge-owned values this crate only
-//! COMBINES into one message, never authoring new runtime content into
-//! either. Before #504 both took `&str` and were admitted only by a
+//! `&Detail` (#500/#504) — never a bare runtime `&str`.
+//! [`fingerprint_mismatch`] and [`uuid_prefixed`] are the two that take
+//! `&Detail`: their inputs are not authored here, they are already
+//! bridge-owned values this crate only COMBINES into one message, never
+//! authoring new runtime content into either.
+//! Before #504 both took `&str` and were admitted only by a
 //! review-only, point-in-time claim pinned by name in
 //! `STR_PARAM_CTOR_EXCEPTIONS` (`scripts/payload_guard/rules/e3.py`) —
 //! nothing verified what a given call site actually passed there. Taking

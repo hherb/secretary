@@ -344,7 +344,7 @@ hand-maintained name list.
 #498 reported the domain as entirely literal apart from `detail.rs`'s own
 internal re-forward. There are **six** non-literal hint arguments: that one,
 plus five in `ffi/secretary-ffi-uniffi/src/namespace/mod.rs` —
-`uuid_from_vec`, `array32_from_vec`, `uuid_from_vec_at`,
+`uuid_from_vec`, `array32_from_vec_into`, `uuid_from_vec_at`,
 `array32_from_vec_at`, `uuid_from_vec_nested_at` — each forwarding its **own**
 `&'static str` parameter one hop. `git show 3775ef5:` confirms all five
 predate this branch, so it is an inherited undercount, not something this work
@@ -373,11 +373,6 @@ newtype, a text rule cannot make a leaked `&'static str` unrepresentable.
 #498's structural option — a closed `enum Context`, or for the five uniffi
 cases a closed `enum ArgField` in that crate's own `detail.rs` — remains the
 only fix that would, and **#498 stays open** recording that.
-
-**Honest limit:** this watches the door, it does not remove it. Unlike the
-newtype, a text rule cannot make a leaked `&'static str` unrepresentable.
-#498's structural option (a closed `enum Context`) remains the only fix that
-would, and #498 stays open recording that.
 
 ### 6.2 `roots.py` bookkeeping
 

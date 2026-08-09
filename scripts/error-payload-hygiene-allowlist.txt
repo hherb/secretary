@@ -27,11 +27,18 @@
 # provably data-free. `E2`/`E3` apply to the bridge AND the two binding
 # wrapper crates — their error types genuinely need prose, so instead of
 # denying by TYPE they are gated by DECLARATION and CONSTRUCTION SITE: `E2`
-# requires a `String` field to be declared under one of the pinned
-# GATED_FIELD_NAMES; `E3` requires the expression at a gated field's
-# construction site to be a literal, a `detail::*` constructor call, the
-# field's own name, or (wrapper roots only) a single-hop field access
-# ending in the gated name (`uuid_hex: a.uuid_hex`). `E4` requires every
+# requires a gated-prose field to be declared under one of the pinned
+# GATED_FIELD_NAMES **and** with the type spelling that root accepts
+# (`ScanRoot.gated_field_types`, PER-ROOT as of #500: the two WRAPPER roots
+# accept `String`, the BRIDGE accepts `Detail` ALONE — all 27 of its gated
+# fields are the newtype, and a new bridge error type cannot opt back out by
+# declaring the old `String` spelling); `E3` requires the expression at a
+# gated field's construction site to be a literal, a `detail::*` constructor
+# call, or the field's own name. A FIFTH E3 shape — a wrapper-only single-hop
+# field access ending in the gated name (`uuid_hex: a.uuid_hex`) — was
+# RETIRED in #497/#500: all four of its live sites moved onto
+# `detail::project(...)`, so `ScanRoot.allow_field_access` is now `False` on
+# every root and the shape denies everywhere (`WP7` pins that). `E4` requires every
 # `impl GatedDetail for X` to live in
 # ffi/secretary-ffi-bridge/src/error/detail.rs and name a type this guard
 # itself scans — BRIDGE-ONLY, since `GatedDetail` is `pub(crate)` there and
@@ -90,6 +97,32 @@
 # current producer staying well-behaved (something this guard structurally
 # cannot verify — see its LIMITS docstring: "it sees DECLARATIONS, not
 # construction sites") needs the most.
+#
+# THIS FILE IS NOT THE ONLY REGISTER OF REVIEWED EXCEPTIONS, and the other one
+# is now EMPTY — worth knowing before anyone re-populates it. `STR_PARAM_CTOR_
+# EXCEPTIONS` (scripts/payload_guard/rules/e3.py) names sanctioned `detail::*`
+# constructors permitted to take a bare `&str` despite `&str` not sitting in
+# `SAFE_PARAM_TYPES`. It used to pin two ffi-py constructors
+# (`fingerprint_mismatch`, `uuid_prefixed`) on a Section-3-class claim — "they
+# only COMBINE already-gated bridge values" — that nothing verified: the guard
+# reads the constructor's SIGNATURE, never what a given call site passes it.
+# #504 made both take `&Detail` instead, converting that claim into a
+# compile-time fact (a `Detail`'s inner field is private to the bridge's own
+# error/detail.rs, so the value can only have come from a sanctioned
+# constructor there), and the set is now `frozenset()`.
+#
+# ADDING A NAME BACK IS A HIGHER-WEIGHT DECISION THAN ANY ENTRY IN THIS FILE,
+# because its blast radius is not one keyed line. An allowlist row here exempts
+# ONE construction site, keyed on its exact collapsed text. A name in
+# `STR_PARAM_CTOR_EXCEPTIONS` re-admits an arbitrary runtime `&str` at EVERY
+# call site of that constructor, present and future, with no per-site key and
+# nothing to re-review when a caller is added. Prefer changing the
+# constructor's parameter to `&Detail` or `&'static str`; if that is genuinely
+# impossible, record the reason beside the set and name every current call
+# site there, on this file's Section 3 discipline. Until then the empty set IS
+# the checkpoint: a new `&str`-taking constructor fails the guard rather than
+# being silently sanctioned, which is what the pre-#496 bare-name registry
+# never did.
 
 # =============================================================================
 # SECTION 1 — ALREADY-DISCLOSED CONTENT

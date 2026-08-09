@@ -1,10 +1,45 @@
-"""Rule E3: every CONSTRUCTION SITE of a bridge error's gated field must
-build its value from a sanctioned source — the other half of rule E2's
-carve-out (a bridge error may carry a `String` under a `GATED_FIELD_NAMES`
-name instead of denying it by type; this rule gates what that field is
-actually set to). Moved out of the former single-file
+"""Rule E3: every CONSTRUCTION SITE of a bridge or wrapper error's gated
+field must build its value from a sanctioned source — the other half of rule
+E2's carve-out (such a type may carry prose under a `GATED_FIELD_NAMES` name
+instead of denying it by type; this rule gates what that field is actually
+set to). Moved out of the former single-file
 `scripts/check-error-payload-hygiene.py` in #486 (task 4). Read the entry
 point's module docstring first for the WHY and THE BRIDGE RULES.
+
+WHAT THIS RULE IS, PER ROOT (#500) — the two are NOT the same and flattening
+them is the specific overclaim this branch exists to avoid:
+
+* **Bridge (`ffi/secretary-ffi-bridge/src/**`) — DEFENCE IN DEPTH.** All 27
+  gated fields there are the `Detail` newtype (`error/detail.rs`), whose
+  private inner field makes a `String` fail to TYPECHECK in the position.
+  The compiler, not this rule, is the enforcement: it covers the four
+  laundering shapes the entry point's LIMITS enumerate as unwatched
+  (pattern-destructuring bind, build-then-mutate, function parameter,
+  dotless local reassignment) AND every shape nobody has enumerated,
+  because it constrains the TYPE rather than the syntax that reaches it.
+  E3 still earns its keep here: it produces a legible, allowlistable
+  FINDING with a file and line instead of a type error, it is what catches
+  a violation in a file that does not compile yet, and it is the only check
+  on the hint-literal requirement (#498) — which is about a constructor's
+  ARGUMENTS, a position the newtype says nothing about. The same
+  demotion-not-retirement E4 took when `GatedDetail` was sealed in #496.
+* **Wrapper roots (`ffi/secretary-ffi-py/src/**`, `ffi/secretary-ffi-uniffi/
+  src/**`) — STILL THE ENFORCEMENT, and the only one alongside E2/E5.**
+  Their own error types keep `detail: String`: uniffi's UDL must project a
+  `string`, PyO3 exceptions take a message, and making them `Detail` would
+  need a `custom_type!` conversion adding UDL surface for a type unwrapped
+  one line later (design §4). Every limit this rule records applies to them
+  at full strength. Their posture is UNCHANGED by #500, not improved — the
+  one `Detail::into_string()` each pass-through arm gained sits immediately
+  beside the wrapper's own construction site, so it is a PROJECTION, not a
+  gate.
+
+The bridge's guarantee is also per DECLARATION rather than per root: it
+covers the 27 fields that hold the real type. A NEW bridge error type
+declaring its gated field through a renaming import (`use
+std::string::String as Detail;`) compiles, and passes both E2 and this rule
+— verified by execution. See `payload_guard/discovery.py`'s
+`discover_local_detail_decoys` residual 5.
 """
 
 from __future__ import annotations
