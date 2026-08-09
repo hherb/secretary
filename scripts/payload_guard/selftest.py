@@ -264,6 +264,14 @@ _ROOTS_BY_LABEL = {r.label: r for r in SCAN_ROOTS}
 # `gated_field_types` as a mismatch even when it exactly matches the
 # reviewed value below (verified: `frozenset({"x"}) is frozenset({"x"})` is
 # `False` in CPython). Fixed to `!=`, which is correct for both.
+# SIBLING PIN: `_WRAPPER_AGREEMENT_FLAGS_REVIEWED` (below) pins WHICH fields
+# the two wrapper roots must AGREE on; this table pins WHAT each root's value
+# is. They overlap — this table's per-root key set is already exactly those
+# seven flags, so a set-equality pin here could have replaced that literal
+# with no new text — and they are deliberately kept separate anyway: they fail
+# INDEPENDENTLY, and every fail-open bug found on this branch was one registry
+# being silently narrowed while another still looked right. Editing either
+# without considering the other is the mistake to avoid.
 _EXPECTED_ROOT_FLAGS: dict[str, dict[str, object]] = {
     "core": {
         "owns_detail_type": False,
@@ -357,6 +365,12 @@ _WRAPPER_AGREEMENT_EXEMPT = frozenset({"label", "path", "detail_module_rel"})
 # `_EXPECTED_ROOT_FLAGS` duplicates `roots.py`'s values: the derivation is the
 # MECHANISM and this is the REVIEW, and a check that reads only the mechanism
 # cannot notice the mechanism being narrowed.
+#
+# SIBLING PIN: `_EXPECTED_ROOT_FLAGS` (above) pins each root's VALUE for these
+# same seven flags, and its key set is already exactly this tuple — so this
+# literal could be derived from it. It is not, on purpose: two pins that fail
+# independently catch a single narrowed registry, which is the shape of every
+# fail-open bug found on this branch. Edit one, check the other.
 _WRAPPER_AGREEMENT_FLAGS_REVIEWED: tuple[str, ...] = (
     "bridge_mode",
     "gated_field_types",
@@ -385,7 +399,8 @@ def _check_wrapper_roots_agree(
     ones — a control corpus that silently tolerated the two wrapper roots
     drifting apart on any policy field would be testing less than it claims
     to. The compared set is DERIVED (`_wrapper_agreement_flags`), not listed,
-    because the listed version fell behind twice. This surfaces that disagreement as a NORMAL harness failure
+    because the listed version fell behind twice. This surfaces that
+    disagreement as a NORMAL harness failure
     (review finding, task 9): the check used to be a bare `assert` inside
     `_wrapper_allow_field_access`, and `run_self_test` is not wrapped at its
     call site, so a real disagreement would have escaped as a raw Python
@@ -410,7 +425,15 @@ def _check_wrapper_roots_agree(
 
 
 def _perturb(value: object) -> object:
-    """A value guaranteed different from `value`, for the agreement probe."""
+    """A value guaranteed different from `value`, for the agreement probe.
+
+    Guaranteed different from the value it is GIVEN — which is ffi-py's — not
+    from ffi-uniffi's. So on a run where the two roots ALREADY disagree on a
+    bool, flipping ffi-py's makes them agree and this flag's probe reports a
+    spurious liveness failure beside the real agreement failure. Extra noise
+    on an already-failing run, never a missed one; not worth restructuring
+    the probe to avoid.
+    """
     if isinstance(value, bool):
         return not value
     if isinstance(value, frozenset):
@@ -544,7 +567,10 @@ def scan_bridge_control(
     `ScanRoot` (`_ROOTS_BY_LABEL["bridge"]`), not hardcoded — see the module-
     level comment above `_ROOTS_BY_LABEL` for why. It is `False` today, so
     every existing bridge control's behaviour is unchanged; `BP43` proves
-    shape 5 stays denied here even when a WRAPPER root grants it elsewhere.
+    shape 5 stays denied here. That used to read "even when a WRAPPER root
+    grants it elsewhere", which since #497/#500 describes a state that cannot
+    obtain — the flag is False on every root, and `WP7` pins the wrapper
+    denial.
 
     Rule E2's `gated_field_types` (#500) is read the same way, off the same
     `ScanRoot`: today `frozenset({"String", "Detail"})`, so a bridge control
@@ -619,7 +645,7 @@ def scan_wrapper_control(
 ) -> list[Finding]:
     """`scan_bridge_control`, but for a WRAPPER ROOT (#486): `bridge_mode=True`
     plus rules E2/E3, with rule E3's `allow_field_access` (shape 5) read off
-    the roots — OFF since #497/#500 —
+    the roots rather than hardcoded — it is OFF everywhere since #497/#500 —
     plus rule E5 (`format!` confinement, task 11) — and NO rule E4 at all.
 
     `gated_detail_impls` is `False` on both wrapper `ScanRoot`s

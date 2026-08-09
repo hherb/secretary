@@ -1,18 +1,23 @@
-"""Rule E3 shape 5's, and rule E5's, self-test control corpus (#486):
+"""The wrapper-root self-test control corpus (#486):
 `WRAPPER_POSITIVE_CONTROLS` / `WRAPPER_NEGATIVE_CONTROLS`, run through
 `payload_guard.selftest.scan_wrapper_control` — the wrapper-root rule set
-(`bridge_mode=True` plus E2/E3, E3's `allow_field_access` now OFF — see
-`WP7` — no E4; rule E5
-runs separately, over `path_label` + `raw` + the root's
-`detail_module_rel`, since it needs the WHOLE FILE TEXT rather than a single
-self-contained fixture string — see `WP4`/`WN2`/`WN3` below and
-`payload_guard.scan.run_real_scan`'s `format_confinement` wiring).
+(`bridge_mode=True` plus E2/E3, no E4; rule E5 runs separately, over
+`path_label` + `raw` + the root's `detail_module_rel`, since it needs the
+WHOLE FILE TEXT rather than a single self-contained fixture string — see
+`WP4`/`WN2`/`WN3` below and `payload_guard.scan.run_real_scan`'s
+`format_confinement` wiring).
+
+Written for rule E3's shape 5, which #497/#500 RETIRED on every root once
+its four DTO pass-through sites moved onto `detail::project(...)`;
+`allow_field_access` is False everywhere now and `WP7` pins the denial. E5
+is the rule the wrapper roots take and the bridge does not.
 
 Mirrors `payload_guard.controls.bridge`'s self-contained-fixture design.
-The BRIDGE-scoping half of shape 5's story is NOT here: it is a BRIDGE
-control (`BP43` in `payload_guard.controls.bridge`), because it asserts what
-the bridge root does, not what a wrapper root does. Read the entry point's
-module docstring first for the WHY.
+`BP43` lives in the BRIDGE corpus rather than here because it asserts what
+the bridge root does, not what a wrapper root does — it used to be the
+bridge half of shape 5's per-root SCOPING story, and with the flag off
+everywhere it and `WP7` now simply pin the same expression denying on both
+sides. Read the entry point's module docstring first for the WHY.
 
 A fixture asserting a construct MUST DENY (produce a finding) is a
 POSITIVE control here, matching `WP1`'s own precedent ("... is not a

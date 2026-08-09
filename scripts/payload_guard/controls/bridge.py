@@ -431,10 +431,13 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         {"rule": "E3", "field": "<io::Error payload>"},
     ),
     (
-        "BP43 #486: E3 shape 5 (field access) is scoped to the WRAPPER roots "
-        "and must still DENY in the bridge, where nothing needs it. A new "
-        "acceptance granted where it is not required is a laundering door "
-        "for free",
+        "BP43 #486: a single-hop field access into a gated field DENIES in "
+        "the bridge. Its original reason was that E3 shape 5 was scoped to "
+        "the WRAPPER roots and the bridge must not inherit an acceptance "
+        "nothing there needed; #497/#500 retired shape 5 on every root, so "
+        "there is no wrapper-side grant left to contrast with and the "
+        "control now simply pins the bridge denial. `WP7` pins the wrapper "
+        "side of the same expression",
         ''' fn f(a: A) -> E { E::V { uuid_hex: a.uuid_hex } } ''',
         {"rule": "E3", "field": "uuid_hex"},
     ),

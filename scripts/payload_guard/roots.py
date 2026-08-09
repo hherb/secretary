@@ -2,8 +2,11 @@
 
 Before #486 the roots were two module-level constants and `run_real_scan`
 open-coded which rules applied to each. Adding the two binding wrapper crates
-made that untenable — they take E1/E2/E3 and the NEW rule E5, but NOT E4, and
-they take an E3 acceptance (shape 5) the bridge deliberately does not get.
+made that untenable — they take E1/E2/E3 and the NEW rule E5, but NOT E4.
+They also took an E3 acceptance (shape 5) the bridge was deliberately denied;
+that one was RETIRED in #497/#500 once all four of its sites moved onto a
+sanctioned constructor, so `allow_field_access` is now False everywhere — see
+the field's own doc below, which this paragraph used to contradict.
 Spelling each root's rule set out as data keeps "which rules apply here" a
 thing a reviewer reads rather than infers.
 """

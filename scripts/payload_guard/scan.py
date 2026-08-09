@@ -1,8 +1,10 @@
 """The real scan driver: `run_real_scan` walks every `ScanRoot` in
 `payload_guard.roots.SCAN_ROOTS` and runs whichever rules that root's data
 says apply (bridge_mode E1 plus E2/E3/E4 on the bridge root; E1/E2/E3 plus
-E3 shape 5 on the two wrapper roots) against every `.rs` file, honouring the
-allowlist. Moved out of the former single-file
+E5 on the two wrapper roots) against every `.rs` file, honouring the
+allowlist. The wrapper roots also carried E3's shape-5 acceptance until
+#497/#500 retired it; `allow_field_access` is False on every root now.
+Moved out of the former single-file
 `scripts/check-error-payload-hygiene.py` in #486 (task 4); rewritten in
 #486 (task 9) to loop over `SCAN_ROOTS` instead of open-coding two hand-written
 passes — see `payload_guard.roots` for why.
