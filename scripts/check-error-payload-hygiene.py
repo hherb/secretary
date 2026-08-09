@@ -359,6 +359,16 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   holds — a third `&str` constructor fails the guard until someone edits
   that set, which is the review checkpoint, but nothing verifies what the
   two existing ones are actually passed.
+  `Detail` joined `SAFE_PARAM_TYPES` in #500 and is the one member that is
+  NOT a residual of this kind: its inner field is private to the bridge's
+  `error/detail.rs`, so the type system — not a review claim — establishes
+  that a value in the position came out of a sanctioned constructor. It is
+  what admits each wrapper crate's `pub(crate) fn project(d: Detail) ->
+  String`, the single named home for the unwrap uniffi's UDL `string` and
+  PyO3's exception messages require. `WN4` pins the acceptance (removing
+  `Detail` from the set fires it AND reds the real scan at 27 sites); `WP6`
+  pins that the widening did NOT also legalise the inline spelling
+  `detail: detail.into_string()`, which matches no accepted shape.
 - RULE E3's SHAPE 5 accepts an ARBITRARY single-hop receiver (`<anything>.
   detail`) on the wrapper roots, not just a bridge DTO. The justification
   recorded for granting it — "the source is a bridge DTO whose fields

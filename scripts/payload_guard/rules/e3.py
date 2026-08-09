@@ -49,8 +49,27 @@ SANCTIONED_CTOR_RE = re.compile(r"pub\(crate\)\s+fn\s+([a-z_][a-z0-9_]*)\s*\(")
 # A constructor with ANY parameter outside this set is DROPPED from the
 # sanctioned set, so its call sites deny — the same fail-closed direction a
 # missing `detail.rs` takes.
+# `Detail` (#500) is the STRONGEST entry in this set, not a relaxation of it.
+# Every other member is a claim about a SHAPE that happens not to carry runtime
+# content (`&'static str` is a compile-time string — though `String::leak` can
+# mint one, which is why the entry point's LIMITS calls it "discourages, not
+# forbids"); `Detail` is a claim the TYPE SYSTEM enforces. Its inner field is
+# private to `ffi/secretary-ffi-bridge/src/error/detail.rs`, so a value of this
+# type can only have come out of a sanctioned constructor in that one reviewed
+# file — the same property rules E2/E3 exist to establish textually, here
+# established by construction.
+#
+# It is what lets each WRAPPER crate's `detail.rs` declare the projection
+# `pub(crate) fn project(d: Detail) -> String` that unwraps a bridge payload
+# into the `String` uniffi's UDL and PyO3's exceptions require. Without it that
+# constructor is dropped from the sanctioned set and all ~27 wrapper projection
+# arms deny — while the alternative spelling (`detail: detail.into_string()`
+# inline) denies too, being neither shape 4 nor shape 5. Routing the unwrap
+# through the crate's own sanctioned module is the same sink-pinning move E5
+# makes for `format!`.
 SAFE_PARAM_TYPES = frozenset(
     {
+        "Detail",
         "&'static str",
         "usize", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
         "&[u8; 16]", "&[u8; 32]",

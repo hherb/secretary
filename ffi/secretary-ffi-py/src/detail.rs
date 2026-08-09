@@ -48,6 +48,8 @@
 //! file, only by adding an unreviewed `format!` call site directly, which
 //! is exactly what this rule exists to catch.
 
+use secretary_ffi_bridge::Detail;
+
 /// `<field> must be <expected> bytes, got <got>`.
 pub(crate) fn arg_len(field: &'static str, expected: usize, got: usize) -> String {
     format!("{field} must be {expected} bytes, got {got}")
@@ -116,6 +118,25 @@ pub(crate) fn fingerprint_mismatch(expected_hex: &str, got_hex: &str) -> String 
 /// new runtime content into either.
 pub(crate) fn uuid_prefixed(uuid_part: &str, detail_part: &str) -> String {
     format!("{uuid_part}: {detail_part}")
+}
+
+/// Project a bridge-gated [`Detail`] into the owned `String` this crate's
+/// error surface requires (#500).
+///
+/// The bridge declares every gated payload field as `Detail`, whose private
+/// inner field means the value can only have come out of a sanctioned
+/// constructor in `ffi/secretary-ffi-bridge/src/error/detail.rs`. PyO3 exceptions take a message `String`, so the newtype cannot cross this
+/// seam intact.
+///
+/// This is a PROJECTION, not a gate: it re-derives nothing and vouches for
+/// nothing. It exists so the unwrap has ONE named home per wrapper crate
+/// rather than 2 inline `.into_string()` call sites — the same reason rule
+/// E5 confines `format!` to this file. Guard rule E3 accepts a call to it
+/// because `Detail` sits in `SAFE_PARAM_TYPES`; the inline spelling
+/// (`detail: detail.into_string()`) matches none of E3's accepted shapes and
+/// denies.
+pub(crate) fn project(d: Detail) -> String {
+    d.into_string()
 }
 
 #[cfg(test)]

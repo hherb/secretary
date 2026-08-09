@@ -9,6 +9,7 @@ use secretary_core::crypto::secret::{SecretBytes, Sensitive};
 use secretary_core::vault::{manifest::is_rollback, OpenVault, Unlocker, VaultError};
 use zeroize::Zeroize as _;
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
 
@@ -75,7 +76,7 @@ pub fn open_vault_with_recovery(
 ) -> Result<OpenVaultOutput, FfiVaultError> {
     let phrase =
         std::str::from_utf8(mnemonic_bytes).map_err(|_| FfiVaultError::InvalidMnemonic {
-            detail: "phrase contained invalid UTF-8".to_string(),
+            detail: detail::literal("phrase contained invalid UTF-8"),
         })?;
     let core_out = secretary_core::vault::open_vault(folder, Unlocker::Recovery(phrase), None)?;
     enforce_rollback_resistance(&core_out)?;

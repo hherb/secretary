@@ -39,7 +39,7 @@ pub struct SyncStatusDto {
 /// - [`FfiVaultError::SyncFailed`] — no platform state dir, or an I/O error.
 pub fn sync_status(vault_uuid: [u8; 16]) -> Result<SyncStatusDto, FfiVaultError> {
     let state_dir = default_state_dir().ok_or_else(|| FfiVaultError::SyncFailed {
-        detail: "no platform data directory available for the sync state cache".into(),
+        detail: detail::literal("no platform data directory available for the sync state cache"),
     })?;
     sync_status_in(&state_dir, vault_uuid)
 }

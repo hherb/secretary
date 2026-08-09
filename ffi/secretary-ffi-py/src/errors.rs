@@ -98,9 +98,11 @@ pub(crate) fn ffi_unlock_error_to_pyerr(e: FfiUnlockError) -> PyErr {
     match e {
         FfiUnlockError::WrongPasswordOrCorrupt => WrongPasswordOrCorrupt::new_err(e.to_string()),
         FfiUnlockError::WrongMnemonicOrCorrupt => WrongMnemonicOrCorrupt::new_err(e.to_string()),
-        FfiUnlockError::InvalidMnemonic { detail } => InvalidMnemonic::new_err(detail),
+        FfiUnlockError::InvalidMnemonic { detail } => {
+            InvalidMnemonic::new_err(detail.into_string())
+        }
         FfiUnlockError::VaultMismatch => VaultMismatch::new_err(e.to_string()),
-        FfiUnlockError::CorruptVault { detail } => CorruptVault::new_err(detail),
+        FfiUnlockError::CorruptVault { detail } => CorruptVault::new_err(detail.into_string()),
     }
 }
 
@@ -118,22 +120,28 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::WrongMnemonicOrCorrupt => {
             VaultWrongMnemonicOrCorrupt::new_err(e.to_string())
         }
-        FfiVaultError::InvalidMnemonic { detail } => VaultInvalidMnemonic::new_err(detail),
+        FfiVaultError::InvalidMnemonic { detail } => {
+            VaultInvalidMnemonic::new_err(detail.into_string())
+        }
         FfiVaultError::VaultMismatch => VaultMismatchFolder::new_err(e.to_string()),
-        FfiVaultError::CorruptVault { detail } => VaultCorruptVault::new_err(detail),
-        FfiVaultError::FolderInvalid { detail } => VaultFolderInvalid::new_err(detail),
+        FfiVaultError::CorruptVault { detail } => VaultCorruptVault::new_err(detail.into_string()),
+        FfiVaultError::FolderInvalid { detail } => {
+            VaultFolderInvalid::new_err(detail.into_string())
+        }
         FfiVaultError::BlockNotFound { uuid_hex } => {
             // Pass uuid_hex as the exception payload so foreign callers
             // can `except VaultBlockNotFound as e: e.args[0]` to get the
             // hex string back.
-            VaultBlockNotFound::new_err(uuid_hex)
+            VaultBlockNotFound::new_err(uuid_hex.into_string())
         }
         FfiVaultError::RecordNotFound { uuid_hex } => {
             // Same args[0] contract as VaultBlockNotFound: the record-UUID
             // hex rides as the exception payload.
-            VaultRecordNotFound::new_err(uuid_hex)
+            VaultRecordNotFound::new_err(uuid_hex.into_string())
         }
-        FfiVaultError::SaveCryptoFailure { detail } => VaultSaveCryptoFailure::new_err(detail),
+        FfiVaultError::SaveCryptoFailure { detail } => {
+            VaultSaveCryptoFailure::new_err(detail.into_string())
+        }
         // B.4d share_block error surface — same args[0] contract as the
         // existing variants: the exception payload carries the most
         // diagnostic-relevant field so foreign callers can pull it via
@@ -142,8 +150,8 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
             expected_fingerprint_hex,
             got_fingerprint_hex,
         } => VaultNotAuthor::new_err(crate::detail::fingerprint_mismatch(
-            &expected_fingerprint_hex,
-            &got_fingerprint_hex,
+            expected_fingerprint_hex.as_str(),
+            got_fingerprint_hex.as_str(),
         )),
         FfiVaultError::RecipientAlreadyPresent => {
             VaultRecipientAlreadyPresent::new_err(e.to_string())
@@ -152,22 +160,28 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::CannotRevokeOwner => VaultCannotRevokeOwner::new_err(e.to_string()),
         FfiVaultError::MissingRecipientCard {
             recipient_fingerprint_hex,
-        } => VaultMissingRecipientCard::new_err(recipient_fingerprint_hex),
-        FfiVaultError::CardDecodeFailure { detail } => VaultCardDecodeFailure::new_err(detail),
+        } => VaultMissingRecipientCard::new_err(recipient_fingerprint_hex.into_string()),
+        FfiVaultError::CardDecodeFailure { detail } => {
+            VaultCardDecodeFailure::new_err(detail.into_string())
+        }
         // B.5 trash_block / restore_block error surface.
         FfiVaultError::BlockUuidAlreadyLive { detail } => {
-            VaultBlockUuidAlreadyLive::new_err(detail)
+            VaultBlockUuidAlreadyLive::new_err(detail.into_string())
         }
-        FfiVaultError::BlockNotInTrash { detail } => VaultBlockNotInTrash::new_err(detail),
+        FfiVaultError::BlockNotInTrash { detail } => {
+            VaultBlockNotInTrash::new_err(detail.into_string())
+        }
         // #399 Task 8: same args[0] contract — the purged block's UUID
         // hex rides as the exception payload.
-        FfiVaultError::BlockPurged { detail } => VaultBlockPurged::new_err(detail),
+        FfiVaultError::BlockPurged { detail } => VaultBlockPurged::new_err(detail.into_string()),
         // D.1.6 share-contacts error surface — same args[0] contract: the
         // contact-UUID hex rides as the exception payload.
         FfiVaultError::ContactAlreadyExists { uuid_hex } => {
-            VaultContactAlreadyExists::new_err(uuid_hex)
+            VaultContactAlreadyExists::new_err(uuid_hex.into_string())
         }
-        FfiVaultError::ContactNotFound { uuid_hex } => VaultContactNotFound::new_err(uuid_hex),
+        FfiVaultError::ContactNotFound { uuid_hex } => {
+            VaultContactNotFound::new_err(uuid_hex.into_string())
+        }
         FfiVaultError::CannotDeleteOwnerContact => VaultCannotDeleteOwnerContact::new_err(
             "the vault owner's own contact card cannot be deleted",
         ),
@@ -186,10 +200,12 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::WrongDeviceSecretOrCorrupt => {
             VaultWrongDeviceSecretOrCorrupt::new_err(e.to_string())
         }
-        FfiVaultError::DeviceUuidMismatch { detail } => VaultDeviceUuidMismatch::new_err(detail),
+        FfiVaultError::DeviceUuidMismatch { detail } => {
+            VaultDeviceUuidMismatch::new_err(detail.into_string())
+        }
         FfiVaultError::VaultFolderNotEmpty => VaultFolderNotEmpty::new_err(e.to_string()),
         FfiVaultError::VaultNeedsRepair { block_uuid_hex } => {
-            VaultNeedsRepair::new_err(block_uuid_hex)
+            VaultNeedsRepair::new_err(block_uuid_hex.into_string())
         }
         // Message contract: `VaultRepairRejected`'s single string argument is
         // `"<block_uuid_hex>: <detail>"` — the bridge's two structured fields
@@ -200,7 +216,10 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::RepairRejected {
             block_uuid_hex,
             detail,
-        } => VaultRepairRejected::new_err(crate::detail::uuid_prefixed(&block_uuid_hex, &detail)),
+        } => VaultRepairRejected::new_err(crate::detail::uuid_prefixed(
+            block_uuid_hex.as_str(),
+            detail.as_str(),
+        )),
     }
 }
 

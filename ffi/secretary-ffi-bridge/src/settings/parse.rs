@@ -10,6 +10,7 @@ use super::schema::{
     SETTINGS_FIELD_RETENTION_WINDOW_MS, SETTINGS_RECORD_TYPE,
 };
 use crate::error::detail;
+use crate::error::detail::Detail;
 
 /// A non-fatal condition surfaced while loading a settings record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +25,7 @@ pub enum SettingsWarning {
     /// A field was malformed / unknown / wrong-shaped and skipped.
     Corrupt {
         /// Human-readable detail about what was wrong with the field.
-        detail: String,
+        detail: Detail,
     },
 }
 
@@ -39,7 +40,7 @@ pub enum SettingsParseError {
     #[error("settings field parse failure: {detail}")]
     Corrupt {
         /// Human-readable detail about the parse failure.
-        detail: String,
+        detail: Detail,
     },
 }
 
@@ -432,11 +433,11 @@ mod tests {
             panic!("expected Corrupt, got {warnings:?}");
         };
         assert!(
-            !detail.contains("secret_field_name_xyz"),
+            !detail.as_str().contains("secret_field_name_xyz"),
             "decrypted field name leaked into warning detail: {detail}"
         );
         assert!(
-            detail.contains("field index"),
+            detail.as_str().contains("field index"),
             "ordinal hint missing: {detail}"
         );
     }

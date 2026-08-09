@@ -88,7 +88,7 @@ pub fn share_block(
     let (manifest_body, manifest_file, owner_card, ibk, vault_folder) = manifest
         .snapshot_for_save_block()
         .ok_or_else(|| FfiVaultError::CorruptVault {
-            detail: "vault manifest handle has been closed".into(),
+            detail: detail::literal("vault manifest handle has been closed"),
         })?;
 
     // Step 1.5 (#206): TOFU non-overwrite guard. If a card for this
@@ -126,7 +126,7 @@ pub fn share_block(
         identity
             .clone_inner_bundle()
             .ok_or_else(|| FfiVaultError::CorruptVault {
-                detail: "identity handle has been closed".into(),
+                detail: detail::literal("identity handle has been closed"),
             })?;
     let mut sk_ed_bytes: [u8; 32] = *identity_clone.ed25519_sk.expose();
     let sk_ed: Ed25519Secret = Sensitive::new(sk_ed_bytes);

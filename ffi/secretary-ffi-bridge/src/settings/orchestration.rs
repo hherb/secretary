@@ -74,7 +74,7 @@ pub fn read_settings(
         }
         let Some(text) = field.expose_text() else {
             shape_warnings.push(SettingsWarning::Corrupt {
-                detail: "settings field text payload missing".to_string(),
+                detail: detail::literal("settings field text payload missing"),
             });
             continue;
         };

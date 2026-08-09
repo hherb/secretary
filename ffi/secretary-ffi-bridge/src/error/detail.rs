@@ -54,6 +54,39 @@ impl Detail {
         self.0
     }
 
+    /// Adopt a diagnostic string `core` has ALREADY gated, verbatim (#500).
+    ///
+    /// EXACTLY ONE call site: `From<core::VaultError>`'s `RepairRejected` arm
+    /// in [`crate::error::vault`], which re-wraps
+    /// `core::VaultError::RepairRejected`'s own `detail` — the reason
+    /// `repair_vault`'s fail-closed gate refused a block, which the app must
+    /// surface because there is no automatic fix. That value is reviewed and
+    /// allowlisted under the guard's rule E1 for `core` (allowlist Section 3,
+    /// "repair rejected for block …": all eleven shipped producers pass a
+    /// literal, a fieldless `ClockRelation` Debug, a hyphenated-UUID list, or
+    /// `format!("{e}")` over another core-gated error). The bridge authors
+    /// nothing here; it only carries core's string across the seam.
+    ///
+    /// # Why this is NOT a `detail::*` free function
+    ///
+    /// Every sanctioned `detail::*` constructor must take a parameter type in
+    /// the guard's `SAFE_PARAM_TYPES`, and a `&str` is deliberately not one:
+    /// a `detail::adopt(&anything)` free function would be sanctioned at
+    /// EVERY bridge call site, which is the self-authorising hole #496 closed.
+    /// Keeping this an inherent `pub(crate)` method instead means rule E3 does
+    /// not recognise it, so its one call site produces an E3 finding that is
+    /// carried as a NAMED, exact-text allowlist entry — the narrowest possible
+    /// carve-out. Any second use of it in a gated position is a new finding at
+    /// new text and reds the scan; the door is one line wide, not crate-wide.
+    ///
+    /// Before the newtype this same re-wrap was field-init SHORTHAND
+    /// (`detail,`), which rule E3 could not see AT ALL — no `:` token, no
+    /// `let`, no `.field =`. Making it explicit is strictly more visible than
+    /// what it replaces.
+    pub(crate) fn from_core_gated(reason: String) -> Detail {
+        Detail(reason)
+    }
+
     /// Test-only escape hatch, absent from every non-test build.
     ///
     /// Wrapper-crate unit tests construct `FfiVaultError` values directly and
@@ -62,13 +95,41 @@ impl Detail {
     /// this function DOES NOT EXIST in `cargo build --release`. That is
     /// enforced by `cargo build --release --workspace` in CI: `cargo test`
     /// and `cargo clippy --tests` both compile a production call to it
-    /// CLEAN once a consumer wires the dev-dependency (verified on a
-    /// synthetic two-crate probe; pending re-verification on this workspace,
-    /// plan Step 6b). The rustdoc gate is NOT a blind spot here — this crate
-    /// is depended on by other workspace members, so `cargo doc` still
-    /// type-checks its bodies and would catch the same leak.
+    /// CLEAN once a consumer wires the dev-dependency.
+    ///
+    /// RE-VERIFIED on this workspace (#500 Task 3 Step 6b) rather than on the
+    /// synthetic two-crate probe Task 1 had to use, now that `ffi-uniffi` and
+    /// `desktop` request the feature from `[dev-dependencies]`. With a
+    /// production `pub fn probe_launder(runtime: String) -> Detail` calling
+    /// `Detail::for_test` planted in THIS file, the five gates reported error
+    /// counts of: `cargo build --release --workspace` 2, `cargo clippy
+    /// --release --workspace` 2, `cargo test --release --workspace` **0**,
+    /// `cargo clippy --release --workspace --tests` **0**, rustdoc 4.
+    ///
+    /// The two zeroes are the blind spot, and they are the two gates a
+    /// contributor runs by habit — which is the whole reason CI carries a
+    /// separate non-test build step. The rustdoc gate is NOT a blind spot
+    /// here: this crate is depended on by `ffi-py`, `ffi-uniffi` and
+    /// `desktop`, so documenting them makes cargo build this crate's rmeta,
+    /// which type-checks these bodies. A leak planted in a LEAF crate would
+    /// scan clean there.
     #[cfg(feature = "test-support")]
     pub fn for_test(s: &str) -> Detail {
+        Detail(s.to_string())
+    }
+
+    /// In-crate counterpart to the `test-support` hatch above.
+    ///
+    /// A crate cannot list itself as a dev-dependency, so the bridge's own
+    /// tests cannot reach the feature-gated `for_test`. `--cfg test` does
+    /// apply within the crate, which covers them. The `not(feature = ...)`
+    /// guard prevents a duplicate definition when a downstream crate's
+    /// dev-dependency turns the feature on during a workspace `cargo test`.
+    ///
+    /// This does NOT widen the hatch: `cfg(test)` is never active in a
+    /// `cargo build`, so neither definition exists in a shipped artifact.
+    #[cfg(all(test, not(feature = "test-support")))]
+    pub(crate) fn for_test(s: &str) -> Detail {
         Detail(s.to_string())
     }
 }
@@ -78,6 +139,23 @@ impl std::fmt::Display for Detail {
         f.write_str(&self.0)
     }
 }
+
+/// Lets a `Detail` BE the payload of a `std::io::Error` (#500).
+///
+/// `io_gated_with_path_and_advice` is the one place in the bridge that mints
+/// an `io::Error` from a gated string. Before the newtype it passed a `String`;
+/// the obvious post-newtype spelling — `detail::gated_with_path_and_advice(..)
+/// .into_string()` — is exactly the trailing-transform shape guard rule E3
+/// denies in a gated position, and denies here too (the io payload is a
+/// candidate position of its own since #487; verified by execution against the
+/// real scan, not assumed). Rather than unwrap at that boundary, the payload
+/// simply stays a `Detail`, so the sanctioned call is the WHOLE expression.
+///
+/// This confers no new construction path: `Error` is a rendering trait over the
+/// `Display` impl above, and the inner field stays private. `io::Error`'s own
+/// `Display` delegates to the boxed payload's, so the rendered text is
+/// byte-identical to what the pre-newtype `String` payload produced.
+impl std::error::Error for Detail {}
 
 /// Sealing module (#496). `Sealed` is nameable only from inside `detail.rs`,
 /// so an `impl GatedDetail for X` written in ANY other module of this crate
@@ -121,40 +199,58 @@ impl GatedDetail for std::num::ParseIntError {} // fixed std phrases, no input e
 impl GatedDetail for std::str::ParseBoolError {} // fixed std phrase, no input echo
 impl GatedDetail for secretary_cli::state::StateError {} // all 5 arms secret-free: errno / core-gated SyncError / disclosed lock path / disclosed vault-UUID hex — see allowlist entry
 
-pub(crate) fn gated(e: &impl GatedDetail) -> String {
-    e.to_string()
+/// A fixed diagnostic sentence written at the call site.
+///
+/// The counterpart of rule E3's shape-1 acceptance (`detail: "…".to_string()`),
+/// which the `Detail` move (#500) turned into a type error at ~37 production
+/// sites: a private inner field means a `String` — even one built from a
+/// literal — can no longer reach a gated position. This constructor is the
+/// sanctioned replacement, and it takes `&'static str` for exactly the reason
+/// [`gated_with_context`]'s `context` does: a compile-time string cannot carry
+/// a decrypted field name, a path, or any other runtime value.
+///
+/// `&'static str` DISCOURAGES rather than forbids — safe, stable Rust can mint
+/// one from runtime data with `String::leak` / `Box::leak`, a caveat that
+/// applies equally to every other `&'static str` position in this module and is
+/// recorded in the guard's LIMITS. Every live call site passes a literal.
+pub(crate) fn literal(text: &'static str) -> Detail {
+    Detail(text.to_string())
 }
 
-pub(crate) fn gated_with_context(context: &'static str, e: &impl GatedDetail) -> String {
-    format!("{context}: {e}")
+pub(crate) fn gated(e: &impl GatedDetail) -> Detail {
+    Detail(e.to_string())
 }
 
-pub(crate) fn uuid_hex(uuid: &[u8; 16]) -> String {
-    hex::encode(uuid)
+pub(crate) fn gated_with_context(context: &'static str, e: &impl GatedDetail) -> Detail {
+    Detail(format!("{context}: {e}"))
 }
 
-pub(crate) fn uuid_hyphenated(uuid: &[u8; 16]) -> String {
-    secretary_core::vault::format_uuid_hyphenated(uuid)
+pub(crate) fn uuid_hex(uuid: &[u8; 16]) -> Detail {
+    Detail(hex::encode(uuid))
 }
 
-pub(crate) fn fingerprint_hex(fingerprint: &[u8; 16]) -> String {
-    hex::encode(fingerprint)
+pub(crate) fn uuid_hyphenated(uuid: &[u8; 16]) -> Detail {
+    Detail(secretary_core::vault::format_uuid_hyphenated(uuid))
+}
+
+pub(crate) fn fingerprint_hex(fingerprint: &[u8; 16]) -> Detail {
+    Detail(hex::encode(fingerprint))
 }
 
 pub(crate) fn gated_for_uuid(
     context: &'static str,
     uuid: &[u8; 16],
     e: &impl GatedDetail,
-) -> String {
-    format!("{context} {}: {e}", hex::encode(uuid))
+) -> Detail {
+    Detail(format!("{context} {}: {e}", hex::encode(uuid)))
 }
 
-pub(crate) fn literal_for_uuid(context: &'static str, uuid: &[u8; 16]) -> String {
-    format!("{context} {}", hex::encode(uuid))
+pub(crate) fn literal_for_uuid(context: &'static str, uuid: &[u8; 16]) -> Detail {
+    Detail(format!("{context} {}", hex::encode(uuid)))
 }
 
-pub(crate) fn counted(context: &'static str, n: usize) -> String {
-    format!("{context}: {n}")
+pub(crate) fn counted(context: &'static str, n: usize) -> Detail {
+    Detail(format!("{context}: {n}"))
 }
 
 /// Append a disclosed filesystem path after an already-gated value (#487).
@@ -165,8 +261,8 @@ pub(crate) fn counted(context: &'static str, n: usize) -> String {
 /// directly, so echoing one here discloses nothing an attacker with folder
 /// access doesn't already have. `e` must already be gated — this fn adds no
 /// gating of its own for whatever `e` carries, it only appends the path.
-pub(crate) fn gated_with_path(e: &impl GatedDetail, path: &Path) -> String {
-    format!("{e}; state file path: {}", path.display())
+pub(crate) fn gated_with_path(e: &impl GatedDetail, path: &Path) -> Detail {
+    Detail(format!("{e}; state file path: {}", path.display()))
 }
 
 /// [`gated_with_path`] plus a TRAILING remediation sentence (#496).
@@ -185,11 +281,16 @@ pub(crate) fn gated_with_path_and_advice(
     e: &impl GatedDetail,
     path: &Path,
     advice: &'static str,
-) -> String {
-    format!(
+) -> Detail {
+    // `Detail: Display`, so the inner value interpolates directly. Spelling
+    // this `…gated_with_path(e, path).as_str()` would work too, but it is the
+    // trailing-transform-after-a-`detail::`-call shape rule E3 denies in a
+    // gated position — keeping it out of the tree entirely means the
+    // "no `detail::…(…).<anything>`" grep stays a clean invariant.
+    Detail(format!(
         "{}; {advice}",
         crate::error::detail::gated_with_path(e, path)
-    )
+    ))
 }
 
 /// Build a `std::io::Error` whose payload is gated, appending a disclosed
@@ -256,20 +357,26 @@ mod tests {
     #[test]
     fn gated_renders_display() {
         let e = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
-        assert_eq!(gated(&e), "gone");
+        assert_eq!(gated(&e).as_str(), "gone");
     }
 
     #[test]
     fn gated_with_context_prefixes() {
         let e = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
-        assert_eq!(gated_with_context("read foo", &e), "read foo: gone");
+        assert_eq!(
+            gated_with_context("read foo", &e).as_str(),
+            "read foo: gone"
+        );
     }
 
     #[test]
     fn gated_with_path_appends_disclosed_path() {
         let e = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
         let msg = gated_with_path(&e, std::path::Path::new("/tmp/state/x.state.cbor"));
-        assert_eq!(msg, "gone; state file path: /tmp/state/x.state.cbor");
+        assert_eq!(
+            msg.as_str(),
+            "gone; state file path: /tmp/state/x.state.cbor"
+        );
     }
 
     #[test]
@@ -285,11 +392,12 @@ mod tests {
             "if that file exists, deleting it resets this device's rollback history",
         );
         assert_eq!(
-            msg,
+            msg.as_str(),
             "gone; state file path: /tmp/state/x.state.cbor; if that file \
              exists, deleting it resets this device's rollback history"
         );
         // Belt and braces: the advice must not PRECEDE the source error.
+        let msg = msg.as_str();
         assert!(msg.find("gone").unwrap() < msg.find("if that file exists").unwrap());
     }
 
@@ -312,13 +420,14 @@ mod tests {
     #[test]
     fn uuid_renderers() {
         let uuid = [0xABu8; 16];
-        assert_eq!(uuid_hex(&uuid), "ab".repeat(16));
-        assert_eq!(fingerprint_hex(&uuid), "ab".repeat(16));
+        assert_eq!(uuid_hex(&uuid).as_str(), "ab".repeat(16));
+        assert_eq!(fingerprint_hex(&uuid).as_str(), "ab".repeat(16));
         assert_eq!(
             uuid_hyphenated(&[
                 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
                 0xFF, 0x00
-            ]),
+            ])
+            .as_str(),
             "11223344-5566-7788-99aa-bbccddeeff00"
         );
     }
@@ -328,11 +437,11 @@ mod tests {
         let e = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
         let uuid = [0x01u8; 16];
         assert_eq!(
-            gated_for_uuid("block file missing for", &uuid, &e),
+            gated_for_uuid("block file missing for", &uuid, &e).as_str(),
             format!("block file missing for {}: gone", "01".repeat(16))
         );
         assert_eq!(
-            literal_for_uuid("trash entry has no matching file for", &uuid),
+            literal_for_uuid("trash entry has no matching file for", &uuid).as_str(),
             format!("trash entry has no matching file for {}", "01".repeat(16))
         );
     }
@@ -340,16 +449,27 @@ mod tests {
     #[test]
     fn counted_renders_index() {
         assert_eq!(
-            counted("unknown settings field ignored; field index", 3),
+            counted("unknown settings field ignored; field index", 3).as_str(),
             "unknown settings field ignored; field index: 3"
         );
     }
 
-    // `Detail`'s own behaviour. Every constructor still returns `String` at
-    // this point (Task 3 moves them), so `for_test` is the only way to build
-    // one — which is exactly the property under test: the type has no public
-    // construction path outside `detail.rs`.
-    #[cfg(feature = "test-support")]
+    #[test]
+    fn literal_renders_the_fixed_sentence() {
+        assert_eq!(
+            literal("handle has been closed").as_str(),
+            "handle has been closed"
+        );
+    }
+
+    // `Detail`'s own behaviour, built through `for_test` rather than a
+    // sanctioned constructor: the property under test is that the type has no
+    // construction path outside `detail.rs`, and `for_test` is the only way in
+    // from a test. Ungated by `feature = "test-support"` since #500 Task 3 —
+    // the `cfg(all(test, not(feature)))` counterpart means `for_test` now
+    // resolves in BOTH bridge test configurations, so gating this test would
+    // silently skip it in the commoner one (plain `cargo test -p
+    // secretary-ffi-bridge`).
     #[test]
     fn detail_renders_borrows_and_unwraps() {
         let runtime = String::from("built at runtime");

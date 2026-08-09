@@ -283,3 +283,32 @@ core/src/vault/mod.rs	E1	#[error("repair rejected for block {block_uuid:02x?}: {
 # =============================================================================
 
 ffi/secretary-ffi-bridge/src/repair/tests/mod.rs	E3	uuid_hex: format_uuid_hyphenated(&block_uuid)	TEST-ONLY FILE: `mod tests` is #[cfg(test)]-gated in the PARENT (repair/mod.rs:22), which this guard cannot see from inside. The RHS is format_uuid_hyphenated(&block_uuid), a data-free renderer over a [u8; 16] (hex digits and hyphens only). Never reaches a platform. NEWLY REPORTED, not newly written: the source line is unchanged since #449; #488 made a `let` binding to a gated name an E3 candidate position, which is what first surfaced it.
+
+# =============================================================================
+# SECTION 5 — BRIDGE E3 CONSTRUCTION SITES ADOPTING AN ALREADY-GATED `core`
+# PAYLOAD (#500)
+#
+# Same claim CLASS as Section 3 — "safe by construction site, not by type" —
+# but on the BRIDGE under rule E3, not on `core/src/**` under rule E1, so it
+# is kept out of Section 3 to preserve that section's stated scope (and the
+# "keep Section 3 short" discipline CLAUDE.md records for it).
+#
+# An entry here says: the bridge is CARRYING a string `core` authored, and
+# `core`'s own producers for that string are reviewed under a Section 3 entry
+# in this same file. The bridge composes nothing and authors nothing.
+#
+# Why an entry is needed at all, rather than a sanctioned constructor: every
+# `detail::*` constructor's parameter types must sit in E3's `SAFE_PARAM_TYPES`
+# (#496), and `&str`/`String` are deliberately excluded — a `detail::adopt`
+# free function taking one would be sanctioned at EVERY bridge call site,
+# re-opening the self-authorising hole #496 closed. An inherent `pub(crate)`
+# method plus an exact-text entry here is the narrowest alternative: a SECOND
+# use of it in any gated position is new text (or a new file) and reds the
+# scan, so the carve-out is one line wide rather than crate-wide.
+#
+# Verify on edit: the named `core` variant still has its Section 3 entry, and
+# the bridge site still only carries the value — no interpolation, no
+# concatenation, no second argument.
+# =============================================================================
+
+ffi/secretary-ffi-bridge/src/error/vault/mod.rs	E3	detail: Detail::from_core_gated(detail)	Carries `core::VaultError::RepairRejected`'s own `detail` verbatim into the mirroring FFI variant — the reason repair_vault's fail-closed gate refused a block, which the app must surface because there is no automatic fix. That string's eleven shipped producers are reviewed under this file's Section 3 entry for `#[error("repair rejected for block {block_uuid:02x?}: {detail}")]` (literals, a fieldless ClockRelation Debug, a hyphenated-UUID list, or format!({e}) over another core-gated error). STRICTLY MORE VISIBLE than what it replaces: until #500 this same re-wrap was field-init SHORTHAND (`detail,`), which E3's three candidate positions miss entirely — no `:` token, no `let`, no `.field =` — so it was exempt without any entry. Re-verify if core adds a RepairRejected producer.

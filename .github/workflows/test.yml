@@ -66,12 +66,15 @@ jobs:
       # A NON-TEST build. `cargo test` and `cargo clippy --tests` both unify
       # dev-dependency features in, so a production call to the
       # `test-support`-gated `Detail::for_test` compiles clean through both
-      # once a consumer wires the dev-dependency (verified on a synthetic
-      # two-crate probe; pending re-verification on this workspace, plan Step
-      # 6b, #500). The rustdoc gate is NOT a blind spot: this crate is
-      # depended on by other workspace members, so `cargo doc` type-checks
-      # its bodies too and would also catch the leak. Only a non-test build
-      # catches what those two gates miss.
+      # once a consumer wires the dev-dependency. RE-VERIFIED on this
+      # workspace (#500 Task 3 Step 6b), with a production `pub fn` calling
+      # `Detail::for_test` planted in the bridge and ffi-uniffi + desktop
+      # requesting the feature from [dev-dependencies] — error counts:
+      # build 2, clippy 2, test 0, clippy --tests 0, rustdoc 4. The rustdoc
+      # gate is NOT a blind spot: this crate is depended on by other
+      # workspace members, so `cargo doc` must build its rmeta and
+      # type-checks its bodies too. Only a non-test build catches what
+      # `cargo test` / `cargo clippy --tests` miss.
       - name: cargo build --release --workspace
         run: cargo build --release --workspace
       # Mirrors the documented local command in CLAUDE.md. The

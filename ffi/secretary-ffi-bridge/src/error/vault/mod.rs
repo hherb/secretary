@@ -5,6 +5,7 @@
 use thiserror::Error;
 
 use crate::error::detail;
+use crate::error::detail::Detail;
 
 /// FFI-friendly thinned error type for the **folder-in** vault entry points
 /// (`open_vault_with_password` and `open_vault_with_recovery`). Mirrors
@@ -20,7 +21,7 @@ use crate::error::detail;
 /// disk (`vault.toml`, `identity.bundle.enc`, `manifest.cbor.enc`,
 /// `contacts/<owner_uuid>.card`) and need a way to surface "your path is
 /// wrong" distinctly from "your data is corrupt". Promoting that distinction
-/// to a separate variant with `detail: String` carrying the missing-file
+/// to a separate variant with `detail: Detail` carrying the missing-file
 /// name lets foreign UIs render the right affordance (fix the path vs.
 /// re-pair from backups). Pre-unlock IO errors don't leak unlock-secret
 /// information, so the §13 anti-oracle constraint allows the granularity.
@@ -59,7 +60,7 @@ pub enum FfiVaultError {
         /// Diagnostic text from the inner `MnemonicError` variant's
         /// `Display` impl, or `"phrase contained invalid UTF-8"` when
         /// the FFI input slice is not valid UTF-8.
-        detail: String,
+        detail: Detail,
     },
 
     /// `vault.toml` and `identity.bundle.enc` reference different vaults.
@@ -80,7 +81,7 @@ pub enum FfiVaultError {
     CorruptVault {
         /// Diagnostic text from the inner `core::VaultError` variant's
         /// `Display` impl. Free-form; not part of the API contract.
-        detail: String,
+        detail: Detail,
     },
 
     /// Vault folder doesn't exist, isn't readable, or is missing one of
@@ -94,7 +95,7 @@ pub enum FfiVaultError {
     FolderInvalid {
         /// IO context string: which file we tried to read + the underlying
         /// `io::Error`'s Display.
-        detail: String,
+        detail: Detail,
     },
 
     /// The requested block UUID does not appear in the manifest's live
@@ -108,8 +109,8 @@ pub enum FfiVaultError {
     /// recovery path instead.
     ///
     /// `uuid_hex` is the 32-char lowercase hex of the requested UUID, e.g.
-    /// `"112233445566778899aabbccddeeff00"`. Stored as a `String` for
-    /// consistency with other variants' `detail: String` payloads; the
+    /// `"112233445566778899aabbccddeeff00"`. Stored as a [`Detail`] for
+    /// consistency with other variants' gated payloads; the
     /// foreign caller can `bytes.fromhex(uuid_hex)` if needed.
     ///
     /// Distinct from `CorruptVault` — `BlockNotFound` means "the manifest
@@ -124,7 +125,7 @@ pub enum FfiVaultError {
     BlockNotFound {
         /// 32-char lowercase hex of the requested 16-byte block UUID.
         /// See the variant-level doc for the contract + counter-cases.
-        uuid_hex: String,
+        uuid_hex: Detail,
     },
 
     /// The requested record UUID does not match any LIVE record in the
@@ -140,7 +141,7 @@ pub enum FfiVaultError {
     #[error("record not found in block: {uuid_hex}")]
     RecordNotFound {
         /// 32-char lowercase hex of the requested 16-byte record UUID.
-        uuid_hex: String,
+        uuid_hex: Detail,
     },
 
     /// Save-time crypto failure on already-validated inputs. Distinguished
@@ -166,7 +167,7 @@ pub enum FfiVaultError {
     SaveCryptoFailure {
         /// Diagnostic text describing which save-step failed. Free-form;
         /// not part of the API contract.
-        detail: String,
+        detail: Detail,
     },
 
     /// Block-share authorization failure: the calling identity's
@@ -184,9 +185,9 @@ pub enum FfiVaultError {
     #[error("only the block author can share this block")]
     NotAuthor {
         /// 32-char lowercase hex of the on-disk author fingerprint.
-        expected_fingerprint_hex: String,
+        expected_fingerprint_hex: Detail,
         /// 32-char lowercase hex of the supplied author-card fingerprint.
-        got_fingerprint_hex: String,
+        got_fingerprint_hex: Detail,
     },
 
     /// The supplied `new_recipient` is already in the block's wire-level
@@ -216,7 +217,7 @@ pub enum FfiVaultError {
     #[error("missing contact card for recipient: {recipient_fingerprint_hex}")]
     MissingRecipientCard {
         /// 32-char lowercase hex of the missing recipient's fingerprint.
-        recipient_fingerprint_hex: String,
+        recipient_fingerprint_hex: Detail,
     },
 
     /// One of the canonical-CBOR `ContactCard` byte slices passed to
@@ -228,7 +229,7 @@ pub enum FfiVaultError {
     CardDecodeFailure {
         /// Diagnostic text from the inner `CardError` variant's `Display`
         /// impl. Free-form; not part of the API contract.
-        detail: String,
+        detail: Detail,
     },
 
     /// A contact card with this `contact_uuid` is already present in the
@@ -237,7 +238,7 @@ pub enum FfiVaultError {
     #[error("contact already exists in vault: {uuid_hex}")]
     ContactAlreadyExists {
         /// 32-char lowercase hex of the contact UUID.
-        uuid_hex: String,
+        uuid_hex: Detail,
     },
 
     /// A contact card referenced by a share operation (an existing recipient
@@ -246,7 +247,7 @@ pub enum FfiVaultError {
     #[error("contact not found in vault: {uuid_hex}")]
     ContactNotFound {
         /// 32-char lowercase hex of the contact UUID.
-        uuid_hex: String,
+        uuid_hex: Detail,
     },
 
     /// `restore_block`: the UUID has both a `TrashEntry` and a live
@@ -257,7 +258,7 @@ pub enum FfiVaultError {
     BlockUuidAlreadyLive {
         /// Diagnostic text including the UUID. Free-form; not part of
         /// the API contract.
-        detail: String,
+        detail: Detail,
     },
 
     /// `restore_block`: no file matched `trash/<uuid>.cbor.enc.*` and
@@ -267,7 +268,7 @@ pub enum FfiVaultError {
     BlockNotInTrash {
         /// Diagnostic text including the UUID. Free-form; not part of
         /// the API contract.
-        detail: String,
+        detail: Detail,
     },
 
     /// `restore_block`: the block's `TrashEntry` is marked purged — the
@@ -281,7 +282,7 @@ pub enum FfiVaultError {
     BlockPurged {
         /// Diagnostic text including the UUID. Free-form; not part of
         /// the API contract.
-        detail: String,
+        detail: Detail,
     },
 
     /// `delete_contact_card`: the requested uuid is the vault owner's own
@@ -302,7 +303,7 @@ pub enum FfiVaultError {
     SyncStateCorrupt {
         /// Diagnostic text (clock metadata only); kept off the wire for
         /// consistency with the other `detail` variants.
-        detail: String,
+        detail: Detail,
     },
 
     /// A concurrent writer changed the canonical manifest between the read and
@@ -320,7 +321,7 @@ pub enum FfiVaultError {
     #[error("sync failed: {detail}")]
     SyncFailed {
         /// Diagnostic text. Free-form; not part of the API contract.
-        detail: String,
+        detail: Detail,
     },
 
     /// `commit_with_decisions` could not match the supplied decisions to the
@@ -345,7 +346,7 @@ pub enum FfiVaultError {
     #[error("device UUID mismatch: {detail}")]
     DeviceUuidMismatch {
         /// Diagnostic text; free-form, not part of the API contract.
-        detail: String,
+        detail: Detail,
     },
 
     /// The `create_vault_in_folder` target directory already contains
@@ -368,7 +369,7 @@ pub enum FfiVaultError {
     #[error("vault needs repair: block {block_uuid_hex} has crash residue")]
     VaultNeedsRepair {
         /// Lowercase-hyphenated UUID of the block with crash residue.
-        block_uuid_hex: String,
+        block_uuid_hex: Detail,
     },
 
     /// `repair_vault` was attempted and refused to adopt a block (core
@@ -376,11 +377,11 @@ pub enum FfiVaultError {
     #[error("repair rejected for block {block_uuid_hex}: {detail}")]
     RepairRejected {
         /// Lowercase-hyphenated UUID of the block repair refused to adopt.
-        block_uuid_hex: String,
+        block_uuid_hex: Detail,
         /// Diagnostic explaining why repair refused — for equal-clock
         /// rejections it names the recipient delta. The app should surface
         /// this to the user; there is no automatic fix.
-        detail: String,
+        detail: Detail,
     },
 }
 
@@ -395,7 +396,7 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // FfiVaultError variants rather than folding to CorruptVault.
             VE::Unlock(UE::WrongDeviceSecretOrCorrupt) => FfiVaultError::WrongDeviceSecretOrCorrupt,
             VE::Unlock(UE::DeviceUuidMismatch) => FfiVaultError::DeviceUuidMismatch {
-                detail: "device wrap header UUID does not match the requested device".to_string(),
+                detail: detail::literal("device wrap header UUID does not match the requested device"),
             },
             // All other unlock-class errors delegate to the FfiUnlockError
             // translation logic so the 5 mirrored variants stay drift-free.
@@ -555,9 +556,16 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // binding, clock freshness, or recipient-widening guard).
             // Promoted OUT of the CorruptVault fold so the foreign side can
             // surface `detail` instead of a generic corruption message.
+            //
+            // #500: `detail` was field-init SHORTHAND until the `Detail`
+            // newtype landed — a shape rule E3 cannot see at all. It is now
+            // an explicit adoption of core's already-E1-reviewed payload;
+            // see `Detail::from_core_gated` for why that is an inherent
+            // method plus one exact-text allowlist entry rather than a
+            // crate-wide `detail::*` constructor.
             VE::RepairRejected { block_uuid, detail } => FfiVaultError::RepairRejected {
                 block_uuid_hex: detail::uuid_hyphenated(&block_uuid),
-                detail,
+                detail: Detail::from_core_gated(detail),
             },
 
             // Post-unlock integrity / structural failures and IO kinds the

@@ -139,7 +139,7 @@ fn read_block_unknown_uuid_returns_block_not_found() {
     let FfiVaultError::BlockNotFound { uuid_hex } = err else {
         panic!("expected BlockNotFound, got {err:?}");
     };
-    assert_eq!(uuid_hex, "00000000000000000000000000000000");
+    assert_eq!(uuid_hex.as_str(), "00000000000000000000000000000000");
 }
 
 /// Helper: copy the full golden_vault_001 tree into a tempdir. Returns
@@ -170,7 +170,8 @@ fn open_vault_corrupt_block_file_returns_vault_needs_repair() {
         panic!("expected VaultNeedsRepair, got {err:?}");
     };
     assert_eq!(
-        block_uuid_hex, "11223344-5566-7788-99aa-bbccddeeff00",
+        block_uuid_hex.as_str(),
+        "11223344-5566-7788-99aa-bbccddeeff00",
         "block_uuid_hex must be the lowercase-hyphenated block UUID",
     );
 }
@@ -191,11 +192,13 @@ fn open_vault_missing_block_file_returns_corrupt_vault() {
         panic!("expected CorruptVault, got {err:?}");
     };
     assert!(
-        detail.contains("file missing from blocks/"),
+        detail.as_str().contains("file missing from blocks/"),
         "detail: {detail}"
     );
     assert!(
-        detail.contains(&format!("{VAULT_001_BLOCK_UUID:02x?}")),
+        detail
+            .as_str()
+            .contains(&format!("{VAULT_001_BLOCK_UUID:02x?}")),
         "detail must carry the failing block uuid: {detail}"
     );
 }

@@ -39,7 +39,9 @@ pub(crate) fn map_warning(w: SettingsWarning) -> AppWarning {
             original_ms,
             clamped_ms,
         },
-        SettingsWarning::Corrupt { detail } => AppWarning::SettingsCorrupt { detail },
+        SettingsWarning::Corrupt { detail } => AppWarning::SettingsCorrupt {
+            detail: detail.into_string(),
+        },
     }
 }
 
@@ -64,7 +66,9 @@ pub fn parse_settings_fields(record_type: &str, fields: &[(String, String)]) -> 
     match bridge_parse(record_type, fields) {
         Ok((settings, warnings)) => Ok((settings, warnings.into_iter().map(map_warning).collect())),
         Err(SettingsParseError::UnknownVersion) => Err(AppError::SettingsUnknownVersion),
-        Err(SettingsParseError::Corrupt { detail }) => Err(AppError::SettingsCorrupt { detail }),
+        Err(SettingsParseError::Corrupt { detail }) => Err(AppError::SettingsCorrupt {
+            detail: detail.into_string(),
+        }),
     }
 }
 

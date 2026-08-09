@@ -136,6 +136,12 @@ tauri-plugin-clipboard-manager = "2"
 workspace = true
 
 [dev-dependencies]
+# `test-support` gives these tests `Detail::for_test`, the only way to build a
+# `Detail` outside the bridge's own `detail.rs` (#500). The crate is already a
+# normal dependency above; this re-declaration adds the feature on the DEV edge
+# only, which under resolver v2 keeps the hatch out of `cargo build --release`.
+# `scripts/check-test-support-placement.py` enforces that placement.
+secretary-ffi-bridge = { path = "../../ffi/secretary-ffi-bridge", features = ["test-support"] }
 # `tempfile` is already a hard dep above (used by `settings::load_or_create_device_uuid`).
 # Re-declared at the same exact pin for explicit use in `tests/*.rs` integration
 # tests; the duplicate pin keeps the version locked even if a future refactor

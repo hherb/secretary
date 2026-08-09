@@ -25,6 +25,7 @@ use secretary_core::vault::{preview_repair, Unlocker};
 
 use super::orchestration::baseline_provider;
 use crate::error::detail;
+use crate::error::detail::Detail;
 use crate::error::FfiVaultError;
 
 /// One recipient a consent-eligible widening would add, projected across
@@ -32,7 +33,7 @@ use crate::error::FfiVaultError;
 #[derive(Debug, Clone)]
 pub struct FfiAddedRecipient {
     /// Lowercase hyphenated UUID of the contact this widening would add.
-    pub uuid_hex: String,
+    pub uuid_hex: Detail,
     /// The contact's verified `display_name` read from its
     /// `contacts/*.card`.
     pub display_name: String,
@@ -50,7 +51,7 @@ pub struct FfiAddedRecipient {
 #[derive(Debug, Clone)]
 pub struct FfiWideningReport {
     /// Lowercase hyphenated UUID of the affected block.
-    pub block_uuid_hex: String,
+    pub block_uuid_hex: Detail,
     /// The block's plaintext name, for display.
     pub block_name: String,
     /// 64 lowercase hex chars — BLAKE3-256 of the on-disk block file
@@ -174,7 +175,7 @@ pub(crate) fn preview_repair_with_recovery_in(
 ) -> Result<FfiRepairPreview, FfiVaultError> {
     let phrase =
         std::str::from_utf8(mnemonic_bytes).map_err(|_| FfiVaultError::InvalidMnemonic {
-            detail: "phrase contained invalid UTF-8".to_string(),
+            detail: detail::literal("phrase contained invalid UTF-8"),
         })?;
     let core_preview = preview_repair(
         folder,

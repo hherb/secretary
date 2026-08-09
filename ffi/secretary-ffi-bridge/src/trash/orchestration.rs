@@ -47,7 +47,7 @@ pub fn trash_block(
     let (manifest_body, manifest_file, owner_card, ibk, vault_folder) = manifest
         .snapshot_for_save_block()
         .ok_or_else(|| FfiVaultError::CorruptVault {
-            detail: "vault manifest handle has been closed".into(),
+            detail: detail::literal("vault manifest handle has been closed"),
         })?;
 
     // Step 2: snapshot identity. trash_block reads from `open.identity`
@@ -58,7 +58,7 @@ pub fn trash_block(
         identity
             .clone_inner_bundle()
             .ok_or_else(|| FfiVaultError::CorruptVault {
-                detail: "identity handle has been closed".into(),
+                detail: detail::literal("identity handle has been closed"),
             })?;
 
     // Step 3: build temporary OpenVault from the snapshots.
@@ -172,7 +172,7 @@ mod tests {
         let FfiVaultError::BlockNotFound { uuid_hex } = ffi else {
             panic!("expected BlockNotFound");
         };
-        assert!(uuid_hex.contains("ab"));
+        assert!(uuid_hex.as_str().contains("ab"));
     }
 
     #[test]

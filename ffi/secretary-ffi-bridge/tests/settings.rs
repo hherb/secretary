@@ -118,7 +118,7 @@ fn read_unknown_version_record_falls_back_to_defaults_with_warning() {
         unreachable!("filtered to Corrupt above");
     };
     assert!(
-        !detail.contains("secretary.settings.v99"),
+        !detail.as_str().contains("secretary.settings.v99"),
         "decrypted record_type leaked into warning detail: {detail}"
     );
 }
@@ -157,7 +157,7 @@ fn read_non_text_field_warning_never_echoes_the_field_name() {
     match &warnings[0] {
         SettingsWarning::Corrupt { detail } => {
             assert!(
-                !detail.contains("secret_field_name_xyz"),
+                !detail.as_str().contains("secret_field_name_xyz"),
                 "decrypted field name leaked into shape-warning detail: {detail}"
             );
         }

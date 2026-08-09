@@ -182,7 +182,7 @@ fn share_block_with_missing_existing_recipient_card_returns_missing_recipient_ca
             recipient_fingerprint_hex,
         } => {
             assert_eq!(
-                recipient_fingerprint_hex.len(),
+                recipient_fingerprint_hex.as_str().len(),
                 32,
                 "fingerprint hex must be 32 chars (16-byte BLAKE3)",
             );
@@ -221,7 +221,7 @@ fn share_block_with_malformed_existing_card_bytes_returns_card_decode_failure() 
     .expect_err("garbage existing card bytes must fail");
     match err {
         FfiVaultError::CardDecodeFailure { detail } => {
-            assert!(!detail.is_empty(), "detail must be populated");
+            assert!(!detail.as_str().is_empty(), "detail must be populated");
         }
         other => panic!("expected CardDecodeFailure (existing), got {other:?}"),
     }
@@ -295,7 +295,7 @@ fn share_block_on_wiped_manifest_returns_corrupt_vault() {
     match err {
         FfiVaultError::CorruptVault { detail } => {
             assert!(
-                detail.to_lowercase().contains("manifest"),
+                detail.as_str().to_lowercase().contains("manifest"),
                 "detail should name the wiped handle: {detail}",
             );
         }
@@ -334,7 +334,7 @@ fn share_block_on_wiped_identity_returns_corrupt_vault() {
     match err {
         FfiVaultError::CorruptVault { detail } => {
             assert!(
-                detail.to_lowercase().contains("identity"),
+                detail.as_str().to_lowercase().contains("identity"),
                 "detail should name the wiped handle: {detail}",
             );
         }
@@ -467,7 +467,7 @@ fn share_block_raw_rejects_unsigned_new_card() {
     .expect_err("card with invalid self-sig must be rejected");
     match err {
         FfiVaultError::CardDecodeFailure { detail } => assert!(
-            detail.contains("self-signature"),
+            detail.as_str().contains("self-signature"),
             "must fail at verify gate, got: {detail}",
         ),
         other => panic!("expected CardDecodeFailure, got {other:?}"),
@@ -515,7 +515,7 @@ fn share_block_raw_rejects_unsigned_existing_card() {
     .expect_err("existing card with invalid self-sig must be rejected");
     match err {
         FfiVaultError::CardDecodeFailure { detail } => assert!(
-            detail.contains("self-signature"),
+            detail.as_str().contains("self-signature"),
             "must fail at verify gate, got: {detail}",
         ),
         other => panic!("expected CardDecodeFailure, got {other:?}"),

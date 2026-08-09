@@ -17,6 +17,7 @@
 //! foreign-side buffer is the caller's concern — see the per-language
 //! READMEs for the documented zeroize discipline.
 
+use crate::error::detail;
 use crate::{FfiUnlockError, UnlockedIdentity};
 
 /// Unlock a vault using its master password. Returns an opaque handle
@@ -78,7 +79,7 @@ pub fn open_with_recovery(
 ) -> Result<UnlockedIdentity, FfiUnlockError> {
     let mnemonic_str =
         std::str::from_utf8(mnemonic_bytes).map_err(|_| FfiUnlockError::InvalidMnemonic {
-            detail: "phrase contained invalid UTF-8".to_string(),
+            detail: detail::literal("phrase contained invalid UTF-8"),
         })?;
     let unlocked = secretary_core::unlock::open_with_recovery(
         vault_toml_bytes,
@@ -224,7 +225,7 @@ mod tests {
             panic!("expected InvalidMnemonic, got {err:?}");
         };
         assert!(
-            detail.contains("got 3"),
+            detail.as_str().contains("got 3"),
             "detail did not carry word count: {detail}",
         );
     }
@@ -241,7 +242,7 @@ mod tests {
             panic!("expected InvalidMnemonic, got {err:?}");
         };
         assert!(
-            detail.contains("UTF-8"),
+            detail.as_str().contains("UTF-8"),
             "detail did not mention UTF-8: {detail}",
         );
     }

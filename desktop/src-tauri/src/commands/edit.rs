@@ -83,10 +83,10 @@ fn dto_to_record_content(dto: RecordInputDto) -> Result<RecordContent, AppError>
 fn map_save_error(e: FfiVaultError) -> AppError {
     match e {
         FfiVaultError::BlockNotFound { uuid_hex } => AppError::BlockNotFound {
-            block_uuid_hex: uuid_hex,
+            block_uuid_hex: uuid_hex.into_string(),
         },
         FfiVaultError::RecordNotFound { uuid_hex } => AppError::RecordNotFound {
-            record_uuid_hex: uuid_hex,
+            record_uuid_hex: uuid_hex.into_string(),
         },
         other => {
             tracing::warn!(?other, "record save failed");
@@ -273,7 +273,7 @@ pub fn reveal_record_impl(
         let output = bridge_read_block(&u.identity, &u.manifest, &block_uuid, false).map_err(
             |e| match e {
                 FfiVaultError::BlockNotFound { uuid_hex } => AppError::BlockNotFound {
-                    block_uuid_hex: uuid_hex,
+                    block_uuid_hex: uuid_hex.into_string(),
                 },
                 other => AppError::from(other),
             },

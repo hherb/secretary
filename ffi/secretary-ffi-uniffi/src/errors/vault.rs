@@ -1,6 +1,7 @@
 //! uniffi-side `VaultError` mirroring `FfiVaultError` + the uniffi-only
 //! `InvalidArgument` variant for wrong-shape FFI inputs.
 
+use crate::detail;
 use secretary_ffi_bridge::FfiVaultError;
 
 /// uniffi projection of FfiVaultError + one extra variant for FFI input-
@@ -161,19 +162,31 @@ impl From<FfiVaultError> for VaultError {
         match e {
             FfiVaultError::WrongPasswordOrCorrupt => VaultError::WrongPasswordOrCorrupt,
             FfiVaultError::WrongMnemonicOrCorrupt => VaultError::WrongMnemonicOrCorrupt,
-            FfiVaultError::InvalidMnemonic { detail } => VaultError::InvalidMnemonic { detail },
+            FfiVaultError::InvalidMnemonic { detail } => VaultError::InvalidMnemonic {
+                detail: detail::project(detail),
+            },
             FfiVaultError::VaultMismatch => VaultError::VaultMismatch,
-            FfiVaultError::CorruptVault { detail } => VaultError::CorruptVault { detail },
-            FfiVaultError::FolderInvalid { detail } => VaultError::FolderInvalid { detail },
-            FfiVaultError::BlockNotFound { uuid_hex } => VaultError::BlockNotFound { uuid_hex },
-            FfiVaultError::RecordNotFound { uuid_hex } => VaultError::RecordNotFound { uuid_hex },
-            FfiVaultError::SaveCryptoFailure { detail } => VaultError::SaveCryptoFailure { detail },
+            FfiVaultError::CorruptVault { detail } => VaultError::CorruptVault {
+                detail: detail::project(detail),
+            },
+            FfiVaultError::FolderInvalid { detail } => VaultError::FolderInvalid {
+                detail: detail::project(detail),
+            },
+            FfiVaultError::BlockNotFound { uuid_hex } => VaultError::BlockNotFound {
+                uuid_hex: detail::project(uuid_hex),
+            },
+            FfiVaultError::RecordNotFound { uuid_hex } => VaultError::RecordNotFound {
+                uuid_hex: detail::project(uuid_hex),
+            },
+            FfiVaultError::SaveCryptoFailure { detail } => VaultError::SaveCryptoFailure {
+                detail: detail::project(detail),
+            },
             FfiVaultError::NotAuthor {
                 expected_fingerprint_hex,
                 got_fingerprint_hex,
             } => VaultError::NotAuthor {
-                expected_fingerprint_hex,
-                got_fingerprint_hex,
+                expected_fingerprint_hex: detail::project(expected_fingerprint_hex),
+                got_fingerprint_hex: detail::project(got_fingerprint_hex),
             },
             FfiVaultError::RecipientAlreadyPresent => VaultError::RecipientAlreadyPresent,
             FfiVaultError::RecipientNotPresent => VaultError::RecipientNotPresent,
@@ -181,40 +194,52 @@ impl From<FfiVaultError> for VaultError {
             FfiVaultError::MissingRecipientCard {
                 recipient_fingerprint_hex,
             } => VaultError::MissingRecipientCard {
-                recipient_fingerprint_hex,
+                recipient_fingerprint_hex: detail::project(recipient_fingerprint_hex),
             },
-            FfiVaultError::CardDecodeFailure { detail } => VaultError::CardDecodeFailure { detail },
-            FfiVaultError::BlockUuidAlreadyLive { detail } => {
-                VaultError::BlockUuidAlreadyLive { detail }
-            }
-            FfiVaultError::BlockNotInTrash { detail } => VaultError::BlockNotInTrash { detail },
-            FfiVaultError::BlockPurged { detail } => VaultError::BlockPurged { detail },
-            FfiVaultError::ContactAlreadyExists { uuid_hex } => {
-                VaultError::ContactAlreadyExists { uuid_hex }
-            }
-            FfiVaultError::ContactNotFound { uuid_hex } => VaultError::ContactNotFound { uuid_hex },
+            FfiVaultError::CardDecodeFailure { detail } => VaultError::CardDecodeFailure {
+                detail: detail::project(detail),
+            },
+            FfiVaultError::BlockUuidAlreadyLive { detail } => VaultError::BlockUuidAlreadyLive {
+                detail: detail::project(detail),
+            },
+            FfiVaultError::BlockNotInTrash { detail } => VaultError::BlockNotInTrash {
+                detail: detail::project(detail),
+            },
+            FfiVaultError::BlockPurged { detail } => VaultError::BlockPurged {
+                detail: detail::project(detail),
+            },
+            FfiVaultError::ContactAlreadyExists { uuid_hex } => VaultError::ContactAlreadyExists {
+                uuid_hex: detail::project(uuid_hex),
+            },
+            FfiVaultError::ContactNotFound { uuid_hex } => VaultError::ContactNotFound {
+                uuid_hex: detail::project(uuid_hex),
+            },
             FfiVaultError::CannotDeleteOwnerContact => VaultError::CannotDeleteOwnerContact,
             FfiVaultError::SyncStateVaultMismatch => VaultError::SyncStateVaultMismatch,
-            FfiVaultError::SyncStateCorrupt { detail } => VaultError::SyncStateCorrupt { detail },
+            FfiVaultError::SyncStateCorrupt { detail } => VaultError::SyncStateCorrupt {
+                detail: detail::project(detail),
+            },
             FfiVaultError::SyncEvidenceStale => VaultError::SyncEvidenceStale,
             FfiVaultError::SyncInProgress => VaultError::SyncInProgress,
-            FfiVaultError::SyncFailed { detail } => VaultError::SyncFailed { detail },
+            FfiVaultError::SyncFailed { detail } => VaultError::SyncFailed {
+                detail: detail::project(detail),
+            },
             FfiVaultError::SyncDecisionsIncomplete => VaultError::SyncDecisionsIncomplete,
             FfiVaultError::DeviceSlotNotFound => VaultError::DeviceSlotNotFound,
             FfiVaultError::WrongDeviceSecretOrCorrupt => VaultError::WrongDeviceSecretOrCorrupt,
-            FfiVaultError::DeviceUuidMismatch { detail } => {
-                VaultError::DeviceUuidMismatch { detail }
-            }
+            FfiVaultError::DeviceUuidMismatch { detail } => VaultError::DeviceUuidMismatch {
+                detail: detail::project(detail),
+            },
             FfiVaultError::VaultFolderNotEmpty => VaultError::VaultFolderNotEmpty,
-            FfiVaultError::VaultNeedsRepair { block_uuid_hex } => {
-                VaultError::VaultNeedsRepair { block_uuid_hex }
-            }
+            FfiVaultError::VaultNeedsRepair { block_uuid_hex } => VaultError::VaultNeedsRepair {
+                block_uuid_hex: detail::project(block_uuid_hex),
+            },
             FfiVaultError::RepairRejected {
                 block_uuid_hex,
                 detail,
             } => VaultError::RepairRejected {
-                block_uuid_hex,
-                detail,
+                block_uuid_hex: detail::project(block_uuid_hex),
+                detail: detail::project(detail),
             },
         }
     }
@@ -223,6 +248,7 @@ impl From<FfiVaultError> for VaultError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use secretary_ffi_bridge::Detail;
 
     // -------------------------------------------------------------------
     // B.4a: pin the From<FfiVaultError> for VaultError mapping.
@@ -240,7 +266,7 @@ mod tests {
             VaultError::WrongMnemonicOrCorrupt
         ));
         let inv = VaultError::from(B::InvalidMnemonic {
-            detail: "x".to_string(),
+            detail: Detail::for_test("x"),
         });
         let VaultError::InvalidMnemonic { detail } = inv else {
             panic!("expected InvalidMnemonic")
@@ -251,14 +277,14 @@ mod tests {
             VaultError::VaultMismatch
         ));
         let cor = VaultError::from(B::CorruptVault {
-            detail: "y".to_string(),
+            detail: Detail::for_test("y"),
         });
         let VaultError::CorruptVault { detail } = cor else {
             panic!("expected CorruptVault")
         };
         assert_eq!(detail, "y");
         let fol = VaultError::from(B::FolderInvalid {
-            detail: "z".to_string(),
+            detail: Detail::for_test("z"),
         });
         let VaultError::FolderInvalid { detail } = fol else {
             panic!("expected FolderInvalid")
@@ -281,7 +307,7 @@ mod tests {
         // fail here first.
         use FfiVaultError as B;
         let bnf = VaultError::from(B::BlockNotFound {
-            uuid_hex: "abc123".to_string(),
+            uuid_hex: Detail::for_test("abc123"),
         });
         let VaultError::BlockNotFound { uuid_hex } = bnf else {
             panic!("expected BlockNotFound");
@@ -295,7 +321,7 @@ mod tests {
         // rename or accidental remap to BlockNotFound would fail here.
         use FfiVaultError as B;
         let rnf = VaultError::from(B::RecordNotFound {
-            uuid_hex: "def456".to_string(),
+            uuid_hex: Detail::for_test("def456"),
         });
         let VaultError::RecordNotFound { uuid_hex } = rnf else {
             panic!("expected RecordNotFound");
@@ -331,7 +357,7 @@ mod tests {
         // or accidental remap to CorruptVault / FolderInvalid would fail
         // here first.
         let bridge_err = FfiVaultError::SaveCryptoFailure {
-            detail: "test detail".to_string(),
+            detail: Detail::for_test("test detail"),
         };
         let uniffi_err = VaultError::from(bridge_err);
         let VaultError::SaveCryptoFailure { detail } = uniffi_err else {
@@ -365,8 +391,8 @@ mod tests {
     #[test]
     fn vault_error_not_author_maps_one_to_one() {
         let bridge_err = FfiVaultError::NotAuthor {
-            expected_fingerprint_hex: "aa".repeat(16),
-            got_fingerprint_hex: "bb".repeat(16),
+            expected_fingerprint_hex: Detail::for_test(&"aa".repeat(16)),
+            got_fingerprint_hex: Detail::for_test(&"bb".repeat(16)),
         };
         match VaultError::from(bridge_err) {
             VaultError::NotAuthor {
@@ -415,7 +441,7 @@ mod tests {
     #[test]
     fn vault_error_missing_recipient_card_maps_one_to_one() {
         let bridge_err = FfiVaultError::MissingRecipientCard {
-            recipient_fingerprint_hex: "cc".repeat(16),
+            recipient_fingerprint_hex: Detail::for_test(&"cc".repeat(16)),
         };
         match VaultError::from(bridge_err) {
             VaultError::MissingRecipientCard {
@@ -444,7 +470,7 @@ mod tests {
     #[test]
     fn vault_error_card_decode_failure_maps_one_to_one() {
         let bridge_err = FfiVaultError::CardDecodeFailure {
-            detail: "bad CBOR".into(),
+            detail: Detail::for_test("bad CBOR"),
         };
         match VaultError::from(bridge_err) {
             VaultError::CardDecodeFailure { detail } => assert_eq!(detail, "bad CBOR"),
@@ -455,7 +481,7 @@ mod tests {
     #[test]
     fn card_decode_failure_display_pins_detail() {
         let err = VaultError::CardDecodeFailure {
-            detail: "bad CBOR".into(),
+            detail: "bad CBOR".to_string(),
         };
         let rendered = format!("{err}");
         assert!(
@@ -475,7 +501,7 @@ mod tests {
     #[test]
     fn ffi_to_uniffi_block_uuid_already_live() {
         let ffi = FfiVaultError::BlockUuidAlreadyLive {
-            detail: "[1,2,3]".into(),
+            detail: Detail::for_test("[1,2,3]"),
         };
         let uniffi: VaultError = ffi.into();
         let VaultError::BlockUuidAlreadyLive { detail } = uniffi else {
@@ -487,7 +513,7 @@ mod tests {
     #[test]
     fn ffi_to_uniffi_block_not_in_trash() {
         let ffi = FfiVaultError::BlockNotInTrash {
-            detail: "[4,5,6]".into(),
+            detail: Detail::for_test("[4,5,6]"),
         };
         let uniffi: VaultError = ffi.into();
         let VaultError::BlockNotInTrash { detail } = uniffi else {
@@ -499,7 +525,7 @@ mod tests {
     #[test]
     fn ffi_to_uniffi_block_purged() {
         let ffi = FfiVaultError::BlockPurged {
-            detail: "[7,7,7]".into(),
+            detail: Detail::for_test("[7,7,7]"),
         };
         let uniffi: VaultError = ffi.into();
         let VaultError::BlockPurged { detail } = uniffi else {
@@ -542,7 +568,7 @@ mod tests {
     #[test]
     fn ffi_to_uniffi_contact_already_exists() {
         let ffi = FfiVaultError::ContactAlreadyExists {
-            uuid_hex: "aa".repeat(16),
+            uuid_hex: Detail::for_test(&"aa".repeat(16)),
         };
         let uniffi: VaultError = ffi.into();
         let VaultError::ContactAlreadyExists { uuid_hex } = uniffi else {
@@ -554,7 +580,7 @@ mod tests {
     #[test]
     fn ffi_to_uniffi_contact_not_found() {
         let ffi = FfiVaultError::ContactNotFound {
-            uuid_hex: "bb".repeat(16),
+            uuid_hex: Detail::for_test(&"bb".repeat(16)),
         };
         let uniffi: VaultError = ffi.into();
         let VaultError::ContactNotFound { uuid_hex } = uniffi else {
@@ -607,7 +633,7 @@ mod tests {
     #[test]
     fn ffi_to_uniffi_device_uuid_mismatch_preserves_detail() {
         let ffi = FfiVaultError::DeviceUuidMismatch {
-            detail: "wrap uuid != lookup uuid".to_string(),
+            detail: Detail::for_test("wrap uuid != lookup uuid"),
         };
         let uniffi: VaultError = ffi.into();
         let VaultError::DeviceUuidMismatch { detail } = uniffi else {
@@ -652,7 +678,7 @@ mod tests {
     #[test]
     fn ffi_to_uniffi_vault_needs_repair_preserves_block_uuid_hex() {
         let ffi = FfiVaultError::VaultNeedsRepair {
-            block_uuid_hex: "11223344-5566-7788-99aa-bbccddeeff00".to_string(),
+            block_uuid_hex: Detail::for_test("11223344-5566-7788-99aa-bbccddeeff00"),
         };
         let uniffi: VaultError = ffi.into();
         let VaultError::VaultNeedsRepair { block_uuid_hex } = uniffi else {
@@ -664,8 +690,8 @@ mod tests {
     #[test]
     fn ffi_to_uniffi_repair_rejected_preserves_fields() {
         let ffi = FfiVaultError::RepairRejected {
-            block_uuid_hex: "11223344-5566-7788-99aa-bbccddeeff00".to_string(),
-            detail: "clock relation Concurrent".to_string(),
+            block_uuid_hex: Detail::for_test("11223344-5566-7788-99aa-bbccddeeff00"),
+            detail: Detail::for_test("clock relation Concurrent"),
         };
         let uniffi: VaultError = ffi.into();
         let VaultError::RepairRejected {

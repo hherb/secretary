@@ -31,6 +31,20 @@ brief.
 
 from __future__ import annotations
 
+# A wrapper `detail.rs` stand-in that declares the #500 projection constructor.
+# `project`'s only parameter is a `Detail`, which sits in rule E3's
+# `SAFE_PARAM_TYPES` — so unlike `passthrough(&str)` (BP49) the constructor
+# survives the signature gate and its call sites are sanctioned.
+SELF_TEST_WRAPPER_DETAIL_SRC_WITH_PROJECT = '''
+pub(crate) fn arg_len(field: &'static str, n: usize) -> String {
+    format!("{field}: {n}")
+}
+
+pub(crate) fn project(d: Detail) -> String {
+    d.into_string()
+}
+'''
+
 WRAPPER_POSITIVE_CONTROLS: list[tuple] = [
     (
         "WP1 shape 5 trusts the FINAL SEGMENT only: a field access whose "
@@ -79,6 +93,18 @@ WRAPPER_POSITIVE_CONTROLS: list[tuple] = [
             fn f(a: &str) -> PyErr { VaultNotAuthor::new_err(format!("{a}")) } ''',
         {"rule": "E5"},
     ),
+    (
+        "WP6 #500: the INLINE unwrap `detail: detail.into_string()` still "
+        "DENIES. Adding `Detail` to SAFE_PARAM_TYPES sanctions a CALL to a "
+        "wrapper detail.rs constructor that takes one; it must not also make "
+        "a trailing transform legal in a gated initializer. This is the "
+        "shape all ~27 wrapper projection arms took before they were routed "
+        "through `detail::project`, and it matches neither arm 4 (the "
+        "expression is not the bare field name) nor arm 5 (shape 5 is a "
+        "single-hop field access, nothing appended)",
+        ''' fn f(e: FfiVaultError) -> E { E::V { detail: detail.into_string() } } ''',
+        {"rule": "E3", "field": "detail"},
+    ),
 ]
 
 WRAPPER_NEGATIVE_CONTROLS: list[tuple] = [
@@ -107,5 +133,16 @@ WRAPPER_NEGATIVE_CONTROLS: list[tuple] = [
             fn renders() { let rendered = format!("{err}"); assert!(!rendered.is_empty()); }
         }
         ''',
+    ),
+    (
+        "WN4 #500: `uuid_hex: detail::project(a.uuid_hex)` — the shape every "
+        "wrapper projection arm takes once the bridge's gated fields are "
+        "`Detail`. Accepted as E3 shape 2 (a sanctioned call consuming the "
+        "WHOLE initializer), which requires `project` to survive the #496 "
+        "signature gate; that in turn requires `Detail` in SAFE_PARAM_TYPES. "
+        "Removing `Detail` from that set must make this control FIRE — and "
+        "reds the real scan at 27 sites",
+        ''' fn f(a: A) -> E { E::V { uuid_hex: detail::project(a.uuid_hex) } } ''',
+        {"detail_src": SELF_TEST_WRAPPER_DETAIL_SRC_WITH_PROJECT},
     ),
 ]

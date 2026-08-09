@@ -77,7 +77,7 @@ impl From<FfiRepairPreview> for RepairPreviewDto {
                 .widenings
                 .into_iter()
                 .map(|w| WideningReportDto {
-                    block_uuid_hex: w.block_uuid_hex,
+                    block_uuid_hex: w.block_uuid_hex.into_string(),
                     block_name: w.block_name,
                     file_fingerprint_hex: w.file_fingerprint_hex,
                     committed_fingerprint_hex: w.committed_fingerprint_hex,
@@ -85,7 +85,7 @@ impl From<FfiRepairPreview> for RepairPreviewDto {
                         .added
                         .into_iter()
                         .map(|a| AddedRecipientDto {
-                            uuid_hex: a.uuid_hex,
+                            uuid_hex: a.uuid_hex.into_string(),
                             display_name: a.display_name,
                             card_fingerprint_hex: a.card_fingerprint_hex,
                         })
@@ -122,7 +122,7 @@ pub struct ApprovedWideningArg {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secretary_ffi_bridge::{FfiAddedRecipient, FfiWideningReport};
+    use secretary_ffi_bridge::{Detail, FfiAddedRecipient, FfiWideningReport};
     use serde_json::Value;
 
     fn to_json<T: serde::Serialize>(v: &T) -> Value {
@@ -178,12 +178,12 @@ mod tests {
     fn repair_preview_dto_from_bridge_type_passes_hex_verbatim() {
         let bridge_preview = FfiRepairPreview {
             widenings: vec![FfiWideningReport {
-                block_uuid_hex: SAMPLE_BLOCK_UUID_HEX.to_string(),
+                block_uuid_hex: Detail::for_test(SAMPLE_BLOCK_UUID_HEX),
                 block_name: "Banking".to_string(),
                 file_fingerprint_hex: SAMPLE_FILE_FINGERPRINT_HEX.to_string(),
                 committed_fingerprint_hex: SAMPLE_COMMITTED_FINGERPRINT_HEX.to_string(),
                 added: vec![FfiAddedRecipient {
-                    uuid_hex: SAMPLE_RECIPIENT_UUID_HEX.to_string(),
+                    uuid_hex: Detail::for_test(SAMPLE_RECIPIENT_UUID_HEX),
                     display_name: "Alice".to_string(),
                     card_fingerprint_hex: SAMPLE_CARD_FINGERPRINT_HEX.to_string(),
                 }],

@@ -75,6 +75,6 @@ pub(crate) fn read_verified_card(bytes: &[u8]) -> Result<ContactCard, FfiVaultEr
 /// `contacts` primitive so the observable error is identical across them.
 pub(crate) fn handle_wiped() -> FfiVaultError {
     FfiVaultError::CorruptVault {
-        detail: "vault manifest handle has been wiped".to_string(),
+        detail: detail::literal("vault manifest handle has been wiped"),
     }
 }

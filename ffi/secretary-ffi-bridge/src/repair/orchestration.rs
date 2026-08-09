@@ -259,7 +259,7 @@ pub(crate) fn repair_vault_with_recovery_in(
 ) -> Result<OpenVaultOutput, FfiVaultError> {
     let phrase =
         std::str::from_utf8(mnemonic_bytes).map_err(|_| FfiVaultError::InvalidMnemonic {
-            detail: "phrase contained invalid UTF-8".to_string(),
+            detail: detail::literal("phrase contained invalid UTF-8"),
         })?;
     // Core invokes the provider with the VERIFIED manifest vault_uuid and
     // runs the §10 check on the COMMITTED clock before it ticks/rewrites
