@@ -302,15 +302,49 @@ ffi/secretary-ffi-bridge/src/repair/tests/mod.rs	E3	uuid_hex: format_uuid_hyphen
 # E::V { detail: detail } }`, CLAUDE.md's "function-parameter case"), one
 # level deeper. Each entry names every CURRENT call site of the enclosing
 # function, verified by `grep -rn`, exactly like Section 3's discipline.
-# Re-verify on any edit that adds a call site or changes what is passed for
-# the named parameter — a future caller building that argument at runtime
-# (a `format!(...)`, a decrypted field name) would be exactly the leak #498
-# exists to catch, and this entry does not vouch for one.
+#
+# TWO CONCRETE EVASIONS SCAN CLEAN TODAY (fix round 1, both verified by
+# execution) — stated plainly rather than left implicit in "a future caller
+# building the argument at runtime would be exactly the leak #498 exists to
+# catch":
+#
+#   - CALLER-SIDE LEAK: `uuid_from_vec(bytes, e.to_string().leak())` at ANY
+#     caller of an allowlisted helper reaches the SAME hint position this
+#     entry vouches for, with no `format!` anywhere — so rule E5 (`format!`
+#     confinement) has nothing to see either. Confirmed: zero findings.
+#   - CHAIN: a brand-new pass-through wrapper —
+#     `fn uuid_for(b: &[u8], field: &'static str) -> X { uuid_from_vec(b,
+#     field) }` — creates NO gated-field construction site of its own (its
+#     body is a plain function call, not a `detail:`-named initializer), so
+#     it produces NO FINDING AT ALL, not even one this section could
+#     allowlist. Confirmed: zero findings. Every entry below covers only the
+#     FIRST hop out of the allowlisted helper; a second hop is invisible to
+#     this guard by construction.
+#
+# The "re-verify on any edit" instruction below has NO MECHANICAL HOOK: rule
+# E3 keys an allowlist entry on the exact CONSTRUCTION-SITE text inside the
+# allowlisted helper itself, which does not change when a caller in ANOTHER
+# FILE is added, removed, or starts building the forwarded argument at
+# runtime. Adding a new caller touches neither this entry nor the line it is
+# keyed on, and the guard stays green regardless. Re-verification here is
+# PURELY a human-review discipline — nothing enforces it — which is a
+# materially weaker claim than "this file changed and the diff was
+# reviewed."
+#
+# THESE SIX ENTRIES ARE PLACEHOLDERS #498's STRUCTURAL OPTION DELETES, NOT
+# JUST ALLOWLISTS IT. For the five ffi-uniffi entries the cheapest version is
+# a closed `enum ArgField` declared in that crate's own `detail.rs`, with one
+# variant per legitimate field name — replacing the `field: &'static str`
+# parameter with `field: ArgField` removes the parameter's ABILITY to carry
+# a leaked or forwarded runtime string at all, which is what makes every
+# entry below (and the two evasions above) unrepresentable rather than
+# merely unreviewed. #498 stays OPEN recording exactly this option.
 #
 # HIGH review weight, same tier as Section 3: this guard sees the CALL SITE
 # to the sanctioned constructor, not the enclosing function's own callers —
 # the claim "every caller of the enclosing function passes a literal" is a
-# point-in-time fact this guard cannot re-verify on its own.
+# point-in-time fact this guard cannot re-verify on its own, and — per the
+# above — cannot even detect a NEW caller of.
 # =============================================================================
 
 ffi/secretary-ffi-bridge/src/error/detail.rs	E3	<io::Error payload>: crate::error::detail::gated_with_path_and_advice(e, path, advice)	`advice` is `io_gated_with_path_and_advice`'s OWN `&'static str` parameter (detail.rs, a few lines above this call), forwarded one hop into `gated_with_path_and_advice`'s hint position. Its only production call site is repair/orchestration.rs's §10 rollback-baseline read, which passes a fixed string literal; its only other call site is inside `#[cfg(test)] mod tests` in this same file (never reaches a shipped binary).

@@ -564,7 +564,20 @@ def _split_call_arg_spans(
         if ch in "<([{":
             depth += 1
         elif ch in ">)]}":
-            depth -= 1
+            # Clamped, unlike `initializer_end`'s unclamped `depth -= 1`
+            # (that function instead BREAKS at `depth == 0` before ever
+            # decrementing, which has no equivalent here — this loop must
+            # keep scanning past a top-level `>`, not stop). `<`/`>` are
+            # counted for generics/turbofish, but an UNPAIRED `>` — a
+            # comparison inside a hint argument, e.g. `if k > 1 { p } else
+            # { q }` — would otherwise drive `depth` negative, and a
+            # top-level `,` right after would then read `depth == 0` as
+            # false and stop registering as a separator: a review finding
+            # (fix round 1), fail-CLOSED (a literal hint got misread as
+            # part of a longer, unrecognised argument and denied) but the
+            # only way this function's depth tracking could shift a real
+            # argument into the wrong index.
+            depth = max(0, depth - 1)
         elif ch == "," and depth == 0:
             spans.append((arg_start, i))
             i += 1
