@@ -596,6 +596,17 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         ''',
         {"rule": "E2", "field": "detail"},
     ),
+    (
+        "BP52",
+        # #498: a `&'static str` hint is NOT leak-proof — safe stable Rust
+        # mints one from runtime data via `Box::leak`. The hint position must
+        # be a string LITERAL, not merely a `&'static str`-typed expression.
+        'fn f(e: &E) -> X {\n'
+        '    let leaked: &\'static str = Box::leak(format!("{e}").into_boxed_str());\n'
+        '    X::V { detail: detail::gated_with_context(leaked, e) }\n'
+        '}\n',
+        {"rule": "E3", "field": "detail"},
+    ),
 ]
 
 BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
@@ -842,6 +853,35 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
         ''',
         {"path_label": DETAIL_MODULE_REL},
     ),
+    (
+        "BN30 #498: a genuine string-literal hint argument still PASSES — "
+        "the mirror image of BP52. Every real `gated_with_context` call site "
+        "in the tree takes this exact shape",
+        ''' fn f(e: &E) -> X { X::V { detail: detail::gated_with_context("read foo", e) } } ''',
+    ),
+    (
+        "BN31 #498: a RAW STRING hint literal (`r\"…\"`) passes too — the "
+        "check must not be narrower than the two forms #498's own definition "
+        "names (`r?#*\"` covers both plain and raw)",
+        ''' fn f(e: &E) -> X { X::V { detail: detail::gated_with_context(r"read foo", e) } } ''',
+    ),
+    (
+        "BN32 #498: a MULTI-LINE call with the literal hint on its own line "
+        "passes — `io_gated_with_path_and_advice`'s and `literal_for_uuid`'s "
+        "production call sites are wrapped exactly this way, across several "
+        "physical lines, and the hint-argument span is offset-based so "
+        "wrapping must not matter",
+        '''
+        fn f(e: &E) -> X {
+            X::V {
+                detail: detail::gated_with_context(
+                    "read foo",
+                    e,
+                ),
+            }
+        }
+        ''',
+    ),
 ]
 
 # The `detail.rs` stand-in every self-test control's rule-E3 sanctioned-
@@ -850,11 +890,23 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
 # are sanctioned" must not silently change meaning when someone adds a
 # constructor to the real `error/detail.rs`. `test_only_helper` is
 # `#[cfg(test)]`-gated and must NOT be sanctioned (`BP34`).
+#
+# `gated_with_context` (#498) is the one HINT-bearing constructor in this
+# fixture — its `context: &'static str` parameter is what `BP52` needs a
+# sanctioned call to have, so the hint-literal check has something to deny
+# that isn't ALSO denied for the unrelated reason "unsanctioned
+# constructor". Neither `gated` nor `uuid_hex` above has a `&'static str`
+# parameter at all, so before this addition nothing in this fixture could
+# exercise `_hint_args_are_literal`.
 SELF_TEST_DETAIL_SRC = '''
 pub(crate) trait GatedDetail: std::fmt::Display {}
 
 pub(crate) fn gated(e: &impl GatedDetail) -> String {
     e.to_string()
+}
+
+pub(crate) fn gated_with_context(context: &'static str, e: &impl GatedDetail) -> String {
+    format!("{context}: {e}")
 }
 
 pub(crate) fn uuid_hex(uuid: &[u8; 16]) -> String {

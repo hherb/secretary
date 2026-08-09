@@ -283,3 +283,39 @@ core/src/vault/mod.rs	E1	#[error("repair rejected for block {block_uuid:02x?}: {
 # =============================================================================
 
 ffi/secretary-ffi-bridge/src/repair/tests/mod.rs	E3	uuid_hex: format_uuid_hyphenated(&block_uuid)	TEST-ONLY FILE: `mod tests` is #[cfg(test)]-gated in the PARENT (repair/mod.rs:22), which this guard cannot see from inside. The RHS is format_uuid_hyphenated(&block_uuid), a data-free renderer over a [u8; 16] (hex digits and hyphens only). Never reaches a platform. NEWLY REPORTED, not newly written: the source line is unchanged since #449; #488 made a `let` binding to a gated name an E3 candidate position, which is what first surfaced it.
+# =============================================================================
+# SECTION 5 — #498's HINT-LITERAL CHECK: A FORWARDED &'static str PARAMETER
+#
+# Rule E3 (#498) now additionally requires every HINT-POSITION argument of a
+# sanctioned `detail::*` call — the parameters typed `&'static str` in that
+# constructor's own signature, e.g. `context`, `field`, `advice` — to be a
+# string-literal TOKEN at the call site, not merely an expression of that
+# type. #498 demonstrated by execution that `Box::leak(format!(…)
+# .into_boxed_str())` mints a `&'static str` from RUNTIME data in safe stable
+# Rust and scanned clean before this fix.
+#
+# Every entry below is the SAME shape: the "non-literal" argument is not a
+# leaked value, it is the ENCLOSING function's OWN `&'static str` PARAMETER,
+# forwarded one hop into a sanctioned constructor's hint position — the same
+# "trust the parameter, not a re-derived provenance" shape rule E3's arm 4
+# already accepts for the gated field's NAME (`fn f(detail: String) -> E {
+# E::V { detail: detail } }`, CLAUDE.md's "function-parameter case"), one
+# level deeper. Each entry names every CURRENT call site of the enclosing
+# function, verified by `grep -rn`, exactly like Section 3's discipline.
+# Re-verify on any edit that adds a call site or changes what is passed for
+# the named parameter — a future caller building that argument at runtime
+# (a `format!(...)`, a decrypted field name) would be exactly the leak #498
+# exists to catch, and this entry does not vouch for one.
+#
+# HIGH review weight, same tier as Section 3: this guard sees the CALL SITE
+# to the sanctioned constructor, not the enclosing function's own callers —
+# the claim "every caller of the enclosing function passes a literal" is a
+# point-in-time fact this guard cannot re-verify on its own.
+# =============================================================================
+
+ffi/secretary-ffi-bridge/src/error/detail.rs	E3	<io::Error payload>: crate::error::detail::gated_with_path_and_advice(e, path, advice)	`advice` is `io_gated_with_path_and_advice`'s OWN `&'static str` parameter (detail.rs, a few lines above this call), forwarded one hop into `gated_with_path_and_advice`'s hint position. Its only production call site is repair/orchestration.rs's §10 rollback-baseline read, which passes a fixed string literal; its only other call site is inside `#[cfg(test)] mod tests` in this same file (never reaches a shipped binary).
+ffi/secretary-ffi-uniffi/src/namespace/mod.rs	E3	detail: crate::detail::arg_len(field, 16, bytes.len())	`field` is `uuid_from_vec`'s own `&'static str` parameter, forwarded one hop into `arg_len`'s hint position. Every one of its 46 call sites (record_edit.rs x12, sync.rs x1, contacts.rs x3, repair.rs x4, block_crud.rs x9, namespace/mod.rs x17 — verified by `grep -rn '\buuid_from_vec('`) passes a fixed string literal.
+ffi/secretary-ffi-uniffi/src/namespace/mod.rs	E3	detail: crate::detail::arg_len(field, 32, bytes.len())	`field` is `array32_from_vec`'s own `&'static str` parameter, forwarded one hop into `arg_len`'s hint position. Every one of its 3 call sites (namespace/mod.rs:598, repair.rs:228,356 — verified by `grep -rn '\barray32_from_vec('`) passes the fixed literal "device_secret".
+ffi/secretary-ffi-uniffi/src/namespace/mod.rs	E3	detail: crate::detail::indexed_arg_len(field, index, 16, bytes.len())	`field` is `uuid_from_vec_at`'s own `&'static str` parameter (`index` is the enclosing `enumerate()`'s integer, not a hint position), forwarded one hop into `indexed_arg_len`'s hint position. Its one call site (repair.rs:57, `convert_approvals`) passes the fixed literal "approvals.block_uuid".
+ffi/secretary-ffi-uniffi/src/namespace/mod.rs	E3	detail: crate::detail::indexed_arg_len(field, index, 32, bytes.len())	`field` is `array32_from_vec_at`'s own `&'static str` parameter (`index` is the enclosing `enumerate()`'s integer, not a hint position), forwarded one hop into `indexed_arg_len`'s hint position. Both of its call sites (repair.rs:59,60, `convert_approvals`) pass a fixed literal ("approvals.file_fingerprint", "approvals.committed_fingerprint").
+ffi/secretary-ffi-uniffi/src/namespace/mod.rs	E3	detail: crate::detail::nested_indexed_arg_len(field, outer, inner, 16, bytes.len())	`field` is `uuid_from_vec_nested_at`'s own `&'static str` parameter (`outer`/`inner` are the enclosing nested `enumerate()`s' integers, not hint positions), forwarded one hop into `nested_indexed_arg_len`'s hint position. Its one call site (repair.rs:69, `convert_approvals`) passes the fixed literal "approvals.added_recipients".

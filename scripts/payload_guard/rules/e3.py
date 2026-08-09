@@ -186,9 +186,38 @@ def _ctor_params_are_safe(
     return True
 
 
+def _static_str_param_indexes(params_text: str) -> frozenset[int]:
+    """The 0-based positional indexes of `params_text`'s `&'static str`
+    parameters — #498's HINT positions: the argument slots a call site must
+    fill with a string LITERAL, not merely an expression of that type (see
+    `_hint_args_are_literal` below).
+
+    Reuses the exact same parenthesis-stripping and `split_top_level` parse
+    `_ctor_params_are_safe` uses on the same `params_text`, so an index
+    returned here always lines up with the parameter
+    `_ctor_params_are_safe` validated the TYPE of — two independently
+    written parses over the same text would risk drifting apart on a
+    future edit to either.
+    """
+    inner = params_text.strip()
+    if inner.startswith("(") and inner.endswith(")"):
+        inner = inner[1:-1]
+    if not inner.strip():
+        return frozenset()
+    indexes: set[int] = set()
+    for i, part in enumerate(split_top_level(inner)):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        ty = " ".join(part.split(":", 1)[1].split())
+        if ty == "&'static str":
+            indexes.add(i)
+    return frozenset(indexes)
+
+
 def sanctioned_constructor_names(
     detail_src: str | None, *, owns_detail_type: bool = False
-) -> frozenset[str]:
+) -> dict[str, frozenset[int]]:
     """The set of `detail::<name>(...)` constructors rule E3 accepts a call
     to — every `pub(crate) fn` declared in `error/detail.rs` (#480).
 
@@ -232,15 +261,27 @@ def sanctioned_constructor_names(
     not part of the shipped crate and must not vouch for shipped code, which
     is the same rule `discover_declarations` applies to its own three
     registries.
+
+    RETURN SHAPE, changed by #498: a `dict[str, frozenset[int]]`, not a bare
+    `frozenset[str]`. The value is the constructor's HINT positions — the
+    0-based indexes of its `&'static str` parameters, from
+    `_static_str_param_indexes` — which `initializer_is_gated`'s arm 2 uses
+    to require a string LITERAL at each of them (see `_hint_args_are_literal`
+    and this module's #498 docstring block above `_hint_args_are_literal`
+    for the honest limit). `name in sanctioned` still works unchanged for a
+    plain membership test — a dict's `in` reads its keys — so this is
+    additive for every call site that only ever checked membership. A
+    MISSING/unreadable file still yields the EMPTY dict, the same
+    fail-closed hinge as before.
     """
     if not detail_src:
-        return frozenset()
+        return {}
     view = discovery_view(detail_src)
     # A root that does not own the newtype must not let a locally-declared
     # decoy called `Detail` satisfy `SAFE_PARAM_TYPES`' spelling test.
     detail_param_ok = owns_detail_type or not LOCAL_DETAIL_TYPE_RE.search(view)
     excluded = discovery_cfg_test_spans(detail_src)
-    names: set[str] = set()
+    names: dict[str, frozenset[int]] = {}
     for m in SANCTIONED_CTOR_RE.finditer(view):
         if _inside(m.start(), excluded):
             continue
@@ -252,8 +293,8 @@ def sanctioned_constructor_names(
             name, params_text, detail_param_ok=detail_param_ok
         ):
             continue
-        names.add(name)
-    return frozenset(names)
+        names[name] = _static_str_param_indexes(params_text)
+    return names
 
 
 # A gated field name in INITIALIZER position: `<name>:` not followed by a
@@ -458,13 +499,133 @@ def initializer_end(view: str, start: int) -> int:
     return i
 
 
+# #498's cheaper half — the LITERAL check on a sanctioned call's HINT-
+# POSITION arguments (`_hint_args_are_literal` and its helper
+# `_split_call_arg_spans`, both used from `initializer_is_gated`'s arm 2
+# below).
+#
+# Every sanctioned constructor's `&'static str` parameter (`context`,
+# `field`, `advice`, …) is a HINT: a fixed sentence or name meant to be
+# written at the call site, never runtime content. #498 demonstrated by
+# EXECUTION that this is not enforced by the parameter's TYPE alone —
+# `Box::leak(format!(…).into_boxed_str())` mints a `&'static str` from
+# RUNTIME data in safe, stable Rust, `#![forbid(unsafe_code)]` does not stop
+# it, and the resulting call (`detail::gated_with_context(leaked, e)`)
+# scanned CLEAN before this fix, because `SAFE_PARAM_TYPES`
+# (`_ctor_params_are_safe`) only ever checked the constructor's declared
+# parameter TYPE, never what a given CALL SITE actually passes there.
+#
+# From here on, every hint-position argument at a sanctioned call site must
+# itself be a string-literal TOKEN — a plain `"…"` or a raw `r"…"` /
+# `r#"…"#` — not merely an expression of type `&'static str`.
+#
+# HONEST LIMIT (spec `docs/superpowers/specs/2026-08-09-500-detail-newtype-
+# design.md` §6.1, stated here in substance): this watches the door, it
+# does not remove it. Unlike the `Detail` newtype (#500), which makes an
+# ungated `String` a TYPE ERROR at every call site, a text rule cannot make
+# a leaked `&'static str` unrepresentable — it can only require that the
+# TOKEN written at a hint position look like a literal. #498's structural
+# option — a closed `enum Context` that only fixed, named variants could
+# construct — remains the only fix that would remove the door rather than
+# watch it, and #498 STAYS OPEN recording that.
+def _split_call_arg_spans(
+    view: str, start: int, end: int, literal_ends: dict[int, int]
+) -> list[tuple[int, int]]:
+    """The `(start, end)` offset of each top-level, comma-separated argument
+    in the call-argument text `view[start:end]`.
+
+    Not `split_top_level` (bracket-depth only, no string awareness): a comma
+    INSIDE a hint literal is a real, live shape —
+    `io_gated_with_path_and_advice`'s production `advice` argument
+    (`ffi/secretary-ffi-bridge/src/repair/orchestration.rs`) is a sentence
+    containing several commas — and `split_top_level` would mis-split on
+    every one of them, exactly the failure mode `initializer_end`'s own
+    docstring already warns a DISCOVERY-view caller about for `,`/`;`
+    inside a literal. Any offset that is the START of a complete string
+    literal (per `literal_ends`, `string_literal_token_ends`'s EXACT-match
+    map — the same one arm 1 uses) is skipped in one jump to that literal's
+    OWN end, so nothing inside a string can register as a top-level
+    separator or change bracket depth.
+
+    `view` must therefore be a LITERAL-INTACT view (`strip_comments`'s
+    output, not `discovery_view`'s) — the same `view`
+    `initializer_is_gated` already receives as `src`.
+    """
+    spans: list[tuple[int, int]] = []
+    depth = 0
+    i = start
+    arg_start = start
+    while i < end:
+        lit_end = literal_ends.get(i)
+        if lit_end is not None and lit_end <= end:
+            i = lit_end
+            continue
+        ch = view[i]
+        if ch in "<([{":
+            depth += 1
+        elif ch in ">)]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            spans.append((arg_start, i))
+            i += 1
+            arg_start = i
+            continue
+        i += 1
+    spans.append((arg_start, end))
+    return spans
+
+
+def _hint_args_are_literal(
+    view: str,
+    args_start: int,
+    args_end: int,
+    hint_indexes: frozenset[int],
+    literal_ends: dict[int, int],
+) -> bool:
+    """#498: every one of a sanctioned call's HINT-POSITION arguments
+    (`hint_indexes`, from `sanctioned_constructor_names`) must be a string
+    literal, checked the SAME way arm 1 checks the whole gated-field value:
+    an EXACT offset match against `literal_ends`, not a prefix test on the
+    argument's rendered text. `string_literal_token_ends`'s own docstring
+    states why exact-match is the safer choice ("If a lexer desync ever
+    swallowed half a file into one 'literal', the expression span would not
+    coincide with that token's span and the acceptance would fail rather
+    than widen") — the same reasoning applies here, and it is what denies
+    an argument like `"a" + leak()`, which STARTS with a quote but is not,
+    in its entirety, a literal token, unlike a bare `^r?#*"` prefix test
+    would.
+
+    `hint_indexes` empty (`gated`, `uuid_hex`, … — no `&'static str`
+    parameter at all) is vacuously safe: nothing to check.
+
+    A hint index with no corresponding argument — fewer top-level commas
+    than the constructor's own signature promises, a call that could not
+    have compiled — DENIES rather than being skipped: default-deny, the
+    same direction every other unparseable shape in this file takes.
+    """
+    if not hint_indexes:
+        return True
+    spans = _split_call_arg_spans(view, args_start, args_end, literal_ends)
+    for idx in hint_indexes:
+        if idx >= len(spans):
+            return False
+        a, b = spans[idx]
+        while a < b and view[a] in " \t\r\n":
+            a += 1
+        while b > a and view[b - 1] in " \t\r\n":
+            b -= 1
+        if literal_ends.get(a) != b:
+            return False
+    return True
+
+
 def initializer_is_gated(
     view: str,
     start: int,
     end: int,
     name: str,
     literal_ends: dict[int, int],
-    sanctioned: frozenset[str],
+    sanctioned: dict[str, frozenset[int]],
     allow_field_access: bool,
     terminator: str,
 ) -> bool:
@@ -489,6 +650,14 @@ def initializer_is_gated(
        consuming the WHOLE expression. Requiring the whole expression is
        deliberately stricter than "starts with a sanctioned call":
        `detail::gated(&e) + leak()` starts with one too.
+
+       #498: AND every one of the constructor's own HINT-POSITION
+       arguments — `sanctioned[<name>]`, the 0-based indexes of its
+       `&'static str` parameters — must itself be a string-literal TOKEN
+       (`_hint_args_are_literal`). A `&'static str`-typed variable at that
+       position (a leaked one via `Box::leak`, demonstrated by #498; or,
+       more mundanely, a forwarded function parameter) is not a literal and
+       DENIES this arm, even though the call is otherwise shape-2-accepted.
     3. The exact token `String` OR `Detail` (#500) — a DECLARATION's type
        position (a struct field, an enum variant field, a function
        parameter), not a value. Rule E2 already decides whether a `String`
@@ -648,11 +817,20 @@ def initializer_is_gated(
         tail = "".join(view[lit_end:end].split())
         if tail in ("", ".into()", ".to_string()"):
             return True
-    # (2) a sanctioned `detail::<name>(...)` call consuming the expression.
+    # (2) a sanctioned `detail::<name>(...)` call consuming the expression,
+    #     with every one of its HINT-POSITION arguments a string literal
+    #     (#498 — see this module's docstring block above
+    #     `_hint_args_are_literal`).
     cm = DETAIL_CALL_RE.match(view, start)
     if cm and cm.end() <= end and cm.group(1) in sanctioned:
         _, after = balanced_slice(view, cm.end() - 1)
-        if after <= end and not view[after:end].strip():
+        if (
+            after <= end
+            and not view[after:end].strip()
+            and _hint_args_are_literal(
+                view, cm.end(), after - 1, sanctioned[cm.group(1)], literal_ends
+            )
+        ):
             return True
     # (5) a SINGLE-HOP field access ending in the gated name — the DTO
     #     pass-through (#486). UNREACHABLE TODAY: `allow_field_access` is
@@ -686,7 +864,7 @@ def initializer_is_gated(
 def scan_bridge_construction_sites(
     path_label: str,
     raw: str,
-    sanctioned: frozenset[str],
+    sanctioned: dict[str, frozenset[int]],
     allow_field_access: bool = False,
 ) -> list[Finding]:
     """Rule E3 (#480): every CONSTRUCTION SITE of a gated field must build
