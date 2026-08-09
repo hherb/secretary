@@ -748,6 +748,47 @@ Then in `ffi/secretary-ffi-uniffi/src/errors/vault.rs`, the 12 constructions ins
 ```
 Add `use secretary_ffi_bridge::Detail;` to the test module.
 
+- [ ] **Step 6b: Re-verify the five-gate matrix — NOW it is demonstrable**
+
+Added after Task 1 executed (implementer concern 1, valid). Task 1's Step 7 could not demonstrate the C/D/E blind spot: with **no** crate requesting `test-support`, `Detail::for_test` exists in no configuration at all, so all five gates rejected the planted call identically. The blind spot only materialises once a consumer wires the dev-dependency — which Step 6 just did.
+
+Run the matrix again, on the real workspace, now that uniffi requests the feature:
+
+```bash
+cd /Users/hherb/src/secretary/.worktrees/500-detail-newtype
+cat >> ffi/secretary-ffi-bridge/src/error/detail.rs <<'EOF'
+// ---- TEMPORARY PROBE (#500 Task 3 Step 6b) ----
+pub fn probe_launder(runtime: String) -> Detail {
+    Detail::for_test(&runtime)
+}
+// ---- END TEMPORARY PROBE ----
+EOF
+
+for g in "build --release --workspace" "clippy --release --workspace"; do
+  echo "--- cargo $g (MUST FAIL) ---"; cargo $g 2>&1 | grep -cE "^error"
+done
+echo "--- cargo test --release --workspace (expect 0) ---"
+cargo test --release --workspace 2>&1 | grep -cE "^error"
+echo "--- cargo clippy --release --workspace --tests (expect 0) ---"
+cargo clippy --release --workspace --tests 2>&1 | grep -cE "^error"
+echo "--- rustdoc gate (expect 0) ---"
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace 2>&1 | grep -cE "^error"
+
+python3 - <<'PY'
+import pathlib
+p = pathlib.Path("ffi/secretary-ffi-bridge/src/error/detail.rs")
+s = p.read_text()
+a = s.index("// ---- TEMPORARY PROBE (#500 Task 3 Step 6b) ----")
+b = s.index("// ---- END TEMPORARY PROBE ----") + len("// ---- END TEMPORARY PROBE ----\n")
+p.write_text(s[:a] + s[b:]); print("probe removed")
+PY
+grep -c probe_launder ffi/secretary-ffi-bridge/src/error/detail.rs   # expect 0
+```
+
+Expected: the first two print a non-zero count; the last three print `0`. **That is the whole justification for the `cargo build --release --workspace` CI step Task 1 added** — three of this repo's five existing gates compile a production call to the hatch clean.
+
+The rustdoc row is the one to watch: it was verified on a synthetic two-crate probe (cold `target/`, rc=0, both crates documented) but a Task 1 experiment using a self-referential dev-dependency reached the opposite conclusion. A self-dep is not a valid model of this wiring; this run is the authoritative one. **If the measured matrix differs from the expectation above, correct `detail.rs`'s `for_test` doc comment and the `test.yml` step comment in this same commit** — they currently assert the expected shape and carry a marker saying it is re-verified here. Do not leave a claim standing that this run contradicts.
+
 - [ ] **Step 7: Fix the bridge's own 29 test constructions**
 
 `ffi/secretary-ffi-bridge/src/error/vault/tests.rs` builds the 29 gated fields with `.to_string()`. Change each to `Detail::for_test(...)`.
