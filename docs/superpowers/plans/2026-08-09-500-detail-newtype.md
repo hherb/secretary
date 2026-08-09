@@ -685,6 +685,13 @@ Expected: a long list of `expected `String`, found `Detail`` errors. This IS the
 
 - [ ] **Step 3: Change the 27 declarations**
 
+> **Spell the type BARE: `Detail`, never a qualified path.** Verified during the
+> Task 2 review: `detail: crate::error::detail::Detail` and `detail: detail::Detail`
+> both DENY today — rule E2's gated carve-out compares the normalized type
+> spelling and does not resolve paths. Fail-closed, so it cannot leak, but it
+> will red the real scan on the first qualified declaration. Add
+> `use crate::error::detail::Detail;` to each of the five files instead.
+
 Change each `detail: String,` to `detail: Detail,` (likewise `uuid_hex`, `block_uuid_hex`, `recipient_fingerprint_hex`, `expected_fingerprint_hex`, `got_fingerprint_hex`) at the 27 sites listed above. Add `use crate::error::detail::Detail;` to each of the five files that needs it.
 
 Update the doc comments that assert the field's type — several say "Stored as a `String`". For example `error/vault/mod.rs:112-113` reads:
@@ -942,6 +949,22 @@ Add to the bridge POSITIVE control list in `scripts/payload_guard/controls/bridg
 uv run scripts/check-error-payload-hygiene.py --self-test 2>&1 | tail -12
 ```
 Expected: FAIL — BP51 expects an E2 finding, but the bridge set still accepts `String`.
+
+- [ ] **Step 2b: Close the `type Detail = String;` laundering door**
+
+Found in the Task 2 review, and it only becomes live once Step 3 narrows the set. Probed at Task 2's HEAD: a bridge file declaring
+
+```rust
+type Detail = String;
+...
+Boom { detail: Detail },
+```
+
+scans **CLEAN**. Harmless while the bridge still accepts `String` — but the moment Step 3 narrows to `{"Detail"}`, this reintroduces a plain `String` under the newtype's name with the guard green. That is a total defeat of the rule this task exists to tighten, and it is one line.
+
+Rule E2's gated arm compares the spelling after `normalize_type` and never resolves aliases. The guard already has alias machinery for exactly this class — `alias_shadowed_names` in `types.py` drops a name that a discovered `type X = Y;` shadows out of a credit tier, with the rationale that *"a name that means two things has not been RESOLVED, and a guard that guesses which meaning is real is a guard that can be aimed."* Apply the same discipline here: a gated field whose type spelling is a locally-aliased name must DENY, regardless of what the alias resolves to.
+
+Add a POSITIVE control (expects a finding) for the fixture above, and a mutation proving it non-vacuous. Re-derive the next free label first (see the LABEL NAMESPACE note above) — `BP52` is claimed by Task 5.
 
 - [ ] **Step 3: Narrow the bridge's accepted set**
 
