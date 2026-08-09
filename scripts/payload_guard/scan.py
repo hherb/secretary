@@ -17,7 +17,8 @@ import sys
 from payload_guard.allowlist import load_allowlist
 from payload_guard.config import ALLOWLIST_PATH, DETAIL_MODULE_REL, REPO_ROOT
 from payload_guard.discovery import (
-    _discover_tier_inputs, discover_scanned_error_type_names, foreign_use_names,
+    _discover_tier_inputs, discover_local_detail_decoys,
+    discover_scanned_error_type_names, foreign_use_names,
 )
 from payload_guard.roots import SCAN_ROOTS
 from payload_guard.rules.e1 import scan_source
@@ -103,7 +104,7 @@ def run_real_scan() -> int:
     # that file's namespace contradicts.
     violations: list[Finding] = []
     for root in SCAN_ROOTS:
-        enums, aliases, consts = tiers[root.label]
+        enums, aliases, consts, alias_candidate_names = tiers[root.label]
         detail_src = (
             next(
                 (
@@ -119,17 +120,30 @@ def run_real_scan() -> int:
         sanctioned = sanctioned_constructor_names(
             detail_src, owns_detail_type=root.owns_detail_type
         )
+        # #500 fix round 2: every `gated_field_types` spelling shadowed by a
+        # same-named local declaration ELSEWHERE in this root — a raw
+        # `type X = Y;` alias candidate (collision or not — see
+        # `_discover_tier_inputs`'s docstring for why this must be the
+        # PRE-collision-drop set, not `frozenset(aliases)`) union a decoy
+        # `struct|enum|union|type Detail` outside the sanctioned module (see
+        # `discover_local_detail_decoys`). Computed ONCE PER ROOT, same as
+        # `sanctioned` above, and threaded unchanged into every file's scan.
+        shadowed_type_names = alias_candidate_names | discover_local_detail_decoys(
+            sources[root.label], root.detail_module_rel
+        )
         for label, raw in sources[root.label]:
             foreign = foreign_use_names(raw)
             findings = scan_source(
                 label, raw, enums, aliases, consts, foreign,
                 bridge_mode=root.bridge_mode,
                 gated_field_types=root.gated_field_types,
+                shadowed_type_names=shadowed_type_names,
             )
             if root.bridge_mode:
                 findings += scan_bridge_plain_declarations(
                     label, raw, enums, aliases, foreign,
                     gated_field_types=root.gated_field_types,
+                    shadowed_type_names=shadowed_type_names,
                 )
             if root.construction_sites:
                 findings += scan_bridge_construction_sites(

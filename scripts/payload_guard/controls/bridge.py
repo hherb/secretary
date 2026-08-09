@@ -558,6 +558,44 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         ''',
         {"rule": "E2", "field": "detail"},
     ),
+    (
+        "BP54 #500 fix round 2 (review finding 'Important 2'): a gated field "
+        "spelled `Detail` still DENIES when THIS file ALSO declares "
+        "`pub struct Detail(pub String);` — a local STRUCT, not a `type` "
+        "alias, so BP53's `type X = Y;` fix does not reach it. Rule E3's own "
+        "`SAFE_PARAM_TYPES`/`LOCAL_DETAIL_TYPE_RE` check does not help "
+        "either: it inspects only the ONE sanctioned `detail.rs` file, "
+        "because its job is 'is this CONSTRUCTOR call sanctioned', not 'is "
+        "this DECLARATION's type spelling trustworthy'. Reuses "
+        "`LOCAL_DETAIL_TYPE_RE` (moved to discovery.py) via "
+        "`discover_local_detail_decoys` rather than a second matcher",
+        '''
+        pub struct Detail(pub String);
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: Detail },
+        }
+        ''',
+        {"rule": "E2", "field": "detail"},
+    ),
+    (
+        "BP55 #500 fix round 2: the ENUM spelling of the same decoy — "
+        "`pub enum Detail { ... }` — must ALSO deny; `LOCAL_DETAIL_TYPE_RE` "
+        "names struct, enum AND union, and BP54 alone would leave two of "
+        "the three keywords the coordinator asked for unpinned",
+        '''
+        pub enum Detail { Wrapped(String) }
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: Detail },
+        }
+        ''',
+        {"rule": "E2", "field": "detail"},
+    ),
 ]
 
 BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
@@ -783,6 +821,26 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
             Boom { detail: Detail },
         }
         ''',
+    ),
+    (
+        "BN29 #500 fix round 2: `pub struct Detail(pub String);` declared "
+        "INSIDE the sanctioned detail module itself is the LEGITIMATE "
+        "declaration (this is what `error/detail.rs` actually contains), "
+        "and a gated field referencing it in the SAME fixture must not be "
+        "shadowed by its own authentic declaration — proves "
+        "`discover_local_detail_decoys`'s exemption for the root's own "
+        "`detail_module_rel` actually fires, not merely that BP54/BP55 "
+        "deny everywhere else",
+        '''
+        pub struct Detail(pub String);
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: Detail },
+        }
+        ''',
+        {"path_label": DETAIL_MODULE_REL},
     ),
 ]
 

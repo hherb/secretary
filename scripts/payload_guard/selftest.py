@@ -24,8 +24,8 @@ from payload_guard.controls.wrapper import (
     WRAPPER_NEGATIVE_CONTROLS, WRAPPER_POSITIVE_CONTROLS,
 )
 from payload_guard.discovery import (
-    discover_declarations, discover_scanned_error_type_names, foreign_use_names,
-    resolve_consts,
+    _discover_tier_inputs, discover_declarations, discover_local_detail_decoys,
+    discover_scanned_error_type_names, foreign_use_names, resolve_consts,
 )
 from payload_guard.lexer import LEXER_SAMPLE, discovery_view, lex_spans, strip_comments
 from payload_guard.roots import SCAN_ROOTS, ScanRoot
@@ -211,12 +211,17 @@ def scan_control(src: str) -> list[Finding]:
     exists to test cannot catch a `roots.py` edit that changes it. `core`'s
     `bridge_mode=False` means this value is never actually consulted by
     `is_bridge_field_safe`, but `scan_source` requires it regardless (#500).
+    `shadowed_type_names` (#500 fix round 2) is the SAME story: `core`'s
+    `gated_field_types` is always empty, so nothing can ever be shadowed
+    OUT of it, and `frozenset()` here is passed for the same
+    never-consulted-under-`bridge_mode=False` reason.
     """
     enums, aliases, declared_consts, shadows = discover_declarations(src)
     consts = resolve_consts(declared_consts, shadows)
     return scan_source(
         "<self-test>", src, enums, aliases, consts, foreign_use_names(src),
         gated_field_types=_ROOTS_BY_LABEL["core"].gated_field_types,
+        shadowed_type_names=frozenset(),
     )
 
 
@@ -579,11 +584,29 @@ def scan_bridge_control(
     duration `{"String", "Detail"}` by task 4 now that every bridge
     declaration has moved off `String`, so a bridge control exercises the
     NARROWED carve-out `is_bridge_field_safe` grants.
+
+    `shadowed_type_names` (#500 fix round 2) is derived from THIS control's
+    own fixture, the same self-contained-design discipline every other
+    input here follows: `frozenset(aliases)` — the discovered alias dict's
+    KEY SET is already the full candidate set regardless of collision for a
+    SINGLE source string (`find_type_aliases` silently keeps the LAST
+    right-hand side on a same-string redeclaration rather than dropping the
+    name, unlike the real cross-file scan's `alias_candidates`, but the KEY
+    is present either way — see
+    `check_cross_file_alias_collision_still_denies` (BP56) for the dedicated
+    cross-file collision check this single-string path cannot exercise) —
+    unioned with `discover_local_detail_decoys` over the SAME
+    fixture, exempting `root.detail_module_rel` so a control that sets
+    `path_label=DETAIL_MODULE_REL` to test the legitimate declaration is
+    not shadowed by its own fixture.
     """
     root = _ROOTS_BY_LABEL["bridge"]
     enums, aliases, declared_consts, shadows = discover_declarations(src)
     consts = resolve_consts(declared_consts, shadows)
     foreign = foreign_use_names(src)
+    shadowed_type_names = frozenset(aliases) | discover_local_detail_decoys(
+        [(path_label, src)], root.detail_module_rel
+    )
     # Every rule below dispatches off the SAME `ScanRoot` flags `run_real_scan`
     # reads (#496) — see `_EXPECTED_ROOT_FLAGS`. Calling them unconditionally
     # is what let E3/E4 be switched off tree-wide with the self-test green.
@@ -591,11 +614,13 @@ def scan_bridge_control(
         path_label, src, enums, aliases, consts, foreign,
         bridge_mode=root.bridge_mode,
         gated_field_types=root.gated_field_types,
+        shadowed_type_names=shadowed_type_names,
     )
     if root.bridge_mode:
         found += scan_bridge_plain_declarations(
             path_label, src, enums, aliases, foreign,
             gated_field_types=root.gated_field_types,
+            shadowed_type_names=shadowed_type_names,
         )
     if root.construction_sites:
         found += scan_bridge_construction_sites(
@@ -680,21 +705,34 @@ def scan_wrapper_control(
     `frozenset({"String"})`, unchanged by the #500 migration (see that
     constant's comment for why the two wrapper roots' agreement is already
     enforced elsewhere).
+
+    `shadowed_type_names` (#500 fix round 2) is derived from this control's
+    own fixture, same as `scan_bridge_control` — see that function's
+    docstring. A wrapper root's `gated_field_types` never contains `Detail`,
+    so a decoy `Detail` declaration can shadow nothing THIS root's carve-out
+    would have accepted anyway; computed uniformly regardless, both for
+    symmetry with `scan_bridge_control` and because `String` collisions are
+    representable here too even though no live wrapper control exercises one.
     """
     enums, aliases, declared_consts, shadows = discover_declarations(src)
     consts = resolve_consts(declared_consts, shadows)
     foreign = foreign_use_names(src)
+    shadowed_type_names = frozenset(aliases) | discover_local_detail_decoys(
+        [(path_label, src)], _WRAPPER_DETAIL_MODULE_REL_FOR_SELFTEST
+    )
     # Same flag-driven dispatch as `scan_bridge_control` (#496), read off BOTH
     # wrapper roots via `_wrapper_flag`.
     found = scan_source(
         path_label, src, enums, aliases, consts, foreign,
         bridge_mode=_wrapper_flag("bridge_mode"),
         gated_field_types=_WRAPPER_GATED_FIELD_TYPES_FOR_SELFTEST,
+        shadowed_type_names=shadowed_type_names,
     )
     if _wrapper_flag("bridge_mode"):
         found += scan_bridge_plain_declarations(
             path_label, src, enums, aliases, foreign,
             gated_field_types=_WRAPPER_GATED_FIELD_TYPES_FOR_SELFTEST,
+            shadowed_type_names=shadowed_type_names,
         )
     if _wrapper_flag("construction_sites"):
         found += scan_bridge_construction_sites(
@@ -791,6 +829,164 @@ def check_bridge_key_distinctness() -> list[str]:
     return failures
 
 
+def check_cross_file_alias_collision_still_denies() -> list[str]:
+    """`BP56` (#500 fix round 2, review finding "Important 1"): a gated
+    field spelled `Detail` must still DENY when a `type Detail = String;`
+    alias declared in ONE bridge file collides with a DIFFERENT, conflicting
+    `type Detail = ...;` declared in ANOTHER bridge file.
+
+    A dedicated check rather than a `BRIDGE_POSITIVE_CONTROLS` entry, for
+    the same class of reason `check_bridge_key_distinctness` is one: this
+    makes a claim about the CROSS-FILE aggregator (`_discover_tier_inputs`,
+    `run_real_scan`'s Pass 1), not about a single self-contained fixture
+    string. `scan_bridge_control` — every other bridge control in this
+    file — calls `discover_declarations(src)` on ONE string, and within one
+    string `find_type_aliases` cannot even represent a collision: a second
+    `type Detail = ...;` in the SAME string just overwrites the first in its
+    own local dict (last-write-wins), so the KEY `"Detail"` is present in
+    `aliases` either way and `BP53` never actually exercises collision-drop.
+    The bug this pins is specific to `_discover_tier_inputs`'s CROSS-FILE
+    `alias_candidates` — the real, multi-file aggregation `run_real_scan`
+    performs once per root — which DOES track collisions, and which is what
+    dropped the shadow (see `is_bridge_field_safe`'s docstring, source 1).
+
+    Verified by execution before this fix existed: FILE_A (BP53's own
+    fixture) alone produced 2 findings; adding FILE_B — containing only
+    `type Detail = Vec<u8>;`, no gated field of its own — took it to ZERO,
+    because the collision emptied `aliases["Detail"]` from the RESOLVED
+    dict `is_bridge_field_safe`'s fix-round-1 check consulted, and an empty
+    dict has no member to deny on. The fix reads `alias_candidate_names`
+    (the PRE-collision-drop set) instead, which still names `"Detail"`
+    regardless of which value won the collision.
+
+    NOT a clean isolation of Important 1 from Important 2, and this
+    docstring used to claim otherwise until mutation-testing this control
+    disproved it: `LOCAL_DETAIL_TYPE_RE`'s second alternative,
+    `\\btype\\s+Detail\\s*[=<]`, matches FILE_B's `type Detail = Vec<u8>;`
+    too, so `discover_local_detail_decoys` (Important 2's independent
+    fix) ALSO denies this exact fixture — reverting `alias_candidate_names`
+    to the post-collision-drop set here left this control GREEN, because
+    the decoy check alone still supplied `"Detail"` to `shadowed_type_names`.
+    This control still pins a real, useful regression (BOTH mechanisms
+    denying a live exploit shape is not a bad thing), but the mutation
+    proof that Important 1's mechanism specifically holds lives in
+    `check_wrapper_alias_collision_isolated_from_decoy_check` (`WP9`)
+    instead, which collides on `String` — a spelling `LOCAL_DETAIL_TYPE_RE`
+    never matches — so nothing else can mask a regression there.
+    """
+    root = _ROOTS_BY_LABEL["bridge"]
+    file_a = (
+        "ffi/secretary-ffi-bridge/src/error/bp56_a.rs",
+        '''
+        type Detail = String;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: Detail },
+        }
+        ''',
+    )
+    file_b = (
+        "ffi/secretary-ffi-bridge/src/error/bp56_b.rs",
+        "type Detail = Vec<u8>;\n",
+    )
+    sources = [file_a, file_b]
+    enums, aliases, consts, alias_candidate_names = _discover_tier_inputs(sources)
+    shadow = alias_candidate_names | discover_local_detail_decoys(
+        sources, root.detail_module_rel
+    )
+    label, raw = file_a
+    found = scan_source(
+        label, raw, enums, aliases, consts, foreign_use_names(raw),
+        bridge_mode=root.bridge_mode,
+        gated_field_types=root.gated_field_types,
+        shadowed_type_names=shadow,
+    )
+    expect: ControlExpectation = {"rule": "E2", "field": "detail"}
+    if not found:
+        return ["POSITIVE control did not fire: BP56 (cross-file alias collision)"]
+    if not any(_finding_matches(f, expect) for f in found):
+        return [
+            "POSITIVE control fired for the WRONG REASON: BP56 (cross-file "
+            f"alias collision) -> expected {expect}, got "
+            f"{[(f.variant, f.field, f.field_type) for f in found]}"
+        ]
+    return []
+
+
+def check_wrapper_alias_collision_isolated_from_decoy_check() -> list[str]:
+    r"""`WP9` (#500 fix round 2, review finding "Important 1", isolation
+    proof): a WRAPPER-root gated field spelled `String` must still DENY
+    when a `type String = usize;` alias in ONE wrapper file collides with a
+    conflicting `type String = Vec<u8>;` in another — the SAME collision-
+    drop bug `BP56` pins, but on a spelling `LOCAL_DETAIL_TYPE_RE` cannot
+    reach.
+
+    `BP56`'s fixture uses `Detail` because that is the bridge's real gated
+    spelling, but `LOCAL_DETAIL_TYPE_RE`'s own pattern —
+    `\b(?:struct|enum|union)\s+Detail\b|\btype\s+Detail\s*[=<]` — matches
+    `type Detail = ...` too, so `discover_local_detail_decoys` (Important
+    2's fix) ALSO denies `BP56`'s fixture independently of Important 1's
+    `alias_candidate_names` mechanism. Reverting `_discover_tier_inputs`'s
+    4th return value to the post-collision-drop set (mutation-tested during
+    this fix's own review) left `BP56` GREEN — the decoy check alone was
+    enough. `LOCAL_DETAIL_TYPE_RE` never mentions `String` in any of its
+    three alternatives, so a collision on THAT spelling can only ever be
+    caught by the raw-candidate mechanism: this is what makes a regression
+    in `alias_candidate_names` specifically OBSERVABLE, independent of
+    whichever other defence happens to also be watching. The wrapper root
+    is used rather than the bridge because `gated_field_types` only
+    contains `String` there — the bridge's is `{"Detail"}` alone, so a
+    `String` collision would deny nothing bridge-side to observe.
+
+    One root suffices (`ffi-py`, matching every other single-root wrapper
+    constant here, e.g. `_WRAPPER_GATED_FIELD_TYPES_FOR_SELFTEST`) — this is
+    a claim about the SHARED discovery/shadow machinery, not about either
+    wrapper root's own `ScanRoot` data, which `_check_wrapper_roots_agree`
+    already pins as identical.
+    """
+    root = _ROOTS_BY_LABEL["ffi-py"]
+    file_a = (
+        "ffi/secretary-ffi-py/src/wp9_a.rs",
+        '''
+        type String = usize;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: String },
+        }
+        ''',
+    )
+    file_b = ("ffi/secretary-ffi-py/src/wp9_b.rs", "type String = Vec<u8>;\n")
+    sources = [file_a, file_b]
+    enums, aliases, consts, alias_candidate_names = _discover_tier_inputs(sources)
+    shadow = alias_candidate_names | discover_local_detail_decoys(
+        sources, root.detail_module_rel
+    )
+    label, raw = file_a
+    found = scan_source(
+        label, raw, enums, aliases, consts, foreign_use_names(raw),
+        bridge_mode=root.bridge_mode,
+        gated_field_types=root.gated_field_types,
+        shadowed_type_names=shadow,
+    )
+    expect: ControlExpectation = {"rule": "E2", "field": "detail"}
+    if not found:
+        return [
+            "POSITIVE control did not fire: WP9 (wrapper cross-file alias "
+            "collision, isolated from the decoy check)"
+        ]
+    if not any(_finding_matches(f, expect) for f in found):
+        return [
+            "POSITIVE control fired for the WRONG REASON: WP9 (wrapper "
+            f"cross-file alias collision) -> expected {expect}, got "
+            f"{[(f.variant, f.field, f.field_type) for f in found]}"
+        ]
+    return []
+
+
 def run_self_test() -> int:
     failures: list[str] = check_view_invariants()
     failures += _check_root_rule_flags()
@@ -841,6 +1037,8 @@ def run_self_test() -> int:
                 f"{[(f.variant, f.field, f.field_type) for f in found]}"
             )
     failures += check_bridge_key_distinctness()
+    failures += check_cross_file_alias_collision_still_denies()
+    failures += check_wrapper_alias_collision_isolated_from_decoy_check()
     for entry in WRAPPER_POSITIVE_CONTROLS:
         label, src = entry[0], entry[1]
         wrapper_expect: ControlExpectation | None = entry[2] if len(entry) > 2 else None

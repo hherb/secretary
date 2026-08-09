@@ -13,7 +13,8 @@ import re
 
 from payload_guard.config import GATED_FIELD_NAMES
 from payload_guard.discovery import (
-    _inside, discovery_cfg_test_spans, discovery_cfg_test_spans_strict,
+    LOCAL_DETAIL_TYPE_RE, _inside, discovery_cfg_test_spans,
+    discovery_cfg_test_spans_strict,
 )
 from payload_guard.lexer import (
     balanced_slice, discovery_view, strip_comments, string_literal_token_ends,
@@ -143,9 +144,16 @@ STR_PARAM_CTOR_EXCEPTIONS = frozenset({"fingerprint_mismatch", "uuid_prefixed"})
 # rule E4 records for `GatedDetail`, and it is why the LIMITS section states
 # the structural guarantee as conditional on the name resolving to
 # `secretary_ffi_bridge::Detail`.
-LOCAL_DETAIL_TYPE_RE = re.compile(
-    r"\b(?:struct|enum|union)\s+Detail\b|\btype\s+Detail\s*[=<]"
-)
+#
+# `LOCAL_DETAIL_TYPE_RE` itself now lives in `discovery.py` (#500 fix round
+# 2, review finding "Important 2"), imported back from there: rule E2's
+# gated-field carve-out (`is_bridge_field_safe`, via
+# `discover_local_detail_decoys`) needed the identical match — a decoy
+# `Detail` declared OUTSIDE the sanctioned module shadows the spelling for
+# E2 exactly as it withdraws a parameter type for E3 here — and a second,
+# independently-maintained copy is how these two checks would drift apart
+# again, the same way E3's own copy of this hole outlived E2's for one full
+# review round.
 
 
 def _ctor_params_are_safe(

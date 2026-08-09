@@ -105,6 +105,7 @@ def scan_source(
     bridge_mode: bool = False,
     *,
     gated_field_types: frozenset[str],
+    shadowed_type_names: frozenset[str],
 ) -> list[Finding]:
     """Find every `#[error]` variant/struct that interpolates a non-data-free
     field, PLUS every `#[error(...)]` attribute whose structure this guard
@@ -154,6 +155,15 @@ def scan_source(
     possibly-permissive spelling. Callers that never exercise `bridge_mode`
     (the `core` root) still pass `frozenset()`, matching `core`'s own
     `ScanRoot.gated_field_types`.
+
+    `shadowed_type_names` (#500 fix round 2) is the SAME kind of REQUIRED,
+    no-default parameter, for the same reason: it names every
+    `gated_field_types` spelling shadowed by a same-named local declaration
+    elsewhere in the root (a raw `type X = Y;` alias candidate, collision or
+    not, plus a decoy `struct|enum|union|type` outside the sanctioned
+    module — see `is_bridge_field_safe`'s docstring), and denies
+    unconditionally ahead of the carve-out. Threaded through unchanged to
+    both consumers below.
 
     Note `strip_comments`, NOT `discovery_view`: locating `#[error(`
     attributes and reading their message text needs the strings INTACT.
@@ -278,6 +288,7 @@ def scan_source(
                     aliases,
                     foreign_names,
                     gated_field_types,
+                    shadowed_type_names,
                 )
             )
 
@@ -390,7 +401,8 @@ def scan_source(
             # Everything else denies exactly as core's E1 does today.
             field_is_safe = (
                 is_bridge_field_safe(
-                    fname, ftype, local_error_enums, aliases, foreign_names, gated_field_types
+                    fname, ftype, local_error_enums, aliases, foreign_names,
+                    gated_field_types, shadowed_type_names,
                 )
                 if bridge_mode
                 else is_data_free(ftype, local_error_enums, aliases, foreign_names)

@@ -54,6 +54,22 @@ ENUM_RE = re.compile(r"\benum\s+([A-Za-z_][A-Za-z0-9_]*)")
 # naive "stop at the first semicolon" regex truncates the RHS to `[u8`. See
 # `find_type_aliases`, which tracks bracket depth instead.
 TYPE_ALIAS_HEAD_RE = re.compile(r"\btype\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*")
+
+# A LOCAL declaration of a type called `Detail` (#500 fix round 1), one of
+# `struct|enum|union Detail` or `type Detail = ...`/`type Detail<...>`.
+# Moved here from `rules/e3.py` (#500 fix round 2, review finding "Important
+# 2") so `discover_local_detail_decoys` below — which needs it for rule E2's
+# gated-field carve-out, a DIFFERENT consumer than E3's `SAFE_PARAM_TYPES`
+# signature gate — can share the one definition instead of a second, drifting
+# copy. `rules/e3.py` imports it back from here (discovery.py sits below
+# rules/* in this package's dependency order; see the module docstring), the
+# same shape `ERROR_ATTR_RE`/`STRUCT_RE` already take in the other direction.
+# See `rules/e3.py`'s own docstring paragraph above `sanctioned_constructor_names`
+# for the full "why a bare-spelling match, not a resolved one" rationale — it
+# is unchanged by the move.
+LOCAL_DETAIL_TYPE_RE = re.compile(
+    r"\b(?:struct|enum|union)\s+Detail\b|\btype\s+Detail\s*[=<]"
+)
 # A `mod name {` block header, anchored at the END of the text preceding a
 # `{`. `non_module_block_spans` uses it to tell the ONE kind of brace block
 # that does not change an item's "is this declared at module scope?" status
@@ -899,9 +915,68 @@ def discover_error_struct_names(raw: str) -> frozenset[str]:
     return frozenset(name for name, _, _ in discover_error_struct_declarations(raw))
 
 
+def discover_local_detail_decoys(
+    sources: list[tuple[str, str]], exempt_label: str | None
+) -> frozenset[str]:
+    """Bare gated-carve-out type spellings SHADOWED by a locally-declared
+    `struct|enum|union|type` of the same name, anywhere in `sources` OTHER
+    THAN `exempt_label` (#500 fix round 2, review finding "Important 2").
+
+    `is_bridge_field_safe`'s gated-field carve-out (rule E2) matches a
+    field's declared type by SPELLING alone — `Detail` under a
+    `GATED_FIELD_NAMES` name is accepted on the strength of the bridge's
+    OWN `pub struct Detail(String)` in `error/detail.rs`, whose private
+    inner field makes a runtime `String` unrepresentable there. That
+    guarantee holds only while "a field spelled `Detail`" and "the type
+    `secretary_ffi_bridge::error::detail::Detail`" are the same thing. A
+    SECOND, same-spelled declaration anywhere else in the root —
+
+        pub struct Detail(pub String);      // any OTHER bridge file
+        ...
+        Boom { detail: Detail },            // credited identically.
+                                             // Zero findings before this fix.
+
+    — is textually indistinguishable from the real one to a spelling-only
+    match, and rule E3's OWN `SAFE_PARAM_TYPES`/`LOCAL_DETAIL_TYPE_RE` check
+    (`sanctioned_constructor_names`) does not help here: that check only
+    ever inspects the ONE `detail_src` file (the root's sanctioned module),
+    never the rest of the root, because its job is "is a CONSTRUCTOR call
+    sanctioned", not "is this DECLARATION's type spelling trustworthy".
+
+    Reuses `LOCAL_DETAIL_TYPE_RE` rather than a second, independently-
+    maintained matcher — the two rules drifted out of step exactly once
+    already (#500 fix round 1 closed E3's copy of this hole; this closes
+    E2's). `exempt_label` is the root's own `detail_module_rel` (or `None`
+    for a root with none, e.g. `core`): the bridge's OWN legitimate
+    declaration must not shadow itself. STRICT `#[cfg(test)]` exclusion
+    (`discovery_cfg_test_spans_strict`), not the permissive `cfg_test_spans`
+    `discover_declarations` uses for its CREDIT registries — this registry
+    DENIES, so an over-matched skip here would be fail-OPEN (hide a real
+    decoy) rather than fail-closed (drop a credit), the same STRICT-vs-
+    permissive split `scan_bridge_plain_declarations` already draws for its
+    own (E2) sweep. `non_module_block_spans` excludes a decoy declared
+    inside a `fn` body — a local item, in scope only where it is written,
+    not a root-wide shadow — mirroring `find_type_aliases`'s identical
+    exclusion for an associated `type`.
+
+    Returns `frozenset({"Detail"})` the moment ANY qualifying match is
+    found (short-circuits — `LOCAL_DETAIL_TYPE_RE` names exactly one
+    spelling today), else `frozenset()`.
+    """
+    for label, raw in sources:
+        if exempt_label is not None and label.replace("\\", "/") == exempt_label:
+            continue
+        view = discovery_view(raw)
+        excluded = non_module_block_spans(view) + discovery_cfg_test_spans_strict(raw)
+        for m in LOCAL_DETAIL_TYPE_RE.finditer(view):
+            if not _inside(m.start(), excluded):
+                return frozenset({"Detail"})
+    return frozenset()
+
+
 def _discover_tier_inputs(
     sources: list[tuple[str, str]],
-) -> tuple[frozenset[str], dict[str, str], frozenset[str]]:
+) -> tuple[frozenset[str], dict[str, str], frozenset[str], frozenset[str]]:
     """`run_real_scan`'s Pass 1, factored out so it can run ONCE PER SCAN
     ROOT (#480): discover every thiserror enum, type alias, and const across
     THE WHOLE `sources` list before classifying anything — a field in
@@ -916,8 +991,29 @@ def _discover_tier_inputs(
     means an unrelated, later-sorted file adding e.g. `type Foo = [u8; 16];`
     can silently launder an EXISTING, unsafe `type Foo = String;` defined
     elsewhere into a pass — proven live in review. A colliding spelling is
-    dropped from the resolvable set entirely, so a lookup against it
-    default-denies instead of guessing which definition was "real."
+    dropped from the RESOLVABLE set (the returned `aliases` dict) entirely,
+    so a TIER-3 lookup against it default-denies instead of guessing which
+    definition was "real."
+
+    The 4th return value, `alias_candidate_names`, is the RAW spelling set
+    BEFORE that collision-drop — every name EVER seen as a `type X = Y;`
+    LHS anywhere in `sources`, resolved or not (#500 fix round 2, review
+    finding "Important 1"). This is deliberately NOT the same set as
+    `frozenset(aliases)`: collision-drop is fail-CLOSED for tier-3 credit
+    (a dropped name loses a resolution, denying more) but was found to be
+    fail-OPEN when the SAME resolved dict was reused as a gated-field-
+    carve-out DENY trigger (`is_bridge_field_safe`'s alias-shadow check,
+    #500 fix round 1) — a colliding name resolves to NOTHING, so "member of
+    the resolved dict" stops meaning "shadowed" the moment a second,
+    conflicting `type Detail = ...;` appears anywhere else in the root,
+    silently un-denying the very spelling the collision makes LESS
+    trustworthy, not more. Verified by execution: the fix-round-1 fixture
+    alone produced 2 findings; adding a second bridge-root file containing
+    only `type Detail = Vec<u8>;` took it to zero. A shadow claim is "this
+    spelling means more than one thing here", which the RAW candidate set
+    establishes regardless of collision; the RESOLVED dict answers a
+    different question ("what does it unambiguously resolve to") that only
+    tier-3 credit needs.
 
     `const` names get the SAME collision-drop, applied by `resolve_consts`
     over the flat cross-file declaration list: a bare spelling this guard
@@ -965,7 +1061,8 @@ def _discover_tier_inputs(
         if len(rhs_set) == 1
     }
     consts = resolve_consts(declared_consts, frozenset(const_shadow_names))
-    return local_error_enums, aliases, consts
+    alias_candidate_names = frozenset(alias_candidates)
+    return local_error_enums, aliases, consts, alias_candidate_names
 
 
 def discover_scanned_error_type_names(
