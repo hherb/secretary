@@ -35,7 +35,8 @@ use crate::wrappers::repair::{ApprovedWidening, RepairPreview};
 use crate::wrappers::vault::{OpenVaultManifest, OpenVaultOutput};
 
 use super::{
-    array32_from_vec, array32_from_vec_at, uuid_from_vec, uuid_from_vec_at, uuid_from_vec_nested_at,
+    array32_from_vec_at, array32_from_vec_into, uuid_from_vec, uuid_from_vec_at,
+    uuid_from_vec_nested_at,
 };
 
 /// Convert a caller-supplied `Vec<ApprovedWidening>` into the bridge-side
@@ -225,7 +226,10 @@ pub fn repair_with_device_secret(
     // immutably and later doing `let mut secret_arr = secret_arr;` would COPY
     // the array (`[u8; 32]: Copy`) into a fresh slot and wipe only the copy,
     // leaving this original slot's 32 plaintext bytes as stack residue.
-    let mut secret_arr = array32_from_vec(device_secret, "device_secret")?;
+    // Written through by `array32_from_vec_into` rather than returned by
+    // value, so this slot is the ONLY [u8; 32] in play (#503).
+    let mut secret_arr = [0u8; 32];
+    array32_from_vec_into(device_secret, &mut secret_arr, "device_secret")?;
 
     let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
         match std::str::from_utf8(&folder_path) {
@@ -352,8 +356,10 @@ pub fn preview_repair_with_device_secret(
     let uuid_arr = uuid_from_vec(&device_uuid, "device_uuid")?;
     // `mut` so the [u8; 32] stack copy is zeroized IN PLACE below — see
     // repair_with_device_secret for why a re-binding `let mut` would leave
-    // stack residue.
-    let mut secret_arr = array32_from_vec(device_secret, "device_secret")?;
+    // stack residue. Written through by `array32_from_vec_into` rather than
+    // returned by value, so this slot is the ONLY [u8; 32] in play (#503).
+    let mut secret_arr = [0u8; 32];
+    array32_from_vec_into(device_secret, &mut secret_arr, "device_secret")?;
 
     let result: Result<secretary_ffi_bridge::FfiRepairPreview, VaultError> =
         match std::str::from_utf8(&folder_path) {
