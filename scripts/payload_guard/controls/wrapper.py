@@ -1,7 +1,8 @@
 """Rule E3 shape 5's, and rule E5's, self-test control corpus (#486):
 `WRAPPER_POSITIVE_CONTROLS` / `WRAPPER_NEGATIVE_CONTROLS`, run through
 `payload_guard.selftest.scan_wrapper_control` — the wrapper-root rule set
-(`bridge_mode=True` plus E2/E3, E3's `allow_field_access` ON, no E4; rule E5
+(`bridge_mode=True` plus E2/E3, E3's `allow_field_access` now OFF — see
+`WP7` — no E4; rule E5
 runs separately, over `path_label` + `raw` + the root's
 `detail_module_rel`, since it needs the WHOLE FILE TEXT rather than a single
 self-contained fixture string — see `WP4`/`WN2`/`WN3` below and
@@ -45,29 +46,45 @@ pub(crate) fn project(d: Detail) -> String {
 }
 '''
 
+# A wrapper `detail.rs` stand-in carrying a DECOY type called `Detail` (#500
+# fix round 1). `SAFE_PARAM_TYPES` matches the spelling, not the resolved
+# type, so before the fix this sanctioned `detail::launder(<anything>)`.
+SELF_TEST_WRAPPER_DETAIL_SRC_WITH_DECOY = '''
+pub(crate) struct Detail(pub String);
+
+pub(crate) fn launder(d: Detail) -> String {
+    d.0
+}
+'''
+
 WRAPPER_POSITIVE_CONTROLS: list[tuple] = [
     (
-        "WP1 shape 5 trusts the FINAL SEGMENT only: a field access whose "
-        "last segment is NOT the gated field's own name is not a "
-        "pass-through and must deny",
+        "WP1 a field access whose last segment is NOT the gated field's own "
+        "name is not a DTO pass-through and must deny. This was shape 5's "
+        "final-segment test; with `allow_field_access` OFF (#497/#500) it "
+        "denies one step earlier, at the flag. Kept because it must STILL "
+        "deny if the acceptance is ever re-enabled — re-enabling it and "
+        "re-running is the check a future author owes this control",
         ''' fn f(a: &A) -> E { E::V { uuid_hex: a.some_other_field } } ''',
         {"rule": "E3", "field": "uuid_hex"},
     ),
     (
         "WP2 a hand-rolled format! into a gated field denies in a wrapper "
-        "root exactly as it does in the bridge — shape 5 widens the accepted "
-        "set, it does not disable the rule",
+        "root exactly as it does in the bridge — a per-root E3 acceptance "
+        "widens the accepted set, it never disables the rule",
         ''' fn f(n: usize) -> E { E::V { detail: format!("got {n}") } } ''',
         {"rule": "E3", "field": "detail"},
     ),
     (
-        "WP3 review finding (task 9): shape 5 is SINGLE-HOP only — a "
-        "depth-2 chain `a.b.uuid_hex` is a claim about an intermediate "
-        "value (`a.b`) this rule has no way to vouch for, is not the shape "
-        "any live site takes, and must DENY even though its final segment "
-        "is the gated name. An earlier, unbounded-depth version of "
+        "WP3 review finding (task 9): a depth-2 chain `a.b.uuid_hex` is a "
+        "claim about an intermediate value (`a.b`) this rule has no way to "
+        "vouch for, and must DENY even though its final segment is the "
+        "gated name. An earlier, unbounded-depth version of "
         "`FIELD_ACCESS_RE` accepted this — wider than the shape it was "
-        "written to recognise, and untested in the extra width",
+        "written to recognise, and untested in the extra width. Like `WP1` "
+        "this now denies at the `allow_field_access` flag (#497/#500) "
+        "rather than at the depth test; both must still hold if shape 5 is "
+        "re-enabled",
         ''' fn f(a: A) -> E { E::V { uuid_hex: a.b.uuid_hex } } ''',
         {"rule": "E3", "field": "uuid_hex"},
     ),
@@ -105,17 +122,38 @@ WRAPPER_POSITIVE_CONTROLS: list[tuple] = [
         ''' fn f(e: FfiVaultError) -> E { E::V { detail: detail.into_string() } } ''',
         {"rule": "E3", "field": "detail"},
     ),
+    (
+        "WP7 #497/#500: the single-hop DTO pass-through `uuid_hex: "
+        "a.uuid_hex` now DENIES on a wrapper root. It was E3 shape 5's whole "
+        "purpose and this control was `WN1`, asserting the opposite; #500 "
+        "moved all four live sites onto `detail::project(...)`, so the "
+        "acceptance had ZERO users, and shape 5 admits an ARBITRARY "
+        "single-hop receiver — a local of any type, including one declared "
+        "outside every scan root — which is wider than the four DTOs that "
+        "justified it. `ScanRoot.allow_field_access`'s own docstring says an "
+        "acceptance granted where nothing needs it is a laundering door for "
+        "free, so it was switched off. Flipping either wrapper root back to "
+        "True must make this control stop firing",
+        ''' fn f(a: A) -> E { E::V { uuid_hex: a.uuid_hex } } ''',
+        {"rule": "E3", "field": "uuid_hex"},
+    ),
+    (
+        "WP8 #500 fix round 1: a LOCALLY-DECLARED decoy type named `Detail` "
+        "in a wrapper's own detail.rs must NOT satisfy SAFE_PARAM_TYPES' "
+        "spelling test. The set matches the TEXT `Detail`, not the resolved "
+        "type, and only the BRIDGE declares the authentic newtype — so "
+        "`pub(crate) struct Detail(pub String)` plus `launder(d: Detail)` "
+        "made `detail::launder(Detail(anything))` scan OK (verified by "
+        "execution). The constructor must now be DROPPED from the "
+        "sanctioned set, so its call site denies. Setting "
+        "`owns_detail_type=True` on a wrapper root must make this stop firing",
+        ''' fn f(x: String) -> E { E::V { detail: detail::launder(Detail(x)) } } ''',
+        {"rule": "E3", "field": "detail"},
+        {"detail_src": SELF_TEST_WRAPPER_DETAIL_SRC_WITH_DECOY},
+    ),
 ]
 
 WRAPPER_NEGATIVE_CONTROLS: list[tuple] = [
-    (
-        "WN1 shape 5: the DTO pass-through `uuid_hex: a.uuid_hex` is the "
-        "shape all four live sites take. It is arm 4's name-trust one level "
-        "deeper — it trusts that a field named `uuid_hex` was gated where "
-        "ITS type declared it, which rules E2/E3 in the bridge do establish "
-        "for these four",
-        ''' fn f(a: A) -> E { E::V { uuid_hex: a.uuid_hex } } ''',
-    ),
     (
         "WN2 rule E5: format! INSIDE the sanctioned detail module is the "
         "whole point of having one",

@@ -35,7 +35,7 @@
 //!   reference different vaults; re-pair from backups".
 //! - [`FfiUnlockError::CorruptVault`] — collapses
 //!   `{core::CorruptVault, all MalformedX, KdfFailure, WeakKdfParams}`.
-//!   Carries a diagnostic `detail: String` for debugging; structured
+//!   Carries a diagnostic `detail: Detail` for debugging; structured
 //!   pattern-matching on the inner cause is intentionally not supported.
 //!   Display text is path-neutral (`"vault data integrity failure"`)
 //!   so the variant reads correctly on BOTH the open path (where it
@@ -63,10 +63,12 @@
 //! - [`vault`] — [`FfiVaultError`] + `From<core::VaultError>`.
 //! - [`conversions`] — `From<FfiUnlockError> for FfiVaultError` + the
 //!   byte-identical-mirror tripwire test.
-//! - `detail` (bridge-private, #480) — the ONLY place in the bridge
-//!   permitted to build a detail string: `GatedDetail` trait + the
-//!   sanctioned `gated*`/`uuid_*`/`counted` constructors that every
-//!   `detail: String` payload above must be built through.
+//! - `detail` (bridge-private, #480; the `Detail` newtype, #500) — the ONLY
+//!   place in the bridge permitted to build a detail string: the `Detail`
+//!   type itself (private inner field, so it is unconstructible elsewhere),
+//!   the `GatedDetail` trait, and the sanctioned `literal`/`gated*`/`uuid_*`/
+//!   `fingerprint_hex`/`counted`/`repair_rejection` constructors that every
+//!   gated payload above must be built through.
 
 pub mod conversions;
 pub(crate) mod detail;

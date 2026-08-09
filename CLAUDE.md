@@ -457,10 +457,15 @@ claiming more coverage than the code delivers:
   review claim of exactly the kind Section 3 of the allowlist holds. A
   third `&str` constructor fails the guard until someone edits that set;
   nothing verifies what the two existing ones are passed.
-- **`E3`'s shape 5 accepts an ARBITRARY single-hop receiver** on the wrapper
-  roots — `<anything>.detail`, not just a bridge DTO. The recorded
-  justification ("the source is a bridge DTO whose fields `E2`/`E3` gate")
-  is a property of the four LIVE sites, not of the shape the rule accepts.
+- **`E3`'s shape 5 is CLOSED** (#497, closed by #500) — it is listed here
+  because prior versions of this file called it open. It accepted an
+  ARBITRARY single-hop receiver on the wrapper roots — `<anything>.detail`,
+  not just a bridge DTO — and the recorded justification ("the source is a
+  bridge DTO whose fields `E2`/`E3` gate") was a property of the four LIVE
+  sites, not of the shape the rule accepts. #500 moved all four onto
+  `detail::project(...)`, so the acceptance had zero users and
+  `ScanRoot.allow_field_access` is now `False` on every root; `WP7` pins the
+  denial. Re-enabling it needs live sites and a fresh review.
 - **`&'static str` is not leak-proof, and several rules lean on it.** Safe,
   stable Rust mints one from runtime data via `Box::leak(s.into_boxed_str())`
   or `String::leak()`, and `#![forbid(unsafe_code)]` does not stop either. So

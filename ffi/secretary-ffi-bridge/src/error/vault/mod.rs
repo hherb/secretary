@@ -558,14 +558,17 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // surface `detail` instead of a generic corruption message.
             //
             // #500: `detail` was field-init SHORTHAND until the `Detail`
-            // newtype landed — a shape rule E3 cannot see at all. It is now
-            // an explicit adoption of core's already-E1-reviewed payload;
-            // see `Detail::from_core_gated` for why that is an inherent
-            // method plus one exact-text allowlist entry rather than a
-            // crate-wide `detail::*` constructor.
-            VE::RepairRejected { block_uuid, detail } => FfiVaultError::RepairRejected {
-                block_uuid_hex: detail::uuid_hyphenated(&block_uuid),
-                detail: Detail::from_core_gated(detail),
+            // newtype landed — a shape rule E3 cannot see at all. It now goes
+            // through a sanctioned constructor that takes the WHOLE core error
+            // and destructures it inside `detail.rs`, so "this string is
+            // core's own E1-reviewed `RepairRejected` payload" is a fact the
+            // compiler enforces rather than a comment. Binding by `ref` keeps
+            // `e` whole for that call, mirroring the `VE::Io` arm above.
+            ref e @ VE::RepairRejected {
+                ref block_uuid, ..
+            } => FfiVaultError::RepairRejected {
+                block_uuid_hex: detail::uuid_hyphenated(block_uuid),
+                detail: detail::repair_rejection(e),
             },
 
             // Post-unlock integrity / structural failures and IO kinds the

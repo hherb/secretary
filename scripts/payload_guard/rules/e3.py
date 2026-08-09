@@ -49,6 +49,7 @@ SANCTIONED_CTOR_RE = re.compile(r"pub\(crate\)\s+fn\s+([a-z_][a-z0-9_]*)\s*\(")
 # A constructor with ANY parameter outside this set is DROPPED from the
 # sanctioned set, so its call sites deny — the same fail-closed direction a
 # missing `detail.rs` takes.
+#
 # `Detail` (#500) is the STRONGEST entry in this set, not a relaxation of it.
 # Every other member is a claim about a SHAPE that happens not to carry runtime
 # content (`&'static str` is a compile-time string — though `String::leak` can
@@ -67,9 +68,31 @@ SANCTIONED_CTOR_RE = re.compile(r"pub\(crate\)\s+fn\s+([a-z_][a-z0-9_]*)\s*\(")
 # inline) denies too, being neither shape 4 nor shape 5. Routing the unwrap
 # through the crate's own sanctioned module is the same sink-pinning move E5
 # makes for `format!`.
+#
+# QUALIFIED, because this membership is matched by SPELLING and the rule does
+# NOT resolve the name: the structural guarantee holds only while `Detail` in
+# that position IS `secretary_ffi_bridge::Detail`. A locally-DECLARED decoy
+# (`pub(crate) struct Detail(pub String);` in a wrapper's own detail.rs, which
+# once made `detail::launder(Detail(anything))` scan OK — verified by
+# execution) is now REJECTED on any root whose `ScanRoot.owns_detail_type` is
+# False; see `LOCAL_DETAIL_TYPE_RE`, pinned by `WP8`. An aliased IMPORT
+# (`use other_crate::X as Detail;`) is still invisible — the same blind spot
+# rule E4 records for `GatedDetail`.
+#
+# `&secretary_core::vault::VaultError` (#500 fix round 1) grants NOTHING the
+# set did not already admit: `&impl GatedDetail` is below, and `VaultError` is
+# one of the E4-reviewed `GatedDetail` impls, so every existing constructor
+# taking `&impl GatedDetail` can already be called with one. Naming the
+# concrete type only lets `detail::repair_rejection` DESTRUCTURE it and lift
+# out core's `RepairRejected { detail }` — a payload core's own rule E1 entry
+# reviews. Its predecessor took a bare `String`, which made that provenance a
+# comment: E3's allowlist keys on exact text per FILE, so a SECOND unreviewed
+# call in `error/vault/mod.rs` — the very `From<VaultError>` match block where
+# a new arm gets written — passed silently (verified by execution).
 SAFE_PARAM_TYPES = frozenset(
     {
         "Detail",
+        "&secretary_core::vault::VaultError",
         "&'static str",
         "usize", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
         "&[u8; 16]", "&[u8; 32]",
@@ -95,11 +118,44 @@ SAFE_PARAM_TYPES = frozenset(
 STR_PARAM_CTOR_EXCEPTIONS = frozenset({"fingerprint_mismatch", "uuid_prefixed"})
 
 
-def _ctor_params_are_safe(name: str, params_text: str) -> bool:
+# A LOCAL declaration of a type called `Detail` (#500 fix round 1).
+#
+# `SAFE_PARAM_TYPES` matches the SPELLING `Detail`; it does not resolve the
+# name. In the BRIDGE that is exactly right — `pub struct Detail(String)` is
+# declared in the very file this registry reads, and it is the authentic type.
+# In a WRAPPER crate it is a decoy: adding
+#
+#     pub(crate) struct Detail(pub String);              // NOT the bridge's
+#     pub(crate) fn launder(d: Detail) -> String { d.0 }
+#
+# to `ffi/secretary-ffi-uniffi/src/detail.rs` made
+# `detail: detail::launder(Detail(anything))` scan OK (verified by execution).
+# So on any root that does NOT own the type, a local declaration withdraws
+# `Detail` from the accepted parameter types, dropping every constructor that
+# takes one — the same fail-closed direction a missing `detail.rs` takes.
+#
+# RESIDUAL: this catches a local DECLARATION, not an aliased IMPORT
+# (`use other_crate::Detail;`, or `use other_crate::X as Detail;`). That is the
+# same aliasing blind spot rule E4 records for `GatedDetail`, and it is why the
+# LIMITS section states the structural guarantee as conditional on the name
+# resolving to `secretary_ffi_bridge::Detail`.
+LOCAL_DETAIL_TYPE_RE = re.compile(
+    r"\b(?:struct|enum|union)\s+Detail\b|\btype\s+Detail\s*[=<]"
+)
+
+
+def _ctor_params_are_safe(
+    name: str, params_text: str, *, detail_param_ok: bool = True
+) -> bool:
     """Every parameter of a candidate sanctioned constructor must carry a
     type from `SAFE_PARAM_TYPES` (or be one of the two reviewed `&str`
-    exceptions). An unparseable parameter is NOT safe — default-deny."""
+    exceptions). An unparseable parameter is NOT safe — default-deny.
+
+    `detail_param_ok=False` withdraws the `Detail` spelling — see
+    `LOCAL_DETAIL_TYPE_RE`."""
     allowed = SAFE_PARAM_TYPES | ({"&str"} if name in STR_PARAM_CTOR_EXCEPTIONS else set())
+    if not detail_param_ok:
+        allowed = allowed - {"Detail"}
     inner = params_text.strip()
     if inner.startswith("(") and inner.endswith(")"):
         inner = inner[1:-1]
@@ -118,7 +174,9 @@ def _ctor_params_are_safe(name: str, params_text: str) -> bool:
     return True
 
 
-def sanctioned_constructor_names(detail_src: str | None) -> frozenset[str]:
+def sanctioned_constructor_names(
+    detail_src: str | None, *, owns_detail_type: bool = False
+) -> frozenset[str]:
     """The set of `detail::<name>(...)` constructors rule E3 accepts a call
     to — every `pub(crate) fn` declared in `error/detail.rs` (#480).
 
@@ -128,6 +186,13 @@ def sanctioned_constructor_names(detail_src: str | None) -> frozenset[str]:
     sanctioned. That is the whole rule's fail-closed hinge — the alternative
     (treat "no constructor list" as "no restriction") would silently disable
     E3 the moment someone moved or renamed the module.
+
+    `owns_detail_type` says this root DECLARES the authentic `Detail`
+    newtype (the bridge, and only the bridge). Everywhere else a local
+    `struct Detail` in the sanctioned module is a decoy that would satisfy
+    `SAFE_PARAM_TYPES`' spelling test, so it withdraws the `Detail` parameter
+    type — see `LOCAL_DETAIL_TYPE_RE`. Defaults to `False`, the fail-closed
+    reading for a caller that forgets to pass it.
 
     Read from the DISCOVERY VIEW (comments AND string CONTENTS blanked), not
     `strip_comments`. This registry GRANTS acceptance, so its fail-closed
@@ -159,6 +224,9 @@ def sanctioned_constructor_names(detail_src: str | None) -> frozenset[str]:
     if not detail_src:
         return frozenset()
     view = discovery_view(detail_src)
+    # A root that does not own the newtype must not let a locally-declared
+    # decoy called `Detail` satisfy `SAFE_PARAM_TYPES`' spelling test.
+    detail_param_ok = owns_detail_type or not LOCAL_DETAIL_TYPE_RE.search(view)
     excluded = discovery_cfg_test_spans(detail_src)
     names: set[str] = set()
     for m in SANCTIONED_CTOR_RE.finditer(view):
@@ -168,7 +236,9 @@ def sanctioned_constructor_names(detail_src: str | None) -> frozenset[str]:
         # SIGNATURE gate (#496): the match ends just past the `(`, so
         # `m.end() - 1` is the opening paren `balanced_slice` needs.
         params_text, _ = balanced_slice(view, m.end() - 1)
-        if not _ctor_params_are_safe(name, params_text):
+        if not _ctor_params_are_safe(
+            name, params_text, detail_param_ok=detail_param_ok
+        ):
             continue
         names.add(name)
     return frozenset(names)
@@ -257,11 +327,15 @@ IO_ERROR_OTHER_RE = re.compile(
 # match.
 IO_PAYLOAD_FIELD = "<io::Error payload>"
 
-# Rule E3 shape 5 (#486): a SINGLE-HOP field access whose final segment is
-# the gated field's own name — `uuid_hex: a.uuid_hex`. Wrapper roots only.
+# Rule E3 shape 5 (#486). CURRENTLY OFF ON EVERY ROOT (#497/#500) — see
+# `ScanRoot.allow_field_access`. A SINGLE-HOP field access whose final segment
+# is the gated field's own name — `uuid_hex: a.uuid_hex`. The regex is kept so
+# the acceptance can be re-enabled with a fresh review if a future DTO needs
+# it; nothing reaches it today, and `WP7` pins the denial.
 #
-# EXACTLY ONE DOT, on purpose (review finding, task 9): all four live sites
-# are single-hop (`a.uuid_hex`, `w.block_uuid_hex`), arm 5's own docstring
+# EXACTLY ONE DOT, on purpose (review finding, task 9): the four sites that
+# once justified it were single-hop (`a.uuid_hex`, `w.block_uuid_hex`) — all
+# four moved to `detail::project(...)` in #500 — arm 5's own docstring
 # describes a single hop, and an earlier unbounded-depth version of this
 # regex accepted `a.b.uuid_hex` / `a.b.c.uuid_hex` too — wider than the
 # shape it was written to recognise, and untested in the extra width. A
@@ -386,7 +460,8 @@ def initializer_is_gated(
     `view[start:end]` assigned to gated field `name` (#480).
 
     FOUR shapes are accepted everywhere, plus a FIFTH gated behind
-    `allow_field_access` (#486, wrapper roots only) — and nothing else: this
+    `allow_field_access` — which is `False` on every root as of #497/#500, so
+    in the tree as it stands only four are reachable — and nothing else: this
     is a default-DENY predicate, so a construct this function does not
     recognise is a finding.
 
@@ -493,10 +568,18 @@ def initializer_is_gated(
        it comes from a SIMPLE `let`, that `let`'s own initializer is now the
        candidate that catches it (`BP36`); only a pattern bind or a
        parameter still reaches the shorthand door unwatched.
-    5. WRAPPER ROOTS ONLY (`allow_field_access`, #486): a SINGLE-HOP field
-       access — `receiver.field`, EXACTLY ONE DOT — whose field segment is
-       the gated field's own name — `uuid_hex: a.uuid_hex`, the DTO
-       pass-through shape all four live wrapper sites take. THIS ARM TRUSTS
+    5. GATED BEHIND `allow_field_access`, WHICH IS NOW `False` ON EVERY
+       ROOT (#486, retired #497/#500): a SINGLE-HOP field access —
+       `receiver.field`, EXACTLY ONE DOT — whose field segment is the gated
+       field's own name — `uuid_hex: a.uuid_hex`. This was the DTO
+       pass-through shape of four wrapper sites; #500 moved all four onto
+       `detail::project(...)` (E3 shape 2, a sanctioned call), leaving this
+       arm with ZERO live sites, and an acceptance nothing needs is a
+       laundering door for free — the exact rule this arm's own scoping
+       paragraph states — so it was switched off rather than left dormant.
+       `WP7` pins that a wrapper single-hop access now DENIES. The rest of
+       this entry describes the behaviour if it is ever re-enabled. THIS ARM
+       TRUSTS
        THE NAME TOO, one level deeper than arm 4: it claims that a field
        named `uuid_hex` on some OTHER type was gated where THAT type
        declared it. For the four live sites that claim holds (the source is
@@ -581,10 +664,10 @@ def scan_bridge_construction_sites(
 
     `allow_field_access` (#486) enables shape 5 — a SINGLE-HOP field access
     ending in the gated name (`uuid_hex: a.uuid_hex`, not `a.b.uuid_hex`) —
-    and defaults to `False` so a caller that does not pass it explicitly gets
-    the bridge's stricter behaviour, not the wrapper roots' looser one. See
-    `initializer_is_gated`'s shape 5 and `payload_guard.roots.ScanRoot.
-    allow_field_access` for why it is scoped to the wrapper roots only.
+    and defaults to `False`, which is now also the value EVERY root passes
+    (#497/#500: its four wrapper DTO sites moved to `detail::project(...)`,
+    so the acceptance had none left). See `initializer_is_gated`'s shape 5
+    and `payload_guard.roots.ScanRoot.allow_field_access`.
 
     Rule E2 lets a bridge error carry a `String` under one of the six
     `GATED_FIELD_NAMES` instead of denying it by TYPE. That carve-out is only

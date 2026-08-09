@@ -59,12 +59,32 @@ class ScanRoot:
     """Rule E5 (#486). Wrapper crates only — see `rules/e5.py` for why the
     bridge is excluded (its `format!` mostly builds filenames)."""
 
+    owns_detail_type: bool
+    """This root DECLARES the authentic `Detail` newtype (#500 fix round 1).
+
+    True for the BRIDGE alone, whose `error/detail.rs` holds
+    `pub struct Detail(String)`. `SAFE_PARAM_TYPES` matches the SPELLING
+    `Detail` and does not resolve the name, so on every other root a locally
+    declared `struct Detail` in the sanctioned module is a decoy that would
+    pass the signature gate and launder an arbitrary `String`. Where this is
+    False, such a declaration withdraws the `Detail` parameter type — see
+    `rules/e3.py`'s `LOCAL_DETAIL_TYPE_RE`."""
+
     allow_field_access: bool
     """Rule E3 shape 5: accept a SINGLE-HOP `a.uuid_hex` for field
-    `uuid_hex` (not a multi-hop `a.b.uuid_hex`). Wrapper roots only. It is a
-    new ACCEPTANCE, so granting it where nothing needs it would open a
-    laundering door for free — all four DTO pass-through sites are in the
-    wrapper crates, and all four are single-hop."""
+    `uuid_hex` (not a multi-hop `a.b.uuid_hex`).
+
+    **OFF on every root as of #497/#500.** It was granted for exactly four
+    wrapper DTO pass-through sites; #500 moved all four onto
+    `detail::project(...)`, a sanctioned-constructor call (E3 shape 2), so the
+    acceptance had ZERO live sites. Its own rule for itself then applied: "it
+    is a new ACCEPTANCE, so granting it where nothing needs it would open a
+    laundering door for free." The shape it accepts is an ARBITRARY single-hop
+    receiver — `<anything>.detail`, a local of any type, including one
+    declared outside every scan root — which is wider than the four sites that
+    justified it and was disclosed as such in the guard's LIMITS (#497).
+    Switched off rather than left dormant; `WP7` pins the denial, and turning
+    it back on for a future DTO must come with live sites and a fresh review."""
 
 
 SCAN_ROOTS: tuple[ScanRoot, ...] = (
@@ -77,6 +97,7 @@ SCAN_ROOTS: tuple[ScanRoot, ...] = (
         construction_sites=False,
         gated_detail_impls=False,
         format_confinement=False,
+        owns_detail_type=False,
         allow_field_access=False,
     ),
     ScanRoot(
@@ -90,6 +111,7 @@ SCAN_ROOTS: tuple[ScanRoot, ...] = (
         construction_sites=True,
         gated_detail_impls=True,
         format_confinement=False,
+        owns_detail_type=True,
         allow_field_access=False,
     ),
     ScanRoot(
@@ -101,7 +123,8 @@ SCAN_ROOTS: tuple[ScanRoot, ...] = (
         construction_sites=True,
         gated_detail_impls=False,
         format_confinement=True,
-        allow_field_access=True,
+        owns_detail_type=False,
+        allow_field_access=False,
     ),
     ScanRoot(
         label="ffi-uniffi",
@@ -112,6 +135,7 @@ SCAN_ROOTS: tuple[ScanRoot, ...] = (
         construction_sites=True,
         gated_detail_impls=False,
         format_confinement=True,
-        allow_field_access=True,
+        owns_detail_type=False,
+        allow_field_access=False,
     ),
 )

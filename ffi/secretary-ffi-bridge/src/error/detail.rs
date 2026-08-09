@@ -23,9 +23,25 @@ use std::path::Path;
 /// The inner field is private, so a `Detail` is constructible only from
 /// inside `detail.rs`. Every gated payload position in the bridge is declared
 /// `Detail`, which makes `detail: format!(…)` — and every other way of
-/// producing a `String`, including the pattern-bind, build-then-mutate,
+/// HANDING OVER a `String`, including the pattern-bind, build-then-mutate,
 /// function-parameter and dotless-reassignment shapes rule E3 cannot see — a
 /// TYPE ERROR at every call site in this crate and in every downstream crate.
+///
+/// # The precise scope of that claim
+///
+/// It is about the ASSIGNMENT, not about reachability of every runtime string.
+/// No constructor below accepts a caller-supplied `String` or `&str` (the one
+/// that did, `from_core_gated`, was replaced in #500's fix round by
+/// `repair_rejection`, which takes the whole `VaultError` and destructures
+/// it here) — but `gated` and its siblings take `&impl GatedDetail`, and one
+/// allowlisted impl, `std::io::Error`, is a CARRIER whose `Display` renders
+/// whatever it was built from. `detail::gated(&io::Error::other(runtime))`
+/// therefore still reaches a gated field, in this crate only. That is the
+/// documented `detail::gated(&Wrap(…))` class the guard's control corpus
+/// records as ACCEPTED, not a hole this newtype claims to close. What the
+/// newtype closes is the far larger surface of a bare `String` arriving from
+/// anywhere at all, and it closes it completely for DOWNSTREAM crates, which
+/// cannot name `GatedDetail` (it is `pub(crate)` and sealed).
 ///
 /// # What this type does and does not claim
 ///
@@ -52,39 +68,6 @@ impl Detail {
     /// see the spec's §4.
     pub fn into_string(self) -> String {
         self.0
-    }
-
-    /// Adopt a diagnostic string `core` has ALREADY gated, verbatim (#500).
-    ///
-    /// EXACTLY ONE call site: `From<core::VaultError>`'s `RepairRejected` arm
-    /// in [`crate::error::vault`], which re-wraps
-    /// `core::VaultError::RepairRejected`'s own `detail` — the reason
-    /// `repair_vault`'s fail-closed gate refused a block, which the app must
-    /// surface because there is no automatic fix. That value is reviewed and
-    /// allowlisted under the guard's rule E1 for `core` (allowlist Section 3,
-    /// "repair rejected for block …": all eleven shipped producers pass a
-    /// literal, a fieldless `ClockRelation` Debug, a hyphenated-UUID list, or
-    /// `format!("{e}")` over another core-gated error). The bridge authors
-    /// nothing here; it only carries core's string across the seam.
-    ///
-    /// # Why this is NOT a `detail::*` free function
-    ///
-    /// Every sanctioned `detail::*` constructor must take a parameter type in
-    /// the guard's `SAFE_PARAM_TYPES`, and a `&str` is deliberately not one:
-    /// a `detail::adopt(&anything)` free function would be sanctioned at
-    /// EVERY bridge call site, which is the self-authorising hole #496 closed.
-    /// Keeping this an inherent `pub(crate)` method instead means rule E3 does
-    /// not recognise it, so its one call site produces an E3 finding that is
-    /// carried as a NAMED, exact-text allowlist entry — the narrowest possible
-    /// carve-out. Any second use of it in a gated position is a new finding at
-    /// new text and reds the scan; the door is one line wide, not crate-wide.
-    ///
-    /// Before the newtype this same re-wrap was field-init SHORTHAND
-    /// (`detail,`), which rule E3 could not see AT ALL — no `:` token, no
-    /// `let`, no `.field =`. Making it explicit is strictly more visible than
-    /// what it replaces.
-    pub(crate) fn from_core_gated(reason: String) -> Detail {
-        Detail(reason)
     }
 
     /// Test-only escape hatch, absent from every non-test build.
@@ -202,7 +185,7 @@ impl GatedDetail for secretary_cli::state::StateError {} // all 5 arms secret-fr
 /// A fixed diagnostic sentence written at the call site.
 ///
 /// The counterpart of rule E3's shape-1 acceptance (`detail: "…".to_string()`),
-/// which the `Detail` move (#500) turned into a type error at ~37 production
+/// which the `Detail` move (#500) turned into a type error at 35 production
 /// sites: a private inner field means a `String` — even one built from a
 /// literal — can no longer reach a gated position. This constructor is the
 /// sanctioned replacement, and it takes `&'static str` for exactly the reason
@@ -251,6 +234,57 @@ pub(crate) fn literal_for_uuid(context: &'static str, uuid: &[u8; 16]) -> Detail
 
 pub(crate) fn counted(context: &'static str, n: usize) -> Detail {
     Detail(format!("{context}: {n}"))
+}
+
+/// The reason `repair_vault`'s fail-closed gate refused to adopt a block,
+/// lifted verbatim out of core's own `RepairRejected` payload (#500).
+///
+/// The app must surface this — an equal-clock rejection names the recipient
+/// delta, and there is no automatic fix — so unlike every other constructor
+/// here this one CARRIES a runtime `String` rather than composing compile-time
+/// parts. What makes that sound is core's side of the contract: the value is
+/// `secretary_core::vault::VaultError::RepairRejected`'s `detail`, reviewed
+/// and allowlisted under the guard's rule E1 for `core` (allowlist Section 3,
+/// `"repair rejected for block …"`: all eleven shipped producers pass a
+/// literal, a fieldless `ClockRelation` Debug, a hyphenated-UUID list, or
+/// `format!("{e}")` over another core-gated error). The bridge authors
+/// nothing; it only moves core's string across the seam.
+///
+/// # Why the parameter is the whole `VaultError`
+///
+/// Taking `reason: String` — which is what this was until the fix round for
+/// #500 — made the provenance a COMMENT. Rule E3's allowlist keys on exact
+/// text per FILE, and `error/vault/mod.rs` is precisely the `From<VaultError>`
+/// match-arm block where a future arm gets added with a conventionally-named
+/// `detail` binding, so a second unreviewed
+/// `Detail::from_core_gated(detail)` in that same file passed the scan
+/// SILENTLY (verified by execution). Taking `&VaultError` and destructuring
+/// HERE makes the provenance a compile-time fact instead: the only value that
+/// type-checks is a core `VaultError`, and the only field read is the one
+/// core's E1 entry vouches for. The allowlist row is gone with it.
+///
+/// This grants the guard nothing new. `&secretary_core::vault::VaultError` is
+/// a STRICT SUBSET of the `&impl GatedDetail` parameter type already in
+/// `SAFE_PARAM_TYPES` — `VaultError` is one of the E4-reviewed `GatedDetail`
+/// impls above, so every existing `&impl GatedDetail` constructor
+/// (`gated`, `gated_with_context`, …) can already be called with one.
+///
+/// RESIDUAL, stated rather than papered over: a bridge author who
+/// hand-constructs `VaultError::RepairRejected { detail: <plaintext>, .. }`
+/// and passes it here launders that plaintext. That is not a new hole — it is
+/// exactly the `detail::gated(&Wrap(decrypted_key))` class the guard's own
+/// control corpus already records as ACCEPTED, and it applies identically to
+/// every `&impl GatedDetail` constructor in this module.
+///
+/// The non-`RepairRejected` arm is unreachable from the single call site (a
+/// match arm that has already matched the variant). It renders the whole
+/// `Display`, i.e. exactly what [`gated`] would return, so the fallback is
+/// safe by the same argument rather than by being unreachable.
+pub(crate) fn repair_rejection(e: &secretary_core::vault::VaultError) -> Detail {
+    match e {
+        secretary_core::vault::VaultError::RepairRejected { detail, .. } => Detail(detail.clone()),
+        other => Detail(other.to_string()),
+    }
 }
 
 /// Append a disclosed filesystem path after an already-gated value (#487).

@@ -127,13 +127,12 @@ declaration-position token on every `bridge_mode` root, wrapper roots
 included, because it is a purely structural distinction (declaration vs.
 construction) and E2 remains the sole gate on which TYPES are policy-
 acceptable where. `String::new()` / `Detail::new()` are NOT that shape and
-deny. On the two
-WRAPPER roots only (#486), a FIFTH shape is also accepted: a SINGLE-HOP
-field access ending in the gated name (`uuid_hex: a.uuid_hex`, not a
-multi-hop `a.b.uuid_hex`) — the DTO pass-through all four live wrapper
-sites use. See `ScanRoot.allow_field_access` and `rules/e3.py`'s
-`initializer_is_gated` for why it is scoped out of the
-bridge root.
+deny. A FIFTH shape — a
+SINGLE-HOP field access ending in the gated name (`uuid_hex: a.uuid_hex`) —
+exists in the code but is now switched OFF on every root (#497/#500): it was
+granted for four wrapper DTO pass-throughs, all four of which moved onto
+`detail::project(...)`, so it had zero live sites and the acceptance was
+retired rather than left dormant. See `ScanRoot.allow_field_access`.
 
 `E4` — THE IMPL ALLOWLIST. `impl GatedDetail for X` is a security decision:
 it claims `X`'s `Display` output carries no secret. Every such impl must live
@@ -369,13 +368,35 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   `Detail` from the set fires it AND reds the real scan at 27 sites); `WP6`
   pins that the widening did NOT also legalise the inline spelling
   `detail: detail.into_string()`, which matches no accepted shape.
-- RULE E3's SHAPE 5 accepts an ARBITRARY single-hop receiver (`<anything>.
-  detail`) on the wrapper roots, not just a bridge DTO. The justification
-  recorded for granting it — "the source is a bridge DTO whose fields
-  rules E2/E3 gate" — is a property of the four LIVE sites, not of the
-  shape the rule accepts; a local of any type, including one declared
-  outside every scan root, satisfies it. Disclosed in #496; tracked
-  separately.
+  QUALIFIED: "structural" holds only while `Detail` in that position RESOLVES
+  to `secretary_ffi_bridge::Detail`. The rule compares the SPELLING. A local
+  decoy declaration in a wrapper's own `detail.rs`
+  (`pub(crate) struct Detail(pub String);` beside
+  `fn launder(d: Detail) -> String`) once made
+  `detail::launder(Detail(anything))` scan OK — verified by execution — and is
+  now rejected wherever `ScanRoot.owns_detail_type` is False (only the bridge
+  declares the real type), pinned by `WP8`. An aliased IMPORT
+  (`use other_crate::X as Detail;`) remains invisible, the same aliasing blind
+  spot `E4` records for `GatedDetail`.
+  The same spelling caveat applies to `&secretary_core::vault::VaultError`,
+  added in the #500 fix round for `detail::repair_rejection`. It grants
+  nothing new — `&impl GatedDetail` is already in the set and `VaultError` is
+  one of the E4-reviewed impls — but naming the concrete type lets that one
+  constructor destructure core's `RepairRejected { detail }` inside
+  `detail.rs`, which is what made its predecessor's `String` parameter (and
+  the per-file allowlist row it needed) unnecessary.
+- RULE E3's SHAPE 5 is CLOSED, not a limit any more (#497, closed by #500).
+  It accepted an ARBITRARY single-hop receiver (`<anything>.detail`) on the
+  wrapper roots, not just a bridge DTO: the justification recorded for
+  granting it — "the source is a bridge DTO whose fields rules E2/E3 gate" —
+  was a property of the four LIVE sites, not of the shape the rule accepts,
+  and a local of any type, including one declared outside every scan root,
+  satisfied it. #500 moved all four sites onto `detail::project(...)`, a
+  sanctioned-constructor call, leaving the acceptance with ZERO users;
+  `ScanRoot.allow_field_access` is now `False` on every root, so the shape
+  denies everywhere. `WP7` pins the denial and fires the moment either
+  wrapper root turns it back on. The regex and the arm are retained so a
+  future DTO can re-enable them WITH live sites and a fresh review.
 - `&'static str` IS NOT LEAK-PROOF, and several rules lean on it. Safe,
   stable Rust can mint one from runtime data via `Box::leak(s.into_
   boxed_str())` or `String::leak()`; `#![forbid(unsafe_code)]` does not

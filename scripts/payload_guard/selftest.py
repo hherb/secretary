@@ -264,25 +264,32 @@ _ROOTS_BY_LABEL = {r.label: r for r in SCAN_ROOTS}
 # `False` in CPython). Fixed to `!=`, which is correct for both.
 _EXPECTED_ROOT_FLAGS: dict[str, dict[str, object]] = {
     "core": {
+        "owns_detail_type": False,
         "bridge_mode": False, "construction_sites": False,
         "gated_detail_impls": False, "format_confinement": False,
         "allow_field_access": False, "gated_field_types": frozenset(),
     },
     "bridge": {
+        "owns_detail_type": True,
         "bridge_mode": True, "construction_sites": True,
         "gated_detail_impls": True, "format_confinement": False,
         "allow_field_access": False,
         "gated_field_types": frozenset({"String", "Detail"}),
     },
+    # `allow_field_access` is False on BOTH wrapper roots as of #497/#500:
+    # E3 shape 5's four DTO pass-through sites all moved to
+    # `detail::project(...)`, leaving the acceptance with zero live sites.
     "ffi-py": {
+        "owns_detail_type": False,
         "bridge_mode": True, "construction_sites": True,
         "gated_detail_impls": False, "format_confinement": True,
-        "allow_field_access": True, "gated_field_types": frozenset({"String"}),
+        "allow_field_access": False, "gated_field_types": frozenset({"String"}),
     },
     "ffi-uniffi": {
+        "owns_detail_type": False,
         "bridge_mode": True, "construction_sites": True,
         "gated_detail_impls": False, "format_confinement": True,
-        "allow_field_access": True, "gated_field_types": frozenset({"String"}),
+        "allow_field_access": False, "gated_field_types": frozenset({"String"}),
     },
 }
 
@@ -447,7 +454,9 @@ def scan_bridge_control(
         found += scan_bridge_construction_sites(
             path_label,
             src,
-            sanctioned_constructor_names(detail_src),
+            sanctioned_constructor_names(
+                detail_src, owns_detail_type=root.owns_detail_type
+            ),
             allow_field_access=root.allow_field_access,
         )
     if root.gated_detail_impls:
@@ -539,7 +548,9 @@ def scan_wrapper_control(
         found += scan_bridge_construction_sites(
             path_label,
             src,
-            sanctioned_constructor_names(detail_src),
+            sanctioned_constructor_names(
+                detail_src, owns_detail_type=_wrapper_flag("owns_detail_type")
+            ),
             allow_field_access=_wrapper_allow_field_access(),
         )
     if _wrapper_flag("format_confinement"):

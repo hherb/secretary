@@ -114,7 +114,9 @@ def run_real_scan() -> int:
             if root.detail_module_rel
             else None
         )
-        sanctioned = sanctioned_constructor_names(detail_src)
+        sanctioned = sanctioned_constructor_names(
+            detail_src, owns_detail_type=root.owns_detail_type
+        )
         for label, raw in sources[root.label]:
             foreign = foreign_use_names(raw)
             findings = scan_source(
