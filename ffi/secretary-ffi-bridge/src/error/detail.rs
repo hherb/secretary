@@ -60,10 +60,13 @@ impl Detail {
     /// cannot otherwise obtain a `Detail`. Gated behind a non-default Cargo
     /// feature that only `[dev-dependencies]` enables, so under resolver v2
     /// this function DOES NOT EXIST in `cargo build --release`. That is
-    /// enforced by `cargo build --release --workspace` in CI — verified by
-    /// execution that `cargo test`, `cargo clippy --tests` and the rustdoc
-    /// gate all compile a production call to it CLEAN (verified on a
-    /// synthetic two-crate probe; re-verified on this workspace in Task 3).
+    /// enforced by `cargo build --release --workspace` in CI: `cargo test`
+    /// and `cargo clippy --tests` both compile a production call to it
+    /// CLEAN once a consumer wires the dev-dependency (verified on a
+    /// synthetic two-crate probe; pending re-verification on this workspace,
+    /// plan Step 6b). The rustdoc gate is NOT a blind spot here — this crate
+    /// is depended on by other workspace members, so `cargo doc` still
+    /// type-checks its bodies and would catch the same leak.
     #[cfg(feature = "test-support")]
     pub fn for_test(s: &str) -> Detail {
         Detail(s.to_string())
