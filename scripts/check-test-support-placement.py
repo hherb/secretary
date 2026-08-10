@@ -198,6 +198,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import re
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -336,7 +337,9 @@ def iter_dep_sections(data: dict) -> list[tuple[str, str, dict]]:
     return out
 
 
-def build_rename_map(data: dict) -> dict[str, set[str]]:
+def build_rename_map(
+    data: dict, inherited: dict[str, set[str]] | None = None
+) -> dict[str, set[str]]:
     """Dependency KEY -> the package names it can refer to (#500 R2).
 
     `mybridge = { package = "secretary-ffi-bridge" }` makes `mybridge` the
@@ -348,16 +351,64 @@ def build_rename_map(data: dict) -> dict[str, set[str]]:
     The key itself is ALWAYS kept in the candidate set alongside any
     rename: fail-closed, so an alias that happens to shadow a real crate
     name is checked both ways rather than only one.
+
+    `inherited` carries WORKSPACE-LEVEL renames (#515 C2). Cargo lets the
+    `package = "..."` rename live in the ROOT manifest's
+    `[workspace.dependencies]` while the member writes only
+    `mybridge = { workspace = true, features = ["test-support"] }`. Reading
+    the member manifest alone, `mybridge` resolves to `{"mybridge"}`, the
+    feature-closure lookup misses `secretary-ffi-bridge` entirely, and the
+    request is invisible — verified by execution to enable `test-support`
+    in a real `cargo build --release` while this guard printed OK. Merging
+    the workspace map in is purely ADDITIVE, so it can only ever widen the
+    candidate set: fail-closed, same as the key-always-kept rule above.
     """
     renames: dict[str, set[str]] = {}
+    if inherited:
+        for key, names in inherited.items():
+            renames.setdefault(key, set()).update(names)
     for _label, _kind, table in iter_dep_sections(data):
         for key, spec in table.items():
             if not isinstance(key, str):
                 continue
             candidates = renames.setdefault(key, {key})
+            candidates.add(key)
             if isinstance(spec, dict) and isinstance(spec.get("package"), str):
                 candidates.add(spec["package"])
     return renames
+
+
+def build_workspace_rename_map(
+    parsed: list[tuple[Path, dict]],
+) -> dict[str, set[str]]:
+    """Renames declared in any scanned `[workspace.dependencies]` (#515 C2).
+
+    Workspace inheritance is repo-global, not manifest-local: a member that
+    writes `dep = { workspace = true }` picks up whatever the root declared,
+    including a `package = "..."` rename. This collects those so
+    `build_rename_map` can merge them into every member's local map.
+
+    Collected across ALL scanned manifests rather than only the root, and
+    unioned rather than overwritten, because this guard already tolerates
+    more than one `[workspace]` in the tree (`core/fuzz` is a second one).
+    A key declared by two workspaces contributes both candidates — again
+    fail-closed.
+    """
+    inherited: dict[str, set[str]] = {}
+    for _manifest, data in parsed:
+        workspace = data.get("workspace")
+        if not isinstance(workspace, dict):
+            continue
+        table = workspace.get("dependencies")
+        if not isinstance(table, dict):
+            continue
+        for key, spec in table.items():
+            if not isinstance(key, str):
+                continue
+            candidates = inherited.setdefault(key, {key})
+            if isinstance(spec, dict) and isinstance(spec.get("package"), str):
+                candidates.add(spec["package"])
+    return inherited
 
 
 def resolve_dep_names(renames: dict[str, set[str]], key: str) -> set[str]:
@@ -371,6 +422,7 @@ def resolve_dep_names(renames: dict[str, set[str]], key: str) -> set[str]:
 
 def build_feature_graph(
     parsed: list[tuple[Path, dict]],
+    inherited: dict[str, set[str]] | None = None,
 ) -> tuple[dict[Path, set[str]], dict[str, set[str]]]:
     """Fixed-point closure of "which `[features]` keys reach `test-support`",
     computed over ALL scanned manifests together (#500 Finding B, R1, R2).
@@ -412,7 +464,7 @@ def build_feature_graph(
 
     for manifest, data in parsed:
         nodes.append(manifest)
-        renames_of[manifest] = build_rename_map(data)
+        renames_of[manifest] = build_rename_map(data, inherited)
         table: dict[str, list[str]] = {}
         features = data.get("features")
         if isinstance(features, dict):
@@ -497,6 +549,205 @@ def find_duplicate_package_names(parsed: list[tuple[Path, dict]]) -> list[str]:
     return hits
 
 
+def find_resolver_violations(parsed: list[tuple[Path, dict]]) -> list[str]:
+    """Every scanned `[workspace]` must pin the feature resolver (#515 C1).
+
+    THIS IS THE PRECONDITION OF THE WHOLE GUARD. The `[dev-dependencies]`
+    placement this file enforces keeps `Detail::for_test` out of a shipped
+    artifact ONLY because resolver v2 declines to unify a dev-dependency's
+    requested features into a non-test build. Under resolver **v1** the
+    three already-sanctioned dev-dependency lines put the hatch straight
+    back into `cargo build --release --workspace`, and every check in this
+    file still passes — it is asking the right question of the wrong
+    universe.
+
+    A VIRTUAL manifest (no `[package]`) defaults to resolver **1**, and
+    Cargo says so with a *warning*, which nothing in CI escalates. The root
+    manifest here is virtual, so deleting one line silently converts the
+    hatch guarantee to nothing. `edition` inference does NOT rescue it:
+    edition-based resolver-2 inference keys off the root `[package].edition`,
+    which a virtual manifest does not have.
+
+    Accepts `"2"` and `"3"`: resolver 3 is a strict successor (it adds
+    MSRV-aware version selection) and keeps v2's feature-unification rules,
+    which are the property this guard depends on.
+
+    EDITION INFERENCE is honoured rather than ignored, because ignoring it
+    would fail a manifest that is genuinely safe: a NON-virtual workspace
+    root (one that also carries `[package]`) infers resolver 2 from
+    `edition >= 2021`. `core/fuzz/Cargo.toml` is exactly that shape — a
+    `[workspace]` with no `resolver` key that resolves to v2 anyway — and
+    denying it would be a false positive that trains a reader to add an
+    allowlist rather than to read the rule.
+    """
+    hits: list[str] = []
+    for manifest, data in parsed:
+        workspace = data.get("workspace")
+        if not isinstance(workspace, dict):
+            continue
+        resolver = workspace.get("resolver")
+        if resolver is not None:
+            if resolver not in ("2", "3"):
+                hits.append(
+                    f"{manifest}: [workspace] sets resolver = {resolver!r}; only "
+                    f'"2" or "3" decline to unify a [dev-dependencies] feature '
+                    f"into a non-test build, which is the sole reason "
+                    f"`{FEATURE}` is absent from shipped artifacts"
+                )
+            continue
+        # No explicit key: safe ONLY if edition inference gives v2, which
+        # needs a root `[package]` (a virtual manifest has no edition to
+        # infer from and silently falls back to resolver 1).
+        package = data.get("package")
+        edition = package.get("edition") if isinstance(package, dict) else None
+        if isinstance(edition, str) and edition.isdigit() and int(edition) >= 2021:
+            continue
+        shape = "VIRTUAL (no [package])" if not isinstance(package, dict) else (
+            f"[package].edition = {edition!r}"
+        )
+        hits.append(
+            f"{manifest}: [workspace] does not set `resolver` and {shape}, so "
+            f"Cargo falls back to resolver 1 with only a WARNING. Under "
+            f"resolver 1 a [dev-dependencies] feature IS unified into `cargo "
+            f"build --release`, which puts `{FEATURE}` straight back into a "
+            f'shipped artifact and makes every other check in this file '
+            f'vacuous. Set `resolver = "2"`'
+        )
+    return hits
+
+
+def find_feature_liveness_violations(parsed: list[tuple[Path, dict]]) -> list[str]:
+    """The guarded feature must still EXIST and still be requested (#515).
+
+    Every other check in this file is conditional on the string `FEATURE`
+    appearing somewhere. Rename the bridge's feature `test-support` ->
+    `test-hatch` consistently across all four manifests and this guard keeps
+    printing OK forever while policing nothing — a vacuity the project's
+    `--self-test`-first convention exists to prevent, and one that
+    `--self-test` alone cannot catch because it runs on synthetic fixtures
+    that carry their own copy of the name.
+
+    Two independent anchors, so a rename trips at least one even if the
+    other is legitimately restructured:
+
+    1. Some scanned manifest DECLARES `[features] test-support`.
+    2. Some scanned manifest REQUESTS it from a `[dev-dependencies]` edge.
+
+    Anchor 2 is what makes the whole `[dev-dependencies]`-only rule
+    load-bearing rather than hypothetical: if nothing requests the feature,
+    nothing is being kept out of a shipped artifact.
+    """
+    declares = [m for m, d in parsed if FEATURE in (d.get("features") or {})]
+    requests: list[Path] = []
+    for manifest, data in parsed:
+        for _label, kind, table in iter_dep_sections(data):
+            if kind != "dev-dependencies":
+                continue
+            for _key, spec in table.items():
+                if isinstance(spec, dict) and FEATURE in (spec.get("features") or []):
+                    requests.append(manifest)
+    hits: list[str] = []
+    if not declares:
+        hits.append(
+            f"no scanned manifest declares `[features] {FEATURE}` — the guarded "
+            f"feature was renamed or removed, so every check in this file is "
+            f"now vacuous while still reporting OK. Re-point `FEATURE`, or "
+            f"retire this guard deliberately."
+        )
+    if not requests:
+        hits.append(
+            f"no scanned manifest requests `{FEATURE}` from a "
+            f"[dev-dependencies] edge — the placement rule this guard enforces "
+            f"has no subject, so a green run proves nothing. Re-point "
+            f"`FEATURE`, or retire this guard deliberately."
+        )
+    return hits
+
+
+def find_unscanned_workspace_members(
+    parsed: list[tuple[Path, dict]], scanned: list[Path]
+) -> list[str]:
+    """Workspace members whose manifest no scan root reached (#515, #505).
+
+    `DEFAULT_ROOTS` is hardcoded, and its comment claimed it was "verified
+    against the `[workspace] members` list" — a one-time human check that
+    nothing re-ran. A new top-level crate directory was therefore silently
+    unscanned, with the guard printing OK and the manifest count merely
+    changing by an amount nobody pins.
+
+    This derives the claim from the manifest instead of from a comment.
+    Glob members (`crates/*`) are expanded with `Path.glob` so the check
+    tracks the same set Cargo does. Note the deliberate asymmetry with
+    `iter_manifests`: NON-members are still scanned (`core/fuzz` is one),
+    because this guard's threat model is "any manifest in the repo that can
+    turn the feature on", which is wider than workspace membership.
+    """
+    scanned_resolved = {p.resolve() for p in scanned}
+    hits: list[str] = []
+    for manifest, data in parsed:
+        workspace = data.get("workspace")
+        if not isinstance(workspace, dict):
+            continue
+        members = workspace.get("members")
+        if not isinstance(members, list):
+            continue
+        base = manifest.parent
+        for member in sorted(m for m in members if isinstance(m, str)):
+            # A member entry may be a literal path or a glob (`crates/*`).
+            matches = sorted(base.glob(member)) if any(
+                c in member for c in "*?["
+            ) else [base / member]
+            if not matches:
+                hits.append(
+                    f"{manifest}: [workspace] members entry {member!r} matches "
+                    f"no directory — a stale member entry means the crate it "
+                    f"named is no longer scanned by anything. {REMEDY}"
+                )
+                continue
+            for match in matches:
+                member_manifest = (match / "Cargo.toml").resolve()
+                if member_manifest not in scanned_resolved:
+                    hits.append(
+                        f"{manifest}: workspace member {member!r} "
+                        f"({member_manifest}) is NOT reached by any scan root — "
+                        f"DEFAULT_ROOTS is hardcoded, so a new crate directory "
+                        f"is invisible to every check in this file while the "
+                        f"scan still reports OK. Add its root. {REMEDY}"
+                    )
+    return hits
+
+
+def find_empty_roots(roots: list[Path], scanned: list[Path]) -> list[str]:
+    """Directory roots that exist but contributed zero manifests (#515).
+
+    `find_missing_roots` tests `.exists()` only, and the zero-manifest check
+    in `run_real_scan` is AGGREGATE — so a root that still exists but has
+    been emptied (a crate tree moved one level down, a rename that left the
+    parent behind) drops every manifest under it while other roots keep the
+    total non-zero and the guard prints OK. `payload_guard/scan.py`'s
+    `_check_roots_resolve` already gets this right for the sibling guard
+    ("contains no *.rs files"); this is the missing half here.
+
+    A root that is itself a FILE is exempt: it contributes exactly itself,
+    and `find_missing_roots` already covers its disappearance.
+    """
+    scanned_resolved = [p.resolve() for p in scanned]
+    hits: list[str] = []
+    for root in roots:
+        if not root.exists() or not root.is_dir():
+            continue
+        resolved = root.resolve()
+        if not any(
+            p == resolved or resolved in p.parents for p in scanned_resolved
+        ):
+            hits.append(
+                f"scan root {root} exists but contributed ZERO manifests — an "
+                f"emptied or moved crate tree drops coverage silently while "
+                f"other roots keep the total non-zero. {REMEDY}"
+            )
+    return hits
+
+
 def _feature_hits(
     spec: object, reaches_by_name: dict[str, set[str]], candidates: set[str]
 ) -> list[str]:
@@ -518,7 +769,10 @@ def _feature_hits(
 
 
 def find_dependency_violations(
-    data: dict, label: str, reaches_by_name: dict[str, set[str]]
+    data: dict,
+    label: str,
+    reaches_by_name: dict[str, set[str]],
+    inherited: dict[str, set[str]] | None = None,
 ) -> list[str]:
     """`features = [...]` on a non-dev dependency edge that names
     `test-support` directly, names an alias whose closure reaches it, or
@@ -531,7 +785,7 @@ def find_dependency_violations(
     — that is the sanctioned section — though they DO feed the rename map.
     """
     hits: list[str] = []
-    renames = build_rename_map(data)
+    renames = build_rename_map(data, inherited)
 
     for section_label, kind, table in iter_dep_sections(data):
         if kind not in DENIED_DEP_SECTIONS:
@@ -561,6 +815,7 @@ def find_feature_table_violations(
     label: str,
     manifest_reaches: set[str],
     reaches_by_name: dict[str, set[str]],
+    inherited: dict[str, set[str]] | None = None,
 ) -> list[str]:
     """`[features]` entries that turn `test-support` on without a consumer
     ever writing `[dev-dependencies]` at all (#500 I2, generalized to
@@ -594,7 +849,7 @@ def find_feature_table_violations(
             f"{label}: [features] default's closure reaches '{FEATURE}' {REMEDY}"
         )
 
-    renames = build_rename_map(data)
+    renames = build_rename_map(data, inherited)
     for feature_name, values in features.items():
         if not isinstance(values, list):
             continue
@@ -634,15 +889,23 @@ def scan(roots: list[Path]) -> tuple[list[str], int, list[Path]]:
             continue
         parsed.append((manifest, data))
 
-    reaches_by_manifest, reaches_by_name = build_feature_graph(parsed)
+    # #515 C2: workspace-level `package = "..."` renames are repo-global,
+    # so they must be resolved BEFORE any per-manifest rename map is built.
+    inherited = build_workspace_rename_map(parsed)
+
+    reaches_by_manifest, reaches_by_name = build_feature_graph(parsed, inherited)
     violations.extend(find_duplicate_package_names(parsed))
+    violations.extend(find_resolver_violations(parsed))
+    violations.extend(find_unscanned_workspace_members(parsed, manifest_paths))
 
     for manifest, data in parsed:
         label = str(manifest)
-        violations.extend(find_dependency_violations(data, label, reaches_by_name))
+        violations.extend(
+            find_dependency_violations(data, label, reaches_by_name, inherited)
+        )
         violations.extend(
             find_feature_table_violations(
-                data, label, reaches_by_manifest[manifest], reaches_by_name
+                data, label, reaches_by_manifest[manifest], reaches_by_name, inherited
             )
         )
 
@@ -670,8 +933,23 @@ def run_real_scan(roots: list[Path]) -> int:
               "from a guard that isn't running.")
         fail = True
 
-    if violations:
-        for v in violations:
+    # #515: two assertions about the REAL TREE rather than about an
+    # arbitrary manifest set, so they live here and not in `scan()` — a
+    # synthetic control fixture legitimately has neither a live
+    # `test-support` feature nor a fully-populated root list, and firing on
+    # those would make every control fixture unwritable. Each is pinned by
+    # a standalone self-test check instead of by a corpus control.
+    parsed_real: list[tuple[Path, dict]] = []
+    for manifest in iter_manifests(roots):
+        try:
+            parsed_real.append((manifest, tomllib.loads(manifest.read_text())))
+        except tomllib.TOMLDecodeError:
+            continue  # already reported as a violation by `scan`
+    real_only = find_feature_liveness_violations(parsed_real)
+    real_only += find_empty_roots(roots, iter_manifests(roots))
+
+    if violations or real_only:
+        for v in violations + real_only:
             print(f"DENIED: {v}")
         fail = True
 
@@ -1042,10 +1320,189 @@ x = ["mybridge/hatch"]
         },
         expect=("[features] x forwards 'mybridge/hatch'",),
     ),
+    # ---- #515 C1: the resolver pin -------------------------------------
+    # Under resolver 1 every OTHER check in this file is asking the right
+    # question of the wrong universe, so the precondition gets the same
+    # positive-control treatment as the rules it underwrites.
+    "resolver_absent_virtual_manifest": Control(
+        files={
+            "Cargo.toml": """
+[workspace]
+members = []
+""",
+        },
+        expect=(
+            "[workspace] does not set `resolver` and VIRTUAL (no [package])",
+        ),
+    ),
+    "resolver_explicitly_v1": Control(
+        files={
+            "Cargo.toml": """
+[workspace]
+resolver = "1"
+members = []
+""",
+        },
+        expect=("[workspace] sets resolver = '1'",),
+    ),
+    "resolver_absent_old_edition": Control(
+        files={
+            "Cargo.toml": """
+[workspace]
+
+[package]
+name = "old-edition-root"
+edition = "2018"
+""",
+        },
+        expect=("[workspace] does not set `resolver` and [package].edition = '2018'",),
+    ),
+    # ---- #515 C2: the workspace-inherited `package = "..."` rename ------
+    # PROVEN by execution to enable `test-support` in a real `cargo build
+    # --release` while this guard printed OK: the rename lives in the ROOT
+    # manifest, the member writes only `workspace = true`, and a
+    # manifest-local rename map cannot see it.
+    "workspace_inherited_rename_on_normal_edge": Control(
+        files={
+            "Cargo.toml": """
+[workspace]
+resolver = "2"
+members = ["consumer"]
+
+[workspace.dependencies]
+mybridge = { path = "bridge", package = "secretary-ffi-bridge" }
+""",
+            "bridge/Cargo.toml": """
+[package]
+name = "secretary-ffi-bridge"
+
+[features]
+test-support = []
+""",
+            "consumer/Cargo.toml": """
+[package]
+name = "consumer"
+
+[dependencies]
+mybridge = { workspace = true, features = ["test-support"] }
+""",
+        },
+        expect=("mybridge (resolves to mybridge / secretary-ffi-bridge) "
+                "requests ['test-support']",),
+    ),
+    # ---- #515 (#505): DEFAULT_ROOTS completeness, derived not asserted ---
+    "workspace_member_outside_scan_roots": Control(
+        files={
+            "Cargo.toml": """
+[workspace]
+resolver = "2"
+members = ["no_such_crate"]
+""",
+        },
+        expect=("workspace member 'no_such_crate'", "is NOT reached by any scan root"),
+    ),
+    # ---- I4: three denied dependency shapes that had NO positive control -
+    # Each denies today, but nothing observed it denying, so each could be
+    # switched off with `--self-test` green.
+    "build_dependencies_edge": Control(
+        files={
+            "Cargo.toml": """
+[build-dependencies]
+secretary-ffi-bridge = { path = "..", features = ["test-support"] }
+""",
+        },
+        expect=("[build-dependencies] secretary-ffi-bridge requests ['test-support']",),
+    ),
+    "target_specific_normal_edge": Control(
+        files={
+            "Cargo.toml": """
+[target."cfg(unix)".dependencies]
+secretary-ffi-bridge = { path = "..", features = ["test-support"] }
+""",
+        },
+        expect=("target.cfg(unix).dependencies",),
+    ),
+    "workspace_dependencies_edge": Control(
+        files={
+            "Cargo.toml": """
+[workspace]
+resolver = "2"
+
+[workspace.dependencies]
+secretary-ffi-bridge = { path = "..", features = ["test-support"] }
+""",
+        },
+        expect=("[workspace.dependencies] secretary-ffi-bridge requests ['test-support']",),
+    ),
 }
+
 
 # Negative controls: each MUST pass with zero violations.
 NEGATIVE_CONTROLS: dict[str, Control] = {
+    # #515 C1's false-positive guards. `resolver_inferred_from_edition` is
+    # the `core/fuzz/Cargo.toml` shape — a `[workspace]` with no `resolver`
+    # key that infers v2 from a root `[package].edition >= 2021`. Denying it
+    # would be a false positive that trains a reader to reach for an
+    # allowlist instead of reading the rule.
+    "resolver_explicitly_v2": Control(
+        files={
+            "Cargo.toml": """
+[workspace]
+resolver = "2"
+members = []
+""",
+        },
+    ),
+    "resolver_inferred_from_edition": Control(
+        files={
+            "Cargo.toml": """
+[workspace]
+
+[package]
+name = "fuzz-like-root"
+edition = "2021"
+""",
+        },
+    ),
+    # #515 C2's false-positive guard: the SAME inherited rename, requested
+    # from the sanctioned section. Resolving the workspace rename must not
+    # by itself manufacture a finding.
+    "workspace_inherited_rename_on_dev_edge": Control(
+        files={
+            "Cargo.toml": """
+[workspace]
+resolver = "2"
+members = ["consumer"]
+
+[workspace.dependencies]
+mybridge = { path = "bridge", package = "secretary-ffi-bridge" }
+""",
+            "bridge/Cargo.toml": """
+[package]
+name = "secretary-ffi-bridge"
+
+[features]
+test-support = []
+""",
+            "consumer/Cargo.toml": """
+[package]
+name = "consumer"
+
+[dev-dependencies]
+mybridge = { workspace = true, features = ["test-support"] }
+""",
+        },
+    ),
+    # `[target.<spec>.dev-dependencies]` is the sanctioned section too — the
+    # target qualifier must not turn a legitimate dev edge into a finding.
+    "target_specific_dev_edge": Control(
+        files={
+            "Cargo.toml": """
+[target."cfg(unix)".dev-dependencies]
+secretary-ffi-bridge = { path = "..", features = ["test-support"] }
+""",
+        },
+    ),
     "legit_dev_dependency": Control(
         files={
             "Cargo.toml": """
@@ -1229,6 +1686,104 @@ def self_test() -> int:
                   f"must not manufacture a duplicate-package-name denial")
             fails += 1
 
+        # #515: the two REAL-TREE-ONLY assertions live in `run_real_scan`,
+        # not `scan`, so no corpus control can reach them. Probe them
+        # directly, both directions — a check nothing observes firing is
+        # the vacuity this whole file exists to prevent.
+        live = [
+            (Path("bridge/Cargo.toml"), {"features": {FEATURE: []}}),
+            (
+                Path("consumer/Cargo.toml"),
+                {"dev-dependencies": {"b": {"features": [FEATURE]}}},
+            ),
+        ]
+        if find_feature_liveness_violations(live):
+            print("SELF-TEST FAIL: feature-liveness check fired on a tree that "
+                  "DOES declare and request the feature (false positive)")
+            fails += 1
+        if not find_feature_liveness_violations([(Path("x/Cargo.toml"), {})]):
+            print("SELF-TEST FAIL: feature-liveness check did NOT fire on a "
+                  "tree where the guarded feature is absent — a rename would "
+                  "silently make every other check in this file vacuous")
+            fails += 1
+        if not find_feature_liveness_violations(live[:1]):
+            print("SELF-TEST FAIL: feature-liveness check did NOT fire when the "
+                  "feature is declared but NOTHING requests it from a "
+                  "[dev-dependencies] edge — the placement rule then has no "
+                  "subject and a green run proves nothing")
+            fails += 1
+
+        # An EXISTING root that contributes zero manifests while other roots
+        # keep the aggregate non-zero (#515). `find_missing_roots` tests
+        # `.exists()` only and the zero-count check is aggregate, so without
+        # this an emptied crate tree drops coverage in silence.
+        hollow = tmp_path / "hollow_root"
+        hollow.mkdir()
+        if not find_empty_roots([hollow], []):
+            print("SELF-TEST FAIL: an existing-but-empty scan root was NOT "
+                  "reported — coverage can be dropped silently")
+            fails += 1
+        if find_empty_roots([clean_dir], [clean_dir / "Cargo.toml"]):
+            print("SELF-TEST FAIL: empty-root check fired on a root that DID "
+                  "contribute a manifest (false positive)")
+            fails += 1
+
+        # ...and the WIRING of those two into `run_real_scan`. The three
+        # probes above call the functions directly, so severing the
+        # `violations.extend(...)` line would leave them green. `clean_dir`
+        # holds a lone `[dev-dependencies]` manifest that declares no
+        # feature at all, so liveness — and only liveness — must red it.
+        rc, captured = _quiet_scan_rc([clean_dir])
+        if rc == 0 or "guarded feature was renamed or removed" not in captured:
+            print("SELF-TEST FAIL: the feature-liveness check is not WIRED "
+                  "into run_real_scan — a tree with no `test-support` at all "
+                  "scanned clean")
+            print(captured)
+            fails += 1
+
+        # Same for the empty-root check. `hollow` is paired with a root that
+        # DOES contribute, so the aggregate zero-manifest check cannot be
+        # what reds it — only `find_empty_roots` can, which is what makes
+        # this probe distinguish the wiring from its neighbours.
+        _rc, captured = _quiet_scan_rc([clean_dir, hollow])
+        if "contributed ZERO manifests" not in captured:
+            print("SELF-TEST FAIL: the empty-root check is not WIRED into "
+                  "run_real_scan — an existing-but-empty root alongside a "
+                  "populated one dropped coverage silently")
+            print(captured)
+            fails += 1
+
+        # The violations -> exit-1 wiring itself. Every corpus control calls
+        # `scan()` directly, so deleting `fail = True` from `run_real_scan`'s
+        # `if violations:` block would leave all of them green while the real
+        # scan printed DENIED lines and exited 0 — the catastrophic shape.
+        wiring = tmp_path / "exit_wiring"
+        wiring.mkdir()
+        _write_fixture(wiring, POSITIVE_CONTROLS["base_normal_dependency"].files)
+        rc, captured = _quiet_scan_rc([wiring])
+        if rc == 0:
+            print("SELF-TEST FAIL: run_real_scan returned 0 despite violations "
+                  "— the DENIED-but-exit-0 shape")
+            print(captured)
+            fails += 1
+        elif "DENIED:" not in captured:
+            print("SELF-TEST FAIL: run_real_scan failed without printing a "
+                  "DENIED line, so CI would show no reason")
+            print(captured)
+            fails += 1
+
+    # #511's class, in a file that reproduced it: control tables are dict
+    # literals, so a duplicate label is silently last-wins and the printed
+    # total simply shrinks. Count the textual entries and compare.
+    source = Path(__file__).read_text(encoding="utf-8")
+    declared = len(re.findall(r"^    \"[A-Za-z0-9_]+\": Control\(", source, re.M))
+    if declared != len(POSITIVE_CONTROLS) + len(NEGATIVE_CONTROLS):
+        print(f"SELF-TEST FAIL: {declared} `Control(` entries are declared in "
+              f"source but only {len(POSITIVE_CONTROLS) + len(NEGATIVE_CONTROLS)} "
+              f"survive in the dicts — a DUPLICATE LABEL was silently "
+              f"last-wins, dropping a control with no other signal")
+        fails += 1
+
     total_controls = len(POSITIVE_CONTROLS) + len(NEGATIVE_CONTROLS)
     if fails:
         print(f"test-support placement self-test: FAILED "
@@ -1236,9 +1791,11 @@ def self_test() -> int:
               f"{negative_ok}/{len(NEGATIVE_CONTROLS)} negative)")
         return 1
     print(f"test-support placement self-test: OK "
-          f"({total_controls}/{total_controls} controls: "
-          f"{positive_ok} positive, {negative_ok} negative; "
-          f"plus 1 zero-manifest, 1 missing-root and 1 overlapping-root check)")
+          f"({positive_ok + negative_ok}/{total_controls} controls: "
+          f"{positive_ok} positive, {negative_ok} negative; plus 1 "
+          f"zero-manifest, 1 missing-root, 1 overlapping-root, 3 "
+          f"feature-liveness, 2 empty-root, 3 wiring and 1 "
+          f"label-uniqueness check)")
     return 0
 
 

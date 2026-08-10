@@ -1,5 +1,11 @@
 """Rule E2: every field of a bridge- OR WRAPPER-root error declaration must
-be data-free or a `String` under a `GATED_FIELD_NAMES` name.
+be data-free, or carry prose under a `GATED_FIELD_NAMES` name with the type
+spelling THAT ROOT accepts. The accepted spelling is PER-ROOT as of #500
+(`ScanRoot.gated_field_types`): `Detail` on the bridge, `String` on the two
+wrapper crates. The bridge permits NO `String` under a gated name — `BP51`
+pins that denial. This headline said "or a `String`" until #515, which is
+the pre-#500 rule and contradicted `bridge_declaration_findings` two lines
+of code below.
 
 Two sweeps — `scan_source`'s `bridge_mode` (thiserror-derived declarations,
 rule module `e1`) and this module's `scan_bridge_plain_declarations`

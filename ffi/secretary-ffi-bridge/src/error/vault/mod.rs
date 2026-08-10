@@ -560,9 +560,15 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // #500: `detail` was field-init SHORTHAND until the `Detail`
             // newtype landed — a shape rule E3 cannot see at all. It now goes
             // through a sanctioned constructor that takes the WHOLE core error
-            // and destructures it inside `detail.rs`, so "this string is
-            // core's own E1-reviewed `RepairRejected` payload" is a fact the
-            // compiler enforces rather than a comment. Binding by `ref` keeps
+            // and destructures it inside `detail.rs`. What the COMPILER
+            // enforces is narrower than an earlier version of this comment
+            // claimed (#515 I6): that the argument is a `&VaultError`. WHICH
+            // rendering comes out is decided by the runtime match inside
+            // `detail::repair_rejection`, whose fallback arm renders the
+            // whole `Display` — so "core's own E1-reviewed `RepairRejected`
+            // payload" remains a REVIEW claim about that function, resting
+            // on allowlist Section 3's `vault/mod.rs — RepairRejected` row.
+            // Binding by `ref` keeps
             // `e` whole for that call, mirroring the `VE::Io` arm above.
             ref e @ VE::RepairRejected {
                 ref block_uuid, ..

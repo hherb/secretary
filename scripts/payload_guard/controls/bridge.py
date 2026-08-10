@@ -607,6 +607,24 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         '}\n',
         {"rule": "E3", "field": "detail"},
     ),
+    (
+        "BP58 #515 I8: the SAME BP52 leak, hidden behind an UNPAIRED `>` in "
+        "an earlier argument. `_split_call_arg_spans` counted every `<`/`>` "
+        "as a bracket, so the `>` of `>=` (or a closure's `-> T`, or any "
+        "comparison) drove the depth counter down and the commas inside a "
+        "nested call read as TOP-LEVEL separators — mis-splitting the "
+        "argument list and moving the #498 hint check onto a different, "
+        "literal argument while the real hint went unchecked. Two "
+        "independent fixes, either of which alone denies this: `<`/`>` are "
+        "now counted only inside a turbofish-introduced generic context, "
+        "and the split must produce exactly the constructor's declared "
+        "ARITY or the call denies outright",
+        'fn f(e: &E, k: usize) -> X {\n'
+        '    let leaked: &\'static str = Box::leak(format!("{e}").into_boxed_str());\n'
+        '    X::V { detail: detail::gated_with_context(if k >= 1 { leaked } else { leaked }, e) }\n'
+        '}\n',
+        {"rule": "E3", "field": "detail"},
+    ),
 ]
 
 BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [

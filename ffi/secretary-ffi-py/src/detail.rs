@@ -116,9 +116,18 @@ pub(crate) fn uuid_prefixed(uuid_part: &Detail, detail_part: &Detail) -> String 
 /// seam intact.
 ///
 /// This is a PROJECTION, not a gate: it re-derives nothing and vouches for
-/// nothing. It exists so the unwrap has ONE named home per wrapper crate
-/// rather than 2 inline `.into_string()` call sites — the same reason rule
-/// E5 confines `format!` to this file. Guard rule E3 accepts a call to it
+/// nothing. It exists so the unwrap has a named home for the two
+/// GATED-FIELD-INITIALIZER sites (`repair_preview.rs:45,83`) that would
+/// otherwise be inline `.into_string()` — the spelling E3 denies.
+///
+/// It is NOT the crate's only unwrap site, and saying so would overstate it
+/// (#515 I11): `errors.rs` holds **17** bare `.into_string()` calls, all in
+/// `new_err(...)` ARGUMENT position — a position rule E3 does not read at
+/// all, so routing them through here would buy no enforcement. The
+/// identical sentence in the ffi-uniffi twin IS accurate for that crate
+/// (verified: zero bare `.into_string()` outside its own `detail.rs`);
+/// this one was copied across without re-checking.
+/// Guard rule E3 accepts a call to it
 /// because `Detail` sits in `SAFE_PARAM_TYPES`; the inline spelling
 /// (`detail: detail.into_string()`) matches none of E3's accepted shapes and
 /// denies.

@@ -906,11 +906,16 @@ Filing a new one means adding it here AND there.
 - #501  ffi-py's pytest suite never runs in CI.
 - #502  `desktop/src-tauri` builds its own `AppError { detail: String }`
         outside every scan root.
-- #505  `check-test-support-placement.py`'s `DEFAULT_ROOTS` completeness is
-        unproven — a manifest under an unlisted root is unscanned.
+- #505  CLOSED IN CODE by #515. `check-test-support-placement.py` now
+        DERIVES the completeness claim from the root manifest's
+        `[workspace] members` (`find_unscanned_workspace_members`) instead
+        of from a code comment, and a member no scan root reaches is a
+        violation. Two positive controls pin it.
 - #506  That same script is 1253 lines and wants this package's treatment.
-- #507  `payload_guard/lexer.py` cites a control `BP46` that has never
-        existed, so one of its C-string claims is pinned by nothing.
+- #507  CLOSED IN CODE by #515: `lexer.py`'s dangling `BP46` citation is
+        corrected to `BP45` (the corpus runs BP1-BP45, BP47-BP58). The
+        C-string claim was always pinned by BP45; only the citation was
+        wrong.
 - #508  E3 shape 5's internals are unpinned while `allow_field_access` is
         `False` everywhere — re-enabling it would restore untested code.
 - #509  E3 arm 3 accepts a bare `String` token on the WRAPPER roots, where
@@ -918,9 +923,13 @@ Filing a new one means adding it here AND there.
         shape the bridge no longer has.
 - #510  `Path.rglob` does not recurse SYMLINKED directories, so a symlinked
         source tree is invisible to EVERY rule here.
-- #511  The control corpora have no uniqueness check over labels; a
-        duplicate is caught only by grep. Not hypothetical — a `WP9`
-        collision during #500 was found by an implementer running grep.
+- #511  CLOSED IN CODE by #515, on BOTH guards.
+        `_check_control_label_uniqueness` compares the leading identity
+        TOKEN across all six corpora here, and
+        `check-test-support-placement.py` counts its textual `Control(`
+        entries against its dict sizes (a duplicate dict key is silently
+        last-wins there). Both are non-vacuity-tested by planting a
+        collision.
 - #512  A RENAMING IMPORT defeats the `Detail` newtype's E2 credit: the
         compiler guarantee is per DECLARATION, not per root. Covers the
         `GatedDetail` trait twin as the same root cause — this guard matches
@@ -933,6 +942,26 @@ Filing a new one means adding it here AND there.
         placement guard's copies until this. Latent, not live: no directory
         symlink and no non-build `target` directory on the workspace path
         today.
+- #516  `--self-test`'s BP57 wiring probes write `.rs` files into the LIVE
+        source tree (five of them as of #515, up from two). Removed in a
+        `finally`, `.gitignore`d, and residue reds the next scan — but the
+        window races a concurrent `cargo`/parallel session, blocks a
+        read-only checkout, and hides residue from `git status`.
+- #517  E6 and `SHADOWABLE_PARAM_IDENTS` carry the same alias/macro blind
+        spots as E4, and unlike `GatedDetail` there is no `Sealed`
+        equivalent for a tuple-struct constructor, so E6 is the ONLY
+        enforcement. Also records that the derived decoy-identifier set is
+        PascalCase-only by reviewed choice. Same root cause as #512.
+
+CLOSED IN CODE by #515: #505, #507, #511 (above), plus the six review
+findings that produced this round — the `resolver = "2"` precondition is
+now itself denied when absent, a workspace-inherited `package = "..."`
+rename can no longer smuggle the feature onto a normal edge, every
+`SAFE_PARAM_TYPES` member (not two) carries a decoy withdrawal, the
+deny-polarity alias pass no longer inherits the permissive `#[cfg]` skip,
+E3's argument splitter no longer mis-indexes on an unpaired `>` (and now
+gates on ARITY), and an E3 allowlist key is scoped to its enclosing
+function rather than exempting its text file-wide.
 
 CLOSED IN CODE by #500, and described above as closed: #497 (E3 shape 5
 retired), #503, #504 (`STR_PARAM_CTOR_EXCEPTIONS` emptied). Their GitHub

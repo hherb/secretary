@@ -103,8 +103,11 @@ bash android/scripts/check-log-hygiene.sh
 # DTO pass-through, was retired in #497/#500 once all four of its sites
 # moved onto a sanctioned constructor); E4 `impl GatedDetail` pinned to one file
 # (bridge-only); E5 `format!` confined to each wrapper crate's own detail.rs
-# (wrapper-only). Default-deny: an unrecognised payload type is a FAILURE,
-# not a pass.
+# (wrapper-only); E6 the `Detail(` tuple-struct constructor pinned to that
+# same one file, and no submodule declared there beyond `private`/`tests`
+# (bridge-only, #515 — Rust privacy is module-SUBTREE scoped, so without
+# this a one-line `mod ext;` relocates minting into an unreviewed file).
+# Default-deny: an unrecognised payload type is a FAILURE, not a pass.
 uv run scripts/check-error-payload-hygiene.py --self-test
 uv run scripts/check-error-payload-hygiene.py
 
@@ -326,7 +329,7 @@ type is a FAILURE, not a pass. It covers **four scan roots**, each described
 as data in [`payload_guard/roots.py`](scripts/payload_guard/roots.py)'s
 `SCAN_ROOTS` — `core/src/**`, `ffi/secretary-ffi-bridge/src/**` (#480), and,
 as of #486, the two binding wrapper crates `ffi/secretary-ffi-py/src/**` and
-`ffi/secretary-ffi-uniffi/src/**` — with **five rules**: `E1` (a variant's
+`ffi/secretary-ffi-uniffi/src/**` — with **six rules** (E6 added in #515): `E1` (a variant's
 payload type must be data-free by construction; all four roots), `E2` (a
 bridge/wrapper gated-prose field is permitted only under one of six PINNED
 names — `detail`, `uuid_hex`, `block_uuid_hex`, `recipient_fingerprint_hex`,
@@ -341,7 +344,12 @@ and name a type the guard scans — **bridge-only**, `GatedDetail` is
 `pub(crate)` there so no wrapper crate can implement it), and `E5` (**wrapper-
 only**: `format!` is confined to each wrapper crate's own sanctioned
 `detail.rs` — the bridge is excluded because most of its `format!` sites
-build filenames, a legitimate non-error use). Gated-field construction is
+build filenames, a legitimate non-error use), and `E6` (**bridge-only**,
+#515: the `Detail(` tuple-struct constructor may be written only in
+`error/detail.rs`, and that file may declare no submodule beyond `private`
+and `tests` — the second half is the load-bearing one, because a descendant
+module inherits the private field's visibility and can live in any file).
+Gated-field construction is
 therefore CI-enforced across the bridge and both wrapper crates: a new
 producer that hand-rolls a `format!` into a gated field fails in the Rust
 author's own PR — the same sink-pinning move `SecretaryLog` (#472) and
@@ -397,8 +405,16 @@ named as open, all structurally:
 that stops.** All **27** gated payload fields in `ffi/secretary-ffi-bridge`
 are declared `Detail`
 ([`error/detail.rs`](ffi/secretary-ffi-bridge/src/error/detail.rs)'s
-`pub struct Detail(String)`), whose inner field is **private to that one
-file**. A `String` therefore does not TYPECHECK in any of those 27
+`pub struct Detail(String)`), whose inner field is private to the
+`error::detail` module **and its descendant modules** — Rust privacy is
+SUBTREE-scoped, not file-scoped, so `mod ext;` there plus `#[path]` would
+hand the minting capability to an unreviewed file while the one-file review
+of `detail.rs` saw only the `mod` line (verified by execution: sibling
+module `E0423`, descendant module compiles clean, guard silent). This said
+"private to that one file" until #515, which made it true by adding guard
+rule **E6**: the `Detail(` constructor may be written nowhere else in the
+bridge, and no submodule beyond `private` and `tests` may be declared in
+`detail.rs`. A `String` therefore does not TYPECHECK in any of those 27
 positions, however it was produced — including through all four E3
 laundering shapes the bullet below lists as unwatched, and through shapes
 nobody has enumerated. `ScanRoot.gated_field_types` was then narrowed to
@@ -499,8 +515,22 @@ Four boundaries, each stated as a boundary rather than a caveat:
 language one.** `Detail::for_test` mints a `Detail` from arbitrary runtime
 text and is absent from shipped artifacts only because Cargo's resolver v2
 declines to unify a **dev**-dependency's requested features into a non-test
-build. [`scripts/check-test-support-placement.py`](scripts/check-test-support-placement.py)
-denies the manifest line (or feature alias) that would put it back, and
+build. **That precondition is itself now pinned** (#515 C1): the root
+manifest is VIRTUAL, so deleting `resolver = "2"` from
+[`Cargo.toml`](Cargo.toml) drops Cargo to resolver **1** with only a
+warning — and under resolver 1 the three already-sanctioned
+`[dev-dependencies]` lines put `Detail::for_test` straight back into
+`cargo build --release --workspace`, with every guard, the self-test and
+the CI build step all still green (verified by execution). The placement
+guard now denies any scanned `[workspace]` that does not resolve to v2,
+honouring edition inference so `core/fuzz`'s non-virtual root is not a
+false positive.
+[`scripts/check-test-support-placement.py`](scripts/check-test-support-placement.py)
+denies the manifest line (or feature alias) that would put it back — a
+`package = "..."` RENAME inherited from the root's
+`[workspace.dependencies]` was a hole there until #515 C2, proven with real
+Cargo to enable the feature in a release build while the guard printed OK —
+and
 `cargo build --release --workspace` in CI catches a production *call* to a
 hatch that should not exist — but neither is the compiler refusing to
 express the thing. **Which gates are blind, measured not assumed:** with a
@@ -568,12 +598,15 @@ claiming more coverage than the code delivers:
   `{detail}` interpolation in an assertion message. None of them a bind.
   ("a doc comment" alone was wrong for four of the five, and is corrected
   rather than generalised away so the split stays reproducible.) On the
-  wrapper roots,
-  counted exactly: all
-  **34** production pattern binds destructure a **bridge** `Ffi*` error, so
-  all 34 bind a `Detail`; the **37** binds of a wrapper's own
-  `String`-typed gated field are all inside `#[cfg(test)]` — production
-  count **zero**. The
+  wrapper roots, the figures
+  **34** and **37** that stood here are SINGLE-LINE-GREP SUBTOTALS, not
+  tree totals — a census that also parses multi-line patterns gives 44 and
+  40 (#515 I1). The CONCLUSIONS are unaffected and are what matter: every
+  production pattern bind destructures a **bridge** `Ffi*` error, so every
+  one binds a `Detail`; the binds of a wrapper's own `String`-typed gated
+  field are all inside `#[cfg(test)]` — production count **zero**.
+  "Counted exactly" is the phrasing this file flags two bullets earlier as
+  how a subtotal gets read as a total. The
   function-parameter form is what every shipped re-wrap site is. All are
   legitimate re-wraps of already-gated values, verified by reading each — but
   "unwatched position in daily use" is a different risk posture from
@@ -641,13 +674,25 @@ claiming more coverage than the code delivers:
   is a **higher-weight decision than any allowlist row**: a name there
   re-admits an arbitrary runtime `&str` at *every* call site of that
   constructor, present and future, with no per-site key to re-review.
-  What remains open is that two `SAFE_PARAM_TYPES` members are matched by
-  SPELLING, so a root that does not own the type can decoy them: a locally
-  declared `struct/enum/union/type Detail` withdraws `Detail`/`&Detail`
-  (`WP8`, `WP10`) and a locally declared `trait GatedDetail` withdraws
-  `&impl GatedDetail` (`WP11`, #504 review R3). **Both withdrawals are
-  suppressed by the same flag**, `ScanRoot.owns_detail_type`, so flipping it
-  `True` on a wrapper root re-opens two decoy classes, not one. Both share
+  **EVERY `SAFE_PARAM_TYPES` member is matched by SPELLING and none is
+  resolved** — a prior version of this bullet said "two members", which was
+  the overclaim, and #515 closed the gap it hid. `&Path`,
+  `&std::path::Path`, `ErrorKind`, `io::ErrorKind`, `std::io::ErrorKind`
+  and `&secretary_core::vault::VaultError` had NO withdrawal behind them,
+  so a wrapper root could decoy any of them; verified by execution against
+  the REAL scan, `pub(crate) struct Path(pub String)` plus
+  `fn launder(p: &Path) -> String` in a wrapper's own `detail.rs` laundered
+  an arbitrary runtime String into a gated field with ZERO findings. The
+  withdrawal set is now DERIVED from `SAFE_PARAM_TYPES` itself
+  (`SHADOWABLE_PARAM_IDENTS` / `discover_shadowed_param_idents`), so a
+  future member brings its own identifiers and cannot be forgotten; `WP12`
+  pins it. The two SPECIFIC withdrawals are kept alongside it because they
+  alone carry the `owns_detail_type` exemption the bridge's real
+  `struct Detail` needs: a locally declared `struct/enum/union/type Detail`
+  withdraws `Detail`/`&Detail` (`WP8`, `WP10`) and a locally declared
+  `trait GatedDetail` withdraws `&impl GatedDetail` (`WP11`, #504 review
+  R3), **both suppressed by that same flag**, so flipping it `True` on a
+  wrapper root re-opens two decoy classes, not one. Both share
   one residual, verified by execution: an IMPORT evades them in either
   spelling — the decoy declared in a sibling file of the same crate and
   `use`d into the sanctioned module leaves the laundering constructor
@@ -685,8 +730,14 @@ claiming more coverage than the code delivers:
       grep in the final whole-branch review, where the bare "six" was found
       to state an E3-visible subtotal as if it were the tree total — the
       same overclaim class, in the one bullet this branch rewrote *because
-      both its halves were previously false*. The **six E3 sees** all
-      pre-date this work (`git show 3775ef5:` confirms):
+      both its halves were previously false*. Of the **six E3 sees**, FIVE
+      pre-date this work; the sixth, `array32_from_vec_into`, was created
+      by this branch (Task 7, `9cad5b3c`) and inherits the forwarding shape
+      verbatim from the by-value `array32_from_vec` it replaced and
+      deleted. A prior version said all six pre-date it and cited `git show
+      3775ef5:` as confirmation — that command DISPROVES it (`grep -c 'fn
+      array32_from_vec_into'` on the merge-base file returns 0), the same
+      overclaim class this section keeps re-finding (#515 I3):
       `error/detail.rs`'s own internal re-forward, plus five in
       `ffi/secretary-ffi-uniffi/src/namespace/mod.rs` (`uuid_from_vec`,
       `array32_from_vec_into`, `uuid_from_vec_at`, `array32_from_vec_at`,
@@ -711,9 +762,17 @@ claiming more coverage than the code delivers:
   `uuid_from_vec(b, e.to_string().leak())` (no `format!`, so `E5` has nothing
   to say either) and a CHAIN — a new pass-through wrapper creates no
   gated-field construction site, so it produces no finding at all. Section
-  5's "re-verify when a call site is added" has **no mechanical hook**: the
-  entry is keyed on text inside the helper, which does not change when a
-  caller in another file does. **#498 stays OPEN** for the structural fix (a
+  5's "re-verify when a call site is added" still has **no mechanical
+  hook** for a caller in ANOTHER file: the entry is keyed on text inside
+  the helper, which that caller does not change. What #515 DID close is the
+  same-file half, which was worse and undocumented: the E3 allowlist key
+  carried no notion of WHERE the expression sat, so each Section 5 row
+  exempted its expression text **anywhere in a 1000+-line file** while its
+  justification was a property of one enclosing function. A second producer
+  in `namespace/mod.rs` minting a runtime `&'static str` via `Box::leak`
+  and calling `detail::arg_len(field, 16, bytes.len())` — the exact `BP52`
+  attack — scanned with ZERO findings, and denies now that the key is
+  scoped to the enclosing `fn`. **#498 stays OPEN** for the structural fix (a
   closed `enum Context` / `enum ArgField`), which is the only thing that
   would make a leaked `&'static str` unrepresentable.
 - **The out-of-root `io::Error` mint.** `cli/src/daemon.rs:424` synthesizes
@@ -747,24 +806,37 @@ its **structural half stays open** and must not be written as closed —
 **#499** (`E5` misses the macro-rename and `format_args!` spellings of
 `format!`), **#501** (ffi-py's pytest suite never runs in CI), **#502**
 (`desktop/src-tauri` builds its own `AppError { detail: String }` outside
-every scan root), **#505** (`check-test-support-placement.py`'s
-`DEFAULT_ROOTS` completeness is unproven), **#506** (that script is 1253
-lines and wants the `payload_guard/` package treatment), **#507**
-(`lexer.py` cites a control `BP46` that has never existed), **#508** (`E3`
+every scan root), **#506** (that script is 1253
+lines and wants the `payload_guard/` package treatment), **#508** (`E3`
 shape 5's internals are unpinned while `allow_field_access` is `False`),
 **#509** (`E3` arm 3 accepts a bare `String` token on the wrapper roots),
 **#510** (`Path.rglob` does not recurse symlinked directories — invisible to
-EVERY rule), **#511** (control labels have no uniqueness check; a duplicate
-is caught only by grep — a `WP9` collision during #500 was found by an
-implementer running grep, not by any guard), **#512** (a renaming import
+EVERY rule), **#512** (a renaming import
 defeats the `Detail` newtype's E2 credit — the guarantee is per declaration,
-not per root; covers the `GatedDetail` trait twin as one root cause), and
+not per root; covers the `GatedDetail` trait twin as one root cause),
+**#516** (`--self-test`'s five BP57 wiring probes write `.rs` files into the
+LIVE tree; removed in a `finally` and `.gitignore`d, but the window races a
+parallel session and hides residue from `git status`), **#517** (`E6` and
+the derived `SHADOWABLE_PARAM_IDENTS` set carry E4's alias/macro blind
+spots, and unlike `GatedDetail` there is no `Sealed` equivalent for a
+tuple-struct constructor — same root cause as #512), and
 **#514** (`check-test-support-placement.py`'s manifest discovery carries the
 same `rglob` symlink gap plus a `target` path-COMPONENT exclusion that drops
 a legitimately-named subtree; #510 is scoped to `payload_guard`, so nothing
 tracked the placement guard's copies until this — latent, not live).
-**#497**, **#503** and **#504** are closed **in code** by #500 and are
-described above as closed; the GitHub issues may still read OPEN, because
+**#505** (`DEFAULT_ROOTS` completeness now DERIVED from the root manifest's
+`[workspace] members`), **#507** (`lexer.py`'s dangling `BP46` citation
+corrected to `BP45`) and **#511** (control-label uniqueness now checked on
+BOTH guards) are closed **in code** by #515, alongside that review's six
+substantive findings: the `resolver = "2"` precondition is denied when
+absent, a workspace-inherited `package = "..."` rename can no longer
+smuggle the feature onto a normal edge, EVERY `SAFE_PARAM_TYPES` member
+carries a decoy withdrawal, the deny-polarity alias pass no longer inherits
+the permissive `#[cfg]` skip, `E3`'s argument splitter no longer
+mis-indexes on an unpaired `>` (and gates on ARITY), and an `E3` allowlist
+key is scoped to its enclosing FUNCTION rather than exempting its text
+file-wide. **#497**, **#503** and **#504** are closed **in code** by #500
+and are described above as closed; the GitHub issues may still read OPEN, because
 this repo cites fixes as `(#N)` and never `Closes #N`, so an issue outlives
 its fix until a human closes it — cross-check the *substance* against the
 code, not the issue state.

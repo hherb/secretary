@@ -579,7 +579,13 @@ pub fn add_device_slot(
 /// borrow of the foreign buffer (`[ByRef] bytes`, #307) — the foreign adapter
 /// owns it and its scrub. The single transient `[u8; 32]` stack copy made
 /// here is written through by `array32_from_vec_into` (so no second copy
-/// exists in a callee frame, #503) and is zeroized on all paths.
+/// exists in a callee frame, #503) and is zeroized on every RETURN path,
+/// including the error path — which is why the bridge `Result` is deferred
+/// into a `let`, wiped, and only then `?`-ed. An UNWINDING PANIC still
+/// skips it; that is #513, filed on this branch, and this comment said
+/// "zeroized on all paths" until #515 pointed out it contradicted the issue
+/// the same branch had just filed. `zeroize::Zeroizing<[u8; 32]>` closes it
+/// via `Drop`; #513 asks for a repo-wide census of the idiom first.
 ///
 /// # Errors
 ///

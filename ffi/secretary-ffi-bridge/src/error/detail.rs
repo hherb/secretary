@@ -16,12 +16,29 @@
 //! or key bytes. Every impl outside this file fails CI (guard rule E4);
 //! keeping all of them here means one file review covers the entire
 //! allowlist rather than trusting it to stay implicit across the crate.
+//!
+//! That one-file-review property needs guard rule **E6** to actually hold
+//! (#515 I5). Rust privacy is module-SUBTREE scoped, so `mod ext;` here
+//! plus `#[path]` would let a DESCENDANT module in an unreviewed file mint
+//! a `Detail` from arbitrary runtime text — the compiler permits it, and
+//! the reviewer of this file sees only the one-line `mod`. E6 denies both
+//! halves: a `Detail(` constructor written anywhere else in the bridge,
+//! and any submodule declared here beyond `private` and `tests`.
 use std::path::Path;
 
 /// A diagnostic string built by a sanctioned constructor in THIS module.
 ///
 /// The inner field is private, so a `Detail` is constructible only from
-/// inside `detail.rs`. Every gated payload position in the bridge is declared
+/// `error::detail` **and its descendant modules** — Rust privacy is scoped to
+/// the defining module's SUBTREE, not to a file, and a descendant can live in
+/// its own file (`mod ext;` plus `#[path]`). This module declares exactly two,
+/// `private` and `tests`, neither of which mints one from caller-supplied
+/// text, and guard rule **E6** pins BOTH halves: the `Detail(` constructor may
+/// be written nowhere else in the bridge, and no third submodule may be
+/// declared here. Earlier versions of this sentence said "only from inside
+/// `detail.rs`", which is what the module docstring's one-file-review claim
+/// needs and is NOT what the language provides on its own (#515 I5).
+/// Every gated payload position in the bridge is declared
 /// `Detail`, which makes `detail: format!(…)` — and every other way of
 /// HANDING OVER a `String`, including the pattern-bind, build-then-mutate,
 /// function-parameter and dotless-reassignment shapes rule E3 cannot see — a
@@ -52,6 +69,38 @@ use std::path::Path;
 /// sibling fields — `display_name`, `block_name` — which stay `String` and
 /// must. A `Detail` beside a plaintext `String` is correct, not an
 /// inconsistency to "clean up".
+///
+/// # The guarantee, pinned by `compile_fail` doctests (#515 I6)
+///
+/// The claims above were, until #515, asserted by nothing: changing
+/// `Detail(String)` to `Detail(pub String)` left every guard control and
+/// every `cargo test` assertion green, because production code goes on
+/// calling `detail::literal(...)` either way. These two doctests run under
+/// `cargo test --doc`, inside the already-required `cargo test` job, and
+/// use the same technique `core/src/vault/ids.rs` uses for its own
+/// role-transposition newtypes.
+///
+/// A `String` cannot occupy a gated payload position. The error code is
+/// PINNED, so a typo'd variant name cannot make this pass for the wrong
+/// reason — the vacuity a bare `compile_fail` invites:
+///
+/// ```compile_fail,E0308
+/// use secretary_ffi_bridge::FfiVaultError;
+/// let _ = FfiVaultError::CorruptVault { detail: "leaked".to_string() };
+/// ```
+///
+/// ...and a downstream crate cannot mint one, because the inner field is
+/// private. That is the half the `pub` re-export in `lib.rs` would
+/// otherwise put at risk:
+///
+/// ```compile_fail,E0423
+/// use secretary_ffi_bridge::Detail;
+/// let _ = Detail("leaked".to_string());
+/// ```
+///
+/// Both must keep FAILING to compile. If either starts succeeding, the
+/// doctest fails loudly — which is the point, since a silent regression
+/// here unwinds #500 entirely.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Detail(String);
 
@@ -109,8 +158,16 @@ impl Detail {
     /// guard prevents a duplicate definition when a downstream crate's
     /// dev-dependency turns the feature on during a workspace `cargo test`.
     ///
-    /// This does NOT widen the hatch: `cfg(test)` is never active in a
-    /// `cargo build`, so neither definition exists in a shipped artifact.
+    /// This does NOT widen the hatch — but the two definitions are excluded
+    /// by DIFFERENT mechanisms, and conflating them overstates what the
+    /// language guarantees (#515 I5). THIS one is excluded by `cfg(test)`,
+    /// which is never active in a `cargo build`: a compiler fact. The
+    /// feature-gated one above is excluded by resolver-v2 feature
+    /// unification plus `scripts/check-test-support-placement.py`: a
+    /// BUILD-CONFIGURATION fact, which is why that script now also pins
+    /// `[workspace] resolver = "2"` itself — under resolver 1 the same
+    /// `[dev-dependencies]` lines put `for_test` straight into
+    /// `cargo build --release`.
     #[cfg(all(test, not(feature = "test-support")))]
     pub(crate) fn for_test(s: &str) -> Detail {
         Detail(s.to_string())
@@ -336,7 +393,9 @@ pub(crate) fn gated_with_path_and_advice(
 /// not about the type. Guard rule E3 treats the payload argument of
 /// `io::Error::new` / `io::Error::other` as a construction site for exactly
 /// that reason, and this is the sanctioned way to satisfy it. It is the ONLY
-/// such constructor, because the tree has exactly one production io mint
+/// such constructor, because this CRATE has exactly one production io mint
+/// (the tree has a second, `cli/src/daemon.rs:424`, outside every scan root
+/// — #494; this said "the tree" until #515)
 /// (`repair::orchestration`'s §10 baseline read); #487's `io_gated` /
 /// `io_gated_with_path` pair was retired in #496 once that site moved off
 /// the leading-context ordering and nothing else called them.

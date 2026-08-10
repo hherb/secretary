@@ -82,6 +82,18 @@ pub(crate) fn launder(d: &Detail) -> String {
 # (sealed) `GatedDetail`, but nothing stops it declaring its OWN local trait
 # of the same name and implementing it for `String`; before the fix this
 # sanctioned `detail::launder(&impl GatedDetail)` on any wrapper root.
+# #515 C3: a decoy for a `SAFE_PARAM_TYPES` member that had NO withdrawal
+# of its own. `Path` is representative rather than special — `ErrorKind` and
+# `VaultError` decoy identically, and the withdrawal is derived from the set
+# so all three (and any future member) are covered by one rule.
+SELF_TEST_WRAPPER_DETAIL_SRC_WITH_PATH_DECOY = '''
+pub(crate) struct Path(pub String);
+
+pub(crate) fn launder(p: &Path) -> String {
+    p.0.clone()
+}
+'''
+
 SELF_TEST_WRAPPER_DETAIL_SRC_WITH_GATED_DETAIL_DECOY = '''
 pub(crate) trait GatedDetail {
     fn render(&self) -> String;
@@ -230,6 +242,23 @@ WRAPPER_POSITIVE_CONTROLS: list[tuple] = [
         ''' fn f(x: String) -> E { E::V { detail: detail::launder(&x) } } ''',
         {"rule": "E3", "field": "detail"},
         {"detail_src": SELF_TEST_WRAPPER_DETAIL_SRC_WITH_GATED_DETAIL_DECOY},
+    ),
+    (
+        "WP12 #515 C3: the GENERAL form of WP8/WP10/WP11. Every "
+        "`SAFE_PARAM_TYPES` member is matched by SPELLING and none is "
+        "resolved, so `&Path` — like `ErrorKind` and "
+        "`&secretary_core::vault::VaultError` — was decoy-able by a local "
+        "`struct Path(pub String)` in a wrapper's own detail.rs, with NO "
+        "withdrawal behind it. Verified by execution against the REAL scan "
+        "before the fix: `detail::launder(&detail::Path(x))` for an "
+        "arbitrary runtime `x` produced ZERO findings. CLAUDE.md described "
+        "the residual as 'two members', which was the overclaim — the "
+        "withdrawal set is now DERIVED from `SAFE_PARAM_TYPES` "
+        "(`SHADOWABLE_PARAM_IDENTS`), so a future member brings its own "
+        "identifiers and cannot be forgotten here",
+        ''' fn f(x: String) -> E { E::V { detail: detail::launder(&detail::Path(x)) } } ''',
+        {"rule": "E3", "field": "detail"},
+        {"detail_src": SELF_TEST_WRAPPER_DETAIL_SRC_WITH_PATH_DECOY},
     ),
 ]
 

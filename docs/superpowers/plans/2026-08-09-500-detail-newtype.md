@@ -1,5 +1,32 @@
 # `Detail` Newtype Implementation Plan
 
+> **STATUS: EXECUTED AND SUPERSEDED (#500, shipped in PR #515).** This is a
+> historical record of the plan as written, not instructions to follow. Three
+> parts of it were overtaken during implementation and would produce WORSE
+> code than what shipped if replayed verbatim — flagged here because the
+> #515 review found a future session could reasonably act on them:
+>
+> 1. **`check-test-support-placement.sh` does not exist.** Twenty references
+>    below (Task 1 Steps 9-10, the commit message at the end of Task 1, and
+>    the verification blocks) prescribe a bash line-matcher whose whole
+>    predicate is `index($0, feat) && index($0, "features")`. It was deleted
+>    in `4b86ffe3` and replaced by a `tomllib` feature-graph parse,
+>    `scripts/check-test-support-placement.py`. The bash version would miss
+>    at least two of the four bypasses **this plan's own spec enumerates at
+>    §5.2** — `default = ["test-support"]` (no `features` substring on that
+>    line) and an alias chain (needs the closure). Its self-test target of
+>    `2/2 controls` is now `34/34`.
+> 2. **"the ten sanctioned constructors"** (next paragraph) is thirteen as
+>    shipped; see the correction block at spec §2.1.
+> 3. **`git rebase --exec` (near the end)** is explicitly forbidden by the
+>    handoff doc, which records that it rewrites every SHA on the branch and
+>    invalidates the SHAs the baton cites. Use a detached throwaway worktree.
+>
+> Two further drifts, harmless but worth knowing: `#497` is recorded here as
+> "keep open" and was closed in code by `2b1be318`; Task 5's prescribed
+> wrapper unwrap spelling (inline `.into_string()`) is the shape rule E3
+> DENIES — the shipped spelling is `detail::project(d)`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make every gated error-payload position in the FFI bridge a newtype the compiler enforces, so a runtime `String` cannot reach one regardless of which laundering shape a future author uses.

@@ -26,6 +26,7 @@ from payload_guard.rules.e2 import scan_bridge_plain_declarations
 from payload_guard.rules.e3 import sanctioned_constructor_names, scan_bridge_construction_sites
 from payload_guard.rules.e4 import is_detail_module, scan_bridge_gated_detail_impls
 from payload_guard.rules.e5 import scan_wrapper_format_confinement
+from payload_guard.rules.e6 import scan_bridge_detail_construction
 from payload_guard.types import Finding
 
 
@@ -154,6 +155,12 @@ def run_real_scan() -> int:
                 findings += scan_bridge_gated_detail_impls(
                     label, raw, scanned_error_type_names
                 )
+                # #515 I5: rule E6 rides the SAME flag rather than adding a
+                # new one. A flag nothing reads is the fail-open class #496
+                # closed, and `gated_detail_impls` already means exactly
+                # "this root owns the `Detail`/`GatedDetail` machinery" —
+                # so `_check_root_rule_flags` pins E6's scope for free.
+                findings += scan_bridge_detail_construction(label, raw)
             if root.format_confinement:
                 findings += scan_wrapper_format_confinement(
                     label, raw, root.detail_module_rel

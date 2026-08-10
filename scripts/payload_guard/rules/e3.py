@@ -208,12 +208,69 @@ STR_PARAM_CTOR_EXCEPTIONS: frozenset[str] = frozenset()
 # review round.
 
 
+# Every PascalCase identifier NAMED by a `SAFE_PARAM_TYPES` member, derived
+# from the set rather than hand-listed (#515 C3).
+#
+# The withdrawal machinery below used to close over exactly TWO spellings,
+# `Detail`/`&Detail` and `&impl GatedDetail`, and CLAUDE.md described the
+# residual as "two `SAFE_PARAM_TYPES` members are matched by SPELLING". That
+# was wrong in the direction that matters: EVERY member is matched by
+# spelling and none is resolved, so a wrapper root could decoy any of the
+# others just as easily. Verified by execution against the real scan —
+#
+#     pub(crate) struct Path(pub String);
+#     pub(crate) fn launder(p: &Path) -> String { p.0.clone() }
+#     ...
+#     detail: detail::launder(&detail::Path(x)),   // x: arbitrary String
+#
+# — scanned with ZERO findings, because `&Path` sat in `SAFE_PARAM_TYPES`
+# with no withdrawal behind it. Deriving the identifier set from
+# `SAFE_PARAM_TYPES` is what stops that recurring: a future member brings
+# its own identifiers with it and cannot be forgotten here.
+#
+# Lowercase primitives (`u8`, `usize`, `i32`, `str`) are deliberately NOT
+# included. Shadowing one needs a non-camel-case type declaration that
+# rustc warns about, and including them would make the derived regex match
+# ordinary prose; the PascalCase set is the reviewable, live-risk half.
+SHADOWABLE_PARAM_IDENTS: frozenset[str] = frozenset(
+    ident
+    for ty in SAFE_PARAM_TYPES
+    for ident in re.findall(r"\b([A-Z][A-Za-z0-9_]*)\b", ty)
+)
+
+# A LOCAL declaration of any of those identifiers, as a type OR a trait.
+# `trait` is in the alternation because `&impl GatedDetail`'s decoy is a
+# trait rather than a type — one matcher covering both keeps the two
+# withdrawals from drifting apart the way #504's did.
+LOCAL_SAFE_PARAM_DECOY_RE = re.compile(
+    r"\b(?:struct|enum|union|trait)\s+(" + "|".join(sorted(SHADOWABLE_PARAM_IDENTS))
+    + r")\b|\btype\s+(" + "|".join(sorted(SHADOWABLE_PARAM_IDENTS)) + r")\s*[=<]"
+)
+
+
+def discover_shadowed_param_idents(view: str) -> frozenset[str]:
+    """Identifiers from `SHADOWABLE_PARAM_IDENTS` locally declared in `view`.
+
+    Returned set is withdrawn from `SAFE_PARAM_TYPES` by
+    `_ctor_params_are_safe`, so a constructor whose signature leans on a
+    decoy spelling stops being sanctioned. Fail-closed by construction: an
+    identifier this misses simply keeps its (possibly decoyed) credit,
+    which is the pre-#515 behaviour, and an identifier it over-matches only
+    ever REMOVES a credit.
+    """
+    found: set[str] = set()
+    for m in LOCAL_SAFE_PARAM_DECOY_RE.finditer(view):
+        found.add(m.group(1) or m.group(2))
+    return frozenset(found)
+
+
 def _ctor_params_are_safe(
     name: str,
     params_text: str,
     *,
     detail_param_ok: bool = True,
     gated_detail_param_ok: bool = True,
+    shadowed_idents: frozenset[str] = frozenset(),
 ) -> bool:
     """Every parameter of a candidate sanctioned constructor must carry a
     type from `SAFE_PARAM_TYPES` (or be one of the reviewed `&str`
@@ -258,6 +315,18 @@ def _ctor_params_are_safe(
         allowed = allowed - {t for t in allowed if re.search(r"\bDetail\b", t)}
     if not gated_detail_param_ok:
         allowed = allowed - {t for t in allowed if re.search(r"\bGatedDetail\b", t)}
+    # #515 C3: the GENERAL form of the two withdrawals above. Any
+    # `SAFE_PARAM_TYPES` member naming a locally-declared identifier loses
+    # its credit, so `&Path`, `ErrorKind`, `&secretary_core::vault::
+    # VaultError` and every future member are covered by the same rule
+    # rather than by two hand-written special cases. The two specific
+    # withdrawals are KEPT rather than folded in: they are pinned by
+    # `WP8`/`WP10`/`WP11` and they carry `owns_detail_type`, which this
+    # general form deliberately does not consult (see the caller).
+    for ident in shadowed_idents:
+        allowed = allowed - {
+            t for t in allowed if re.search(rf"\b{re.escape(ident)}\b", t)
+        }
     inner = params_text.strip()
     if inner.startswith("(") and inner.endswith(")"):
         inner = inner[1:-1]
@@ -305,9 +374,30 @@ def _static_str_param_indexes(params_text: str) -> frozenset[int]:
     return frozenset(indexes)
 
 
+def _ctor_arity(params_text: str) -> int:
+    """How many parameters a sanctioned constructor declares (#515 I8).
+
+    `_hint_args_are_literal` indexes a call's arguments POSITIONALLY, so any
+    mis-split of the argument list silently moves the hint check onto a
+    different argument. Requiring the split to produce exactly this many
+    arguments makes such a shift unrepresentable rather than merely
+    unlikely: whatever the splitter does wrong, the count stops matching and
+    the call DENIES.
+
+    Same parenthesis-stripping and `split_top_level` parse as its two
+    siblings above, for the same anti-drift reason.
+    """
+    inner = params_text.strip()
+    if inner.startswith("(") and inner.endswith(")"):
+        inner = inner[1:-1]
+    if not inner.strip():
+        return 0
+    return len([p for p in split_top_level(inner) if p.strip()])
+
+
 def sanctioned_constructor_names(
     detail_src: str | None, *, owns_detail_type: bool = False
-) -> dict[str, frozenset[int]]:
+) -> dict[str, tuple[frozenset[int], int]]:
     """The set of `detail::<name>(...)` constructors rule E3 accepts a call
     to — every `pub(crate) fn` declared in `error/detail.rs` (#480).
 
@@ -382,6 +472,15 @@ def sanctioned_constructor_names(
     gated_detail_param_ok = owns_detail_type or not LOCAL_GATED_DETAIL_TRAIT_RE.search(
         view
     )
+    # #515 C3: the same reasoning for every OTHER `SAFE_PARAM_TYPES`
+    # identifier. `Detail`/`GatedDetail` are dropped from this general set
+    # because the two specific flags above already handle them AND carry
+    # the `owns_detail_type` exemption — the bridge's own `detail.rs`
+    # legitimately declares `struct Detail`, so a general withdrawal that
+    # ignored ownership would deny the real tree. No root legitimately
+    # declares a `Path` / `ErrorKind` / `VaultError` inside its sanctioned
+    # detail module, so those need no such exemption.
+    shadowed_idents = discover_shadowed_param_idents(view) - {"Detail", "GatedDetail"}
     excluded = discovery_cfg_test_spans(detail_src)
     names: dict[str, frozenset[int]] = {}
     for m in SANCTIONED_CTOR_RE.finditer(view):
@@ -396,9 +495,10 @@ def sanctioned_constructor_names(
             params_text,
             detail_param_ok=detail_param_ok,
             gated_detail_param_ok=gated_detail_param_ok,
+            shadowed_idents=shadowed_idents,
         ):
             continue
-        names[name] = _static_str_param_indexes(params_text)
+        names[name] = (_static_str_param_indexes(params_text), _ctor_arity(params_text))
     return names
 
 
@@ -633,6 +733,39 @@ def initializer_end(view: str, start: int) -> int:
 # option — a closed `enum Context` that only fixed, named variants could
 # construct — remains the only fix that would remove the door rather than
 # watch it, and #498 STAYS OPEN recording that.
+# The enclosing `fn` name for an offset, used to SCOPE an E3 allowlist key
+# (#515 C1). Scans backwards for the nearest `fn <name>` and returns it, or
+# `"<toplevel>"` when there is none.
+ENCLOSING_FN_RE = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def enclosing_fn_name(src: str, offset: int) -> str:
+    """Name of the nearest `fn` declared before `offset`.
+
+    An E3 allowlist row is keyed on `path \t rule \t "<field>: <expr>"`,
+    and NOTHING in that key identifies where in the file the expression sat
+    — while every Section 5 row's justification is a property of its
+    ENCLOSING FUNCTION ("`field` is `uuid_from_vec`'s own `&'static str`
+    parameter, forwarded one hop"). A row therefore exempted its expression
+    TEXT anywhere in the file, and the shapes involved are idiomatic and
+    copy-pasteable in a 1000+-line module. Verified by execution: a SECOND
+    producer in the same file, minting a runtime `&'static str` via
+    `Box::leak` and calling `detail::arg_len(field, 16, bytes.len())` — the
+    precise `BP52` attack — scanned with ZERO findings, because an existing
+    row's key collided with it exactly.
+
+    Putting the enclosing item into the key turns each row from "this text,
+    anywhere in this file" into "this text, in this function". Approximate
+    by construction — it does not model nested items or `impl` blocks — but
+    it only ever NARROWS an exemption, so a wrong answer costs a re-review,
+    never a silent pass.
+    """
+    last = "<toplevel>"
+    for m in ENCLOSING_FN_RE.finditer(src, 0, offset):
+        last = m.group(1)
+    return last
+
+
 def _split_call_arg_spans(
     view: str, start: int, end: int, literal_ends: dict[int, int]
 ) -> list[tuple[int, int]]:
@@ -658,6 +791,7 @@ def _split_call_arg_spans(
     """
     spans: list[tuple[int, int]] = []
     depth = 0
+    angle_depth = 0
     i = start
     arg_start = start
     while i < end:
@@ -666,9 +800,23 @@ def _split_call_arg_spans(
             i = lit_end
             continue
         ch = view[i]
-        if ch in "<([{":
+        # #515 I8: `<`/`>` are counted as brackets ONLY inside a generic
+        # context, which in an EXPRESSION is introduced by a turbofish
+        # (`::<`). Counting every `<`/`>` unconditionally was the actual
+        # defect: `mk(z >= 1, y, "lit", w)` drove the counter down on the
+        # `>` of `>=`, so the commas INSIDE `mk(...)` read as top-level and
+        # the argument list mis-split 6 ways instead of 3 — shifting the
+        # hint position onto a different argument, which is exactly the
+        # index shift the #498 literal check exists to prevent. A closure's
+        # `-> T` and any ordinary comparison did the same. Clamping at zero
+        # (below) bounded the damage but did not remove it.
+        if ch == "<" and (angle_depth > 0 or view[max(0, i - 2) : i] == "::"):
+            angle_depth += 1
+        elif ch == ">" and angle_depth > 0:
+            angle_depth -= 1
+        elif ch in "([{":
             depth += 1
-        elif ch in ">)]}":
+        elif ch in ")]}":
             # Clamped, unlike `initializer_end`'s unclamped `depth -= 1`
             # (that function instead BREAKS at `depth == 0` before ever
             # decrementing, which has no equivalent here — this loop must
@@ -699,6 +847,8 @@ def _hint_args_are_literal(
     args_end: int,
     hint_indexes: frozenset[int],
     literal_ends: dict[int, int],
+    *,
+    expected_arity: int | None = None,
 ) -> bool:
     """#498: every one of a sanctioned call's HINT-POSITION arguments
     (`hint_indexes`, from `sanctioned_constructor_names`) must be a string
@@ -724,6 +874,24 @@ def _hint_args_are_literal(
     if not hint_indexes:
         return True
     spans = _split_call_arg_spans(view, args_start, args_end, literal_ends)
+    # #515 I8: an ARITY gate, so a mis-split cannot silently move the hint
+    # check onto a different argument. `_split_call_arg_spans` is a textual
+    # bracket counter, and its `<`/`>` handling was demonstrably shiftable;
+    # the counter is fixed, but "the splitter is correct" is a claim about
+    # code, whereas this is a claim the guard re-checks on every call. If
+    # the split does not produce exactly the number of arguments the
+    # constructor's own signature declares, DENY — default-deny, the
+    # direction every other unparseable shape here takes.
+    #
+    # A TRAILING COMMA is the one benign shape that changes the count, so a
+    # single trailing all-whitespace span is dropped before comparing
+    # (`BN32`'s fixture is exactly that).
+    if expected_arity is not None:
+        effective = list(spans)
+        if len(effective) > 1 and not view[effective[-1][0] : effective[-1][1]].strip():
+            effective.pop()
+        if len(effective) != expected_arity:
+            return False
     for idx in hint_indexes:
         if idx >= len(spans):
             return False
@@ -743,7 +911,7 @@ def initializer_is_gated(
     end: int,
     name: str,
     literal_ends: dict[int, int],
-    sanctioned: dict[str, frozenset[int]],
+    sanctioned: dict[str, tuple[frozenset[int], int]],
     allow_field_access: bool,
     terminator: str,
 ) -> bool:
@@ -946,7 +1114,12 @@ def initializer_is_gated(
             after <= end
             and not view[after:end].strip()
             and _hint_args_are_literal(
-                view, cm.end(), after - 1, sanctioned[cm.group(1)], literal_ends
+                view,
+                cm.end(),
+                after - 1,
+                sanctioned[cm.group(1)][0],
+                literal_ends,
+                expected_arity=sanctioned[cm.group(1)][1],
             )
         ):
             return True
@@ -982,7 +1155,7 @@ def initializer_is_gated(
 def scan_bridge_construction_sites(
     path_label: str,
     raw: str,
-    sanctioned: dict[str, frozenset[int]],
+    sanctioned: dict[str, tuple[frozenset[int], int]],
     allow_field_access: bool = False,
 ) -> list[Finding]:
     """Rule E3 (#480): every CONSTRUCTION SITE of a gated field must build
@@ -1084,7 +1257,9 @@ def scan_bridge_construction_sites(
             Finding(
                 path=path_label,
                 line=src.count("\n", 0, m_start) + 1,
-                source_line=" ".join(f"{name}: {expr}".split()),
+                source_line=" ".join(
+                    f"{enclosing_fn_name(src, m_start)}::{name}: {expr}".split()
+                ),
                 variant="<construction site>",
                 field=name,
                 field_type=expr,

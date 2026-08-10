@@ -37,8 +37,11 @@ DATA_FREE_TYPES: frozenset[str] = frozenset(
     }
 )
 
-# #480/rule E2: field NAMES whose construction site rule E3 gates. A bridge
-# field under one of these names, declared EXACTLY `String`,
+# #480/rule E2: field NAMES whose construction site rule E3 gates. A field
+# under one of these names, declared with the type spelling ITS ROOT accepts
+# (`ScanRoot.gated_field_types` — `Detail` on the bridge as of #500,
+# `String` on the two wrappers; this comment said "EXACTLY `String`" until
+# #515),
 # is not a structural finding — its VALUE is checked at the construction
 # site instead of being denied outright by TYPE. Pinned to this exact set
 # (spec §3.2): `record_uuid_hex` / `device_uuid_hex` are deliberately NOT

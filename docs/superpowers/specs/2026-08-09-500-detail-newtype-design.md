@@ -163,6 +163,22 @@ while remaining unable to **construct** one.
 
 ### 2.1 Constructor signatures
 
+> **CORRECTION (#515, post-implementation).** As shipped, `detail.rs` has
+> **thirteen** sanctioned constructors, twelve of which return `Detail`. Two
+> were added during implementation and appear nowhere in this document, in
+> the plan, or in the baton:
+>
+> | constructor | production call sites |
+> |---|---|
+> | `detail::literal(text: &'static str)` | **35** (+14 in `error/vault/tests.rs`) |
+> | `detail::repair_rejection(e: &VaultError)` | 1 (`error/vault/mod.rs`) |
+>
+> This matters because `detail.rs` **is** the reviewed allowlist of what may
+> become a gated payload string. Anyone auditing the sanctioned surface from
+> this section alone would review 11 of 13 and never see `literal`, which
+> backs 35 production sites. The count below is the pre-implementation
+> design; read it as history, and read `detail.rs` for the current set.
+
 `detail.rs` has **eleven** sanctioned constructors: `gated`,
 `gated_with_context`, `uuid_hex`, `uuid_hyphenated`, `fingerprint_hex`,
 `gated_for_uuid`, `literal_for_uuid`, `counted`, `gated_with_path`,

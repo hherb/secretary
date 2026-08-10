@@ -132,9 +132,12 @@ def scan_source(
     const tier — is withdrawn for those spellings while this file is
     scanned.
 
-    `bridge_mode` (#480, rule E2) does TWO things, both scoped to
-    `ffi/secretary-ffi-bridge/src/**` — core behaviour (the default,
-    `bridge_mode=False`) is byte-identical to before this parameter existed:
+    `bridge_mode` (#480, rule E2) does TWO things. It is `True` on THREE
+    roots — the bridge and both wrapper crates (`roots.py`) — not on the
+    bridge alone; this said "scoped to `ffi/secretary-ffi-bridge/src/**`"
+    until #515, which `e2.py`'s own module docstring already contradicted.
+    Core behaviour (the default, `bridge_mode=False`) is byte-identical to
+    before this parameter existed:
 
     1. Rule E2's carve-out on the ordinary interpolated-field check below:
        `is_bridge_field_safe` replaces the bare `is_data_free` call, so a

@@ -1169,8 +1169,56 @@ def _discover_tier_inputs(
         if len(rhs_set) == 1
     }
     consts = resolve_consts(declared_consts, frozenset(const_shadow_names))
-    alias_candidate_names = frozenset(alias_candidates)
+    alias_candidate_names = frozenset(alias_candidates) | _deny_polarity_alias_names(
+        sources
+    )
     return local_error_enums, aliases, consts, alias_candidate_names
+
+
+def _deny_polarity_alias_names(
+    sources: list[tuple[str, str]],
+) -> frozenset[str]:
+    """Alias spellings for the SHADOW (deny) use, under the STRICT cfg gate.
+
+    #515 C4 — the #496 permissive-skip bug, on a consumer #496 did not
+    reach. `alias_candidate_names` was harvested entirely from
+    `discover_declarations`, whose exclusion list is
+    `non_module_block_spans(src) + cfg_test_spans(src)` — the PERMISSIVE
+    `CFG_TEST_RE`, which matches `\\btest\\b` anywhere and therefore also
+    swallows `#[cfg(not(test))]` and every `#[cfg_attr(test, ...)]`.
+
+    That is correct for a CREDIT registry, where an over-matched skip
+    merely drops a credit (fail-closed). #500 then reused the same set with
+    INVERTED polarity, as `run_real_scan`'s shadow trigger — and there an
+    over-matched skip HIDES A SHADOW, which is fail-OPEN. Verified by
+    execution: on a wrapper root,
+
+        pub struct SecretHolder(pub std::string::String);
+        #[cfg(not(test))]
+        type String = SecretHolder;          // <- skipped by CFG_TEST_RE
+        ...  Boom { detail: String },        // credited by E2's carve-out
+        pub fn launder(detail: String) -> E { E::Boom { detail } }
+
+    scanned with ZERO findings; deleting only the `#[cfg(not(test))]` line
+    made the same file FAIL. `#[cfg_attr(test, allow(dead_code))]` behaved
+    identically.
+
+    Computed here as an INDEPENDENT second pass rather than by changing
+    `discover_declarations`' own exclusion list, because that list is
+    load-bearing for the credit registries in the opposite direction: making
+    it strict there would start crediting `#[cfg(test)]` declarations, which
+    is the fail-open mistake in mirror image. Two polarities, two spans —
+    the same split `discover_local_detail_decoys` already draws.
+
+    Unioned into the candidate set, never subtracted from it, so this can
+    only ever ADD shadows: fail-closed by construction.
+    """
+    names: set[str] = set()
+    for _label, raw in sources:
+        view = discovery_view(raw)
+        excluded = non_module_block_spans(view) + discovery_cfg_test_spans_strict(raw)
+        names.update(find_type_aliases(view, excluded))
+    return frozenset(names)
 
 
 def discover_scanned_error_type_names(

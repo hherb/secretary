@@ -19,7 +19,7 @@ import io
 import re
 import sys
 
-from payload_guard.config import REPO_ROOT
+from payload_guard.config import DETAIL_MODULE_REL, REPO_ROOT
 from payload_guard.controls.bridge import (
     BRIDGE_NEGATIVE_CONTROLS, BRIDGE_POSITIVE_CONTROLS, SELF_TEST_DETAIL_SRC,
 )
@@ -1104,6 +1104,17 @@ _SHADOW_WIRING_PROBE_REL = (
 _ALIAS_WIRING_PROBE_REL = (
     "ffi/secretary-ffi-uniffi/src/__selftest_alias_wiring_probe.rs"
 )
+# #515 I7: a BRIDGE file declaring a gated `detail: String`. Pins
+# `run_real_scan`'s `gated_field_types` wiring in the WIDENING direction,
+# which step 1's clean-tree check cannot see.
+_GATED_STRING_WIRING_PROBE_REL = (
+    "ffi/secretary-ffi-bridge/src/error/__selftest_gated_string_probe.rs"
+)
+# #515 I5: a bridge file OUTSIDE `detail.rs` writing `Detail(...)`.
+# Pins rule E6's WIRING, which the direct-call check cannot see.
+_E6_WIRING_PROBE_REL = (
+    "ffi/secretary-ffi-bridge/src/error/__selftest_e6_wiring_probe.rs"
+)
 
 
 def check_real_scan_shadow_wiring_is_live() -> list[str]:
@@ -1219,6 +1230,46 @@ def check_real_scan_shadow_wiring_is_live() -> list[str]:
             "`discover_local_detail_decoys` cannot substitute for it "
             "(it returns only the spelling `Detail`, never `String`)",
         ),
+        (
+            "step 3b",
+            _ALIAS_WIRING_PROBE_REL,
+            "#[cfg(not(test))]\ntype String = SecretHolder;\n",
+            "the deny-polarity alias pass (`_deny_polarity_alias_names`) may "
+            "be severed. `alias_candidate_names` used to be harvested only "
+            "from `discover_declarations`, whose PERMISSIVE `CFG_TEST_RE` "
+            "skip also swallows `#[cfg(not(test))]` and every "
+            "`#[cfg_attr(test, ..)]` — an over-matched skip on a DENY "
+            "trigger is fail-OPEN, and this exact line scanned clean before "
+            "#515 C4 (verified by execution). Step 3's un-gated probe cannot "
+            "substitute: it passes whether or not the strict pass exists",
+        ),
+        (
+            "step 3c",
+            _GATED_STRING_WIRING_PROBE_REL,
+            '#[derive(Debug, thiserror::Error)]\npub enum ZzProbe {\n'
+            '    #[error("boom: {detail}")]\n    Boom { detail: String },\n}\n',
+            "run_real_scan's `gated_field_types` wiring may be WIDENED — "
+            "replaced by a hardcoded set that still contains `String`. "
+            "BP51 recomputes the denial from `ScanRoot` data and never reads "
+            "this call site, and step 1 only proves a CLEAN tree scans OK, "
+            "which a widening preserves. The bridge must permit NO `String` "
+            "under a gated name (#500's headline narrowing), so a bridge "
+            "file declaring one has to red the real scan",
+        ),
+        (
+            "step 3d",
+            _E6_WIRING_PROBE_REL,
+            "use super::Detail;\npub(crate) fn f(s: String) -> Detail "
+            "{ Detail(s) }\n",
+            "rule E6's call in `scan.py` may be severed. "
+            "`check_e6_detail_construction_is_live` calls the rule FUNCTION "
+            "directly, so it passes whether or not the scan ever invokes it "
+            "— the same function-vs-wiring split BP57 exists to cover. E6 "
+            "pins the `Detail` tuple-struct constructor to one file, which "
+            "is what stops a DESCENDANT module (Rust privacy is subtree-, "
+            "not file-scoped) relocating the minting capability out of the "
+            "reviewed file",
+        ),
     )
 
     existing = [rel for _, rel, _, _ in probes if (REPO_ROOT / rel).exists()]
@@ -1272,9 +1323,118 @@ def check_real_scan_shadow_wiring_is_live() -> list[str]:
     return failures
 
 
+def _check_control_label_uniqueness() -> list[str]:
+    """No two controls in any corpus may share a LABEL (#511, closed here).
+
+    Every control is a `(label, src, ...)` tuple in a list, and the label is
+    what a failure message names. A duplicate is not a crash and not a
+    finding — it is two controls that report under one identity, so a
+    regression in either prints a message pointing at the other, and a
+    reviewer grepping the label finds the wrong fixture. #511 was filed
+    after a `WP9` collision on this branch was caught by an implementer
+    running `grep`, which is exactly the kind of catch that does not
+    survive contact with a tired afternoon.
+
+    Labels here are long prose strings, so the comparison is on the leading
+    TOKEN (`BP52`, `WN3`, …) — the part that is actually used as an
+    identity — rather than the whole sentence, which would let
+    `BP52 <one wording>` and `BP52 <another>` both pass.
+    """
+    corpora = [
+        ("CORE POSITIVE", POSITIVE_CONTROLS),
+        ("CORE NEGATIVE", NEGATIVE_CONTROLS),
+        ("BRIDGE POSITIVE", BRIDGE_POSITIVE_CONTROLS),
+        ("BRIDGE NEGATIVE", BRIDGE_NEGATIVE_CONTROLS),
+        ("WRAPPER POSITIVE", WRAPPER_POSITIVE_CONTROLS),
+        ("WRAPPER NEGATIVE", WRAPPER_NEGATIVE_CONTROLS),
+    ]
+    seen: dict[str, str] = {}
+    failures: list[str] = []
+    for corpus_name, corpus in corpora:
+        for entry in corpus:
+            token = str(entry[0]).split()[0] if str(entry[0]).strip() else "<empty>"
+            if token in seen:
+                failures.append(
+                    f"CONTROL LABEL COLLISION: {token!r} is used by both "
+                    f"{seen[token]} and {corpus_name} — a duplicate label "
+                    f"makes a regression in one control print a message "
+                    f"naming the other (#511)"
+                )
+            else:
+                seen[token] = corpus_name
+    return failures
+
+
+def check_e6_detail_construction_is_live() -> list[str]:
+    """Rule E6 (#515 I5) fires on both arms and stays silent on the real file.
+
+    E6 has no corpus control because it is a PLACEMENT rule keyed on the
+    file path, which `scan_control`'s synthetic single-file fixtures cannot
+    express — the same reason E4's file-placement arm is exercised directly.
+
+    Three assertions, because two of them are the halves of one hole and the
+    third is the false-positive guard that keeps the rule usable:
+
+    1. `Detail(` in a bridge file OTHER than `detail.rs` must DENY.
+    2. An unsanctioned `mod` INSIDE `detail.rs` must DENY. This is the arm
+       that actually closes the descendant-module hole — Rust privacy is
+       module-SUBTREE scoped, so `mod ext;` plus `#[path]` relocates the
+       minting capability into an unreviewed file while arm 1 stays silent.
+    3. `detail.rs` itself, with its real `Detail(...)` constructions and its
+       two legitimate submodules, must stay CLEAN.
+    """
+    from payload_guard.rules.e6 import scan_bridge_detail_construction
+
+    failures: list[str] = []
+    foreign = scan_bridge_detail_construction(
+        "ffi/secretary-ffi-bridge/src/error/zz_probe.rs",
+        "use super::Detail;\npub(crate) fn f(s: String) -> Detail { Detail(s) }\n",
+    )
+    if not any(f.rule == "E6" for f in foreign):
+        failures.append(
+            "E6 ARM 1: `Detail(s)` written OUTSIDE "
+            f"{DETAIL_MODULE_REL} did not produce an E6 finding — the "
+            "newtype's minting capability is unpinned, and a descendant "
+            "module can relocate it into an unreviewed file"
+        )
+    submod = scan_bridge_detail_construction(
+        DETAIL_MODULE_REL, "pub struct Detail(String);\npub(crate) mod ext;\n"
+    )
+    if not any(f.rule == "E6" for f in submod):
+        failures.append(
+            f"E6 ARM 2: an unsanctioned `mod ext;` inside {DETAIL_MODULE_REL} "
+            "did not produce an E6 finding — a child module inherits the "
+            "private field's visibility, so declaring one hands the minting "
+            "capability to whatever file `#[path]` points at"
+        )
+    # Read as a HARNESS FAILURE rather than a traceback: this file's own
+    # standard (see `_check_wrapper_roots_agree`) is that a security gate
+    # must not surface an IO problem as a raw stack trace, which reads as a
+    # crashed tool rather than a failed check.
+    try:
+        real = (REPO_ROOT / DETAIL_MODULE_REL).read_text(encoding="utf-8")
+    except OSError as exc:
+        return failures + [
+            f"E6 SELF-CHECK: cannot read {DETAIL_MODULE_REL} ({exc}) — the "
+            "false-positive half of this check could not run, so a green "
+            "self-test would not mean the rule is usable on the real tree"
+        ]
+    on_real = scan_bridge_detail_construction(DETAIL_MODULE_REL, real)
+    if on_real:
+        failures.append(
+            f"E6 FALSE POSITIVE: the real {DETAIL_MODULE_REL} produced "
+            f"{[f.source_line for f in on_real]!r} — its own constructions "
+            "and its two sanctioned submodules must stay clean, or the rule "
+            "is unusable and will be switched off rather than fixed"
+        )
+    return failures
+
+
 def run_self_test() -> int:
     failures: list[str] = check_view_invariants()
     failures += _check_root_rule_flags()
+    failures += check_e6_detail_construction_is_live()
+    failures += _check_control_label_uniqueness()
     failures += _check_wrapper_roots_agree()
     failures += _check_wrapper_agreement_is_live()
     failures += _check_expectation_keys()

@@ -148,6 +148,15 @@ pub use edit::{
 // crates can NAME and READ one (`as_str` / `into_string` / `Display`) while
 // remaining unable to CONSTRUCT one — the private inner field is the whole
 // mechanism (#500).
+//
+// That last clause holds OUTSIDE a `test-support` build. With the feature on
+// — which `ffi-py`, `ffi-uniffi` and `desktop` all request from
+// `[dev-dependencies]`, so it IS on during `cargo test` — `Detail::for_test`
+// is `pub` and those crates' tests do construct `Detail`s with it. Under
+// resolver v2 it is absent from `cargo build --release`; see
+// `error/detail.rs` for the full statement of that build-configuration
+// guarantee and `scripts/check-test-support-placement.py` for its
+// enforcement (#515 I4).
 pub use error::detail::Detail;
 pub use error::{FfiUnlockError, FfiVaultError};
 pub use identity::UnlockedIdentity;

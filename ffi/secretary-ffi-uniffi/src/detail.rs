@@ -9,8 +9,13 @@
 //! indices — but the SIGNATURE admitted a decrypted field name, which is
 //! structurally what #481 was, one layer out from where #480 closed it.
 //!
-//! Every constructor here takes `&'static str` and integers only, so there
-//! is no parameter through which a runtime string can enter — today. That is
+//! Every constructor here takes `&'static str`, an integer, or a `Detail`
+//! — so there is no parameter through which an UNGATED runtime string can
+//! enter (a `Detail` is one the bridge already vouched for, and its inner
+//! field is private to the bridge's own `detail.rs`). This said
+//! "`&'static str` and integers only" until #515, which #500 had already
+//! falsified by adding `project(d: Detail) -> String` to this very module;
+//! the ffi-py twin was updated in #500 and this one was missed. That is
 //! a property of the signatures below, and guard rule E3 checks it as of
 //! #496 (`SAFE_PARAM_TYPES`): a constructor with a parameter outside the
 //! reviewed set is DROPPED from the sanctioned set and its call sites deny.
