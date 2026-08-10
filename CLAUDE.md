@@ -430,8 +430,13 @@ Four boundaries, each stated as a boundary rather than a caveat:
   — which never held a `Detail` — take the other two arms, and ffi-uniffi
   has 19 of them in production: 13 string literals and 6 further `detail::*`
   constructor calls (`arg_len`, `indexed_arg_len`, `nested_indexed_arg_len`,
-  `range`). ffi-py's 17 *bare* `detail.into_string()` calls are all
-  `new_err(...)` **arguments**, a position E3 does not read at all. The
+  `range`). ffi-py's 17 *bare* `.into_string()` calls in `errors.rs` are all
+  `new_err(...)` **arguments**, a position E3 does not read at all — of
+  those 17, **11** have receiver `detail` and **six** carry another gated
+  name (4 `uuid_hex`, 1 `recipient_fingerprint_hex`, 1 `block_uuid_hex`),
+  a receiver census corrected in the final review from a flat "17 bare
+  `detail.into_string()`" that was right about the count and the position
+  and wrong about the receiver. The
   design doc's §4 exists for this sentence — do not flatten the two roots
   into one claim.
 - **The guarantee is per DECLARATION, not per root.** It covers the 27
@@ -439,13 +444,35 @@ Four boundaries, each stated as a boundary rather than a caveat:
   its gated field through a renaming import — `use std::string::String as
   Detail;` — which compiles, and which **both E2 and E3 pass**: verified by
   execution, that declaration plus an E3 arm-4 parameter re-wrap scans with
-  ZERO findings. `discover_local_detail_decoys` catches a local
-  *declaration* of a decoy `Detail` anywhere in the root **except the root's
-  own sanctioned module**, which it exempts so the real declaration does not
-  shadow itself (`BP54`/`BP55` pin the catch, `BN29` the exemption) — and it
-  never catches an *import* of one. Nothing in this guard resolves a name;
-  `Detail` is matched by spelling throughout. Tracked by **#512**, which
-  covers this and its `GatedDetail` twin as one root cause.
+  ZERO findings. **That sentence is true of the CLASS but must not be read
+  as "#500 opened this"** — the blind spot MOVED SPELLING and SHRANK, and
+  both halves are measured, not argued:
+    - *Moved.* The guard matches the accepted gated-field type by spelling,
+      so the attack is always "import something under the accepted name."
+      At merge-base `3775ef5` the accepted spelling was `String`, and that
+      exact line — `use std::string::String as Detail;` with `detail:
+      Detail` — was **DENIED** (4 findings: E2, E1, E3 x2), while its
+      `String`-spelled equivalent `use secret::SecretHolder as String;`
+      with `detail: String` was **ACCEPTED** (0 findings). On this branch
+      the two swap exactly: `as Detail` accepts (0), `as String` denies (2).
+      Same hole, relabelled by the narrowing of `gated_field_types`.
+    - *Shrank.* The `type`-ALIAS form of the same attack is now **denied on
+      all four roots** where merge-base accepted it. `type String =
+      SecretHolder;` with `detail: String` scored 0 findings at merge-base
+      and reds the branch (`type Detail = String;` likewise: 2 findings),
+      because `run_real_scan`'s `shadowed_type_names` — `alias_candidate_
+      names` union `discover_local_detail_decoys`, machinery that does not
+      exist at merge-base at all — withdraws a shadowed spelling from the
+      carve-out. Both terms of that expression are pinned by `BP57`, one
+      probe each.
+  What is left is the IMPORT form alone. `discover_local_detail_decoys`
+  catches a local *declaration* of a decoy `Detail` anywhere in the root
+  **except the root's own sanctioned module**, which it exempts so the real
+  declaration does not shadow itself (`BP54`/`BP55` pin the catch, `BN29`
+  the exemption) — and it never catches an *import* of one. Nothing in this
+  guard resolves a name; `Detail` is matched by spelling throughout. Tracked
+  by **#512**, which covers this and its `GatedDetail` twin as one root
+  cause.
 - **`Detail` says nothing about its neighbours.** It claims one thing: this
   string came out of a reviewed constructor. E2's declaration sweep covers
   `#[error(`-attributed types plus plain-derive types named `*Error` /
@@ -521,11 +548,22 @@ claiming more coverage than the code delivers:
   the regex was never scoped to see it. **Two of these shapes are in daily
   use** — a prior version of this bullet claimed "no live producer in the
   tree today", which #496 found to be wrong and is the same overclaim class
-  this branch kept re-finding. **Re-censused in #500:** the pattern-bind
-  form has TWO live bridge producers, not three — `error/conversions.rs:25`
-  and `:27`; the `error/vault/mod.rs:558` site this list used to name no
-  longer exists, #500 having replaced its field-init shorthand with
-  `detail::repair_rejection(e)`. On the wrapper roots, counted exactly: all
+  this branch kept re-finding. **Re-censused in #500, and CORRECTED in the
+  final whole-branch review:** the pattern-bind form has **three** live
+  bridge producers, not the two an intermediate draft claimed —
+  `error/conversions.rs:25` and `:27`, plus `error/detail.rs:285`
+  (`VaultError::RepairRejected { detail, .. } => Detail(detail.clone())`).
+  That third site is shipped code (`detail.rs`'s `#[cfg(test)]` starts at
+  line 387) and **this branch created it**: #500 replaced the
+  `error/vault/mod.rs:558` site the list used to name with a
+  `detail::repair_rejection(e)` call, and the bind moved *into* that
+  constructor rather than disappearing. It is not a leak — it destructures
+  a `core` payload gated by core's own E1 entry (allowlist Section 3,
+  `vault/mod.rs — RepairRejected`), inside the one module whose job is
+  minting `Detail`. Every other bridge hit of the census grep is test code,
+  an `#[error(…)]` attribute, a doc comment, or a `{detail}` interpolation
+  in an assertion message — none of them a bind. On the wrapper roots,
+  counted exactly: all
   **34** production pattern binds destructure a **bridge** `Ffi*` error, so
   all 34 bind a `Detail`; the **37** binds of a wrapper's own
   `String`-typed gated field are all inside `#[cfg(test)]` — production
@@ -555,11 +593,16 @@ claiming more coverage than the code delivers:
   thing, and none of them is a site `E5` inspects — a producer using any of
   them to build a gated-field argument passes silently. Re-running
   `grep -rnE "push_str|write!\s*\(|\.join\s*\(|String::from\s*\("
-  ffi/secretary-ffi-py/src ffi/secretary-ffi-uniffi/src` today returns seven
-  hits and zero live composition sites: three are `String::from\s*\(`
-  matching as a substring of `SecretString::from(`, and four are
+  ffi/secretary-ffi-py/src ffi/secretary-ffi-uniffi/src` today returns
+  **nine** hits (this said "seven" until the final whole-branch review
+  re-ran it) and zero live composition sites: three are `String::from\s*\(`
+  matching as a substring of `SecretString::from(`, four are
   `core_test_data_dir().join(...)` — `Path::join`, not `str`/`String`
-  `.join()`, all four inside `#[cfg(test)]`. `push_str` / `write!` /
+  `.join()`, all four inside `#[cfg(test)]` — and two are
+  `ffi/secretary-ffi-py/src/detail.rs:17-18`, the doc comment that names
+  these very constructs, i.e. the census matching its own prose. The
+  substance is unchanged: zero live composition sites either way.
+  `push_str` / `write!` /
   `writeln!` do not appear at all; `+` string concatenation isn't
   census-able by grep and is named here on its construction merits alone.
   Separately, `.to_string()` — which by itself only ever RENDERS one value —
@@ -631,16 +674,32 @@ claiming more coverage than the code delivers:
       `BN30`/`BN31`/`BN32` pin that plain, raw-string and multi-line
       literals still pass. It is still nothing at all for a `core` payload's
       map-level hint (E1 sees the declaration, never the producer).
-    - *"Every live site passes a literal"* is wrong **by six**. Six
-      non-literal hint arguments exist, all pre-dating this work
-      (`git show 3775ef5:` confirms): `error/detail.rs`'s own internal
-      re-forward, plus five in `ffi/secretary-ffi-uniffi/src/namespace/mod.rs`
-      (`uuid_from_vec`, `array32_from_vec_into`, `uuid_from_vec_at`,
-      `array32_from_vec_at`, `uuid_from_vec_nested_at`), each forwarding its
-      *own* `&'static str` parameter one hop. All 54 call sites across the
-      six enclosing functions were read and do pass a literal; the six are
+    - *"Every live site passes a literal"* is wrong **by six that rule E3
+      can see — and by nine in the tree**. Both figures were re-derived by
+      grep in the final whole-branch review, where the bare "six" was found
+      to state an E3-visible subtotal as if it were the tree total — the
+      same overclaim class, in the one bullet this branch rewrote *because
+      both its halves were previously false*. The **six E3 sees** all
+      pre-date this work (`git show 3775ef5:` confirms):
+      `error/detail.rs`'s own internal re-forward, plus five in
+      `ffi/secretary-ffi-uniffi/src/namespace/mod.rs` (`uuid_from_vec`,
+      `array32_from_vec_into`, `uuid_from_vec_at`, `array32_from_vec_at`,
+      `uuid_from_vec_nested_at`), each forwarding its *own* `&'static str`
+      parameter one hop. All **54** production call sites across those six
+      enclosing functions were read and do pass a literal; the six are
       recorded as individually justified allowlist entries (Section 5)
-      rather than waved through by a wider rule.
+      rather than waved through by a wider rule. The **three E3 cannot
+      see** are in `ffi/secretary-ffi-py/src/errors.rs` — `:231`,
+      `:249-254`, `:265` — forwarding their own `field: &'static str` into
+      `crate::detail::arg_len` / `indexed_arg_len` in
+      `PyValueError::new_err(...)` **argument** position.
+      `_hint_args_are_literal` is reachable only from
+      `initializer_is_gated`, so E3 never inspects them: no finding, no
+      Section 5 row, and their **43** call sites sit outside the "54 were
+      read" claim. The source comments at `errors.rs:224-228` and
+      `:237-242` do record a by-hand review, so this is a **scope error,
+      not an unreviewed hole** — and it is the same argument-position
+      blindness **#498** owns structurally.
   This **watches** the door, it does not remove it, and two evasions of the
   Section 5 entries scan clean today: a caller-side
   `uuid_from_vec(b, e.to_string().leak())` (no `format!`, so `E5` has nothing
@@ -652,10 +711,15 @@ claiming more coverage than the code delivers:
   closed `enum Context` / `enum ArgField`), which is the only thing that
   would make a leaked `&'static str` unrepresentable.
 - **The out-of-root `io::Error` mint.** `cli/src/daemon.rs:424` synthesizes
-  a `std::io::Error` from a `format!` in a tree no scan root covers. Not a
-  live exposure — the bridge imports only `secretary_cli::{state, pipeline}`,
-  never `daemon` — but tracked by **#494**, and dropped from this list
-  entirely in an earlier draft.
+  a `std::io::Error` from a runtime string in a tree no scan root covers.
+  The shape is `std::io::Error::other(err.to_string())` over a
+  `notify::Error` — **not a `format!`**, which is what this bullet and the
+  guard's own `#494` register both said until the final review re-read the
+  file (`cli/src/daemon.rs` contains zero `format!`). The gap is identical
+  either way: E3 gates the io payload argument, and nothing gates it out of
+  root. Not a live exposure — the bridge imports only
+  `secretary_cli::{state, pipeline}`, never `daemon` — but tracked by
+  **#494**, and dropped from this list entirely in an earlier draft.
 
 What #496 CLOSED, all fail-open holes in the guard's own wiring rather than
 in any scanned source: a scan root whose path moved contributed zero files
@@ -686,9 +750,13 @@ shape 5's internals are unpinned while `allow_field_access` is `False`),
 **#510** (`Path.rglob` does not recurse symlinked directories — invisible to
 EVERY rule), **#511** (control labels have no uniqueness check; a duplicate
 is caught only by grep — a `WP9` collision during #500 was found by an
-implementer running grep, not by any guard), and **#512** (a renaming import
+implementer running grep, not by any guard), **#512** (a renaming import
 defeats the `Detail` newtype's E2 credit — the guarantee is per declaration,
-not per root; covers the `GatedDetail` trait twin as one root cause).
+not per root; covers the `GatedDetail` trait twin as one root cause), and
+**#514** (`check-test-support-placement.py`'s manifest discovery carries the
+same `rglob` symlink gap plus a `target` path-COMPONENT exclusion that drops
+a legitimately-named subtree; #510 is scoped to `payload_guard`, so nothing
+tracked the placement guard's copies until this — latent, not live).
 **#497**, **#503** and **#504** are closed **in code** by #500 and are
 described above as closed; the GitHub issues may still read OPEN, because
 this repo cites fixes as `(#N)` and never `Closes #N`, so an issue outlives
@@ -708,6 +776,8 @@ guard changes without a matching edit here.
 ### Memory hygiene: zeroize discipline
 
 Every secret-bearing byte string is wrapped in `Sensitive<T>` or `SecretBytes` ([core/src/crypto/secret.rs](core/src/crypto/secret.rs)) — both derive `Zeroize, ZeroizeOnDrop`. Composite types (`IdentityBundle`, `UnlockedIdentity`, `Mnemonic`) drop their secret fields in source order. Any time you `Sensitive::new(stack_var)` where `stack_var: [u8; N]`, follow with `stack_var.zeroize()` to overwrite the source slot — the move copies (`[u8; N]: Copy`) and the bytes linger otherwise. The pattern lives in `crypto::kem::derive_wrap_key`, `crypto::kdf::derive_master_kek`/`derive_recovery_kek`, `crypto::sig::generate_ed25519`, etc.
+
+**The trailing-`zeroize()` idiom is correct on every RETURN path and skipped by an UNWINDING PANIC** — tracked by **#513**, filed during the #500 whole-branch review and deliberately not fixed there (pre-existing, repo-wide; folding a cross-cutting memory-hygiene change into a documentation-and-guard branch would have buried it). The three known instances are the `device_secret` slots at `ffi/secretary-ffi-uniffi/src/namespace/mod.rs:601` and `namespace/repair.rs:231`/`:361`, whose wipe is placed after the bridge call returns — including the error path, which is why the bridge `Result` is deferred into a `let`, wiped, and only then `?`-ed (that shape is what #503 verified). `zeroize::Zeroizing<[u8; 32]>` closes it on every exit path via `Drop`, adds no dependency and no `unsafe`; #513 asks for a census of the idiom before converting, not a three-site patch. Read [`docs/manual/contributors/memory-hygiene-audit-internal.md`](docs/manual/contributors/memory-hygiene-audit-internal.md) first if you take it on.
 
 **`RecordFieldValue` is zeroize-typed** as of PR #16: `Text(SecretString)` and `Bytes(SecretBytes)` (both `Zeroize, ZeroizeOnDrop`). The previously-unzeroized `Text(String) / Bytes(Vec<u8>)` form has been retired. Don't add new secret-bearing fields to `Record` / `RecordField` without thinking about whether they should be zeroize-typed — and don't widen the existing fields' lifetimes (e.g. by stashing them in caches, hash maps, or async closures) without weighing the same tradeoff.
 

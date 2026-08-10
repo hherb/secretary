@@ -212,18 +212,31 @@ repeated review finding of the predecessor branch (#496):
      `detail: detail.into_string()` matches no E3 arm (`WP6`). `project` is
      NOT a fourth shape: it is a call into the crate's sanctioned module,
      the same `detail::*` shape listed in E3 above. The wrapper's OWN
-     authored diagnostics never held a
-     `Detail` and take the other shapes — ffi-uniffi has 19 such production
-     initializers, 13 string literals plus 6 further `detail::*` constructor
-     calls. ffi-py's 17 BARE `detail.into_string()` calls are all
-     `new_err(...)` ARGUMENTS, a position E3 does not read at all.
+     authored diagnostics never held a `Detail` and take the other shapes
+     — ffi-uniffi has 19 such production initializers, 13 string literals
+     plus 6 further `detail::*` constructor calls. ffi-py's 17 BARE
+     `.into_string()` calls in `errors.rs` are all `new_err(...)`
+     ARGUMENTS, a position E3 does not read at all. RECEIVER CENSUS,
+     re-derived in final review, where the earlier wording ("17 bare
+     `detail.into_string()` calls") was wrong about the RECEIVER though
+     not about the count or the position: 11 of the 17 have receiver
+     `detail`; the other SIX carry a different gated name — 4 `uuid_hex`
+     (`errors.rs:135,140,180,183`), 1 `recipient_fingerprint_hex` (`:163`)
+     and 1 `block_uuid_hex` (`:208`). An 18th `.into_string()` exists and
+     is NOT one of these: `detail.rs:126`, the whole body of `project`.
   2. THE GUARANTEE IS PER DECLARATION, NOT PER ROOT. It covers the 27
      fields that ARE declared with the bridge's real `Detail`. A NEW bridge
      error type can still declare its gated field as a RENAMING IMPORT of
      `String` — `use std::string::String as Detail;` — which compiles, and
      which BOTH E2 and E3 pass (verified by execution: that declaration
      plus an E3 arm-4 parameter re-wrap `fn f(detail: Detail) -> E { E::V {
-     detail } }` scans with ZERO findings). `discover_local_detail_decoys`
+     detail: detail } }` scans with ZERO findings — and so does the FIELD
+     SHORTHAND spelling `E::V { detail }`, by a DIFFERENT route: shorthand
+     produces no `detail:` token, so it is never a candidate at all, where
+     the explicit spelling IS a candidate that arm 4 then accepts. Earlier
+     drafts of this paragraph showed the shorthand while attributing it to
+     arm 4; the zero-findings result is right either way, the attribution
+     was not). `discover_local_detail_decoys`
      catches a local DECLARATION of a decoy `Detail`, never an IMPORT of
      one; this is the same aliasing blind spot E4 records for `GatedDetail`,
      reached here through E2's carve-out. The cause is that `Detail` is
@@ -325,9 +338,16 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
         `GATED_ASSIGN_RE` — which matches `.<name> <op>=`, name AFTER the
         dot — never sees it: the dot in `detail.push_str(` precedes the
         method name, not the gated name.
-    (c) arm 4's PARAMETER case: `fn f(detail: String) -> E { E::V { detail }
-        }` trusts the name of a value this guard never watched being
-        built.
+    (c) arm 4's PARAMETER case: `fn f(detail: String) -> E { E::V {
+        detail: detail } }` trusts the name of a value this guard never
+        watched being built. MIND THE SPELLING — earlier drafts wrote this
+        example with FIELD SHORTHAND (`E::V { detail }`), which arm 4 never
+        sees: shorthand has no `:` and therefore produces no candidate at
+        all, so it evades this rule at the DETECTION step rather than being
+        accepted at the classification step. Both scan clean, so the gap is
+        real under either spelling; only the attribution differed.
+        `rules/e3.py`'s arm-4 docstring has always used the correct
+        `detail: detail` spelling — this text is what drifted from it.
     (d) DOTLESS LOCAL REASSIGNMENT: `detail = <expr>;` in statement
         position, reassigning a local that was bound WITHOUT a `let` this
         rule can see — a function PARAMETER (`fn f(mut detail: String) {
@@ -352,13 +372,23 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   overclaim class this branch kept re-finding. Shapes (b) and (d) still
   have none anywhere. The #500 census (`grep -rnE '\{\s*(detail|uuid_hex|
   …)\s*(,|\}|\.\.)'` over all three FFI roots):
-    - Shape (a) on the BRIDGE has TWO production sites, `error/conversions.
-      rs:25` and `:27` (`FfiUnlockError::X { detail } => FfiVaultError::X {
-      detail }`); every other bridge match is test code. The THIRD site this
-      paragraph used to name, `error/vault/mod.rs:558`
-      (`VE::RepairRejected { block_uuid, detail } => ...`), NO LONGER EXISTS
-      — #500 replaced that field-init shorthand with `detail::
-      repair_rejection(e)`, a sanctioned-constructor call E3 can see.
+    - Shape (a) on the BRIDGE has THREE production sites, CORRECTED in
+      final review from a "two" this branch itself made stale:
+      `error/conversions.rs:25` and `:27` (`FfiUnlockError::X { detail } =>
+      FfiVaultError::X { detail }`), plus `error/detail.rs:285`
+      (`VaultError::RepairRejected { detail, .. } => Detail(detail
+      .clone())`). That third site is SHIPPED code — `detail.rs`'s
+      `#[cfg(test)]` begins at line 387 — and #500's own fix round
+      introduced it, in the commit that REPLACED the `error/vault/mod.rs:
+      558` site this paragraph used to name with a `detail::
+      repair_rejection(e)` call. The bind moved INTO the sanctioned module;
+      it did not disappear. It is not a leak: it destructures a `core`
+      payload that core's OWN rule-E1 entry gates (allowlist Section 3,
+      `vault/mod.rs — RepairRejected`), and it sits inside `detail.rs`,
+      where building a `Detail` is the file's entire job. Every OTHER
+      bridge match of the census grep is test code, an `#[error(...)]`
+      attribute, a doc comment, or a `{detail}` interpolation in an
+      assertion message — none of which is a pattern bind.
     - Shape (a) on the WRAPPER roots, counted exactly rather than sampled:
       34 production binds, ALL of them destructuring a BRIDGE `Ffi*` error,
       so all 34 bind a `Detail` and not a `String`. Binds of a wrapper's
@@ -418,11 +448,16 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   producer using any of them to build a gated-field argument passes
   silently. Verified by execution:
   `grep -rnE "push_str|write!\s*\(|\.join\s*\(|String::from\s*\(" \
-  ffi/secretary-ffi-py/src ffi/secretary-ffi-uniffi/src` returns seven
+  ffi/secretary-ffi-py/src ffi/secretary-ffi-uniffi/src` returns NINE
   hits and zero live composition sites today (three are `String::from\s*\(`
   matching as a substring of `SecretString::from(`; four are
   `core_test_data_dir().join(...)` — `Path::join`, not `str`/`String`
-  `.join()`, all four `#[cfg(test)]`-only). `push_str` and `write!` /
+  `.join()`, all four `#[cfg(test)]`-only; and TWO — re-derived in final
+  review, where this count still read "seven" — are
+  `ffi/secretary-ffi-py/src/detail.rs:17-18`, the doc comment that NAMES
+  these very constructs, i.e. the census matching its own prose). The
+  SUBSTANCE is unchanged by the correction: zero live composition sites
+  either way. `push_str` and `write!` /
   `writeln!` do not appear at all; `+` string concatenation is not
   census-able by grep (indistinguishable from arithmetic `+`) and is named
   as uncovered on its construction merits alone. Separately, `.to_string()`
@@ -591,20 +626,42 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
       only the DECLARATION `&'static str`, never the producer) and a
       `SAFE_PARAM_TYPES` parameter reached any way other than a gated
       construction site.
-    * "EVERY LIVE SITE PASSES A LITERAL" is wrong by SIX. There are six
-      non-literal hint arguments in the tree, all pre-dating this branch
-      (`git show 3775ef5:` confirms): `error/detail.rs`'s own internal
-      re-forward, plus five in `ffi/secretary-ffi-uniffi/src/namespace/
-      mod.rs` (`uuid_from_vec`, `array32_from_vec_into`,
-      `uuid_from_vec_at`, `array32_from_vec_at`, `uuid_from_vec_nested_
-      at`). Each forwards its OWN `&'static str` parameter one hop. All
-      54 call sites across the six enclosing functions were read and do
-      pass a literal, and the six sites are recorded as individually
-      justified allowlist entries (Section 5) rather than waved through
-      by widening the rule — a "any function forwarding its own
+    * "EVERY LIVE SITE PASSES A LITERAL" is wrong by SIX THAT RULE E3
+      CAN SEE — and by NINE in the tree, once the three E3 cannot see
+      are counted too (both figures re-derived by grep in final review;
+      the bare "six" was a scope error, stating an E3-visible subtotal
+      as if it were the tree total, in the one bullet this branch
+      rewrote BECAUSE both its halves were previously false).
+      The SIX E3 SEES, all pre-dating this branch (`git show 3775ef5:`
+      confirms): `error/detail.rs`'s own internal re-forward, plus five
+      in `ffi/secretary-ffi-uniffi/src/namespace/mod.rs`
+      (`uuid_from_vec`, `array32_from_vec_into`, `uuid_from_vec_at`,
+      `array32_from_vec_at`, `uuid_from_vec_nested_at`). Each forwards
+      its OWN `&'static str` parameter one hop. All 54 production call
+      sites across those six enclosing functions were read and do pass a
+      literal, and the six are recorded as individually justified
+      allowlist entries (Section 5) rather than waved through by
+      widening the rule — an "any function forwarding its own
       `&'static str`" shape rule is not enforcement but a strictly WIDER
       acceptance, and would delete the checkpoint a new direct forwarder
       currently trips.
+      THE THREE E3 CANNOT SEE are in `ffi/secretary-ffi-py/src/errors.rs`
+      — `:231`, `:249-254` and `:265` (`uuid_array_or_value_error`,
+      `indexed_uuid_array_or_value_error`, `array32_or_value_error`) —
+      each forwarding its own `field: &'static str` one hop into
+      `crate::detail::arg_len` / `indexed_arg_len`, the IDENTICAL shape
+      the six Section 5 rows exist for. They sit in
+      `PyValueError::new_err(...)` ARGUMENT position, and
+      `_hint_args_are_literal` is reachable only from
+      `initializer_is_gated`, so E3 never inspects them: no finding, no
+      Section 5 row, and their 43 call sites (40 + 1 + 2, by grep) fall
+      OUTSIDE the "54 call sites were read" claim above. The source
+      comments at `errors.rs:224-228` and `:237-242` do record a by-hand
+      review, so this is a SCOPE error rather than an unreviewed hole —
+      but the same argument-position blindness that hides them is what
+      **#498** owns structurally: an `enum ArgField` replacing the
+      `&'static str` parameter removes the shape on both sides of the
+      E3 visibility line at once.
   This WATCHES the door; it does not remove it. Unlike the `Detail`
   newtype, a text rule cannot make a leaked `&'static str`
   unrepresentable. The structural fix — a closed `enum Context`, or for
@@ -825,8 +882,14 @@ the register from prose. CLAUDE.md's guard section carries the same list;
 the two are a DELIBERATE two-site register and must be edited together.
 Filing a new one means adding it here AND there.
 
-- #494  An `io::Error` minted from a `format!` in `cli/src/daemon.rs:424`,
-        a tree no scan root covers. Not reachable from the bridge today.
+- #494  An `io::Error` minted from a runtime string at
+        `cli/src/daemon.rs:424`, in a tree no scan root covers. The shape
+        is `std::io::Error::other(err.to_string())` over a
+        `notify::Error` — NOT a `format!`, as this line and CLAUDE.md's
+        twin both said until final review re-read it (`cli/src/daemon.rs`
+        contains zero `format!`). The gap is the same either way: rule E3
+        gates the io payload ARGUMENT, and nothing gates it out of root.
+        Not reachable from the bridge today.
 - #495  `payload_guard/discovery.py` is two unrelated parsers in one file.
 - #498  STRUCTURAL half only. Its cheaper half (E3's string-literal hint
         rule) landed in #500; a closed `enum Context` / `enum ArgField` is
@@ -857,6 +920,13 @@ Filing a new one means adding it here AND there.
         `GatedDetail` trait twin as the same root cause — this guard matches
         by spelling and never resolves a name. See "THE #500 NEWTYPE"
         boundary 2.
+- #514  `check-test-support-placement.py`'s manifest discovery has the
+        SAME `Path.rglob` symlink gap #510 records for this package, plus
+        a `target` path-COMPONENT exclusion that drops a legitimately-named
+        subtree. #510 is scoped to `payload_guard`, so nothing tracked the
+        placement guard's copies until this. Latent, not live: no directory
+        symlink and no non-build `target` directory on the workspace path
+        today.
 
 CLOSED IN CODE by #500, and described above as closed: #497 (E3 shape 5
 retired), #503, #504 (`STR_PARAM_CTOR_EXCEPTIONS` emptied). Their GitHub

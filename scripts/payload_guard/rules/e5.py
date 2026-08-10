@@ -63,21 +63,31 @@ and deliberately deferred rather than silently omitted.
     $ grep -rnE "push_str|write!\s*\(|\.join\s*\(|String::from\s*\(" \
         ffi/secretary-ffi-py/src ffi/secretary-ffi-uniffi/src
     ffi/secretary-ffi-py/src/save.rs:47: ... SecretString::from(s) ...
+    ffi/secretary-ffi-py/src/detail.rs:17: //! ... (`push_str`, `write!`/`writeln!`, `+` on an owned
+    ffi/secretary-ffi-py/src/detail.rs:18: //! `String` and `.join()` ...
     ffi/secretary-ffi-uniffi/src/namespace/record_edit.rs:33: ... SecretString::from(text) ...
     ffi/secretary-ffi-uniffi/src/namespace/sync.rs:181: ... core_test_data_dir().join("golden_vault_001") ...
     ffi/secretary-ffi-uniffi/src/namespace/block_crud.rs:162: ... core_test_data_dir().join("golden_vault_001") ...
-    ffi/secretary-ffi-uniffi/src/namespace/mod.rs:726: ... SecretString::from(text) ...
-    ffi/secretary-ffi-uniffi/src/namespace/mod.rs:943: ... core_test_data_dir().join("golden_vault_001") ...
+    ffi/secretary-ffi-uniffi/src/namespace/mod.rs:750: ... SecretString::from(text) ...
     ffi/secretary-ffi-uniffi/src/namespace/mod.rs:967: ... core_test_data_dir().join("golden_vault_001") ...
+    ffi/secretary-ffi-uniffi/src/namespace/mod.rs:991: ... core_test_data_dir().join("golden_vault_001") ...
 
-Seven hits, zero live composition sites: the three `String::from\s*\(` hits
-are the pattern matching as a SUBSTRING of `SecretString::from(` (not a bare
-`String::from` call), and the four `.join(` hits are all
+NINE hits, zero live composition sites. (This block said SEVEN, with three
+stale `namespace/mod.rs` line numbers and the two `ffi-py/detail.rs` hits
+absent, until the #500 final whole-branch review re-ran the grep. The
+SUBSTANCE — zero live composition sites — is unchanged; only the transcript
+was stale, and it is quoted here precisely so a re-reviewer can reproduce
+it.) Three `String::from\s*\(` hits are the pattern matching as a SUBSTRING
+of `SecretString::from(` (not a bare `String::from` call). Four `.join(`
+hits are all
 `secretary_test_utils::core_test_data_dir().join(...)` — `std::path::Path::join`,
 not a `str`/`String` `.join()`, and every one of the four call sites sits
 inside a `#[cfg(test)]` module (`sync_commit_decisions_bad_manifest_hash_len_is_sync_failed`,
 `open_writable_vault`, `read_block_wrong_length_returns_invalid_argument`,
-`write_settings_out_of_range_returns_invalid_argument`). `push_str` and
+`write_settings_out_of_range_returns_invalid_argument`). The remaining two
+are `ffi-py/src/detail.rs`'s own DOC COMMENT naming these very constructs —
+the census matching its own prose, which is noise rather than a site.
+`push_str` and
 `write!`/`writeln!` do not appear at all. The `+` string-concatenation
 operator is not census-able by a simple grep (indistinguishable from
 arithmetic `+` without a real parser) and is named here on its construction

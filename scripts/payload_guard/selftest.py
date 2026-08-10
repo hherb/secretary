@@ -1080,14 +1080,29 @@ def check_gated_detail_naming_param_types_are_all_withdrawn_under_decoy() -> lis
     return failures
 
 
-# `BP57`'s planted-decoy target (#500 fix round 2, review finding "the
-# Important that matters more than either T4-I1/T4-I2"). Deliberately
-# unmistakable — no real PR would ever choose this name — and additionally
-# listed in `.gitignore` as belt-and-suspenders; the PRIMARY guarantee that
-# no residue survives is `check_real_scan_shadow_wiring_is_live`'s own
-# `finally` block, not the gitignore entry.
+# `BP57`'s TWO planted-decoy targets (#500 fix round 2, review finding "the
+# Important that matters more than either T4-I1/T4-I2"; the second added in
+# the final whole-branch review). Deliberately unmistakable — no real PR
+# would ever choose these names — and additionally listed in `.gitignore` as
+# belt-and-suspenders; the PRIMARY guarantee that no residue survives is
+# `check_real_scan_shadow_wiring_is_live`'s own `finally` block, not the
+# gitignore entries.
+#
+# ONE PROBE PER TERM of the production expression, because each term is
+# caught by a DIFFERENT decoy shape and neither substitutes for the other:
+#
+#   * `_SHADOW_WIRING_PROBE_REL` — a `struct Detail` decoy under the BRIDGE
+#     root, caught by `discover_local_detail_decoys`, which returns a
+#     hardcoded `frozenset({"Detail"})`.
+#   * `_ALIAS_WIRING_PROBE_REL` — a `type String = ...;` alias decoy under a
+#     WRAPPER root, caught by `alias_candidate_names` ONLY. The wrapper
+#     roots' gated spelling is `String` (`ScanRoot.gated_field_types`), a
+#     name `discover_local_detail_decoys` can never return.
 _SHADOW_WIRING_PROBE_REL = (
     "ffi/secretary-ffi-bridge/src/error/__selftest_shadow_wiring_probe.rs"
+)
+_ALIAS_WIRING_PROBE_REL = (
+    "ffi/secretary-ffi-uniffi/src/__selftest_alias_wiring_probe.rs"
 )
 
 
@@ -1136,7 +1151,23 @@ def check_real_scan_shadow_wiring_is_live() -> list[str]:
     guarantee (`error/vault/mod.rs`, reverted by exact-text edit, `git
     diff` checked empty afterward).
 
-    Three assertions, in order:
+    ONE PROBE PER TERM, because the expression has TWO and a single probe
+    pins only one of them (final whole-branch review). The original version
+    of this check planted the `struct Detail` decoy alone, which
+    `discover_local_detail_decoys` — the SURVIVING term — catches on its
+    own: replacing `alias_candidate_names` with `frozenset()` therefore
+    left `--self-test` FULLY green and the real scan green, exactly the
+    hole this control was written to close, one term over. That term is
+    NOT redundant with the other: `discover_local_detail_decoys` returns a
+    hardcoded `frozenset({"Detail"})`, while the WRAPPER roots' gated
+    spelling is `String`, so only `alias_candidate_names` can ever shadow
+    it. Measured on this tree: a planted `type String = SecretHolder;`
+    under `ffi/secretary-ffi-uniffi/src/` takes the real scan from 46
+    violations to `OK` (exit 0) the moment that term is severed. The
+    denial is a #500 capability — merge-base `3775ef5` accepted the same
+    fixture — so nothing else in the corpus would have missed it either.
+
+    Four assertions, in order:
 
     1. The UNTOUCHED tree scans OK. This alone pins `gated_field_types`'s
        PRE-EXISTING, IDENTICAL wiring hole for free (mitigating context
@@ -1145,27 +1176,57 @@ def check_real_scan_shadow_wiring_is_live() -> list[str]:
        immediately, no decoy needed — so a clean-tree baseline assertion
        catches it without a line of code written specifically for it.
     2. Planting a decoy `pub struct Detail(pub String);` — a throwaway
-       `.rs` file under the bridge root, needing NO gated field of its own
+       `.rs` file under the BRIDGE root, needing NO gated field of its own
        (the ~27 EXISTING real ones are what a LIVE shadow set catches) —
-       makes the scan FAIL. This is what pins `shadowed_type_names`
-       specifically: an EMPTY (severed) shadow set has nothing to catch on
-       today's clean tree, so only a POSITIVE probe like this observes it;
-       step 1 alone would not (a severed shadow set and a live one behave
+       makes the scan FAIL. This pins the `discover_local_detail_decoys`
+       TERM: an EMPTY (severed) shadow set has nothing to catch on today's
+       clean tree, so only a POSITIVE probe like this observes it; step 1
+       alone would not (a severed shadow set and a live one behave
        identically when there is no decoy to disagree about).
-    3. Removing the decoy (`finally` — runs even if 1 or 2 raise) restores
-       a clean scan. Proves the probe leaves no residue, and that the
-       decoy specifically — not some unrelated cause — was what tripped
-       step 2.
+    3. Planting a decoy `type String = SecretHolder;` under a WRAPPER root
+       makes the scan FAIL. This pins the `alias_candidate_names` TERM,
+       and ONLY it — see the paragraph above for why step 2's probe cannot
+       stand in for this one. A `type` alias rather than a `struct` on
+       purpose: `alias_candidate_names` is the RAW `type X = Y;` LHS set
+       (`_discover_tier_inputs`), so an alias is the only shape that
+       reaches it.
+    4. Removing both decoys (`finally` — runs even if 1-3 raise) restores
+       a clean scan. Proves the probes leave no residue, and that the
+       decoys specifically — not some unrelated cause — were what tripped
+       steps 2 and 3.
 
     `run_real_scan`'s own stdout/stderr are captured and discarded: this
     check's OWN pass/fail reporting is what `--self-test` surfaces, not a
     second copy of the real scan's violation listing.
     """
-    decoy_path = REPO_ROOT / _SHADOW_WIRING_PROBE_REL
-    if decoy_path.exists():
+    probes: tuple[tuple[str, str, str, str], ...] = (
+        (
+            "step 2",
+            _SHADOW_WIRING_PROBE_REL,
+            "pub struct Detail(pub String);\n",
+            "run_real_scan's OWN shadowed_type_names computation (scan.py) "
+            "may be severed, or its `discover_local_detail_decoys` TERM "
+            "specifically may be — that term is what BP54/BP55/BN29/BP56/WP9 "
+            "independently recompute without ever reading this call site",
+        ),
+        (
+            "step 3",
+            _ALIAS_WIRING_PROBE_REL,
+            "type String = SecretHolder;\n",
+            "run_real_scan's OWN shadowed_type_names computation (scan.py) "
+            "may be severed, or its `alias_candidate_names` TERM "
+            "specifically may be — no other control observes that term, and "
+            "`discover_local_detail_decoys` cannot substitute for it "
+            "(it returns only the spelling `Detail`, never `String`)",
+        ),
+    )
+
+    existing = [rel for _, rel, _, _ in probes if (REPO_ROOT / rel).exists()]
+    if existing:
         return [
-            f"REAL SCAN WIRING PROBE: {_SHADOW_WIRING_PROBE_REL} already "
-            "exists — refusing to overwrite; remove it by hand and re-run"
+            f"REAL SCAN WIRING PROBE: {rel} already exists — refusing to "
+            "overwrite; remove it by hand and re-run"
+            for rel in existing
         ]
 
     def _quiet_real_scan() -> int:
@@ -1177,32 +1238,35 @@ def check_real_scan_shadow_wiring_is_live() -> list[str]:
     if baseline != 0:
         return [
             "REAL SCAN WIRING PROBE (BP57 step 1): the untouched tree does "
-            f"not scan OK (exit {baseline}) — cannot run the decoy probe on "
+            f"not scan OK (exit {baseline}) — cannot run the decoy probes on "
             "top of an already-failing baseline. This also means "
             "gated_field_types' own real-scan wiring may be severed"
         ]
 
     failures: list[str] = []
     try:
-        decoy_path.write_text("pub struct Detail(pub String);\n", encoding="utf-8")
-        planted = _quiet_real_scan()
-        if planted == 0:
-            failures.append(
-                "REAL SCAN WIRING (BP57 step 2): planting a decoy `Detail` "
-                f"declaration at {_SHADOW_WIRING_PROBE_REL} did not fail "
-                "the real scan — run_real_scan's OWN shadowed_type_names "
-                "computation (scan.py) may be severed from what "
-                "BP54/BP55/BN29/BP56/WP9 independently recompute"
-            )
+        for step, rel, body, diagnosis in probes:
+            decoy_path = REPO_ROOT / rel
+            try:
+                decoy_path.write_text(body, encoding="utf-8")
+                planted = _quiet_real_scan()
+                if planted == 0:
+                    failures.append(
+                        f"REAL SCAN WIRING (BP57 {step}): planting a decoy at "
+                        f"{rel} did not fail the real scan — {diagnosis}"
+                    )
+            finally:
+                decoy_path.unlink(missing_ok=True)
     finally:
-        decoy_path.unlink(missing_ok=True)
+        for _, rel, _, _ in probes:
+            (REPO_ROOT / rel).unlink(missing_ok=True)
 
     if not failures:
         cleaned = _quiet_real_scan()
         if cleaned != 0:
             failures.append(
-                "REAL SCAN WIRING PROBE (BP57 step 3): removing the decoy "
-                f"did not restore a clean scan (exit {cleaned}) — the probe "
+                "REAL SCAN WIRING PROBE (BP57 step 4): removing the decoys "
+                f"did not restore a clean scan (exit {cleaned}) — a probe "
                 "left residue, or the tree was already broken"
             )
     return failures

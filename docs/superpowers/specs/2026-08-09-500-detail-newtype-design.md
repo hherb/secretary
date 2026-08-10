@@ -100,6 +100,19 @@ So **only `secretary-ffi-uniffi` takes the `test-support` dev-dependency.**
 `secretary-ffi-py` and the bridge's own integration tests need no change at
 all. §5 is scoped accordingly.
 
+> **SUPERSEDED BY IMPLEMENTATION (recorded in the #500 final review rather
+> than silently edited, so the design's own reasoning stays legible).** As
+> shipped, **three** crates carry the dev-dependency, not one:
+> `ffi/secretary-ffi-uniffi/Cargo.toml:43`, `ffi/secretary-ffi-py/Cargo.toml:37`
+> and `desktop/src-tauri/Cargo.toml:144` (`grep -rn test-support --include=Cargo.toml`
+> returns exactly those three plus the bridge's own `[features]` declaration).
+> The census above was a census of *sites that could not otherwise construct a
+> `Detail`* at design time; implementation added tests in the other two crates
+> that need the same hatch. Nothing about §5's mechanism changes — the placement
+> guard (`scripts/check-test-support-placement.py`) enforces the
+> `[dev-dependencies]`-only rule across **every** manifest, not just the one this
+> section anticipated, which is why the widening cost no design change.
+
 ### 1.3 What the census does *not* say
 
 The 109 `detail::` call sites are already sanctioned. This design does not
@@ -191,7 +204,17 @@ The wrapper crates' **own** error types keep `detail: String`:
 UDL, and `secretary-ffi-py`'s exceptions take a message. Consequently:
 
 - **Bridge — compiler-enforced.** All four documented E3 laundering shapes die
-  here, along with every shape nobody has thought of yet. This is unqualified.
+  here, along with every shape nobody has thought of yet — **for the 27 fields
+  that are DECLARED with the real `Detail`.** The guarantee is per
+  DECLARATION, not per root, and that qualification is not optional: a new
+  bridge error type declaring its gated field through a renaming import
+  (`use std::string::String as Detail;`) compiles and passes both E2 and E3,
+  verified by execution and tracked by **#512**. (This bullet read "This is
+  unqualified" until the #500 final review — the one place in the branch that
+  stated the claim without the boundary the other four documents carry:
+  `scripts/check-error-payload-hygiene.py`'s "THE #500 NEWTYPE" boundary 2,
+  CLAUDE.md's matching bullet, `payload_guard/rules/e3.py`'s module docstring,
+  and `discover_local_detail_decoys`'s residual 5.)
 - **Wrapper crates — still text-guarded**, by rules E2/E3/E5 exactly as today.
   Their posture is *unchanged*, not improved.
 
@@ -437,10 +460,21 @@ records as never running in CI).
 ## 8. Non-goals
 
 - **The wrapper crates' own error types.** §4. Their posture is unchanged.
-- **#497** (E3 shape 5's unbounded receiver), **#499** (`format!` spellings),
-  **#501** (ffi-py pytest in CI), **#502** (`desktop/src-tauri`'s `AppError`),
-  **#494** (`cli/`'s `io::Error`), **#495** (splitting `discovery.py`, now 1005
-  lines). All remain open and are not touched.
+- **#499** (`format!` spellings), **#501** (ffi-py pytest in CI), **#502**
+  (`desktop/src-tauri`'s `AppError`), **#494** (`cli/`'s `io::Error`), **#495**
+  (splitting `discovery.py`). All remain open and are not touched.
+
+  Two corrections from the #500 final review, both to this bullet's earlier
+  wording. **#497 is NOT in this list any more:** it was written here as
+  untouched, but the implementation closed it in code — E3's shape 5 accepted
+  an arbitrary single-hop receiver, all four of its live sites moved onto
+  `detail::project(...)`, and `ScanRoot.allow_field_access` is now `False` on
+  every root with `WP7` pinning the denial. (Per this repo's `(#N)` citation
+  convention the GitHub issue may still read OPEN; check the substance, not
+  the issue state.) And **`discovery.py` is not 1005 lines** — that was its
+  size at merge-base `3775ef5`; it is **1208** on this branch, which makes
+  #495's case stronger, not weaker. Both figures are snapshots: re-run
+  `wc -l` rather than quoting this one.
 - **#498's structural half.** §6.1.
 - **Any change to the FFI surface.** No `FfiVaultError` variant is added,
   removed, or renamed; no field is added or removed; `secretary.udl` must diff

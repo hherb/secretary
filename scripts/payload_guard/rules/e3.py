@@ -46,9 +46,15 @@ them is the specific overclaim this branch exists to avoid:
   same shape any other `detail::*` call takes. The wrapper's OWN authored
   diagnostics never held a `Detail` and take the other shapes — ffi-uniffi
   has 19 such production initializers, 13 string literals plus 6 further
-  `detail::*` constructor calls. ffi-py's 17 BARE `detail.into_string()`
-  calls are all `new_err(...)` ARGUMENTS, a position this rule does not
-  read at all.
+  `detail::*` constructor calls. ffi-py's 17 BARE `.into_string()` calls in
+  `errors.rs` are all `new_err(...)` ARGUMENTS, a position this rule does
+  not read at all. RECEIVER CENSUS, corrected in final review (this text
+  and the entry point's twin both said "17 bare `detail.into_string()`",
+  right about the count and the position, wrong about the receiver): 11
+  have receiver `detail`, and SIX carry another gated name — 4 `uuid_hex`,
+  1 `recipient_fingerprint_hex`, 1 `block_uuid_hex`. An 18th
+  `.into_string()` in the crate is `detail.rs:126`, the whole body of
+  `project`, and is not one of the 17.
 
 The bridge's guarantee is also per DECLARATION rather than per root: it
 covers the 27 fields that hold the real type. A NEW bridge error type

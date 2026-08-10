@@ -1001,8 +1001,12 @@ def discover_local_detail_decoys(
     found (short-circuits — `LOCAL_DETAIL_TYPE_RE` names exactly one
     spelling today), else `frozenset()`.
 
-    LIMITS (#500 fix round 2 review) — four shapes this function does NOT
-    catch, all defence-in-depth gaps rather than live leaks: in every one,
+    LIMITS (#500 fix round 2 review) — FIVE shapes this function does NOT
+    catch (the header said "four" until final review counted the list
+    below; the two documents that cite this docstring, the entry point's
+    E2 bullet and its "THE #500 NEWTYPE" section, both said five and were
+    right). The first four are defence-in-depth gaps rather than live
+    leaks: in each of those,
     rule E3's construction-site gate independently denies the actual
     CONSTRUCTION of a value from the decoy, because the decoy's own
     constructor (if any) still has to survive `SAFE_PARAM_TYPES`/
@@ -1047,10 +1051,15 @@ def discover_local_detail_decoys(
        deny: verified by execution, `use std::string::String as Detail;`
        in a bridge file, a new `#[error("{detail}")] Boom { detail:
        Detail }`, and an E3 arm-4 parameter re-wrap
-       (`fn f(detail: Detail) -> E { E::Boom { detail } }`) together
-       produce ZERO findings — arm 4 accepts the same-name re-wrap
-       precisely because it trusts the DECLARED type, which here is a
-       `String` wearing the newtype's name. An import DECLARES nothing in
+       (`fn f(detail: Detail) -> E { E::Boom { detail: detail } }`)
+       together produce ZERO findings — arm 4 accepts the same-name
+       re-wrap precisely because it trusts the DECLARED type, which here
+       is a `String` wearing the newtype's name. (The FIELD SHORTHAND
+       spelling `E::Boom { detail }`, which earlier drafts showed here,
+       also produces zero — but by never becoming a candidate at all
+       rather than by arm 4 accepting it. Same result, different
+       mechanism; the attribution is what was wrong.) An import DECLARES
+       nothing in
        this root, so no textual matcher sited on declarations can see it;
        closing it needs real name resolution. This is the same aliasing
        blind spot rule E4 records for `GatedDetail`, and it is the reason
