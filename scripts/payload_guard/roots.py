@@ -61,8 +61,9 @@ class ScanRoot:
     * An IMPORT is NOT caught, in either spelling. `use std::string::String
       as Detail;` in a bridge file, plus a new gated field declared `Detail`
       and an E3 arm-4 parameter re-wrap, scans with ZERO findings — verified
-      by execution. See `discover_local_detail_decoys`' residual 5 and the
-      entry point's "THE #500 NEWTYPE" boundary 2: the compiler guarantee is
+      by execution, and tracked by #512. See
+      `discover_local_detail_decoys`' residual 5 and the entry point's
+      "THE #500 NEWTYPE" boundary 2: the compiler guarantee is
       per DECLARATION, over the 27 fields that hold the real type, not a
       root-wide property this flag can assert on its own.
 
@@ -157,8 +158,8 @@ SCAN_ROOTS: tuple[ScanRoot, ...] = (
         # `Detail` resolves to `secretary_ffi_bridge::Detail`. A same-spelled
         # DECLARATION elsewhere in this root withdraws the acceptance
         # (`discover_local_detail_decoys`); an IMPORT — `use
-        # std::string::String as Detail;` — does not, and scans clean. Do not
-        # read this line as a root-wide guarantee.
+        # std::string::String as Detail;` — does not, and scans clean (#512).
+        # Do not read this line as a root-wide guarantee.
         gated_field_types=frozenset({"Detail"}),
         construction_sites=True,
         gated_detail_impls=True,

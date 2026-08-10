@@ -104,7 +104,8 @@ LOCAL_DETAIL_TYPE_RE = re.compile(
 # what the decoy exploits is that `SAFE_PARAM_TYPES` matches the SPELLING.)
 # That is parity with a documented blind spot rather than a regression, but
 # an unstated limit on a brand-new security control is how the next reader
-# stops checking, so it is written down.
+# stops checking, so it is written down. Tracked by #512 together with
+# `LOCAL_DETAIL_TYPE_RE`'s identical residual — one root cause, one issue.
 LOCAL_GATED_DETAIL_TRAIT_RE = re.compile(r"\btrait\s+GatedDetail\b")
 
 # A `mod name {` block header, anchored at the END of the text preceding a
@@ -1054,7 +1055,8 @@ def discover_local_detail_decoys(
        closing it needs real name resolution. This is the same aliasing
        blind spot rule E4 records for `GatedDetail`, and it is the reason
        the entry point's "THE #500 NEWTYPE" section states the compiler
-       guarantee as PER DECLARATION rather than per root: the 27 fields
+       guarantee as PER DECLARATION rather than per root. Tracked by
+       #512 (this and the `GatedDetail` twin, one root cause): the 27 fields
        that ARE the bridge's real `Detail` cannot hold a `String`; a
        28th, newly written against an aliased import, can.
     """

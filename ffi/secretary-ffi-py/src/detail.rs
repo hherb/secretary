@@ -29,17 +29,17 @@
 //! [`fingerprint_mismatch`] and [`uuid_prefixed`] are the two that take
 //! `&Detail`: their inputs are not authored here, they are already
 //! bridge-owned values this crate only COMBINES into one message, never
-//! authoring new runtime content into either.
-//! Before #504 both took `&str` and were admitted only by a
-//! review-only, point-in-time claim pinned by name in
-//! `STR_PARAM_CTOR_EXCEPTIONS` (`scripts/payload_guard/rules/e3.py`) —
-//! nothing verified what a given call site actually passed there. Taking
-//! `&Detail` converts that claim into a compile-time fact: `Detail`'s inner
-//! field is private to the bridge's own `error/detail.rs`, so a value of
-//! that type can only have come from a sanctioned constructor there, and
-//! the exception set is now empty. Every other constructor's inputs are
-//! authored by THIS crate (a field name, a byte-length count, a bounds
-//! value), so they stay `&'static str`/integer-only, holding the line
+//! authoring new runtime content into either. Before #504 both took
+//! `&str` and were admitted only by a review-only, point-in-time claim
+//! pinned by name in `STR_PARAM_CTOR_EXCEPTIONS`
+//! (`scripts/payload_guard/rules/e3.py`) — nothing verified what a given
+//! call site actually passed there. Taking `&Detail` converts that claim
+//! into a compile-time fact: `Detail`'s inner field is private to the
+//! bridge's own `error/detail.rs`, so a value of that type can only have
+//! come from a sanctioned constructor there, and the exception set is now
+//! empty. Every other constructor's inputs are authored by THIS crate (a
+//! field name, a byte-length count, a bounds value), so they stay
+//! `&'static str`/integer-only, holding the line
 //! `ffi/secretary-ffi-uniffi/src/detail.rs` set in task 10.
 //!
 //! Guard rule E5 enforces that this module is the only source of these
@@ -111,7 +111,8 @@ pub(crate) fn uuid_prefixed(uuid_part: &Detail, detail_part: &Detail) -> String 
 ///
 /// The bridge declares every gated payload field as `Detail`, whose private
 /// inner field means the value can only have come out of a sanctioned
-/// constructor in `ffi/secretary-ffi-bridge/src/error/detail.rs`. PyO3 exceptions take a message `String`, so the newtype cannot cross this
+/// constructor in `ffi/secretary-ffi-bridge/src/error/detail.rs`. PyO3
+/// exceptions take a message `String`, so the newtype cannot cross this
 /// seam intact.
 ///
 /// This is a PROJECTION, not a gate: it re-derives nothing and vouches for

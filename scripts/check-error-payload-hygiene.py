@@ -201,10 +201,17 @@ repeated review finding of the predecessor branch (#496):
      `ffi/secretary-ffi-uniffi` keep `detail: String` on their OWN error
      types — uniffi's UDL must project a `string`, PyO3 exceptions take a
      message. Rules E2/E3/E5 remain their ONLY enforcement, at exactly the
-     strength they had before #500. Each pass-through arm gains one
-     `Detail::into_string()` where a bridge payload becomes a wrapper
-     `String`; that unwrap sits immediately beside the wrapper's own
-     construction site, so it is a PROJECTION, not a gate (design §4).
+     strength they had before #500. Each pass-through arm gains one unwrap
+     where a bridge payload becomes a wrapper `String`, sitting immediately
+     beside the wrapper's own construction site, so it is a PROJECTION, not
+     a gate (design §4). Mind the SPELLING, because the obvious one denies:
+     EVERY gated-field initializer in both crates routes through
+     `detail::project(d)`, whose whole body is the single
+     `Detail::into_string()` — 25 sites in ffi-uniffi, 2 in ffi-py
+     (`repair_preview.rs`) — because the inline
+     `detail: detail.into_string()` matches no E3 arm (`WP6`). ffi-py's 17
+     BARE `detail.into_string()` calls are all `new_err(...)` ARGUMENTS, a
+     position E3 does not read at all.
   2. THE GUARANTEE IS PER DECLARATION, NOT PER ROOT. It covers the 27
      fields that ARE declared with the bridge's real `Detail`. A NEW bridge
      error type can still declare its gated field as a RENAMING IMPORT of
@@ -216,7 +223,8 @@ repeated review finding of the predecessor branch (#496):
      one; this is the same aliasing blind spot E4 records for `GatedDetail`,
      reached here through E2's carve-out. The cause is that `Detail` is
      matched by SPELLING everywhere in this guard — nothing resolves the
-     name to `secretary_ffi_bridge::Detail`.
+     name to `secretary_ffi_bridge::Detail`. TRACKED BY #512, which covers
+     this and its `GatedDetail` twin as one root cause.
   3. `Detail` IS NOT A SECRET-FREEDOM CLAIM ABOUT ITS NEIGHBOURS. It claims
      one thing: this string came out of a reviewed constructor. E2's
      declaration sweep covers `#[error(`-attributed types plus PLAIN-derive
@@ -527,8 +535,9 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   the IMPORT — `use std::string::String as Detail;` in a bridge file makes a
   NEW gated field declared `detail: Detail` a plain `String`, and that
   declaration plus an E3 arm-4 parameter re-wrap scans with ZERO findings
-  (verified by execution). See "THE #500 NEWTYPE" boundary 2 above: the
-  compiler guarantee is per DECLARATION, and this guard resolves no names.
+  (verified by execution; tracked by #512). See "THE #500 NEWTYPE"
+  boundary 2 above: the compiler guarantee is per DECLARATION, and this
+  guard resolves no names.
 - THE `test-support` FEATURE IS A BUILD-CONFIGURATION GUARANTEE, NOT A
   LANGUAGE ONE (#500). `Detail::for_test` (`ffi/secretary-ffi-bridge/src/
   error/detail.rs`) mints a `Detail` from arbitrary runtime text, and it is
@@ -802,6 +811,52 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
   definition." This guard does not re-verify that an allowlisted leaf stays
   sound as the type evolves; see
   `docs/superpowers/specs/2026-08-05-474-error-payload-hygiene-design.md` §4.
+
+OPEN ISSUES AGAINST THIS GUARD (#500 Task 8)
+----------------------------------------------
+Every gap above that has a tracker number, in one place, so a reader of THIS
+file — the one CLAUDE.md calls authoritative — does not have to reconstruct
+the register from prose. CLAUDE.md's guard section carries the same list;
+the two are a DELIBERATE two-site register and must be edited together.
+Filing a new one means adding it here AND there.
+
+- #494  An `io::Error` minted from a `format!` in `cli/src/daemon.rs:424`,
+        a tree no scan root covers. Not reachable from the bridge today.
+- #495  `payload_guard/discovery.py` is two unrelated parsers in one file.
+- #498  STRUCTURAL half only. Its cheaper half (E3's string-literal hint
+        rule) landed in #500; a closed `enum Context` / `enum ArgField` is
+        what would make a leaked `&'static str` unrepresentable. See the
+        `&'static str` bullet above — do not write #498 as closed.
+- #499  E5 misses two spellings of `format!` itself: a macro RENAME
+        (`use std::format as fmt2;`) and `std::fmt::format(format_args!(…))`.
+- #501  ffi-py's pytest suite never runs in CI.
+- #502  `desktop/src-tauri` builds its own `AppError { detail: String }`
+        outside every scan root.
+- #505  `check-test-support-placement.py`'s `DEFAULT_ROOTS` completeness is
+        unproven — a manifest under an unlisted root is unscanned.
+- #506  That same script is 1253 lines and wants this package's treatment.
+- #507  `payload_guard/lexer.py` cites a control `BP46` that has never
+        existed, so one of its C-string claims is pinned by nothing.
+- #508  E3 shape 5's internals are unpinned while `allow_field_access` is
+        `False` everywhere — re-enabling it would restore untested code.
+- #509  E3 arm 3 accepts a bare `String` token on the WRAPPER roots, where
+        `String` is still the declared gated type — a let-binding laundering
+        shape the bridge no longer has.
+- #510  `Path.rglob` does not recurse SYMLINKED directories, so a symlinked
+        source tree is invisible to EVERY rule here.
+- #511  The control corpora have no uniqueness check over labels; a
+        duplicate is caught only by grep. Not hypothetical — a `WP9`
+        collision during #500 was found by an implementer running grep.
+- #512  A RENAMING IMPORT defeats the `Detail` newtype's E2 credit: the
+        compiler guarantee is per DECLARATION, not per root. Covers the
+        `GatedDetail` trait twin as the same root cause — this guard matches
+        by spelling and never resolves a name. See "THE #500 NEWTYPE"
+        boundary 2.
+
+CLOSED IN CODE by #500, and described above as closed: #497 (E3 shape 5
+retired), #503, #504 (`STR_PARAM_CTOR_EXCEPTIONS` emptied). Their GitHub
+issues may still read OPEN — this repo cites fixes as `(#N)`, never
+`Closes #N`, so an issue outlives its fix until a human closes it.
 """
 
 from __future__ import annotations

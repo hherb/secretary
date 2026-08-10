@@ -328,9 +328,12 @@ as data in [`payload_guard/roots.py`](scripts/payload_guard/roots.py)'s
 as of #486, the two binding wrapper crates `ffi/secretary-ffi-py/src/**` and
 `ffi/secretary-ffi-uniffi/src/**` — with **five rules**: `E1` (a variant's
 payload type must be data-free by construction; all four roots), `E2` (a
-bridge/wrapper `String` field is permitted only under one of six PINNED names
-— `detail`, `uuid_hex`, `block_uuid_hex`, `recipient_fingerprint_hex`,
-`expected_fingerprint_hex`, `got_fingerprint_hex`), `E3` (every CONSTRUCTION
+bridge/wrapper gated-prose field is permitted only under one of six PINNED
+names — `detail`, `uuid_hex`, `block_uuid_hex`, `recipient_fingerprint_hex`,
+`expected_fingerprint_hex`, `got_fingerprint_hex` — **and** only with the
+type spelling that root accepts, which is PER-ROOT as of #500: `Detail` on
+the bridge, `String` on the two wrappers. The bridge permits **no** `String`
+under a gated name; `BP51` pins that denial), `E3` (every CONSTRUCTION
 SITE of a gated field must build its value from a sanctioned source — bridge
 and both wrapper roots), `E4` (every `impl GatedDetail for X` must live in
 [`ffi/secretary-ffi-bridge/src/error/detail.rs`](ffi/secretary-ffi-bridge/src/error/detail.rs)
@@ -413,20 +416,30 @@ Four boundaries, each stated as a boundary rather than a caveat:
   message, and making them `Detail` would need a `custom_type!` conversion
   adding UDL surface for a type unwrapped one line later. Rules E2/E3/E5
   remain their **only** enforcement, at exactly the strength they had
-  before. Each pass-through arm gained one `Detail::into_string()` where a
-  bridge payload becomes a wrapper `String`; that unwrap sits immediately
-  beside the wrapper's own construction site, so it is a **projection, not
-  a gate**. The design doc's §4 exists for this sentence — do not flatten
-  the two roots into one claim.
+  before. Each pass-through arm gained one unwrap where a bridge payload
+  becomes a wrapper `String`, and it sits immediately beside the wrapper's
+  own construction site, so it is a **projection, not a gate**. Note the
+  spelling, because the obvious one is denied: **every** gated-field
+  initializer in both crates routes through `detail::project(d)`, whose
+  whole body is the single `Detail::into_string()` — 25 sites in ffi-uniffi,
+  2 in ffi-py (`repair_preview.rs`) — because the inline
+  `detail: detail.into_string()` matches no E3 arm and denies (`WP6`;
+  each crate's `detail.rs` says so outright). ffi-py's 17 *bare*
+  `detail.into_string()` calls are all `new_err(...)` **arguments**, a
+  position E3 does not read at all. The design doc's §4 exists for this
+  sentence — do not flatten the two roots into one claim.
 - **The guarantee is per DECLARATION, not per root.** It covers the 27
   fields that hold the real type. A NEW bridge error type can still declare
   its gated field through a renaming import — `use std::string::String as
   Detail;` — which compiles, and which **both E2 and E3 pass**: verified by
   execution, that declaration plus an E3 arm-4 parameter re-wrap scans with
   ZERO findings. `discover_local_detail_decoys` catches a local
-  *declaration* of a decoy `Detail` anywhere in the root
-  (`BP54`/`BP55`), never an *import* of one. Nothing in this guard resolves
-  a name; `Detail` is matched by spelling throughout.
+  *declaration* of a decoy `Detail` anywhere in the root **except the root's
+  own sanctioned module**, which it exempts so the real declaration does not
+  shadow itself (`BP54`/`BP55` pin the catch, `BN29` the exemption) — and it
+  never catches an *import* of one. Nothing in this guard resolves a name;
+  `Detail` is matched by spelling throughout. Tracked by **#512**, which
+  covers this and its `GatedDetail` twin as one root cause.
 - **`Detail` says nothing about its neighbours.** It claims one thing: this
   string came out of a reviewed constructor. E2's declaration sweep covers
   `#[error(`-attributed types plus plain-derive types named `*Error` /
@@ -665,16 +678,26 @@ lines and wants the `payload_guard/` package treatment), **#507**
 shape 5's internals are unpinned while `allow_field_access` is `False`),
 **#509** (`E3` arm 3 accepts a bare `String` token on the wrapper roots),
 **#510** (`Path.rglob` does not recurse symlinked directories — invisible to
-EVERY rule), and **#511** (control labels have no uniqueness check; a
-duplicate is caught only by grep — a `WP9` collision during #500 was found
-by an implementer running grep, not by any guard). **#497**, **#503** and
-**#504** were closed by #500 and are described above as closed.
+EVERY rule), **#511** (control labels have no uniqueness check; a duplicate
+is caught only by grep — a `WP9` collision during #500 was found by an
+implementer running grep, not by any guard), and **#512** (a renaming import
+defeats the `Detail` newtype's E2 credit — the guarantee is per declaration,
+not per root; covers the `GatedDetail` trait twin as one root cause).
+**#497**, **#503** and **#504** are closed **in code** by #500 and are
+described above as closed; the GitHub issues may still read OPEN, because
+this repo cites fixes as `(#N)` and never `Closes #N`, so an issue outlives
+its fix until a human closes it — cross-check the *substance* against the
+code, not the issue state.
 
-Read the guard's own module docstring's LIMITS section
-([`scripts/check-error-payload-hygiene.py`](scripts/check-error-payload-hygiene.py))
-for the authoritative, current version of this list — this paragraph
-summarizes it and will drift if the guard changes without a matching edit
-here.
+The same register lives in the guard's own `OPEN ISSUES` block
+([`scripts/check-error-payload-hygiene.py`](scripts/check-error-payload-hygiene.py)),
+with one clause each. That is a **deliberate two-site register** — a
+maintainer reading only the guard should not have to reconstruct it from
+prose — so filing or closing one means editing **both**.
+
+Read that file's LIMITS section for the authoritative, current version of
+the gap DESCRIPTIONS — this section summarizes them and will drift if the
+guard changes without a matching edit here.
 
 ### Memory hygiene: zeroize discipline
 

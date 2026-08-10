@@ -77,8 +77,9 @@ pub(crate) fn range(context: &'static str, min: u64, max: u64) -> String {
 ///
 /// The bridge declares every gated payload field as `Detail`, whose private
 /// inner field means the value can only have come out of a sanctioned
-/// constructor in `ffi/secretary-ffi-bridge/src/error/detail.rs`. uniffi's `VaultError` variants must carry a UDL `string`, so the newtype
-/// cannot cross this seam intact.
+/// constructor in `ffi/secretary-ffi-bridge/src/error/detail.rs`. uniffi's
+/// `VaultError` variants must carry a UDL `string`, so the newtype cannot
+/// cross this seam intact.
 ///
 /// This is a PROJECTION, not a gate: it re-derives nothing and vouches for
 /// nothing. It exists so the unwrap has ONE named home per wrapper crate

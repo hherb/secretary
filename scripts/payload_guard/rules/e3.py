@@ -12,6 +12,10 @@ them is the specific overclaim this branch exists to avoid:
 * **Bridge (`ffi/secretary-ffi-bridge/src/**`) — DEFENCE IN DEPTH.** All 27
   gated fields there are the `Detail` newtype (`error/detail.rs`), whose
   private inner field makes a `String` fail to TYPECHECK in the position.
+  Rule E2's accepted set for this root was narrowed to `{Detail}` to match
+  (`ScanRoot.gated_field_types`), so the bridge permits NO `String` under a
+  gated name and a new error type cannot opt back out by declaring the old
+  spelling — `BP51` pins that denial, `BN28` the acceptance.
   The compiler, not this rule, is the enforcement: it covers the four
   laundering shapes the entry point's LIMITS enumerate as unwatched
   (pattern-destructuring bind, build-then-mutate, function parameter,
@@ -30,16 +34,22 @@ them is the specific overclaim this branch exists to avoid:
   need a `custom_type!` conversion adding UDL surface for a type unwrapped
   one line later (design §4). Every limit this rule records applies to them
   at full strength. Their posture is UNCHANGED by #500, not improved — the
-  one `Detail::into_string()` each pass-through arm gained sits immediately
-  beside the wrapper's own construction site, so it is a PROJECTION, not a
-  gate.
+  one unwrap each pass-through arm gained sits immediately beside the
+  wrapper's own construction site, so it is a PROJECTION, not a gate. Its
+  SPELLING is not free: EVERY gated-field initializer in both crates routes
+  through `detail::project(d)`, whose whole body is the single
+  `Detail::into_string()` — 25 sites in ffi-uniffi, 2 in ffi-py
+  (`repair_preview.rs`) — because the inline `detail: detail.into_string()`
+  matches none of THIS rule's accepted shapes and denies (`WP6`). ffi-py's
+  17 BARE `detail.into_string()` calls are all `new_err(...)` ARGUMENTS, a
+  position this rule does not read at all.
 
 The bridge's guarantee is also per DECLARATION rather than per root: it
 covers the 27 fields that hold the real type. A NEW bridge error type
 declaring its gated field through a renaming import (`use
 std::string::String as Detail;`) compiles, and passes both E2 and this rule
-— verified by execution. See `payload_guard/discovery.py`'s
-`discover_local_detail_decoys` residual 5.
+— verified by execution, and tracked by #512. See
+`payload_guard/discovery.py`'s `discover_local_detail_decoys` residual 5.
 """
 
 from __future__ import annotations
