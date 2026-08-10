@@ -561,8 +561,14 @@ claiming more coverage than the code delivers:
   a `core` payload gated by core's own E1 entry (allowlist Section 3,
   `vault/mod.rs — RepairRejected`), inside the one module whose job is
   minting `Detail`. Every other bridge hit of the census grep is test code,
-  an `#[error(…)]` attribute, a doc comment, or a `{detail}` interpolation
-  in an assertion message — none of them a bind. On the wrapper roots,
+  an `#[error(…)]` attribute, a **comment of either form** — four plain
+  `//` line comments (`repair/orchestration.rs:133`,
+  `error/vault/mod.rs:493`, `:501`, `:511`) plus one `///` doc comment
+  (`error/unlock.rs:57`), all five shipped rather than test code — or a
+  `{detail}` interpolation in an assertion message. None of them a bind.
+  ("a doc comment" alone was wrong for four of the five, and is corrected
+  rather than generalised away so the split stays reproducible.) On the
+  wrapper roots,
   counted exactly: all
   **34** production pattern binds destructure a **bridge** `Ffi*` error, so
   all 34 bind a `Detail`; the **37** binds of a wrapper's own

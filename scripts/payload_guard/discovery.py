@@ -1003,10 +1003,12 @@ def discover_local_detail_decoys(
 
     LIMITS (#500 fix round 2 review) — FIVE shapes this function does NOT
     catch (the header said "four" until final review counted the list
-    below; the two documents that cite this docstring, the entry point's
-    E2 bullet and its "THE #500 NEWTYPE" section, both said five and were
-    right). The first four are defence-in-depth gaps rather than live
-    leaks: in each of those,
+    below; the two places that cite this docstring's count both said five
+    and were right — `check-error-payload-hygiene.py`'s E2 bullet in THE
+    BRIDGE RULES, and its RULE-E2 bullet in LIMITS. The "THE #500 NEWTYPE"
+    section states no shape count at all and is NOT one of them, contrary
+    to the first version of this parenthetical). The first four are
+    defence-in-depth gaps rather than live leaks: in each of those,
     rule E3's construction-site gate independently denies the actual
     CONSTRUCTION of a value from the decoy, because the decoy's own
     constructor (if any) still has to survive `SAFE_PARAM_TYPES`/

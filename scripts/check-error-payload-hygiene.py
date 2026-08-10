@@ -387,8 +387,14 @@ LIMITS (stated, not hidden — each one points at the module that owns it)
       `vault/mod.rs — RepairRejected`), and it sits inside `detail.rs`,
       where building a `Detail` is the file's entire job. Every OTHER
       bridge match of the census grep is test code, an `#[error(...)]`
-      attribute, a doc comment, or a `{detail}` interpolation in an
-      assertion message — none of which is a pattern bind.
+      attribute, a COMMENT of either form — four plain `//` LINE comments
+      (`repair/orchestration.rs:133`, `error/vault/mod.rs:493`, `:501`,
+      `:511`) plus one `///` DOC comment (`error/unlock.rs:57`), all five
+      shipped rather than test code — or a `{detail}` interpolation in an
+      assertion message. None of which is a pattern bind. ("a doc comment"
+      alone was wrong for four of the five, and is corrected here rather
+      than generalised away, since naming the two forms is what lets a
+      re-reviewer reproduce the split.)
     - Shape (a) on the WRAPPER roots, counted exactly rather than sampled:
       34 production binds, ALL of them destructuring a BRIDGE `Ffi*` error,
       so all 34 bind a `Detail` and not a `String`. Binds of a wrapper's
