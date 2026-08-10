@@ -419,15 +419,21 @@ Four boundaries, each stated as a boundary rather than a caveat:
   before. Each pass-through arm gained one unwrap where a bridge payload
   becomes a wrapper `String`, and it sits immediately beside the wrapper's
   own construction site, so it is a **projection, not a gate**. Note the
-  spelling, because the obvious one is denied: **every** gated-field
-  initializer in both crates routes through `detail::project(d)`, whose
-  whole body is the single `Detail::into_string()` — 25 sites in ffi-uniffi,
-  2 in ffi-py (`repair_preview.rs`) — because the inline
-  `detail: detail.into_string()` matches no E3 arm and denies (`WP6`;
-  each crate's `detail.rs` says so outright). ffi-py's 17 *bare*
-  `detail.into_string()` calls are all `new_err(...)` **arguments**, a
-  position E3 does not read at all. The design doc's §4 exists for this
-  sentence — do not flatten the two roots into one claim.
+  spelling, because the obvious one is denied: every gated-field initializer
+  **that unwraps a bridge payload** routes through `detail::project(d)`,
+  whose whole body is the single `Detail::into_string()` — 25 such sites in
+  ffi-uniffi, 2 in ffi-py (`repair_preview.rs:45,83`) — because the inline
+  `detail: detail.into_string()` matches no E3 arm and denies (`WP6`; each
+  crate's `detail.rs` says so outright). `project` is not a fourth arm: it
+  is a call into the crate's sanctioned module, i.e. the `detail::*` arm the
+  rule summary above already lists. The wrapper's OWN authored diagnostics
+  — which never held a `Detail` — take the other two arms, and ffi-uniffi
+  has 19 of them in production: 13 string literals and 6 further `detail::*`
+  constructor calls (`arg_len`, `indexed_arg_len`, `nested_indexed_arg_len`,
+  `range`). ffi-py's 17 *bare* `detail.into_string()` calls are all
+  `new_err(...)` **arguments**, a position E3 does not read at all. The
+  design doc's §4 exists for this sentence — do not flatten the two roots
+  into one claim.
 - **The guarantee is per DECLARATION, not per root.** It covers the 27
   fields that hold the real type. A NEW bridge error type can still declare
   its gated field through a renaming import — `use std::string::String as

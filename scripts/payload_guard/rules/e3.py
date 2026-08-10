@@ -36,13 +36,19 @@ them is the specific overclaim this branch exists to avoid:
   at full strength. Their posture is UNCHANGED by #500, not improved — the
   one unwrap each pass-through arm gained sits immediately beside the
   wrapper's own construction site, so it is a PROJECTION, not a gate. Its
-  SPELLING is not free: EVERY gated-field initializer in both crates routes
-  through `detail::project(d)`, whose whole body is the single
-  `Detail::into_string()` — 25 sites in ffi-uniffi, 2 in ffi-py
-  (`repair_preview.rs`) — because the inline `detail: detail.into_string()`
-  matches none of THIS rule's accepted shapes and denies (`WP6`). ffi-py's
-  17 BARE `detail.into_string()` calls are all `new_err(...)` ARGUMENTS, a
-  position this rule does not read at all.
+  SPELLING is not free: every gated-field initializer THAT UNWRAPS A BRIDGE
+  PAYLOAD routes through `detail::project(d)`, whose whole body is the
+  single `Detail::into_string()` — 25 such sites in ffi-uniffi, 2 in ffi-py
+  (`repair_preview.rs:45,83`) — because the inline
+  `detail: detail.into_string()` matches none of THIS rule's accepted shapes
+  and denies (`WP6`). `project` is NOT a fourth shape: it is a call into the
+  crate's sanctioned module — `initializer_is_gated`'s arm 2, below, the
+  same shape any other `detail::*` call takes. The wrapper's OWN authored
+  diagnostics never held a `Detail` and take the other shapes — ffi-uniffi
+  has 19 such production initializers, 13 string literals plus 6 further
+  `detail::*` constructor calls. ffi-py's 17 BARE `detail.into_string()`
+  calls are all `new_err(...)` ARGUMENTS, a position this rule does not
+  read at all.
 
 The bridge's guarantee is also per DECLARATION rather than per root: it
 covers the 27 fields that hold the real type. A NEW bridge error type

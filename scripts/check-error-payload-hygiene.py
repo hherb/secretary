@@ -205,13 +205,18 @@ repeated review finding of the predecessor branch (#496):
      where a bridge payload becomes a wrapper `String`, sitting immediately
      beside the wrapper's own construction site, so it is a PROJECTION, not
      a gate (design §4). Mind the SPELLING, because the obvious one denies:
-     EVERY gated-field initializer in both crates routes through
-     `detail::project(d)`, whose whole body is the single
-     `Detail::into_string()` — 25 sites in ffi-uniffi, 2 in ffi-py
-     (`repair_preview.rs`) — because the inline
-     `detail: detail.into_string()` matches no E3 arm (`WP6`). ffi-py's 17
-     BARE `detail.into_string()` calls are all `new_err(...)` ARGUMENTS, a
-     position E3 does not read at all.
+     every gated-field initializer THAT UNWRAPS A BRIDGE PAYLOAD routes
+     through `detail::project(d)`, whose whole body is the single
+     `Detail::into_string()` — 25 such sites in ffi-uniffi, 2 in ffi-py
+     (`repair_preview.rs:45,83`) — because the inline
+     `detail: detail.into_string()` matches no E3 arm (`WP6`). `project` is
+     NOT a fourth shape: it is a call into the crate's sanctioned module,
+     the same `detail::*` shape listed in E3 above. The wrapper's OWN
+     authored diagnostics never held a
+     `Detail` and take the other shapes — ffi-uniffi has 19 such production
+     initializers, 13 string literals plus 6 further `detail::*` constructor
+     calls. ffi-py's 17 BARE `detail.into_string()` calls are all
+     `new_err(...)` ARGUMENTS, a position E3 does not read at all.
   2. THE GUARANTEE IS PER DECLARATION, NOT PER ROOT. It covers the 27
      fields that ARE declared with the bridge's real `Detail`. A NEW bridge
      error type can still declare its gated field as a RENAMING IMPORT of
