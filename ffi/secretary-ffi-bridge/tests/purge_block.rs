@@ -86,7 +86,7 @@ fn purge_block_owner_only_then_restore_returns_block_purged() {
     match result {
         Err(FfiVaultError::BlockPurged { detail }) => {
             assert!(
-                detail.contains("ab") || detail.contains("AB"),
+                detail.as_str().contains("ab") || detail.as_str().contains("AB"),
                 "detail must carry the UUID hex: {detail}"
             );
         }
@@ -160,7 +160,7 @@ fn purge_block_unknown_uuid_returns_block_not_in_trash() {
     match result {
         Err(FfiVaultError::BlockNotInTrash { detail }) => {
             assert!(
-                detail.contains("ab") || detail.contains("AB"),
+                detail.as_str().contains("ab") || detail.as_str().contains("AB"),
                 "detail must carry the UUID hex: {detail}"
             );
         }

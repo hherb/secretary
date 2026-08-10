@@ -54,6 +54,60 @@ ENUM_RE = re.compile(r"\benum\s+([A-Za-z_][A-Za-z0-9_]*)")
 # naive "stop at the first semicolon" regex truncates the RHS to `[u8`. See
 # `find_type_aliases`, which tracks bracket depth instead.
 TYPE_ALIAS_HEAD_RE = re.compile(r"\btype\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*")
+
+# A LOCAL declaration of a type called `Detail` (#500 fix round 1), one of
+# `struct|enum|union Detail` or `type Detail = ...`/`type Detail<...>`.
+# Moved here from `rules/e3.py` (#500 fix round 2, review finding "Important
+# 2") so `discover_local_detail_decoys` below — which needs it for rule E2's
+# gated-field carve-out, a DIFFERENT consumer than E3's `SAFE_PARAM_TYPES`
+# signature gate — can share the one definition instead of a second, drifting
+# copy. `rules/e3.py` imports it back from here (discovery.py sits below
+# rules/* in this package's dependency order; see the module docstring), the
+# same shape `ERROR_ATTR_RE`/`STRUCT_RE` already take in the other direction.
+# See `rules/e3.py`'s own docstring paragraph above `sanctioned_constructor_names`
+# for the full "why a bare-spelling match, not a resolved one" rationale — it
+# is unchanged by the move.
+LOCAL_DETAIL_TYPE_RE = re.compile(
+    r"\b(?:struct|enum|union)\s+Detail\b|\btype\s+Detail\s*[=<]"
+)
+
+# A LOCAL declaration of a TRAIT called `GatedDetail` (#504 review R3): a
+# wrapper root's `&impl GatedDetail` in `SAFE_PARAM_TYPES` was the sibling of
+# the `Detail`/`&Detail` decoy hole #504's own review found and fixed — a
+# wrapper crate cannot implement the BRIDGE's `pub(crate)` `GatedDetail` (it
+# is sealed, #496), but nothing stops one declaring its OWN same-named local
+# `trait GatedDetail`, implementing it for e.g. `String`, and writing
+# `pub(crate) fn launder(d: &impl GatedDetail) -> String`, which then
+# sanctions an arbitrary runtime string exactly like the `Detail` decoy did
+# (verified by execution; zero live constructors take `&impl GatedDetail` in
+# either wrapper crate today — census re-run at every guard scan via `WP11`).
+#
+# DELIBERATELY A SEPARATE REGEX, not a widened `LOCAL_DETAIL_TYPE_RE`: that
+# regex is SHARED with rule E2's `discover_local_detail_decoys`, whose return
+# value is a hardcoded `frozenset({"Detail"})` — folding a `GatedDetail`
+# trait match into it would make an unrelated `GatedDetail` decoy shadow the
+# "Detail" FIELD-type spelling for rule E2, a different rule with a different
+# job. Keeping this match independent means rule E3's `GatedDetail`
+# withdrawal (`rules/e3.py`'s `gated_detail_param_ok`) cannot perturb E2's
+# behaviour, and vice versa — the same single-responsibility split the two
+# rules already keep for `LOCAL_DETAIL_TYPE_RE` itself before this addition.
+#
+# RESIDUAL — IDENTICAL to `LOCAL_DETAIL_TYPE_RE`'s, restated here rather than
+# left to be inferred from the sibling (#500 Task 8). This matcher sees a
+# local DECLARATION of the trait and nothing else, so an IMPORT evades it in
+# both spellings: `use crate::zz_evil::GatedDetail;` written inside a wrapper
+# crate's own `detail.rs`, with the decoy trait declared in a SIBLING FILE of
+# that same crate, leaves `pub(crate) fn launder(d: &impl GatedDetail) ->
+# String` in the sanctioned set and the whole scan green — verified by
+# execution, zero findings. (The bridge is unaffected: its `GatedDetail` is
+# `pub(crate)` and SEALED, so no other crate can implement the REAL trait;
+# what the decoy exploits is that `SAFE_PARAM_TYPES` matches the SPELLING.)
+# That is parity with a documented blind spot rather than a regression, but
+# an unstated limit on a brand-new security control is how the next reader
+# stops checking, so it is written down. Tracked by #512 together with
+# `LOCAL_DETAIL_TYPE_RE`'s identical residual — one root cause, one issue.
+LOCAL_GATED_DETAIL_TRAIT_RE = re.compile(r"\btrait\s+GatedDetail\b")
+
 # A `mod name {` block header, anchored at the END of the text preceding a
 # `{`. `non_module_block_spans` uses it to tell the ONE kind of brace block
 # that does not change an item's "is this declared at module scope?" status
@@ -899,9 +953,138 @@ def discover_error_struct_names(raw: str) -> frozenset[str]:
     return frozenset(name for name, _, _ in discover_error_struct_declarations(raw))
 
 
+def discover_local_detail_decoys(
+    sources: list[tuple[str, str]], exempt_label: str | None
+) -> frozenset[str]:
+    """Bare gated-carve-out type spellings SHADOWED by a locally-declared
+    `struct|enum|union|type` of the same name, anywhere in `sources` OTHER
+    THAN `exempt_label` (#500 fix round 2, review finding "Important 2").
+
+    `is_bridge_field_safe`'s gated-field carve-out (rule E2) matches a
+    field's declared type by SPELLING alone — `Detail` under a
+    `GATED_FIELD_NAMES` name is accepted on the strength of the bridge's
+    OWN `pub struct Detail(String)` in `error/detail.rs`, whose private
+    inner field makes a runtime `String` unrepresentable there. That
+    guarantee holds only while "a field spelled `Detail`" and "the type
+    `secretary_ffi_bridge::error::detail::Detail`" are the same thing. A
+    SECOND, same-spelled declaration anywhere else in the root —
+
+        pub struct Detail(pub String);      // any OTHER bridge file
+        ...
+        Boom { detail: Detail },            // credited identically.
+                                             // Zero findings before this fix.
+
+    — is textually indistinguishable from the real one to a spelling-only
+    match, and rule E3's OWN `SAFE_PARAM_TYPES`/`LOCAL_DETAIL_TYPE_RE` check
+    (`sanctioned_constructor_names`) does not help here: that check only
+    ever inspects the ONE `detail_src` file (the root's sanctioned module),
+    never the rest of the root, because its job is "is a CONSTRUCTOR call
+    sanctioned", not "is this DECLARATION's type spelling trustworthy".
+
+    Reuses `LOCAL_DETAIL_TYPE_RE` rather than a second, independently-
+    maintained matcher — the two rules drifted out of step exactly once
+    already (#500 fix round 1 closed E3's copy of this hole; this closes
+    E2's). `exempt_label` is the root's own `detail_module_rel` (or `None`
+    for a root with none, e.g. `core`): the bridge's OWN legitimate
+    declaration must not shadow itself. STRICT `#[cfg(test)]` exclusion
+    (`discovery_cfg_test_spans_strict`), not the permissive `cfg_test_spans`
+    `discover_declarations` uses for its CREDIT registries — this registry
+    DENIES, so an over-matched skip here would be fail-OPEN (hide a real
+    decoy) rather than fail-closed (drop a credit), the same STRICT-vs-
+    permissive split `scan_bridge_plain_declarations` already draws for its
+    own (E2) sweep. `non_module_block_spans` excludes a decoy declared
+    inside a `fn` body — a local item, in scope only where it is written,
+    not a root-wide shadow — mirroring `find_type_aliases`'s identical
+    exclusion for an associated `type`.
+
+    Returns `frozenset({"Detail"})` the moment ANY qualifying match is
+    found (short-circuits — `LOCAL_DETAIL_TYPE_RE` names exactly one
+    spelling today), else `frozenset()`.
+
+    LIMITS (#500 fix round 2 review) — FIVE shapes this function does NOT
+    catch (the header said "four" until final review counted the list
+    below; the two places that cite this docstring's count both said five
+    and were right — `check-error-payload-hygiene.py`'s E2 bullet in THE
+    BRIDGE RULES, and its RULE-E2 bullet in LIMITS. The "THE #500 NEWTYPE"
+    section states no shape count at all and is NOT one of them, contrary
+    to the first version of this parenthetical). The first four are
+    defence-in-depth gaps rather than live leaks: in each of those,
+    rule E3's construction-site gate independently denies the actual
+    CONSTRUCTION of a value from the decoy, because the decoy's own
+    constructor (if any) still has to survive `SAFE_PARAM_TYPES`/
+    `sanctioned_constructor_names`'s signature gate to be usable at all —
+    verified by execution, not merely reasoned about.
+
+    1. **Decoy and the field referencing it both inside `#[cfg(test)]`.**
+       Excluded on purpose (see above) — the decoy is non-shippable code,
+       so nothing crosses the FFI regardless of what E2 does with it here.
+    2. **Decoy and the referencing field both inside ONE function body.**
+       `non_module_block_spans` excludes it on purpose too — a fn-local
+       `struct`/`enum`/`union`/`type` cannot be named from outside that
+       function, so it cannot reach an FFI error type's field declaration
+       (which is always module-scope) regardless of this function's
+       verdict.
+    3. **Decoy declared in a `mod` NESTED INSIDE the exempt file itself**
+       (`error/detail.rs`'s own submodule, e.g. `mod inner { pub struct
+       Detail(pub String); }`). `exempt_label` is a PATH match on the
+       whole FILE, not a scope match on the module inside it — a
+       genuinely different type at `crate::error::detail::inner::Detail`
+       is invisible to a spelling-only carve-out exactly like an IMPORTED
+       decoy is (see the module's own RESIDUAL paragraph on
+       `LOCAL_DETAIL_TYPE_RE`'s `use`-blind spot): reaching it from a
+       gated field elsewhere in the root needs a `use`, which this
+       function does not resolve any more than `SAFE_PARAM_TYPES` does.
+    4. **`pub struct r#Detail(pub String);`** — a RAW IDENTIFIER. This
+       compiles (rustc-verified), and `r#Detail` names the exact same
+       identifier `Detail` does as far as rustc's name resolution is
+       concerned — the `r#` prefix is purely an ESCAPE for using a
+       keyword-shaped token as an identifier, invisible to anything that
+       actually resolves the name. `LOCAL_DETAIL_TYPE_RE` is a TEXTUAL
+       match on the four bare keyword-plus-`Detail` shapes and has no
+       notion of the `r#` escape, so it does not fire on this spelling —
+       the one shape here that would surprise a reader, since the claim
+       above is specifically about NAMES, and rustc agrees this name
+       matches.
+    5. **AN IMPORT, in BOTH its spellings** — the renaming
+       `use std::string::String as Detail;` and the plain
+       `use some_other_crate::Detail;`. This is the residual that BREAKS
+       the pattern of 1-4, and it is stated last because it is the only
+       one where rule E3's construction-site gate does NOT independently
+       deny: verified by execution, `use std::string::String as Detail;`
+       in a bridge file, a new `#[error("{detail}")] Boom { detail:
+       Detail }`, and an E3 arm-4 parameter re-wrap
+       (`fn f(detail: Detail) -> E { E::Boom { detail: detail } }`)
+       together produce ZERO findings — arm 4 accepts the same-name
+       re-wrap precisely because it trusts the DECLARED type, which here
+       is a `String` wearing the newtype's name. (The FIELD SHORTHAND
+       spelling `E::Boom { detail }`, which earlier drafts showed here,
+       also produces zero — but by never becoming a candidate at all
+       rather than by arm 4 accepting it. Same result, different
+       mechanism; the attribution is what was wrong.) An import DECLARES
+       nothing in
+       this root, so no textual matcher sited on declarations can see it;
+       closing it needs real name resolution. This is the same aliasing
+       blind spot rule E4 records for `GatedDetail`, and it is the reason
+       the entry point's "THE #500 NEWTYPE" section states the compiler
+       guarantee as PER DECLARATION rather than per root. Tracked by
+       #512 (this and the `GatedDetail` twin, one root cause): the 27 fields
+       that ARE the bridge's real `Detail` cannot hold a `String`; a
+       28th, newly written against an aliased import, can.
+    """
+    for label, raw in sources:
+        if exempt_label is not None and label.replace("\\", "/") == exempt_label:
+            continue
+        view = discovery_view(raw)
+        excluded = non_module_block_spans(view) + discovery_cfg_test_spans_strict(raw)
+        for m in LOCAL_DETAIL_TYPE_RE.finditer(view):
+            if not _inside(m.start(), excluded):
+                return frozenset({"Detail"})
+    return frozenset()
+
+
 def _discover_tier_inputs(
     sources: list[tuple[str, str]],
-) -> tuple[frozenset[str], dict[str, str], frozenset[str]]:
+) -> tuple[frozenset[str], dict[str, str], frozenset[str], frozenset[str]]:
     """`run_real_scan`'s Pass 1, factored out so it can run ONCE PER SCAN
     ROOT (#480): discover every thiserror enum, type alias, and const across
     THE WHOLE `sources` list before classifying anything — a field in
@@ -916,8 +1099,29 @@ def _discover_tier_inputs(
     means an unrelated, later-sorted file adding e.g. `type Foo = [u8; 16];`
     can silently launder an EXISTING, unsafe `type Foo = String;` defined
     elsewhere into a pass — proven live in review. A colliding spelling is
-    dropped from the resolvable set entirely, so a lookup against it
-    default-denies instead of guessing which definition was "real."
+    dropped from the RESOLVABLE set (the returned `aliases` dict) entirely,
+    so a TIER-3 lookup against it default-denies instead of guessing which
+    definition was "real."
+
+    The 4th return value, `alias_candidate_names`, is the RAW spelling set
+    BEFORE that collision-drop — every name EVER seen as a `type X = Y;`
+    LHS anywhere in `sources`, resolved or not (#500 fix round 2, review
+    finding "Important 1"). This is deliberately NOT the same set as
+    `frozenset(aliases)`: collision-drop is fail-CLOSED for tier-3 credit
+    (a dropped name loses a resolution, denying more) but was found to be
+    fail-OPEN when the SAME resolved dict was reused as a gated-field-
+    carve-out DENY trigger (`is_bridge_field_safe`'s alias-shadow check,
+    #500 fix round 1) — a colliding name resolves to NOTHING, so "member of
+    the resolved dict" stops meaning "shadowed" the moment a second,
+    conflicting `type Detail = ...;` appears anywhere else in the root,
+    silently un-denying the very spelling the collision makes LESS
+    trustworthy, not more. Verified by execution: the fix-round-1 fixture
+    alone produced 2 findings; adding a second bridge-root file containing
+    only `type Detail = Vec<u8>;` took it to zero. A shadow claim is "this
+    spelling means more than one thing here", which the RAW candidate set
+    establishes regardless of collision; the RESOLVED dict answers a
+    different question ("what does it unambiguously resolve to") that only
+    tier-3 credit needs.
 
     `const` names get the SAME collision-drop, applied by `resolve_consts`
     over the flat cross-file declaration list: a bare spelling this guard
@@ -965,7 +1169,56 @@ def _discover_tier_inputs(
         if len(rhs_set) == 1
     }
     consts = resolve_consts(declared_consts, frozenset(const_shadow_names))
-    return local_error_enums, aliases, consts
+    alias_candidate_names = frozenset(alias_candidates) | _deny_polarity_alias_names(
+        sources
+    )
+    return local_error_enums, aliases, consts, alias_candidate_names
+
+
+def _deny_polarity_alias_names(
+    sources: list[tuple[str, str]],
+) -> frozenset[str]:
+    """Alias spellings for the SHADOW (deny) use, under the STRICT cfg gate.
+
+    #515 C4 — the #496 permissive-skip bug, on a consumer #496 did not
+    reach. `alias_candidate_names` was harvested entirely from
+    `discover_declarations`, whose exclusion list is
+    `non_module_block_spans(src) + cfg_test_spans(src)` — the PERMISSIVE
+    `CFG_TEST_RE`, which matches `\\btest\\b` anywhere and therefore also
+    swallows `#[cfg(not(test))]` and every `#[cfg_attr(test, ...)]`.
+
+    That is correct for a CREDIT registry, where an over-matched skip
+    merely drops a credit (fail-closed). #500 then reused the same set with
+    INVERTED polarity, as `run_real_scan`'s shadow trigger — and there an
+    over-matched skip HIDES A SHADOW, which is fail-OPEN. Verified by
+    execution: on a wrapper root,
+
+        pub struct SecretHolder(pub std::string::String);
+        #[cfg(not(test))]
+        type String = SecretHolder;          // <- skipped by CFG_TEST_RE
+        ...  Boom { detail: String },        // credited by E2's carve-out
+        pub fn launder(detail: String) -> E { E::Boom { detail } }
+
+    scanned with ZERO findings; deleting only the `#[cfg(not(test))]` line
+    made the same file FAIL. `#[cfg_attr(test, allow(dead_code))]` behaved
+    identically.
+
+    Computed here as an INDEPENDENT second pass rather than by changing
+    `discover_declarations`' own exclusion list, because that list is
+    load-bearing for the credit registries in the opposite direction: making
+    it strict there would start crediting `#[cfg(test)]` declarations, which
+    is the fail-open mistake in mirror image. Two polarities, two spans —
+    the same split `discover_local_detail_decoys` already draws.
+
+    Unioned into the candidate set, never subtracted from it, so this can
+    only ever ADD shadows: fail-closed by construction.
+    """
+    names: set[str] = set()
+    for _label, raw in sources:
+        view = discovery_view(raw)
+        excluded = non_module_block_spans(view) + discovery_cfg_test_spans_strict(raw)
+        names.update(find_type_aliases(view, excluded))
+    return frozenset(names)
 
 
 def discover_scanned_error_type_names(

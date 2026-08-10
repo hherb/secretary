@@ -10,6 +10,7 @@
 //! `namespace/repair.rs` length-check every field (16/32/32/16-each bytes)
 //! before converting to `secretary_ffi_bridge::FfiApprovedWidening`.
 
+use crate::detail;
 /// One user-approved crash-repair recipient widening. uniffi dictionary
 /// counterpart of [`secretary_ffi_bridge::FfiApprovedWidening`]. Carries
 /// unvalidated foreign input — see module docs.
@@ -43,7 +44,7 @@ pub struct AddedRecipient {
 impl From<secretary_ffi_bridge::FfiAddedRecipient> for AddedRecipient {
     fn from(a: secretary_ffi_bridge::FfiAddedRecipient) -> Self {
         Self {
-            uuid_hex: a.uuid_hex,
+            uuid_hex: detail::project(a.uuid_hex),
             display_name: a.display_name,
             card_fingerprint_hex: a.card_fingerprint_hex,
         }
@@ -69,7 +70,7 @@ pub struct WideningReport {
 impl From<secretary_ffi_bridge::FfiWideningReport> for WideningReport {
     fn from(w: secretary_ffi_bridge::FfiWideningReport) -> Self {
         Self {
-            block_uuid_hex: w.block_uuid_hex,
+            block_uuid_hex: detail::project(w.block_uuid_hex),
             block_name: w.block_name,
             file_fingerprint_hex: w.file_fingerprint_hex,
             committed_fingerprint_hex: w.committed_fingerprint_hex,
@@ -96,11 +97,12 @@ impl From<secretary_ffi_bridge::FfiRepairPreview> for RepairPreview {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use secretary_ffi_bridge::Detail;
 
     #[test]
     fn added_recipient_projection_round_trip() {
         let bridge = secretary_ffi_bridge::FfiAddedRecipient {
-            uuid_hex: "0102-uuid".to_string(),
+            uuid_hex: Detail::for_test("0102-uuid"),
             display_name: "Carol".to_string(),
             card_fingerprint_hex: "abcd".to_string(),
         };
@@ -113,12 +115,12 @@ mod tests {
     #[test]
     fn widening_report_projection_round_trip() {
         let bridge = secretary_ffi_bridge::FfiWideningReport {
-            block_uuid_hex: "block-uuid".to_string(),
+            block_uuid_hex: Detail::for_test("block-uuid"),
             block_name: "Passwords".to_string(),
             file_fingerprint_hex: "ff00".to_string(),
             committed_fingerprint_hex: "cc11".to_string(),
             added: vec![secretary_ffi_bridge::FfiAddedRecipient {
-                uuid_hex: "0102-uuid".to_string(),
+                uuid_hex: Detail::for_test("0102-uuid"),
                 display_name: "Carol".to_string(),
                 card_fingerprint_hex: "abcd".to_string(),
             }],
@@ -143,7 +145,7 @@ mod tests {
     fn repair_preview_projection_round_trip_nonempty() {
         let bridge = secretary_ffi_bridge::FfiRepairPreview {
             widenings: vec![secretary_ffi_bridge::FfiWideningReport {
-                block_uuid_hex: "block-uuid".to_string(),
+                block_uuid_hex: Detail::for_test("block-uuid"),
                 block_name: "Passwords".to_string(),
                 file_fingerprint_hex: "ff00".to_string(),
                 committed_fingerprint_hex: "cc11".to_string(),

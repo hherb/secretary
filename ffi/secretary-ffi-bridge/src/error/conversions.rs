@@ -45,6 +45,7 @@ impl From<FfiUnlockError> for FfiVaultError {
 #[cfg(test)]
 mod tests {
     use super::{FfiUnlockError, FfiVaultError};
+    use crate::error::detail::Detail;
 
     #[test]
     fn vault_error_display_strings_mirror_unlock_error_byte_identical() {
@@ -62,11 +63,11 @@ mod tests {
         );
         assert_eq!(
             FfiUnlockError::InvalidMnemonic {
-                detail: "test".to_string()
+                detail: Detail::for_test("test")
             }
             .to_string(),
             FfiVaultError::InvalidMnemonic {
-                detail: "test".to_string()
+                detail: Detail::for_test("test")
             }
             .to_string(),
         );
@@ -76,11 +77,11 @@ mod tests {
         );
         assert_eq!(
             FfiUnlockError::CorruptVault {
-                detail: "test".to_string()
+                detail: Detail::for_test("test")
             }
             .to_string(),
             FfiVaultError::CorruptVault {
-                detail: "test".to_string()
+                detail: Detail::for_test("test")
             }
             .to_string(),
         );
@@ -101,22 +102,22 @@ mod tests {
             FfiVaultError::WrongMnemonicOrCorrupt,
         ));
         let inv = FfiVaultError::from(FfiUnlockError::InvalidMnemonic {
-            detail: "bad".to_string(),
+            detail: Detail::for_test("bad"),
         });
         let FfiVaultError::InvalidMnemonic { detail } = inv else {
             panic!("expected InvalidMnemonic, got {inv:?}");
         };
-        assert_eq!(detail, "bad");
+        assert_eq!(detail.as_str(), "bad");
         assert!(matches!(
             FfiVaultError::from(FfiUnlockError::VaultMismatch),
             FfiVaultError::VaultMismatch,
         ));
         let corrupt = FfiVaultError::from(FfiUnlockError::CorruptVault {
-            detail: "x".to_string(),
+            detail: Detail::for_test("x"),
         });
         let FfiVaultError::CorruptVault { detail } = corrupt else {
             panic!("expected CorruptVault, got {corrupt:?}");
         };
-        assert_eq!(detail, "x");
+        assert_eq!(detail.as_str(), "x");
     }
 }

@@ -17,6 +17,7 @@
 //! because a `get_all` `Vec` getter clones the field out to Python and
 //! these types are output-only (never extracted from Python).
 
+use crate::detail;
 use pyo3::prelude::*;
 use zeroize::Zeroize;
 
@@ -41,7 +42,7 @@ pub struct AddedRecipient {
 impl From<secretary_ffi_bridge::FfiAddedRecipient> for AddedRecipient {
     fn from(a: secretary_ffi_bridge::FfiAddedRecipient) -> Self {
         Self {
-            uuid_hex: a.uuid_hex,
+            uuid_hex: detail::project(a.uuid_hex),
             display_name: a.display_name,
             card_fingerprint_hex: a.card_fingerprint_hex,
         }
@@ -79,7 +80,7 @@ pub struct WideningReport {
 impl From<secretary_ffi_bridge::FfiWideningReport> for WideningReport {
     fn from(w: secretary_ffi_bridge::FfiWideningReport) -> Self {
         Self {
-            block_uuid_hex: w.block_uuid_hex,
+            block_uuid_hex: detail::project(w.block_uuid_hex),
             block_name: w.block_name,
             file_fingerprint_hex: w.file_fingerprint_hex,
             committed_fingerprint_hex: w.committed_fingerprint_hex,

@@ -55,7 +55,9 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         // Genuine cryptographic / integrity failures → VaultCorrupt.
         FfiVaultError::CorruptVault { detail }
         | FfiVaultError::SaveCryptoFailure { detail }
-        | FfiVaultError::CardDecodeFailure { detail } => AppError::VaultCorrupt { detail },
+        | FfiVaultError::CardDecodeFailure { detail } => AppError::VaultCorrupt {
+            detail: detail.into_string(),
+        },
 
         // vault.toml ↔ identity.bundle.enc mismatch is a corruption-class
         // failure from the user's perspective: the on-disk state is
@@ -76,7 +78,9 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         // this with the path-aware VaultPathNotFound / VaultPathNotAVault
         // construction at the boundary; here we fold to the generic Io
         // bucket so any pre-Task-4 code path surfaces something coherent.
-        FfiVaultError::FolderInvalid { detail } => AppError::Io { detail },
+        FfiVaultError::FolderInvalid { detail } => AppError::Io {
+            detail: detail.into_string(),
+        },
 
         // Block-lookup miss. Reachable in D.1.1 if a caller passes a
         // stale block UUID to read_block (e.g. between a settings-block
@@ -93,7 +97,7 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         // can react (e.g. the record was deleted under it). The uuid hex is
         // non-secret (a caller-minted UUID) and crosses the seam.
         FfiVaultError::RecordNotFound { uuid_hex } => AppError::RecordNotFound {
-            record_uuid_hex: uuid_hex,
+            record_uuid_hex: uuid_hex.into_string(),
         },
 
         // Restore precondition: the UUID has both a live and a trashed entry.
@@ -105,14 +109,14 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         // into `block_uuid_hex` is exact — NOT a prose message mislabeled as a
         // UUID. If that bridge mapping ever changes, this relabel breaks.
         FfiVaultError::BlockUuidAlreadyLive { detail } => AppError::BlockRestoreConflict {
-            block_uuid_hex: detail,
+            block_uuid_hex: detail.into_string(),
         },
 
         // Restore precondition: no TrashEntry or file exists for this UUID.
         // Typed variant so the UI can distinguish "already restored" from
         // corruption. Same bridge contract as above: `detail` is the bare hex.
         FfiVaultError::BlockNotInTrash { detail } => AppError::TrashEntryNotFound {
-            block_uuid_hex: detail,
+            block_uuid_hex: detail.into_string(),
         },
 
         // #399 Task 8: restore precondition — the TrashEntry is marked
@@ -120,7 +124,7 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         // UI can tell "permanently deleted" apart from "already restored".
         // Same bridge contract as above: `detail` is the bare hex.
         FfiVaultError::BlockPurged { detail } => AppError::BlockPurged {
-            block_uuid_hex: detail,
+            block_uuid_hex: detail.into_string(),
         },
 
         // Block-share authorization failures and recipient table mismatches,
@@ -134,17 +138,21 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         FfiVaultError::CannotRevokeOwner => AppError::CannotRevokeOwner,
         FfiVaultError::MissingRecipientCard { .. } => AppError::MissingRecipientCard,
         FfiVaultError::ContactAlreadyExists { uuid_hex } => AppError::ContactAlreadyExists {
-            contact_uuid_hex: uuid_hex,
+            contact_uuid_hex: uuid_hex.into_string(),
         },
         FfiVaultError::ContactNotFound { uuid_hex } => AppError::ContactNotFound {
-            contact_uuid_hex: uuid_hex,
+            contact_uuid_hex: uuid_hex.into_string(),
         },
         FfiVaultError::CannotDeleteOwnerContact => AppError::CannotDeleteOwnerContact,
         FfiVaultError::SyncStateVaultMismatch => AppError::SyncStateVaultMismatch,
-        FfiVaultError::SyncStateCorrupt { detail } => AppError::SyncStateCorrupt { detail },
+        FfiVaultError::SyncStateCorrupt { detail } => AppError::SyncStateCorrupt {
+            detail: detail.into_string(),
+        },
         FfiVaultError::SyncEvidenceStale => AppError::SyncEvidenceStale,
         FfiVaultError::SyncInProgress => AppError::SyncInProgress,
-        FfiVaultError::SyncFailed { detail } => AppError::SyncFailed { detail },
+        FfiVaultError::SyncFailed { detail } => AppError::SyncFailed {
+            detail: detail.into_string(),
+        },
         // The committed decisions did not cover the recomputed veto set (UI bug
         // or a race against a concurrent change). Typed variant so the UI can
         // distinguish "couldn't apply your choices, retry" from a generic sync
@@ -156,7 +164,9 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         // open_with_device_secret / remove_device_slot surfaces are wired in.
         FfiVaultError::DeviceSlotNotFound => AppError::DeviceSlotNotFound,
         FfiVaultError::WrongDeviceSecretOrCorrupt => AppError::WrongDeviceSecret,
-        FfiVaultError::DeviceUuidMismatch { detail } => AppError::VaultCorrupt { detail },
+        FfiVaultError::DeviceUuidMismatch { detail } => AppError::VaultCorrupt {
+            detail: detail.into_string(),
+        },
 
         // Folder-create precondition (iOS create/import Slice 1). The bridge
         // variant is path-less, exactly like `FolderInvalid` above. Desktop's
@@ -172,9 +182,9 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         // #374: crash residue `repair_vault` may be able to adopt. Typed
         // variant so the frontend can offer "Repair now?" instead of a
         // generic corruption message.
-        FfiVaultError::VaultNeedsRepair { block_uuid_hex } => {
-            AppError::VaultNeedsRepair { block_uuid_hex }
-        }
+        FfiVaultError::VaultNeedsRepair { block_uuid_hex } => AppError::VaultNeedsRepair {
+            block_uuid_hex: block_uuid_hex.into_string(),
+        },
 
         // #374: repair_vault was attempted and refused to adopt a block
         // (fail-closed). `detail` names the reason and is user-facing —
@@ -183,8 +193,8 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
             block_uuid_hex,
             detail,
         } => AppError::RepairRejected {
-            block_uuid_hex,
-            detail,
+            block_uuid_hex: block_uuid_hex.into_string(),
+            detail: detail.into_string(),
         },
     }
 }

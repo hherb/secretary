@@ -144,6 +144,20 @@ pub use edit::{
     append_record, create_block, edit_record, move_record, rename_block, resurrect_record,
     tombstone_record, RecordContent,
 };
+// `Detail` is re-exported out of the `pub(crate) mod detail` so downstream
+// crates can NAME and READ one (`as_str` / `into_string` / `Display`) while
+// remaining unable to CONSTRUCT one — the private inner field is the whole
+// mechanism (#500).
+//
+// That last clause holds OUTSIDE a `test-support` build. With the feature on
+// — which `ffi-py`, `ffi-uniffi` and `desktop` all request from
+// `[dev-dependencies]`, so it IS on during `cargo test` — `Detail::for_test`
+// is `pub` and those crates' tests do construct `Detail`s with it. Under
+// resolver v2 it is absent from `cargo build --release`; see
+// `error/detail.rs` for the full statement of that build-configuration
+// guarantee and `scripts/check-test-support-placement.py` for its
+// enforcement (#515 I4).
+pub use error::detail::Detail;
 pub use error::{FfiUnlockError, FfiVaultError};
 pub use identity::UnlockedIdentity;
 pub use purge::{empty_trash, purge_block, EmptyTrashReport, PurgeReport};

@@ -42,10 +42,10 @@ use crate::session::VaultSession;
 fn map_record_delete_error(e: FfiVaultError) -> AppError {
     match e {
         FfiVaultError::BlockNotFound { uuid_hex } => AppError::BlockNotFound {
-            block_uuid_hex: uuid_hex,
+            block_uuid_hex: uuid_hex.into_string(),
         },
         FfiVaultError::RecordNotFound { uuid_hex } => AppError::RecordNotFound {
-            record_uuid_hex: uuid_hex,
+            record_uuid_hex: uuid_hex.into_string(),
         },
         other => {
             tracing::warn!(?other, "record tombstone/resurrect failed");

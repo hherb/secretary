@@ -42,7 +42,7 @@ pub fn read_block_impl(
                 // BlockNotFound rather than the generic Internal that the shared
                 // map_ffi_error uses (it can't know the caller's hex).
                 FfiVaultError::BlockNotFound { uuid_hex } => AppError::BlockNotFound {
-                    block_uuid_hex: uuid_hex,
+                    block_uuid_hex: uuid_hex.into_string(),
                 },
                 other => AppError::from(other),
             },
@@ -84,7 +84,7 @@ pub fn reveal_field_impl(
         let output =
             bridge_read_block(&u.identity, &u.manifest, &uuid, false).map_err(|e| match e {
                 FfiVaultError::BlockNotFound { uuid_hex } => AppError::BlockNotFound {
-                    block_uuid_hex: uuid_hex,
+                    block_uuid_hex: uuid_hex.into_string(),
                 },
                 other => AppError::from(other),
             })?;

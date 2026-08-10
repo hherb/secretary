@@ -13,8 +13,13 @@ dependency order, alongside `controls/*`, consuming
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
+import io
+import re
 import sys
 
+from payload_guard.config import DETAIL_MODULE_REL, REPO_ROOT
 from payload_guard.controls.bridge import (
     BRIDGE_NEGATIVE_CONTROLS, BRIDGE_POSITIVE_CONTROLS, SELF_TEST_DETAIL_SRC,
 )
@@ -23,18 +28,20 @@ from payload_guard.controls.wrapper import (
     WRAPPER_NEGATIVE_CONTROLS, WRAPPER_POSITIVE_CONTROLS,
 )
 from payload_guard.discovery import (
-    discover_declarations, discover_scanned_error_type_names, foreign_use_names,
-    resolve_consts,
+    _discover_tier_inputs, discover_declarations, discover_local_detail_decoys,
+    discover_scanned_error_type_names, foreign_use_names, resolve_consts,
 )
 from payload_guard.lexer import LEXER_SAMPLE, discovery_view, lex_spans, strip_comments
-from payload_guard.roots import SCAN_ROOTS
+from payload_guard.roots import SCAN_ROOTS, ScanRoot
 from payload_guard.rules.e1 import scan_source
 from payload_guard.rules.e2 import scan_bridge_plain_declarations
 from payload_guard.rules.e3 import (
-    sanctioned_constructor_names, scan_bridge_construction_sites,
+    SAFE_PARAM_TYPES, _ctor_params_are_safe, sanctioned_constructor_names,
+    scan_bridge_construction_sites,
 )
 from payload_guard.rules.e4 import scan_bridge_gated_detail_impls
 from payload_guard.rules.e5 import scan_wrapper_format_confinement
+from payload_guard.scan import run_real_scan
 from payload_guard.types import Finding
 
 # `(variant, field, field_type, field_type_prefix)` claims a POSITIVE control
@@ -202,11 +209,25 @@ def scan_control(src: str) -> list[Finding]:
     discovery pass — no real file path, hence no `path_label` — exercises the
     real discovery, collision-drop and import-shadow code paths rather than a
     hardcoded name list.
+
+    `gated_field_types` is read off the `core` `ScanRoot` (`_ROOTS_BY_LABEL`,
+    defined below) rather than hardcoded as `frozenset()` here — same
+    discipline the module comment above `_ROOTS_BY_LABEL` gives for
+    `allow_field_access`: a control corpus that hardcodes the very value it
+    exists to test cannot catch a `roots.py` edit that changes it. `core`'s
+    `bridge_mode=False` means this value is never actually consulted by
+    `is_bridge_field_safe`, but `scan_source` requires it regardless (#500).
+    `shadowed_type_names` (#500 fix round 2) is the SAME story: `core`'s
+    `gated_field_types` is always empty, so nothing can ever be shadowed
+    OUT of it, and `frozenset()` here is passed for the same
+    never-consulted-under-`bridge_mode=False` reason.
     """
     enums, aliases, declared_consts, shadows = discover_declarations(src)
     consts = resolve_consts(declared_consts, shadows)
     return scan_source(
-        "<self-test>", src, enums, aliases, consts, foreign_use_names(src)
+        "<self-test>", src, enums, aliases, consts, foreign_use_names(src),
+        gated_field_types=_ROOTS_BY_LABEL["core"].gated_field_types,
+        shadowed_type_names=frozenset(),
     )
 
 
@@ -217,10 +238,11 @@ def scan_control(src: str) -> list[Finding]:
 # `scan_wrapper_control`: a control corpus that hardcodes the very flag it
 # exists to test cannot catch a `roots.py` edit that changes it. Mutating
 # `ScanRoot.allow_field_access` must be OBSERVABLE through `--self-test` —
-# that is exactly what `BP43` (bridge, must stay denied) and `WN1` (wrapper,
-# must stay accepted) exist to prove, and neither proves anything if the
-# value under test is a literal sitting beside them instead of the one
-# `run_real_scan` itself reads.
+# that is exactly what `BP43` (bridge, must stay denied) and `WP7` (wrapper,
+# must stay denied too now that the flag is OFF everywhere — it was `WN1`,
+# "must stay accepted", until #497/#500 retired shape 5) exist to prove, and
+# neither proves anything if the value under test is a literal sitting beside
+# them instead of the one `run_real_scan` itself reads.
 _ROOTS_BY_LABEL = {r.label: r for r in SCAN_ROOTS}
 
 
@@ -242,26 +264,55 @@ _ROOTS_BY_LABEL = {r.label: r for r in SCAN_ROOTS}
 #     than merely declared. This is the discipline the `_ROOTS_BY_LABEL`
 #     comment above already states for `allow_field_access`, carried to the
 #     other four.
-_EXPECTED_ROOT_FLAGS: dict[str, dict[str, bool]] = {
+#
+# `gated_field_types` (#500) joins the table as a SIXTH flag, and it is not
+# a `bool` — it is `ScanRoot`'s per-root frozenset of type spellings E2's
+# carve-out accepts. `_check_root_rule_flags` used to compare with `is not`,
+# which is correct only by ACCIDENT for the five booleans (`True`/`False`
+# are interned singletons, so `is not` and `!=` agree for them) — it is
+# WRONG for a frozenset: two separately-constructed frozensets with equal
+# content are never the same object, so `is not` would report every root's
+# `gated_field_types` as a mismatch even when it exactly matches the
+# reviewed value below (verified: `frozenset({"x"}) is frozenset({"x"})` is
+# `False` in CPython). Fixed to `!=`, which is correct for both.
+# SIBLING PIN: `_WRAPPER_AGREEMENT_FLAGS_REVIEWED` (below) pins WHICH fields
+# the two wrapper roots must AGREE on; this table pins WHAT each root's value
+# is. They overlap — this table's per-root key set is already exactly those
+# seven flags, so a set-equality pin here could have replaced that literal
+# with no new text — and they are deliberately kept separate anyway: they fail
+# INDEPENDENTLY, and every fail-open bug found on this branch was one registry
+# being silently narrowed while another still looked right. Editing either
+# without considering the other is the mistake to avoid.
+_EXPECTED_ROOT_FLAGS: dict[str, dict[str, object]] = {
     "core": {
+        "owns_detail_type": False,
         "bridge_mode": False, "construction_sites": False,
         "gated_detail_impls": False, "format_confinement": False,
-        "allow_field_access": False,
+        "allow_field_access": False, "gated_field_types": frozenset(),
     },
     "bridge": {
+        "owns_detail_type": True,
         "bridge_mode": True, "construction_sites": True,
         "gated_detail_impls": True, "format_confinement": False,
         "allow_field_access": False,
+        # #500 (task 4): narrowed from {"String", "Detail"} now that every
+        # bridge declaration has moved off `String` — see roots.py.
+        "gated_field_types": frozenset({"Detail"}),
     },
+    # `allow_field_access` is False on BOTH wrapper roots as of #497/#500:
+    # E3 shape 5's four DTO pass-through sites all moved to
+    # `detail::project(...)`, leaving the acceptance with zero live sites.
     "ffi-py": {
+        "owns_detail_type": False,
         "bridge_mode": True, "construction_sites": True,
         "gated_detail_impls": False, "format_confinement": True,
-        "allow_field_access": True,
+        "allow_field_access": False, "gated_field_types": frozenset({"String"}),
     },
     "ffi-uniffi": {
+        "owns_detail_type": False,
         "bridge_mode": True, "construction_sites": True,
         "gated_detail_impls": False, "format_confinement": True,
-        "allow_field_access": True,
+        "allow_field_access": False, "gated_field_types": frozenset({"String"}),
     },
 }
 
@@ -287,7 +338,10 @@ def _check_root_rule_flags() -> list[str]:
     for root in SCAN_ROOTS:
         for flag, expected in _EXPECTED_ROOT_FLAGS[root.label].items():
             got = getattr(root, flag)
-            if got is not expected:
+            # `!=`, not `is not` (#500) — see the comment above
+            # `_EXPECTED_ROOT_FLAGS` for why identity comparison silently
+            # broke once a non-singleton value (`frozenset`) joined the table.
+            if got != expected:
                 failures.append(
                     f"SCAN ROOT FLAG: {root.label}.{flag} is {got}, reviewed "
                     f"value is {expected} — this flag decides whether a whole "
@@ -297,12 +351,69 @@ def _check_root_rule_flags() -> list[str]:
     return failures
 
 
-def _check_wrapper_roots_agree() -> list[str]:
+# Fields that are LEGITIMATELY per-crate and must NOT be compared between the
+# two wrapper roots: the root's own identity and the paths into its crate.
+# EVERYTHING ELSE must agree, and the list is DERIVED from `ScanRoot` rather
+# than spelled out (#500 fix round 2).
+#
+# It used to be a hardcoded 5-tuple whose comment claimed it covered "every
+# RULE-SELECTING flag: `scan_wrapper_control` now dispatches off all of them".
+# That claim decayed twice. `gated_field_types` (#500 Task 2) was never added
+# — the plan's parked minor P6 — and `owns_detail_type` (#500 fix round 1) was
+# dispatched on by `scan_wrapper_control` while missing here, so setting it
+# asymmetrically WITH `_EXPECTED_ROOT_FLAGS` updated to match left the
+# self-test green: the harness then ran strict (`_wrapper_flag`'s `all(...)`)
+# while the real scan ran permissive on the exempted root, and rule E3's
+# local-`Detail` decoy laundered unflagged there.
+#
+# Deriving inverts the default. A new `ScanRoot` field is compared unless
+# someone deliberately exempts it here, so forgetting is fail-CLOSED (a
+# spurious agreement failure) instead of fail-open (a silent divergence).
+# `_check_wrapper_agreement_is_live` proves the check actually fires for every
+# flag it claims to cover.
+_WRAPPER_AGREEMENT_EXEMPT = frozenset({"label", "path", "detail_module_rel"})
+
+# The reviewed answer to "which `ScanRoot` fields must the two wrapper roots
+# agree on". Duplicated from the derivation on purpose, exactly as
+# `_EXPECTED_ROOT_FLAGS` duplicates `roots.py`'s values: the derivation is the
+# MECHANISM and this is the REVIEW, and a check that reads only the mechanism
+# cannot notice the mechanism being narrowed.
+#
+# SIBLING PIN: `_EXPECTED_ROOT_FLAGS` (above) pins each root's VALUE for these
+# same seven flags, and its key set is already exactly this tuple — so this
+# literal could be derived from it. It is not, on purpose: two pins that fail
+# independently catch a single narrowed registry, which is the shape of every
+# fail-open bug found on this branch. Edit one, check the other.
+_WRAPPER_AGREEMENT_FLAGS_REVIEWED: tuple[str, ...] = (
+    "bridge_mode",
+    "gated_field_types",
+    "construction_sites",
+    "gated_detail_impls",
+    "format_confinement",
+    "owns_detail_type",
+    "allow_field_access",
+)
+
+
+def _wrapper_agreement_flags() -> tuple[str, ...]:
+    """Every `ScanRoot` field the two wrapper roots must agree on."""
+    return tuple(
+        f.name
+        for f in dataclasses.fields(ScanRoot)
+        if f.name not in _WRAPPER_AGREEMENT_EXEMPT
+    )
+
+
+def _check_wrapper_roots_agree(
+    roots: dict[str, ScanRoot] | None = None,
+) -> list[str]:
     """The design's premise (`payload_guard.roots` module docstring) is a
     single shared wrapper-root rule set, not two independently configurable
     ones — a control corpus that silently tolerated the two wrapper roots
-    drifting apart on `allow_field_access` would be testing less than it
-    claims to. This surfaces that disagreement as a NORMAL harness failure
+    drifting apart on any policy field would be testing less than it claims
+    to. The compared set is DERIVED (`_wrapper_agreement_flags`), not listed,
+    because the listed version fell behind twice. This surfaces that
+    disagreement as a NORMAL harness failure
     (review finding, task 9): the check used to be a bare `assert` inside
     `_wrapper_allow_field_access`, and `run_self_test` is not wrapped at its
     call site, so a real disagreement would have escaped as a raw Python
@@ -311,15 +422,10 @@ def _check_wrapper_roots_agree() -> list[str]:
     `check_view_invariants` / `check_bridge_key_distinctness`.
     """
     failures: list[str] = []
-    # Widened in #496 from `allow_field_access` alone to every RULE-SELECTING
-    # flag: `scan_wrapper_control` now dispatches off all of them, so a
-    # disagreement on any one makes "the wrapper-root rule set" ambiguous.
-    for flag in (
-        "bridge_mode", "construction_sites", "gated_detail_impls",
-        "format_confinement", "allow_field_access",
-    ):
+    roots = roots if roots is not None else _ROOTS_BY_LABEL
+    for flag in _wrapper_agreement_flags():
         values = {
-            label: getattr(_ROOTS_BY_LABEL[label], flag)
+            label: getattr(roots[label], flag)
             for label in ("ffi-py", "ffi-uniffi")
         }
         if len(set(values.values())) != 1:
@@ -327,6 +433,85 @@ def _check_wrapper_roots_agree() -> list[str]:
                 "WRAPPER ROOT AGREEMENT: ffi-py and ffi-uniffi disagree on "
                 f"{flag} ({values}) — scan_wrapper_control assumes one shared "
                 "wrapper-root rule set"
+            )
+    return failures
+
+
+def _perturb(value: object) -> object:
+    """A value guaranteed different from `value`, for the agreement probe.
+
+    Guaranteed different from the value it is GIVEN — which is ffi-py's — not
+    from ffi-uniffi's. So on a run where the two roots ALREADY disagree on a
+    bool, flipping ffi-py's makes them agree and this flag's probe reports a
+    spurious liveness failure beside the real agreement failure. Extra noise
+    on an already-failing run, never a missed one; not worth restructuring
+    the probe to avoid.
+    """
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, frozenset):
+        return frozenset(value | {"<probe>"})
+    if isinstance(value, str):
+        return value + "<probe>"
+    return object()
+
+
+def _check_wrapper_agreement_is_live() -> list[str]:
+    """`_check_wrapper_roots_agree` must actually FIRE for every field
+    `_wrapper_agreement_flags` claims to cover (#500 fix round 2).
+
+    This is the non-vacuity proof the hardcoded tuple never had, and the
+    reason it decayed twice unnoticed (see `_WRAPPER_AGREEMENT_EXEMPT`). It
+    perturbs ONE field at a time on a COPY of the two wrapper roots and
+    asserts the disagreement is reported and NAMES that field — so a future
+    edit that drops a field from the compared set, or exempts one, fails here
+    rather than silently widening what the two roots may disagree about.
+
+    Copies only: `SCAN_ROOTS` is never mutated, and `ScanRoot` is a frozen
+    dataclass, so `dataclasses.replace` is the only way to vary one anyway.
+    """
+    failures: list[str] = []
+    flags = _wrapper_agreement_flags()
+    # PIN the SET first. The per-flag probe below derives its list from the
+    # same function it is testing, so it can only prove that the fields
+    # CURRENTLY compared are live — it is structurally blind to a field being
+    # dropped from the set, which is the precise failure being fixed here
+    # (verified: adding `owns_detail_type` to `_WRAPPER_AGREEMENT_EXEMPT`
+    # leaves the probe loop green, because the loop never visits it). Pinning
+    # against a reviewed literal closes both directions: exempting a field, or
+    # `ScanRoot` gaining one nobody classified, fails until someone edits this
+    # tuple — the same review-checkpoint move `_EXPECTED_ROOT_FLAGS` and
+    # `STR_PARAM_CTOR_EXCEPTIONS` make for their own registries.
+    if set(flags) != set(_WRAPPER_AGREEMENT_FLAGS_REVIEWED):
+        failures.append(
+            "WRAPPER AGREEMENT SET: the wrapper roots are compared on "
+            f"{sorted(flags)}, reviewed set is "
+            f"{sorted(_WRAPPER_AGREEMENT_FLAGS_REVIEWED)} — a ScanRoot field "
+            "is compared unless deliberately exempted, so both adding a field "
+            "and exempting one are reviewed changes; update "
+            "_WRAPPER_AGREEMENT_FLAGS_REVIEWED in the same commit"
+        )
+    if not flags:
+        return failures + [
+            "WRAPPER AGREEMENT LIVENESS: _wrapper_agreement_flags() is EMPTY "
+            "— the agreement check would compare nothing and pass vacuously"
+        ]
+    for flag in flags:
+        base_py = _ROOTS_BY_LABEL["ffi-py"]
+        probe = {
+            "ffi-py": dataclasses.replace(
+                base_py, **{flag: _perturb(getattr(base_py, flag))}
+            ),
+            "ffi-uniffi": _ROOTS_BY_LABEL["ffi-uniffi"],
+        }
+        reported = _check_wrapper_roots_agree(probe)
+        if not any(flag in msg for msg in reported):
+            failures.append(
+                "WRAPPER AGREEMENT LIVENESS: the two wrapper roots were made "
+                f"to disagree on {flag!r} and _check_wrapper_roots_agree did "
+                "NOT report it — that field is dispatched on but unguarded, "
+                "which is exactly how owns_detail_type and gated_field_types "
+                "each slipped through"
             )
     return failures
 
@@ -395,28 +580,61 @@ def scan_bridge_control(
     `ScanRoot` (`_ROOTS_BY_LABEL["bridge"]`), not hardcoded — see the module-
     level comment above `_ROOTS_BY_LABEL` for why. It is `False` today, so
     every existing bridge control's behaviour is unchanged; `BP43` proves
-    shape 5 stays denied here even when a WRAPPER root grants it elsewhere.
+    shape 5 stays denied here. That used to read "even when a WRAPPER root
+    grants it elsewhere", which since #497/#500 describes a state that cannot
+    obtain — the flag is False on every root, and `WP7` pins the wrapper
+    denial.
+
+    Rule E2's `gated_field_types` (#500) is read the same way, off the same
+    `ScanRoot`: today `frozenset({"Detail"})` — narrowed from the migration-
+    duration `{"String", "Detail"}` by task 4 now that every bridge
+    declaration has moved off `String`, so a bridge control exercises the
+    NARROWED carve-out `is_bridge_field_safe` grants.
+
+    `shadowed_type_names` (#500 fix round 2) is derived from THIS control's
+    own fixture, the same self-contained-design discipline every other
+    input here follows: `frozenset(aliases)` — the discovered alias dict's
+    KEY SET is already the full candidate set regardless of collision for a
+    SINGLE source string (`find_type_aliases` silently keeps the LAST
+    right-hand side on a same-string redeclaration rather than dropping the
+    name, unlike the real cross-file scan's `alias_candidates`, but the KEY
+    is present either way — see
+    `check_cross_file_alias_collision_still_denies` (BP56) for the dedicated
+    cross-file collision check this single-string path cannot exercise) —
+    unioned with `discover_local_detail_decoys` over the SAME
+    fixture, exempting `root.detail_module_rel` so a control that sets
+    `path_label=DETAIL_MODULE_REL` to test the legitimate declaration is
+    not shadowed by its own fixture.
     """
     root = _ROOTS_BY_LABEL["bridge"]
     enums, aliases, declared_consts, shadows = discover_declarations(src)
     consts = resolve_consts(declared_consts, shadows)
     foreign = foreign_use_names(src)
+    shadowed_type_names = frozenset(aliases) | discover_local_detail_decoys(
+        [(path_label, src)], root.detail_module_rel
+    )
     # Every rule below dispatches off the SAME `ScanRoot` flags `run_real_scan`
     # reads (#496) — see `_EXPECTED_ROOT_FLAGS`. Calling them unconditionally
     # is what let E3/E4 be switched off tree-wide with the self-test green.
     found = scan_source(
         path_label, src, enums, aliases, consts, foreign,
         bridge_mode=root.bridge_mode,
+        gated_field_types=root.gated_field_types,
+        shadowed_type_names=shadowed_type_names,
     )
     if root.bridge_mode:
         found += scan_bridge_plain_declarations(
-            path_label, src, enums, aliases, foreign
+            path_label, src, enums, aliases, foreign,
+            gated_field_types=root.gated_field_types,
+            shadowed_type_names=shadowed_type_names,
         )
     if root.construction_sites:
         found += scan_bridge_construction_sites(
             path_label,
             src,
-            sanctioned_constructor_names(detail_src),
+            sanctioned_constructor_names(
+                detail_src, owns_detail_type=root.owns_detail_type
+            ),
             allow_field_access=root.allow_field_access,
         )
     if root.gated_detail_impls:
@@ -443,13 +661,25 @@ def scan_bridge_control(
 _WRAPPER_DETAIL_MODULE_REL_FOR_SELFTEST = _ROOTS_BY_LABEL["ffi-py"].detail_module_rel
 
 
+# Rule E2's `gated_field_types` (#500), read the same single-root way and for
+# the same reason: unlike `detail_module_rel`, the two wrapper roots' values
+# ARE meant to agree (`frozenset({"String"})`, no `Detail` — the wrapper
+# crates keep `String` because uniffi's UDL must project a `string` and PyO3
+# exceptions take a message), and that agreement is already pinned
+# independently by `_EXPECTED_ROOT_FLAGS`/`_check_root_rule_flags`, which
+# checks EACH wrapper root against the same literal — so picking one root's
+# value here does not weaken what is enforced elsewhere.
+_WRAPPER_GATED_FIELD_TYPES_FOR_SELFTEST = _ROOTS_BY_LABEL["ffi-py"].gated_field_types
+
+
 def scan_wrapper_control(
     src: str,
     path_label: str = "<self-test-wrapper>",
     detail_src: str = SELF_TEST_DETAIL_SRC,
 ) -> list[Finding]:
     """`scan_bridge_control`, but for a WRAPPER ROOT (#486): `bridge_mode=True`
-    plus rules E2/E3, with rule E3's `allow_field_access` (shape 5) turned ON,
+    plus rules E2/E3, with rule E3's `allow_field_access` (shape 5) read off
+    the roots rather than hardcoded — it is OFF everywhere since #497/#500 —
     plus rule E5 (`format!` confinement, task 11) — and NO rule E4 at all.
 
     `gated_detail_impls` is `False` on both wrapper `ScanRoot`s
@@ -464,32 +694,59 @@ def scan_wrapper_control(
 
     Rule E3's `allow_field_access` (shape 5) is read from BOTH wrapper
     `ScanRoot`s via `_wrapper_allow_field_access()`, not hardcoded — see the
-    module-level comment above `_ROOTS_BY_LABEL` for why. It is `True` today;
-    `WN1` proves the DTO pass-through stays accepted, and flipping either
-    wrapper root's flag to `False` in `roots.py` must make `WN1` fire.
+    module-level comment above `_ROOTS_BY_LABEL` for why. It is `False`
+    today (#497/#500: shape 5's four DTO pass-through sites all moved to
+    `detail::project(...)`, leaving the acceptance with no users); `WP7`
+    proves the DTO pass-through now DENIES, and flipping either wrapper
+    root's flag back to `True` in `roots.py` must make `WP7` STOP firing.
+    Both the value and the direction of that mutation are the reverse of
+    what this paragraph said before the flag was retired.
 
     Rule E5's `detail_module_rel` is read the same way, off ONE wrapper root
     (`_WRAPPER_DETAIL_MODULE_REL_FOR_SELFTEST`) — see that constant's
     comment for why one root suffices here.
+
+    Rule E2's `gated_field_types` (#500) is read the same single-root way,
+    off `_WRAPPER_GATED_FIELD_TYPES_FOR_SELFTEST` — today
+    `frozenset({"String"})`, unchanged by the #500 migration (see that
+    constant's comment for why the two wrapper roots' agreement is already
+    enforced elsewhere).
+
+    `shadowed_type_names` (#500 fix round 2) is derived from this control's
+    own fixture, same as `scan_bridge_control` — see that function's
+    docstring. A wrapper root's `gated_field_types` never contains `Detail`,
+    so a decoy `Detail` declaration can shadow nothing THIS root's carve-out
+    would have accepted anyway; computed uniformly regardless, both for
+    symmetry with `scan_bridge_control` and because `String` collisions are
+    representable here too even though no live wrapper control exercises one.
     """
     enums, aliases, declared_consts, shadows = discover_declarations(src)
     consts = resolve_consts(declared_consts, shadows)
     foreign = foreign_use_names(src)
+    shadowed_type_names = frozenset(aliases) | discover_local_detail_decoys(
+        [(path_label, src)], _WRAPPER_DETAIL_MODULE_REL_FOR_SELFTEST
+    )
     # Same flag-driven dispatch as `scan_bridge_control` (#496), read off BOTH
     # wrapper roots via `_wrapper_flag`.
     found = scan_source(
         path_label, src, enums, aliases, consts, foreign,
         bridge_mode=_wrapper_flag("bridge_mode"),
+        gated_field_types=_WRAPPER_GATED_FIELD_TYPES_FOR_SELFTEST,
+        shadowed_type_names=shadowed_type_names,
     )
     if _wrapper_flag("bridge_mode"):
         found += scan_bridge_plain_declarations(
-            path_label, src, enums, aliases, foreign
+            path_label, src, enums, aliases, foreign,
+            gated_field_types=_WRAPPER_GATED_FIELD_TYPES_FOR_SELFTEST,
+            shadowed_type_names=shadowed_type_names,
         )
     if _wrapper_flag("construction_sites"):
         found += scan_bridge_construction_sites(
             path_label,
             src,
-            sanctioned_constructor_names(detail_src),
+            sanctioned_constructor_names(
+                detail_src, owns_detail_type=_wrapper_flag("owns_detail_type")
+            ),
             allow_field_access=_wrapper_allow_field_access(),
         )
     if _wrapper_flag("format_confinement"):
@@ -578,10 +835,608 @@ def check_bridge_key_distinctness() -> list[str]:
     return failures
 
 
+def check_cross_file_alias_collision_still_denies() -> list[str]:
+    """`BP56` (#500 fix round 2, review finding "Important 1"): a gated
+    field spelled `Detail` must still DENY when a `type Detail = String;`
+    alias declared in ONE bridge file collides with a DIFFERENT, conflicting
+    `type Detail = ...;` declared in ANOTHER bridge file.
+
+    A dedicated check rather than a `BRIDGE_POSITIVE_CONTROLS` entry, for
+    the same class of reason `check_bridge_key_distinctness` is one: this
+    makes a claim about the CROSS-FILE aggregator (`_discover_tier_inputs`,
+    `run_real_scan`'s Pass 1), not about a single self-contained fixture
+    string. `scan_bridge_control` — every other bridge control in this
+    file — calls `discover_declarations(src)` on ONE string, and within one
+    string `find_type_aliases` cannot even represent a collision: a second
+    `type Detail = ...;` in the SAME string just overwrites the first in its
+    own local dict (last-write-wins), so the KEY `"Detail"` is present in
+    `aliases` either way and `BP53` never actually exercises collision-drop.
+    The bug this pins is specific to `_discover_tier_inputs`'s CROSS-FILE
+    `alias_candidates` — the real, multi-file aggregation `run_real_scan`
+    performs once per root — which DOES track collisions, and which is what
+    dropped the shadow (see `is_bridge_field_safe`'s docstring, source 1).
+
+    Verified by execution before this fix existed: FILE_A (BP53's own
+    fixture) alone produced 2 findings; adding FILE_B — containing only
+    `type Detail = Vec<u8>;`, no gated field of its own — took it to ZERO,
+    because the collision emptied `aliases["Detail"]` from the RESOLVED
+    dict `is_bridge_field_safe`'s fix-round-1 check consulted, and an empty
+    dict has no member to deny on. The fix reads `alias_candidate_names`
+    (the PRE-collision-drop set) instead, which still names `"Detail"`
+    regardless of which value won the collision.
+
+    NOT a clean isolation of Important 1 from Important 2, and this
+    docstring used to claim otherwise until mutation-testing this control
+    disproved it: `LOCAL_DETAIL_TYPE_RE`'s second alternative,
+    `\\btype\\s+Detail\\s*[=<]`, matches FILE_B's `type Detail = Vec<u8>;`
+    too, so `discover_local_detail_decoys` (Important 2's independent
+    fix) ALSO denies this exact fixture — reverting `alias_candidate_names`
+    to the post-collision-drop set here left this control GREEN, because
+    the decoy check alone still supplied `"Detail"` to `shadowed_type_names`.
+    This control still pins a real, useful regression (BOTH mechanisms
+    denying a live exploit shape is not a bad thing), but the mutation
+    proof that Important 1's mechanism specifically holds lives in
+    `check_wrapper_alias_collision_isolated_from_decoy_check` (`WP9`)
+    instead, which collides on `String` — a spelling `LOCAL_DETAIL_TYPE_RE`
+    never matches — so nothing else can mask a regression there.
+    """
+    root = _ROOTS_BY_LABEL["bridge"]
+    file_a = (
+        "ffi/secretary-ffi-bridge/src/error/bp56_a.rs",
+        '''
+        type Detail = String;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: Detail },
+        }
+        ''',
+    )
+    file_b = (
+        "ffi/secretary-ffi-bridge/src/error/bp56_b.rs",
+        "type Detail = Vec<u8>;\n",
+    )
+    sources = [file_a, file_b]
+    enums, aliases, consts, alias_candidate_names = _discover_tier_inputs(sources)
+    shadow = alias_candidate_names | discover_local_detail_decoys(
+        sources, root.detail_module_rel
+    )
+    label, raw = file_a
+    found = scan_source(
+        label, raw, enums, aliases, consts, foreign_use_names(raw),
+        bridge_mode=root.bridge_mode,
+        gated_field_types=root.gated_field_types,
+        shadowed_type_names=shadow,
+    )
+    expect: ControlExpectation = {"rule": "E2", "field": "detail"}
+    if not found:
+        return ["POSITIVE control did not fire: BP56 (cross-file alias collision)"]
+    if not any(_finding_matches(f, expect) for f in found):
+        return [
+            "POSITIVE control fired for the WRONG REASON: BP56 (cross-file "
+            f"alias collision) -> expected {expect}, got "
+            f"{[(f.variant, f.field, f.field_type) for f in found]}"
+        ]
+    return []
+
+
+def check_wrapper_alias_collision_isolated_from_decoy_check() -> list[str]:
+    r"""`WP9` (#500 fix round 2, review finding "Important 1", isolation
+    proof): a WRAPPER-root gated field spelled `String` must still DENY
+    when a `type String = usize;` alias in ONE wrapper file collides with a
+    conflicting `type String = Vec<u8>;` in another — the SAME collision-
+    drop bug `BP56` pins, but on a spelling `LOCAL_DETAIL_TYPE_RE` cannot
+    reach.
+
+    `BP56`'s fixture uses `Detail` because that is the bridge's real gated
+    spelling, but `LOCAL_DETAIL_TYPE_RE`'s own pattern —
+    `\b(?:struct|enum|union)\s+Detail\b|\btype\s+Detail\s*[=<]` — matches
+    `type Detail = ...` too, so `discover_local_detail_decoys` (Important
+    2's fix) ALSO denies `BP56`'s fixture independently of Important 1's
+    `alias_candidate_names` mechanism. Reverting `_discover_tier_inputs`'s
+    4th return value to the post-collision-drop set (mutation-tested during
+    this fix's own review) left `BP56` GREEN — the decoy check alone was
+    enough. `LOCAL_DETAIL_TYPE_RE` never mentions `String` in any of its
+    three alternatives, so a collision on THAT spelling can only ever be
+    caught by the raw-candidate mechanism: this is what makes a regression
+    in `alias_candidate_names` specifically OBSERVABLE, independent of
+    whichever other defence happens to also be watching. The wrapper root
+    is used rather than the bridge because `gated_field_types` only
+    contains `String` there — the bridge's is `{"Detail"}` alone, so a
+    `String` collision would deny nothing bridge-side to observe.
+
+    One root suffices (`ffi-py`, matching every other single-root wrapper
+    constant here, e.g. `_WRAPPER_GATED_FIELD_TYPES_FOR_SELFTEST`) — this is
+    a claim about the SHARED discovery/shadow machinery, not about either
+    wrapper root's own `ScanRoot` data, which `_check_wrapper_roots_agree`
+    already pins as identical.
+    """
+    root = _ROOTS_BY_LABEL["ffi-py"]
+    file_a = (
+        "ffi/secretary-ffi-py/src/wp9_a.rs",
+        '''
+        type String = usize;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: String },
+        }
+        ''',
+    )
+    file_b = ("ffi/secretary-ffi-py/src/wp9_b.rs", "type String = Vec<u8>;\n")
+    sources = [file_a, file_b]
+    enums, aliases, consts, alias_candidate_names = _discover_tier_inputs(sources)
+    shadow = alias_candidate_names | discover_local_detail_decoys(
+        sources, root.detail_module_rel
+    )
+    label, raw = file_a
+    found = scan_source(
+        label, raw, enums, aliases, consts, foreign_use_names(raw),
+        bridge_mode=root.bridge_mode,
+        gated_field_types=root.gated_field_types,
+        shadowed_type_names=shadow,
+    )
+    expect: ControlExpectation = {"rule": "E2", "field": "detail"}
+    if not found:
+        return [
+            "POSITIVE control did not fire: WP9 (wrapper cross-file alias "
+            "collision, isolated from the decoy check)"
+        ]
+    if not any(_finding_matches(f, expect) for f in found):
+        return [
+            "POSITIVE control fired for the WRONG REASON: WP9 (wrapper "
+            f"cross-file alias collision) -> expected {expect}, got "
+            f"{[(f.variant, f.field, f.field_type) for f in found]}"
+        ]
+    return []
+
+
+def check_detail_naming_param_types_are_all_withdrawn_under_decoy() -> list[str]:
+    r"""#504 review R1: `_ctor_params_are_safe`'s wrapper-decoy withdrawal
+    (`detail_param_ok=False`) must deny EVERY `SAFE_PARAM_TYPES` member
+    whose spelling names the `Detail` newtype, not just the two spellings
+    (`Detail`, `&Detail`) that happen to exist today.
+
+    Independent of HOW the production withdrawal is implemented — this
+    check computes its OWN `\bDetail\b`-naming subset of `SAFE_PARAM_TYPES`
+    directly, rather than importing whatever set/logic
+    `_ctor_params_are_safe` uses internally, so it is not tautological: a
+    regression that reverts the withdrawal to a hand-maintained literal (the
+    exact shape #504's own review caught — `allowed - {"Detail", "&Detail"}`
+    silently missing a THIRD future `Detail`-naming spelling) is caught here
+    even though the production code and this check independently agree
+    today. Mutation-verified: temporarily reverting
+    `_ctor_params_are_safe` to the pre-fix `allowed - {"Detail", "&Detail"}`
+    literal, with `"&'static Detail"` added to `SAFE_PARAM_TYPES` as a
+    stand-in for a plausible future member, reproduces a red result here
+    (`_ctor_params_are_safe` sanctions the synthetic member under
+    `detail_param_ok=False` when it should deny) — see the #504 review
+    fix-round commit for the transcript.
+
+    `\bDetail\b` deliberately does NOT match `&impl GatedDetail` (no word
+    boundary between `Gated` and `Detail`), so that spelling is correctly
+    excluded from this loop. `&impl GatedDetail`'s own wrapper-decoy
+    exposure was the SAME class of hole one type over (#504 review R3) and
+    is closed by a separate, independently-derived withdrawal
+    (`gated_detail_param_ok` in `_ctor_params_are_safe`) rather than folded
+    in here by a wider match — see
+    `check_gated_detail_naming_param_types_are_all_withdrawn_under_decoy`
+    below for its own coupling check, the `GatedDetail` analogue of this one.
+    """
+    failures: list[str] = []
+    detail_naming = {t for t in SAFE_PARAM_TYPES if re.search(r"\bDetail\b", t)}
+    if not detail_naming:
+        return [
+            "DETAIL WITHDRAWAL LIVENESS: no SAFE_PARAM_TYPES member matches "
+            r"\bDetail\b — this check would pass vacuously"
+        ]
+    for ty in sorted(detail_naming):
+        if _ctor_params_are_safe("x", f"(d: {ty})", detail_param_ok=False):
+            failures.append(
+                "DETAIL WITHDRAWAL INCOMPLETE: SAFE_PARAM_TYPES member "
+                f"{ty!r} is NOT denied by _ctor_params_are_safe under "
+                "detail_param_ok=False — a wrapper-root decoy `Detail` "
+                "would leave this spelling sanctioned"
+            )
+    return failures
+
+
+def check_gated_detail_naming_param_types_are_all_withdrawn_under_decoy() -> list[str]:
+    r"""#504 review R3: the `GatedDetail` analogue of
+    `check_detail_naming_param_types_are_all_withdrawn_under_decoy` directly
+    above — same coupling risk, same independent-computation fix, one type
+    over. `_ctor_params_are_safe`'s `gated_detail_param_ok=False` withdrawal
+    must deny EVERY `SAFE_PARAM_TYPES` member whose spelling names
+    `GatedDetail`, not just `&impl GatedDetail`, the one spelling that
+    exists today.
+
+    Computes its OWN `\bGatedDetail\b`-naming subset of `SAFE_PARAM_TYPES`
+    directly rather than reading whatever the production withdrawal uses
+    internally, for the same non-tautology reason the `Detail` check gives.
+    Mutation-verified the same way: temporarily reverting the withdrawal to
+    a hand-maintained `{"&impl GatedDetail"}` literal, with a synthetic
+    `"&'static impl GatedDetail"` added to `SAFE_PARAM_TYPES`, reproduces a
+    red result here.
+    """
+    failures: list[str] = []
+    gated_detail_naming = {
+        t for t in SAFE_PARAM_TYPES if re.search(r"\bGatedDetail\b", t)
+    }
+    if not gated_detail_naming:
+        return [
+            "GATED_DETAIL WITHDRAWAL LIVENESS: no SAFE_PARAM_TYPES member "
+            r"matches \bGatedDetail\b — this check would pass vacuously"
+        ]
+    for ty in sorted(gated_detail_naming):
+        if _ctor_params_are_safe("x", f"(d: {ty})", gated_detail_param_ok=False):
+            failures.append(
+                "GATED_DETAIL WITHDRAWAL INCOMPLETE: SAFE_PARAM_TYPES member "
+                f"{ty!r} is NOT denied by _ctor_params_are_safe under "
+                "gated_detail_param_ok=False — a wrapper-root decoy "
+                "`trait GatedDetail` would leave this spelling sanctioned"
+            )
+    return failures
+
+
+# `BP57`'s TWO planted-decoy targets (#500 fix round 2, review finding "the
+# Important that matters more than either T4-I1/T4-I2"; the second added in
+# the final whole-branch review). Deliberately unmistakable — no real PR
+# would ever choose these names — and additionally listed in `.gitignore` as
+# belt-and-suspenders; the PRIMARY guarantee that no residue survives is
+# `check_real_scan_shadow_wiring_is_live`'s own `finally` block, not the
+# gitignore entries.
+#
+# ONE PROBE PER TERM of the production expression, because each term is
+# caught by a DIFFERENT decoy shape and neither substitutes for the other:
+#
+#   * `_SHADOW_WIRING_PROBE_REL` — a `struct Detail` decoy under the BRIDGE
+#     root, caught by `discover_local_detail_decoys`, which returns a
+#     hardcoded `frozenset({"Detail"})`.
+#   * `_ALIAS_WIRING_PROBE_REL` — a `type String = ...;` alias decoy under a
+#     WRAPPER root, caught by `alias_candidate_names` ONLY. The wrapper
+#     roots' gated spelling is `String` (`ScanRoot.gated_field_types`), a
+#     name `discover_local_detail_decoys` can never return.
+_SHADOW_WIRING_PROBE_REL = (
+    "ffi/secretary-ffi-bridge/src/error/__selftest_shadow_wiring_probe.rs"
+)
+_ALIAS_WIRING_PROBE_REL = (
+    "ffi/secretary-ffi-uniffi/src/__selftest_alias_wiring_probe.rs"
+)
+# #515 I7: a BRIDGE file declaring a gated `detail: String`. Pins
+# `run_real_scan`'s `gated_field_types` wiring in the WIDENING direction,
+# which step 1's clean-tree check cannot see.
+_GATED_STRING_WIRING_PROBE_REL = (
+    "ffi/secretary-ffi-bridge/src/error/__selftest_gated_string_probe.rs"
+)
+# #515 I5: a bridge file OUTSIDE `detail.rs` writing `Detail(...)`.
+# Pins rule E6's WIRING, which the direct-call check cannot see.
+_E6_WIRING_PROBE_REL = (
+    "ffi/secretary-ffi-bridge/src/error/__selftest_e6_wiring_probe.rs"
+)
+
+
+def check_real_scan_shadow_wiring_is_live() -> list[str]:
+    r"""`BP57` (#500 fix round 2 review): `run_real_scan`'s OWN per-root
+    computation of `shadowed_type_names` —
+
+        shadowed_type_names = alias_candidate_names | discover_local_detail_decoys(
+            sources[root.label], root.detail_module_rel
+        )
+
+    in `scan.py` — is pinned by NOTHING. Every self-test control
+    (`BP54`/`BP55`/`BN29`/`BP56`/`WP9`, and `scan_bridge_control` /
+    `scan_wrapper_control` generally) computes its OWN shadow set from its
+    OWN fixture; not one of them reads that line. Severing it to
+    `shadowed_type_names = frozenset()` was verified (by the reviewer, then
+    re-verified here) to leave `--self-test` FULLY green — every count
+    unchanged — and the real scan green too, because today's tree has no
+    live decoy for an empty shadow set to fail to catch. `T4-I1`/`T4-I2`'s
+    fixes can be switched off tree-wide, undetectably, right up until an
+    attacker actually plants the decoy the protection exists to catch —
+    at which point the protection has already failed.
+
+    This is the same class #496 closed for `roots.py`'s rule-selecting
+    booleans ("three of `roots.py`'s five rule flags were read by nothing,
+    so `E3`/`E4`/`E5` could each be switched off tree-wide with
+    `--self-test` green" — CLAUDE.md's guard section). That fix made
+    `scan_bridge_control`/`scan_wrapper_control` DISPATCH off the SAME
+    `ScanRoot` flags `run_real_scan` reads. The same move does NOT close
+    THIS hole: `shadowed_type_names` is not `ScanRoot` DATA a control could
+    dispatch off, it is an EXPRESSION inside `run_real_scan`'s own function
+    body, and a control that independently RECOMPUTES that expression —
+    which is exactly what `BP56`/`WP9` already do — provably does not
+    observe a mutation to the call site itself: both stayed GREEN in
+    review when this exact line was severed, because they call
+    `discover_local_detail_decoys`/`_discover_tier_inputs` directly, never
+    `run_real_scan`. The "shared helper" alternative considered and
+    rejected for the same reason: routing `scan_bridge_control` through a
+    shared helper would catch a bug IN the helper, but not a severed CALL
+    to it at the one production site — the exact mutation demonstrated.
+
+    The only way to observe a mutation INSIDE `run_real_scan`'s own body
+    is to run `run_real_scan` — end to end, against the real filesystem
+    tree, the SAME "plant / observe / revert" discipline this task's own
+    Step 5 already used to demonstrate the `Detail` newtype's compile-time
+    guarantee (`error/vault/mod.rs`, reverted by exact-text edit, `git
+    diff` checked empty afterward).
+
+    ONE PROBE PER TERM, because the expression has TWO and a single probe
+    pins only one of them (final whole-branch review). The original version
+    of this check planted the `struct Detail` decoy alone, which
+    `discover_local_detail_decoys` — the SURVIVING term — catches on its
+    own: replacing `alias_candidate_names` with `frozenset()` therefore
+    left `--self-test` FULLY green and the real scan green, exactly the
+    hole this control was written to close, one term over. That term is
+    NOT redundant with the other: `discover_local_detail_decoys` returns a
+    hardcoded `frozenset({"Detail"})`, while the WRAPPER roots' gated
+    spelling is `String`, so only `alias_candidate_names` can ever shadow
+    it. Measured on this tree: a planted `type String = SecretHolder;`
+    under `ffi/secretary-ffi-uniffi/src/` takes the real scan from 46
+    violations to `OK` (exit 0) the moment that term is severed. The
+    denial is a #500 capability — merge-base `3775ef5` accepted the same
+    fixture — so nothing else in the corpus would have missed it either.
+
+    Four assertions, in order:
+
+    1. The UNTOUCHED tree scans OK. This alone pins `gated_field_types`'s
+       PRE-EXISTING, IDENTICAL wiring hole for free (mitigating context
+       from review): severing `gated_field_types=root.gated_field_types`
+       denies every one of the ~27 real `detail: Detail` fields
+       immediately, no decoy needed — so a clean-tree baseline assertion
+       catches it without a line of code written specifically for it.
+    2. Planting a decoy `pub struct Detail(pub String);` — a throwaway
+       `.rs` file under the BRIDGE root, needing NO gated field of its own
+       (the ~27 EXISTING real ones are what a LIVE shadow set catches) —
+       makes the scan FAIL. This pins the `discover_local_detail_decoys`
+       TERM: an EMPTY (severed) shadow set has nothing to catch on today's
+       clean tree, so only a POSITIVE probe like this observes it; step 1
+       alone would not (a severed shadow set and a live one behave
+       identically when there is no decoy to disagree about).
+    3. Planting a decoy `type String = SecretHolder;` under a WRAPPER root
+       makes the scan FAIL. This pins the `alias_candidate_names` TERM,
+       and ONLY it — see the paragraph above for why step 2's probe cannot
+       stand in for this one. A `type` alias rather than a `struct` on
+       purpose: `alias_candidate_names` is the RAW `type X = Y;` LHS set
+       (`_discover_tier_inputs`), so an alias is the only shape that
+       reaches it.
+    4. Removing both decoys (`finally` — runs even if 1-3 raise) restores
+       a clean scan. Proves the probes leave no residue, and that the
+       decoys specifically — not some unrelated cause — were what tripped
+       steps 2 and 3.
+
+    `run_real_scan`'s own stdout/stderr are captured and discarded: this
+    check's OWN pass/fail reporting is what `--self-test` surfaces, not a
+    second copy of the real scan's violation listing.
+    """
+    probes: tuple[tuple[str, str, str, str], ...] = (
+        (
+            "step 2",
+            _SHADOW_WIRING_PROBE_REL,
+            "pub struct Detail(pub String);\n",
+            "run_real_scan's OWN shadowed_type_names computation (scan.py) "
+            "may be severed, or its `discover_local_detail_decoys` TERM "
+            "specifically may be — that term is what BP54/BP55/BN29/BP56/WP9 "
+            "independently recompute without ever reading this call site",
+        ),
+        (
+            "step 3",
+            _ALIAS_WIRING_PROBE_REL,
+            "type String = SecretHolder;\n",
+            "run_real_scan's OWN shadowed_type_names computation (scan.py) "
+            "may be severed, or its `alias_candidate_names` TERM "
+            "specifically may be — no other control observes that term, and "
+            "`discover_local_detail_decoys` cannot substitute for it "
+            "(it returns only the spelling `Detail`, never `String`)",
+        ),
+        (
+            "step 3b",
+            _ALIAS_WIRING_PROBE_REL,
+            "#[cfg(not(test))]\ntype String = SecretHolder;\n",
+            "the deny-polarity alias pass (`_deny_polarity_alias_names`) may "
+            "be severed. `alias_candidate_names` used to be harvested only "
+            "from `discover_declarations`, whose PERMISSIVE `CFG_TEST_RE` "
+            "skip also swallows `#[cfg(not(test))]` and every "
+            "`#[cfg_attr(test, ..)]` — an over-matched skip on a DENY "
+            "trigger is fail-OPEN, and this exact line scanned clean before "
+            "#515 C4 (verified by execution). Step 3's un-gated probe cannot "
+            "substitute: it passes whether or not the strict pass exists",
+        ),
+        (
+            "step 3c",
+            _GATED_STRING_WIRING_PROBE_REL,
+            '#[derive(Debug, thiserror::Error)]\npub enum ZzProbe {\n'
+            '    #[error("boom: {detail}")]\n    Boom { detail: String },\n}\n',
+            "run_real_scan's `gated_field_types` wiring may be WIDENED — "
+            "replaced by a hardcoded set that still contains `String`. "
+            "BP51 recomputes the denial from `ScanRoot` data and never reads "
+            "this call site, and step 1 only proves a CLEAN tree scans OK, "
+            "which a widening preserves. The bridge must permit NO `String` "
+            "under a gated name (#500's headline narrowing), so a bridge "
+            "file declaring one has to red the real scan",
+        ),
+        (
+            "step 3d",
+            _E6_WIRING_PROBE_REL,
+            "use super::Detail;\npub(crate) fn f(s: String) -> Detail "
+            "{ Detail(s) }\n",
+            "rule E6's call in `scan.py` may be severed. "
+            "`check_e6_detail_construction_is_live` calls the rule FUNCTION "
+            "directly, so it passes whether or not the scan ever invokes it "
+            "— the same function-vs-wiring split BP57 exists to cover. E6 "
+            "pins the `Detail` tuple-struct constructor to one file, which "
+            "is what stops a DESCENDANT module (Rust privacy is subtree-, "
+            "not file-scoped) relocating the minting capability out of the "
+            "reviewed file",
+        ),
+    )
+
+    existing = [rel for _, rel, _, _ in probes if (REPO_ROOT / rel).exists()]
+    if existing:
+        return [
+            f"REAL SCAN WIRING PROBE: {rel} already exists — refusing to "
+            "overwrite; remove it by hand and re-run"
+            for rel in existing
+        ]
+
+    def _quiet_real_scan() -> int:
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            return run_real_scan()
+
+    baseline = _quiet_real_scan()
+    if baseline != 0:
+        return [
+            "REAL SCAN WIRING PROBE (BP57 step 1): the untouched tree does "
+            f"not scan OK (exit {baseline}) — cannot run the decoy probes on "
+            "top of an already-failing baseline. This also means "
+            "gated_field_types' own real-scan wiring may be severed"
+        ]
+
+    failures: list[str] = []
+    try:
+        for step, rel, body, diagnosis in probes:
+            decoy_path = REPO_ROOT / rel
+            try:
+                decoy_path.write_text(body, encoding="utf-8")
+                planted = _quiet_real_scan()
+                if planted == 0:
+                    failures.append(
+                        f"REAL SCAN WIRING (BP57 {step}): planting a decoy at "
+                        f"{rel} did not fail the real scan — {diagnosis}"
+                    )
+            finally:
+                decoy_path.unlink(missing_ok=True)
+    finally:
+        for _, rel, _, _ in probes:
+            (REPO_ROOT / rel).unlink(missing_ok=True)
+
+    if not failures:
+        cleaned = _quiet_real_scan()
+        if cleaned != 0:
+            failures.append(
+                "REAL SCAN WIRING PROBE (BP57 step 4): removing the decoys "
+                f"did not restore a clean scan (exit {cleaned}) — a probe "
+                "left residue, or the tree was already broken"
+            )
+    return failures
+
+
+def _check_control_label_uniqueness() -> list[str]:
+    """No two controls in any corpus may share a LABEL (#511, closed here).
+
+    Every control is a `(label, src, ...)` tuple in a list, and the label is
+    what a failure message names. A duplicate is not a crash and not a
+    finding — it is two controls that report under one identity, so a
+    regression in either prints a message pointing at the other, and a
+    reviewer grepping the label finds the wrong fixture. #511 was filed
+    after a `WP9` collision on this branch was caught by an implementer
+    running `grep`, which is exactly the kind of catch that does not
+    survive contact with a tired afternoon.
+
+    Labels here are long prose strings, so the comparison is on the leading
+    TOKEN (`BP52`, `WN3`, …) — the part that is actually used as an
+    identity — rather than the whole sentence, which would let
+    `BP52 <one wording>` and `BP52 <another>` both pass.
+    """
+    corpora = [
+        ("CORE POSITIVE", POSITIVE_CONTROLS),
+        ("CORE NEGATIVE", NEGATIVE_CONTROLS),
+        ("BRIDGE POSITIVE", BRIDGE_POSITIVE_CONTROLS),
+        ("BRIDGE NEGATIVE", BRIDGE_NEGATIVE_CONTROLS),
+        ("WRAPPER POSITIVE", WRAPPER_POSITIVE_CONTROLS),
+        ("WRAPPER NEGATIVE", WRAPPER_NEGATIVE_CONTROLS),
+    ]
+    seen: dict[str, str] = {}
+    failures: list[str] = []
+    for corpus_name, corpus in corpora:
+        for entry in corpus:
+            token = str(entry[0]).split()[0] if str(entry[0]).strip() else "<empty>"
+            if token in seen:
+                failures.append(
+                    f"CONTROL LABEL COLLISION: {token!r} is used by both "
+                    f"{seen[token]} and {corpus_name} — a duplicate label "
+                    f"makes a regression in one control print a message "
+                    f"naming the other (#511)"
+                )
+            else:
+                seen[token] = corpus_name
+    return failures
+
+
+def check_e6_detail_construction_is_live() -> list[str]:
+    """Rule E6 (#515 I5) fires on both arms and stays silent on the real file.
+
+    E6 has no corpus control because it is a PLACEMENT rule keyed on the
+    file path, which `scan_control`'s synthetic single-file fixtures cannot
+    express — the same reason E4's file-placement arm is exercised directly.
+
+    Three assertions, because two of them are the halves of one hole and the
+    third is the false-positive guard that keeps the rule usable:
+
+    1. `Detail(` in a bridge file OTHER than `detail.rs` must DENY.
+    2. An unsanctioned `mod` INSIDE `detail.rs` must DENY. This is the arm
+       that actually closes the descendant-module hole — Rust privacy is
+       module-SUBTREE scoped, so `mod ext;` plus `#[path]` relocates the
+       minting capability into an unreviewed file while arm 1 stays silent.
+    3. `detail.rs` itself, with its real `Detail(...)` constructions and its
+       two legitimate submodules, must stay CLEAN.
+    """
+    from payload_guard.rules.e6 import scan_bridge_detail_construction
+
+    failures: list[str] = []
+    foreign = scan_bridge_detail_construction(
+        "ffi/secretary-ffi-bridge/src/error/zz_probe.rs",
+        "use super::Detail;\npub(crate) fn f(s: String) -> Detail { Detail(s) }\n",
+    )
+    if not any(f.rule == "E6" for f in foreign):
+        failures.append(
+            "E6 ARM 1: `Detail(s)` written OUTSIDE "
+            f"{DETAIL_MODULE_REL} did not produce an E6 finding — the "
+            "newtype's minting capability is unpinned, and a descendant "
+            "module can relocate it into an unreviewed file"
+        )
+    submod = scan_bridge_detail_construction(
+        DETAIL_MODULE_REL, "pub struct Detail(String);\npub(crate) mod ext;\n"
+    )
+    if not any(f.rule == "E6" for f in submod):
+        failures.append(
+            f"E6 ARM 2: an unsanctioned `mod ext;` inside {DETAIL_MODULE_REL} "
+            "did not produce an E6 finding — a child module inherits the "
+            "private field's visibility, so declaring one hands the minting "
+            "capability to whatever file `#[path]` points at"
+        )
+    # Read as a HARNESS FAILURE rather than a traceback: this file's own
+    # standard (see `_check_wrapper_roots_agree`) is that a security gate
+    # must not surface an IO problem as a raw stack trace, which reads as a
+    # crashed tool rather than a failed check.
+    try:
+        real = (REPO_ROOT / DETAIL_MODULE_REL).read_text(encoding="utf-8")
+    except OSError as exc:
+        return failures + [
+            f"E6 SELF-CHECK: cannot read {DETAIL_MODULE_REL} ({exc}) — the "
+            "false-positive half of this check could not run, so a green "
+            "self-test would not mean the rule is usable on the real tree"
+        ]
+    on_real = scan_bridge_detail_construction(DETAIL_MODULE_REL, real)
+    if on_real:
+        failures.append(
+            f"E6 FALSE POSITIVE: the real {DETAIL_MODULE_REL} produced "
+            f"{[f.source_line for f in on_real]!r} — its own constructions "
+            "and its two sanctioned submodules must stay clean, or the rule "
+            "is unusable and will be switched off rather than fixed"
+        )
+    return failures
+
+
 def run_self_test() -> int:
     failures: list[str] = check_view_invariants()
     failures += _check_root_rule_flags()
+    failures += check_e6_detail_construction_is_live()
+    failures += _check_control_label_uniqueness()
     failures += _check_wrapper_roots_agree()
+    failures += _check_wrapper_agreement_is_live()
     failures += _check_expectation_keys()
     for entry in POSITIVE_CONTROLS:
         label, src = entry[0], entry[1]
@@ -627,6 +1482,11 @@ def run_self_test() -> int:
                 f"{[(f.variant, f.field, f.field_type) for f in found]}"
             )
     failures += check_bridge_key_distinctness()
+    failures += check_cross_file_alias_collision_still_denies()
+    failures += check_wrapper_alias_collision_isolated_from_decoy_check()
+    failures += check_detail_naming_param_types_are_all_withdrawn_under_decoy()
+    failures += check_gated_detail_naming_param_types_are_all_withdrawn_under_decoy()
+    failures += check_real_scan_shadow_wiring_is_live()
     for entry in WRAPPER_POSITIVE_CONTROLS:
         label, src = entry[0], entry[1]
         wrapper_expect: ControlExpectation | None = entry[2] if len(entry) > 2 else None

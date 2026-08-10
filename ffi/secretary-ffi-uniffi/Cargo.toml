@@ -36,6 +36,12 @@ zeroize = "=1.8.2"
 uniffi = { version = "0.32", features = ["build"] }
 
 [dev-dependencies]
+# `test-support` gives these tests `Detail::for_test`, the only way to build a
+# `Detail` outside the bridge's own `detail.rs` (#500). DEV-ONLY — under
+# resolver v2 that keeps the hatch out of every non-test build, which
+# `scripts/check-test-support-placement.py` enforces.
+secretary-ffi-bridge = { path = "../secretary-ffi-bridge", features = ["test-support"] }
+
 # Deterministic seeded RNG for the B.3b mod tests' fast
 # MnemonicOutput-wrapper test (avoids the slow Argon2id cost of
 # create_vault). Match the version pinned in core/Cargo.toml so we share

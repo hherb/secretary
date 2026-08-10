@@ -61,7 +61,7 @@ pub fn save_block(
     let (manifest_body, manifest_file, owner_card, ibk, vault_folder) = manifest
         .snapshot_for_save_block()
         .ok_or_else(|| FfiVaultError::CorruptVault {
-            detail: "vault manifest handle has been closed".into(),
+            detail: detail::literal("vault manifest handle has been closed"),
         })?;
 
     // Step 2: snapshot the identity. We only need an owned clone of the
@@ -71,7 +71,7 @@ pub fn save_block(
         identity
             .clone_inner_bundle()
             .ok_or_else(|| FfiVaultError::CorruptVault {
-                detail: "identity handle has been closed".into(),
+                detail: detail::literal("identity handle has been closed"),
             })?;
 
     // Step 3: build BlockPlaintext from BlockInput. The conversion moves

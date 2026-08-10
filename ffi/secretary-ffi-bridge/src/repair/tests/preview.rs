@@ -29,7 +29,10 @@ fn preview_with_password_reports_widening() {
 
     assert_eq!(preview.widenings.len(), 1, "exactly one widened block");
     let report = &preview.widenings[0];
-    assert_eq!(report.block_uuid_hex, format_uuid_hyphenated(&block_uuid));
+    assert_eq!(
+        report.block_uuid_hex.as_str(),
+        format_uuid_hyphenated(&block_uuid)
+    );
     assert_eq!(report.block_name, "mine");
     assert_eq!(
         report.file_fingerprint_hex.len(),
@@ -50,7 +53,7 @@ fn preview_with_password_reports_widening() {
     assert_eq!(report.added.len(), 1, "exactly one added recipient");
     let added = &report.added[0];
     assert_eq!(
-        added.uuid_hex,
+        added.uuid_hex.as_str(),
         format_uuid_hyphenated(&staged.added_contact_uuid)
     );
     assert_eq!(added.display_name, "Cee");
@@ -95,7 +98,10 @@ fn preview_with_recovery_reports_widening() {
 
     assert_eq!(preview.widenings.len(), 1, "exactly one widened block");
     let report = &preview.widenings[0];
-    assert_eq!(report.block_uuid_hex, format_uuid_hyphenated(&block_uuid));
+    assert_eq!(
+        report.block_uuid_hex.as_str(),
+        format_uuid_hyphenated(&block_uuid)
+    );
     assert_eq!(report.block_name, "mine");
     assert_eq!(
         report.file_fingerprint_hex,
@@ -105,7 +111,7 @@ fn preview_with_recovery_reports_widening() {
     assert_eq!(report.added.len(), 1, "exactly one added recipient");
     let added = &report.added[0];
     assert_eq!(
-        added.uuid_hex,
+        added.uuid_hex.as_str(),
         format_uuid_hyphenated(&staged.added_contact_uuid)
     );
     assert_eq!(added.display_name, "Dee");
@@ -170,7 +176,10 @@ fn preview_with_device_secret_reports_widening() {
 
     assert_eq!(preview.widenings.len(), 1, "exactly one widened block");
     let report = &preview.widenings[0];
-    assert_eq!(report.block_uuid_hex, format_uuid_hyphenated(&block_uuid));
+    assert_eq!(
+        report.block_uuid_hex.as_str(),
+        format_uuid_hyphenated(&block_uuid)
+    );
     assert_eq!(report.block_name, "mine");
     assert_eq!(
         report.file_fingerprint_hex,
@@ -180,7 +189,7 @@ fn preview_with_device_secret_reports_widening() {
     assert_eq!(report.added.len(), 1, "exactly one added recipient");
     let added = &report.added[0];
     assert_eq!(
-        added.uuid_hex,
+        added.uuid_hex.as_str(),
         format_uuid_hyphenated(&staged.added_contact_uuid)
     );
     assert_eq!(added.display_name, "Eff");
@@ -248,11 +257,13 @@ fn preview_fails_closed_on_garbage_baseline_state() {
     match err {
         FfiVaultError::CorruptVault { detail } => {
             assert!(
-                detail.contains(&state_path.display().to_string()),
+                detail.as_str().contains(&state_path.display().to_string()),
                 "detail must name the failing state file: {detail}"
             );
             assert!(
-                detail.contains("resets this device's rollback history"),
+                detail
+                    .as_str()
+                    .contains("resets this device's rollback history"),
                 "detail must carry the documented remedy: {detail}"
             );
         }

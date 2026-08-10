@@ -27,11 +27,18 @@
 # provably data-free. `E2`/`E3` apply to the bridge AND the two binding
 # wrapper crates — their error types genuinely need prose, so instead of
 # denying by TYPE they are gated by DECLARATION and CONSTRUCTION SITE: `E2`
-# requires a `String` field to be declared under one of the pinned
-# GATED_FIELD_NAMES; `E3` requires the expression at a gated field's
-# construction site to be a literal, a `detail::*` constructor call, the
-# field's own name, or (wrapper roots only) a single-hop field access
-# ending in the gated name (`uuid_hex: a.uuid_hex`). `E4` requires every
+# requires a gated-prose field to be declared under one of the pinned
+# GATED_FIELD_NAMES **and** with the type spelling that root accepts
+# (`ScanRoot.gated_field_types`, PER-ROOT as of #500: the two WRAPPER roots
+# accept `String`, the BRIDGE accepts `Detail` ALONE — all 27 of its gated
+# fields are the newtype, and a new bridge error type cannot opt back out by
+# declaring the old `String` spelling); `E3` requires the expression at a
+# gated field's construction site to be a literal, a `detail::*` constructor
+# call, or the field's own name. A FIFTH E3 shape — a wrapper-only single-hop
+# field access ending in the gated name (`uuid_hex: a.uuid_hex`) — was
+# RETIRED in #497/#500: all four of its live sites moved onto
+# `detail::project(...)`, so `ScanRoot.allow_field_access` is now `False` on
+# every root and the shape denies everywhere (`WP7` pins that). `E4` requires every
 # `impl GatedDetail for X` to live in
 # ffi/secretary-ffi-bridge/src/error/detail.rs and name a type this guard
 # itself scans — BRIDGE-ONLY, since `GatedDetail` is `pub(crate)` there and
@@ -90,6 +97,32 @@
 # current producer staying well-behaved (something this guard structurally
 # cannot verify — see its LIMITS docstring: "it sees DECLARATIONS, not
 # construction sites") needs the most.
+#
+# THIS FILE IS NOT THE ONLY REGISTER OF REVIEWED EXCEPTIONS, and the other one
+# is now EMPTY — worth knowing before anyone re-populates it. `STR_PARAM_CTOR_
+# EXCEPTIONS` (scripts/payload_guard/rules/e3.py) names sanctioned `detail::*`
+# constructors permitted to take a bare `&str` despite `&str` not sitting in
+# `SAFE_PARAM_TYPES`. It used to pin two ffi-py constructors
+# (`fingerprint_mismatch`, `uuid_prefixed`) on a Section-3-class claim — "they
+# only COMBINE already-gated bridge values" — that nothing verified: the guard
+# reads the constructor's SIGNATURE, never what a given call site passes it.
+# #504 made both take `&Detail` instead, converting that claim into a
+# compile-time fact (a `Detail`'s inner field is private to the bridge's own
+# error/detail.rs, so the value can only have come from a sanctioned
+# constructor there), and the set is now `frozenset()`.
+#
+# ADDING A NAME BACK IS A HIGHER-WEIGHT DECISION THAN ANY ENTRY IN THIS FILE,
+# because its blast radius is not one keyed line. An allowlist row here exempts
+# ONE construction site, keyed on its exact collapsed text. A name in
+# `STR_PARAM_CTOR_EXCEPTIONS` re-admits an arbitrary runtime `&str` at EVERY
+# call site of that constructor, present and future, with no per-site key and
+# nothing to re-review when a caller is added. Prefer changing the
+# constructor's parameter to `&Detail` or `&'static str`; if that is genuinely
+# impossible, record the reason beside the set and name every current call
+# site there, on this file's Section 3 discipline. Until then the empty set IS
+# the checkpoint: a new `&str`-taking constructor fails the guard rather than
+# being silently sanctioned, which is what the pre-#496 bare-name registry
+# never did.
 
 # =============================================================================
 # SECTION 1 — ALREADY-DISCLOSED CONTENT
@@ -162,7 +195,7 @@ core/src/vault/mod.rs	E1	#[error("vault I/O error ({context}): {source}")]	io::E
 #     variants") is stated in its own entry below.
 # =============================================================================
 
-ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::io::Error	CARRIER, not a fixed-format type: Display renders whatever it was built with. Core's own io::Error uses (Section 2) are OS-returned or literal-payload (path + errno, disclosed; or a fixed string with no runtime content — core/src/vault/io.rs:62, core/src/vault/orchestrators.rs:143,156). Inside ffi/secretary-ffi-bridge/src/ (this guard's own scan root) the payload argument of every io::Error::new / io::Error::other call is now itself a rule-E3 candidate (#487: the second argument of new, the first of other) — a hand-rolled format! there fails CI in the author's own PR, same as any other gated field. repair/orchestration.rs:137-147, the one site that used to hand-roll a format! embedding StateError's Display (E4-gated below) plus the state-dir path (disclosed, same class as core Section 2), now routes through detail::io_gated_with_path (layered on detail::io_gated). That DISCHARGES this entry's former trigger — "re-review on any NEW io::Error construction site in ffi/secretary-ffi-bridge/src/" — for the in-root half: a new hand-rolled site there is now a CI failure, not a silent gap needing manual re-review. cli/src/daemon.rs:424 remains the one residual: a same-shape site outside every scan root entirely, unreachable from any gated fold, tracked by #494 (this branch closes #487; not a live exposure today, since the bridge never calls into cli/src/daemon.rs)
+ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::io::Error	CARRIER, not a fixed-format type: Display renders whatever it was built with. Core's own io::Error uses (Section 2) are OS-returned or literal-payload (path + errno, disclosed; or a fixed string with no runtime content — core/src/vault/io.rs:62, core/src/vault/orchestrators.rs:143,156). Inside ffi/secretary-ffi-bridge/src/ (this guard's own scan root) the payload argument of every io::Error::new / io::Error::other call is now itself a rule-E3 candidate (#487: the second argument of new, the first of other) — a hand-rolled format! there fails CI in the author's own PR, same as any other gated field. repair/orchestration.rs:144-149, the one site that used to hand-roll a format! embedding StateError's Display (E4-gated below) plus the state-dir path (disclosed, same class as core Section 2), now routes through detail::io_gated_with_path_and_advice — the ONLY io-minting constructor in the module. (This row named detail::io_gated_with_path / detail::io_gated until the #500 final review: #496 RETIRED that pair once this site moved off the leading-context ordering and nothing else called them, and detail.rs:340-342 records the retirement. The line citation was stale by the same edit.) That DISCHARGES this entry's former trigger — "re-review on any NEW io::Error construction site in ffi/secretary-ffi-bridge/src/" — for the in-root half: a new hand-rolled site there is now a CI failure, not a silent gap needing manual re-review. cli/src/daemon.rs:424 remains the one residual: a same-shape site outside every scan root entirely, unreachable from any gated fold, tracked by #494 (this branch closes #487; not a live exposure today, since the bridge never calls into cli/src/daemon.rs)
 ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::num::ParseIntError	std renders fixed phrases ("invalid digit found in string"); the parsed input is never echoed. IntErrorKind is #[non_exhaustive]; re-review on a rust-toolchain.toml bump
 ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for std::str::ParseBoolError	std renders a fixed phrase ("provided string was not `true` or `false`"); input never echoed; re-review on a rust-toolchain.toml bump
 ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for secretary_cli::state::StateError	all 5 arms are secret-free: Io renders an OS errno (state.rs mints no custom io::Error); Decode/Encode render core-gated SyncError; LockfileHeld renders a host-local <state-dir>/<hex>.lock path (disclosed class, per core Section 2); VaultUuidMismatch renders two vault-UUID hex strings (vault.toml is cleartext, vault-format §2). Re-verify if cli adds variants
@@ -201,8 +234,11 @@ ffi/secretary-ffi-bridge/src/error/detail.rs	E4	impl GatedDetail for secretary_c
 #   `CborFault` — see state.rs:136-139's comment: "Classified, not
 #   stringified: ciborium's Display is its Debug form... (#474)").
 #
-# sync/error.rs — StateEncodeFailed (4 constructions: sync/error.rs:99 test,
-# sync/state.rs:107,125 — 2 sites, one file):
+# sync/error.rs — StateEncodeFailed (3 constructions: sync/error.rs:99 test,
+# sync/state.rs:107,125 — 2 sites, one file. The header said "4" while
+# enumerating three until the #500 final review re-ran the grep; three is
+# what `grep -rn 'StateEncodeFailed' core/src/` returns, excluding the
+# variant's own declaration at sync/error.rs:22):
 #   Both real producers live inside SyncState::to_canonical_cbor
 #   (core/src/sync/state.rs), same vault_uuid + vector-clock-only scope as
 #   StateDecodeFailed above. Both pass `format!("{err}")` over
@@ -282,4 +318,74 @@ core/src/vault/mod.rs	E1	#[error("repair rejected for block {block_uuid:02x?}: {
 # Verify on edit: the parent's `#[cfg(test)] mod <name>;` still exists.
 # =============================================================================
 
-ffi/secretary-ffi-bridge/src/repair/tests/mod.rs	E3	uuid_hex: format_uuid_hyphenated(&block_uuid)	TEST-ONLY FILE: `mod tests` is #[cfg(test)]-gated in the PARENT (repair/mod.rs:22), which this guard cannot see from inside. The RHS is format_uuid_hyphenated(&block_uuid), a data-free renderer over a [u8; 16] (hex digits and hyphens only). Never reaches a platform. NEWLY REPORTED, not newly written: the source line is unchanged since #449; #488 made a `let` binding to a gated name an E3 candidate position, which is what first surfaced it.
+ffi/secretary-ffi-bridge/src/repair/tests/mod.rs	E3	stage_crashed_share::uuid_hex: format_uuid_hyphenated(&block_uuid)	TEST-ONLY FILE: `mod tests` is #[cfg(test)]-gated in the PARENT (repair/mod.rs:22), which this guard cannot see from inside. The RHS is format_uuid_hyphenated(&block_uuid), a data-free renderer over a [u8; 16] (hex digits and hyphens only). Never reaches a platform. NEWLY REPORTED, not newly written: the source line is unchanged since #449; #488 made a `let` binding to a gated name an E3 candidate position, which is what first surfaced it.
+# =============================================================================
+# SECTION 5 — #498's HINT-LITERAL CHECK: A FORWARDED &'static str PARAMETER
+#
+# Rule E3 (#498) now additionally requires every HINT-POSITION argument of a
+# sanctioned `detail::*` call — the parameters typed `&'static str` in that
+# constructor's own signature, e.g. `context`, `field`, `advice` — to be a
+# string-literal TOKEN at the call site, not merely an expression of that
+# type. #498 demonstrated by execution that `Box::leak(format!(…)
+# .into_boxed_str())` mints a `&'static str` from RUNTIME data in safe stable
+# Rust and scanned clean before this fix.
+#
+# Every entry below is the SAME shape: the "non-literal" argument is not a
+# leaked value, it is the ENCLOSING function's OWN `&'static str` PARAMETER,
+# forwarded one hop into a sanctioned constructor's hint position — the same
+# "trust the parameter, not a re-derived provenance" shape rule E3's arm 4
+# already accepts for the gated field's NAME (`fn f(detail: String) -> E {
+# E::V { detail: detail } }`, CLAUDE.md's "function-parameter case"), one
+# level deeper. Each entry names every CURRENT call site of the enclosing
+# function, verified by `grep -rn`, exactly like Section 3's discipline.
+#
+# TWO CONCRETE EVASIONS SCAN CLEAN TODAY (fix round 1, both verified by
+# execution) — stated plainly rather than left implicit in "a future caller
+# building the argument at runtime would be exactly the leak #498 exists to
+# catch":
+#
+#   - CALLER-SIDE LEAK: `uuid_from_vec(bytes, e.to_string().leak())` at ANY
+#     caller of an allowlisted helper reaches the SAME hint position this
+#     entry vouches for, with no `format!` anywhere — so rule E5 (`format!`
+#     confinement) has nothing to see either. Confirmed: zero findings.
+#   - CHAIN: a brand-new pass-through wrapper —
+#     `fn uuid_for(b: &[u8], field: &'static str) -> X { uuid_from_vec(b,
+#     field) }` — creates NO gated-field construction site of its own (its
+#     body is a plain function call, not a `detail:`-named initializer), so
+#     it produces NO FINDING AT ALL, not even one this section could
+#     allowlist. Confirmed: zero findings. Every entry below covers only the
+#     FIRST hop out of the allowlisted helper; a second hop is invisible to
+#     this guard by construction.
+#
+# The "re-verify on any edit" instruction below has NO MECHANICAL HOOK: rule
+# E3 keys an allowlist entry on the exact CONSTRUCTION-SITE text inside the
+# allowlisted helper itself, which does not change when a caller in ANOTHER
+# FILE is added, removed, or starts building the forwarded argument at
+# runtime. Adding a new caller touches neither this entry nor the line it is
+# keyed on, and the guard stays green regardless. Re-verification here is
+# PURELY a human-review discipline — nothing enforces it — which is a
+# materially weaker claim than "this file changed and the diff was
+# reviewed."
+#
+# THESE SIX ENTRIES ARE PLACEHOLDERS #498's STRUCTURAL OPTION DELETES, NOT
+# JUST ALLOWLISTS IT. For the five ffi-uniffi entries the cheapest version is
+# a closed `enum ArgField` declared in that crate's own `detail.rs`, with one
+# variant per legitimate field name — replacing the `field: &'static str`
+# parameter with `field: ArgField` removes the parameter's ABILITY to carry
+# a leaked or forwarded runtime string at all, which is what makes every
+# entry below (and the two evasions above) unrepresentable rather than
+# merely unreviewed. #498 stays OPEN recording exactly this option.
+#
+# HIGH review weight, same tier as Section 3: this guard sees the CALL SITE
+# to the sanctioned constructor, not the enclosing function's own callers —
+# the claim "every caller of the enclosing function passes a literal" is a
+# point-in-time fact this guard cannot re-verify on its own, and — per the
+# above — cannot even detect a NEW caller of.
+# =============================================================================
+
+ffi/secretary-ffi-bridge/src/error/detail.rs	E3	io_gated_with_path_and_advice::<io::Error payload>: crate::error::detail::gated_with_path_and_advice(e, path, advice)	`advice` is `io_gated_with_path_and_advice`'s OWN `&'static str` parameter (detail.rs, a few lines above this call), forwarded one hop into `gated_with_path_and_advice`'s hint position. Its only production call site is repair/orchestration.rs's §10 rollback-baseline read, which passes a fixed string literal; its only other call site is inside `#[cfg(test)] mod tests` in this same file (never reaches a shipped binary).
+ffi/secretary-ffi-uniffi/src/namespace/mod.rs	E3	uuid_from_vec::detail: crate::detail::arg_len(field, 16, bytes.len())	`field` is `uuid_from_vec`'s own `&'static str` parameter, forwarded one hop into `arg_len`'s hint position. Every one of its 46 call sites (record_edit.rs x12, sync.rs x1, contacts.rs x3, repair.rs x4, block_crud.rs x9, namespace/mod.rs x17 — verified by `grep -rn '\buuid_from_vec('`) passes a fixed string literal.
+ffi/secretary-ffi-uniffi/src/namespace/mod.rs	E3	array32_from_vec_into::detail: crate::detail::arg_len(field, 32, bytes.len())	`field` is `array32_from_vec_into`'s own `&'static str` parameter, forwarded one hop into `arg_len`'s hint position (#503: `array32_from_vec_into` replaced the by-value `array32_from_vec`, deleted in the same commit, so this row stays one-to-one with its subject and its key text — unchanged — is now this function's). Every one of its 3 production call sites (namespace/mod.rs:602, repair.rs:232,362 — verified by `grep -rn '\barray32_from_vec_into('` ffi/secretary-ffi-uniffi/src/namespace/, excluding the definition at mod.rs:680 and the two `#[cfg(test)]` calls in mod.rs's own test module at :1024,:1032 — the second was cited as :1028 until the #500 final review re-ran the grep) passes the fixed literal "device_secret".
+ffi/secretary-ffi-uniffi/src/namespace/mod.rs	E3	uuid_from_vec_at::detail: crate::detail::indexed_arg_len(field, index, 16, bytes.len())	`field` is `uuid_from_vec_at`'s own `&'static str` parameter (`index` is the enclosing `enumerate()`'s integer, not a hint position), forwarded one hop into `indexed_arg_len`'s hint position. Its one call site (repair.rs:58, `convert_approvals`) passes the fixed literal "approvals.block_uuid".
+ffi/secretary-ffi-uniffi/src/namespace/mod.rs	E3	array32_from_vec_at::detail: crate::detail::indexed_arg_len(field, index, 32, bytes.len())	`field` is `array32_from_vec_at`'s own `&'static str` parameter (`index` is the enclosing `enumerate()`'s integer, not a hint position), forwarded one hop into `indexed_arg_len`'s hint position. Both of its call sites (repair.rs:60,61, `convert_approvals`) pass a fixed literal ("approvals.file_fingerprint", "approvals.committed_fingerprint").
+ffi/secretary-ffi-uniffi/src/namespace/mod.rs	E3	uuid_from_vec_nested_at::detail: crate::detail::nested_indexed_arg_len(field, outer, inner, 16, bytes.len())	`field` is `uuid_from_vec_nested_at`'s own `&'static str` parameter (`outer`/`inner` are the enclosing nested `enumerate()`s' integers, not hint positions), forwarded one hop into `nested_indexed_arg_len`'s hint position. Its one call site (repair.rs:70, `convert_approvals`) passes the fixed literal "approvals.added_recipients".

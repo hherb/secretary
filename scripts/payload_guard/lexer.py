@@ -39,8 +39,10 @@ KIND_LITERAL = "s"  # a literal's CONTENT bytes
 # `discovery_view`, which `rules/e3.py` names as the ONE pass in this guard
 # where a lexer desync is fail-OPEN — so a single `cr#"a " b"#` line above a
 # violation silently blanked it (verified by execution). This is the same
-# class `BP30`-`BP33` pin for `r#`/`br`/escapes/lifetimes; `BP45`/`BP46` now
-# pin the C-string forms.
+# class `BP30`-`BP33` pin for `r#`/`br`/escapes/lifetimes; `BP45` pins the
+# C-string forms. (This cited `BP45`/`BP46` until #515; `BP46` has never
+# existed — the corpus runs BP1-BP45, BP47-BP58. That is #507, and the
+# dangling citation was its only in-tree symptom.)
 RAW_STRING_START_RE = re.compile(r"(?:[bc]?r)(?P<hashes>#*)\"")
 # `'x'`, `'\n'`, `'\''`, `'\\'`, `'\u{1F600}'`, and the byte forms `b'x'`.
 # Deliberately NOT matched: `'static` / `'a` / `'outer` -- a `'` that is not

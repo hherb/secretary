@@ -4,6 +4,7 @@
 use thiserror::Error;
 
 use crate::error::detail;
+use crate::error::detail::Detail;
 
 /// FFI-friendly thinned error type for the unlock entry points
 /// (`open_with_password` and `open_with_recovery`). See the parent
@@ -34,7 +35,7 @@ pub enum FfiUnlockError {
         /// Diagnostic text from the inner `MnemonicError` variant's
         /// `Display` impl, or `"phrase contained invalid UTF-8"` when
         /// the FFI input slice is not valid UTF-8.
-        detail: String,
+        detail: Detail,
     },
 
     /// `vault.toml` and `identity.bundle.enc` reference different vaults.
@@ -57,7 +58,7 @@ pub enum FfiUnlockError {
         /// projection layer was already using `detail` in B.2 to
         /// avoid a Kotlin `Throwable.message` collision; B.3a propagates
         /// the rename back to the bridge so all layers agree.
-        detail: String,
+        detail: Detail,
     },
 }
 
@@ -152,7 +153,7 @@ mod tests {
         let FfiUnlockError::CorruptVault { detail } = ffi else {
             panic!("expected CorruptVault");
         };
-        assert!(detail.contains("vault data integrity failure"));
+        assert!(detail.as_str().contains("vault data integrity failure"));
     }
 
     #[test]
@@ -163,8 +164,8 @@ mod tests {
         let FfiUnlockError::CorruptVault { detail } = ffi else {
             panic!("expected CorruptVault");
         };
-        assert!(detail.contains("malformed vault.toml"));
-        assert!(detail.contains("kdf"));
+        assert!(detail.as_str().contains("malformed vault.toml"));
+        assert!(detail.as_str().contains("kdf"));
     }
 
     #[test]
@@ -224,7 +225,7 @@ mod tests {
             "vault.toml and identity.bundle.enc reference different vaults",
         );
         let corrupt = FfiUnlockError::CorruptVault {
-            detail: "fnord".to_string(),
+            detail: Detail::for_test("fnord"),
         };
         assert_eq!(corrupt.to_string(), "vault data integrity failure: fnord",);
     }
@@ -238,7 +239,7 @@ mod tests {
             panic!("expected InvalidMnemonic, got {ffi:?}");
         };
         assert!(
-            detail.contains("got 3"),
+            detail.as_str().contains("got 3"),
             "detail did not carry word count: {detail}"
         );
     }
@@ -255,7 +256,7 @@ mod tests {
             panic!("expected InvalidMnemonic, got {ffi:?}");
         };
         assert!(
-            detail.contains("#6"),
+            detail.as_str().contains("#6"),
             "detail did not carry the 1-based word position: {detail}"
         );
     }
@@ -269,7 +270,7 @@ mod tests {
             panic!("expected InvalidMnemonic, got {ffi:?}");
         };
         assert!(
-            detail.to_lowercase().contains("checksum"),
+            detail.as_str().to_lowercase().contains("checksum"),
             "detail did not mention checksum: {detail}"
         );
     }
@@ -340,14 +341,14 @@ mod tests {
         // tripwire — a future refactor that reverts to `message` would fail
         // here AND break the uniffi/PyO3 forwarders, so it must be deliberate.
         let ffi = FfiUnlockError::CorruptVault {
-            detail: "tripwire".to_string(),
+            detail: Detail::for_test("tripwire"),
         };
         let rendered = format!("{ffi}");
         assert!(rendered.contains("tripwire"));
         let FfiUnlockError::CorruptVault { detail } = ffi else {
             unreachable!()
         };
-        assert_eq!(detail, "tripwire");
+        assert_eq!(detail.as_str(), "tripwire");
     }
 
     #[test]
@@ -359,7 +360,7 @@ mod tests {
         // text would fail here, forcing a deliberate decision rather than
         // a silent regression.
         let ffi = FfiUnlockError::CorruptVault {
-            detail: "fnord".to_string(),
+            detail: Detail::for_test("fnord"),
         };
         let rendered = format!("{ffi}");
         assert!(

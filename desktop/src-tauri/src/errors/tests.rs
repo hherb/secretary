@@ -9,6 +9,7 @@
 
 use super::{map_ffi_error, AppError, AppWarning};
 use secretary_ffi_bridge::error::FfiVaultError;
+use secretary_ffi_bridge::Detail;
 use serde_json::Value;
 
 fn round_trip(err: &AppError) -> Value {
@@ -176,7 +177,7 @@ fn map_ffi_error_is_pure_no_log_side_effect_required() {
 #[test]
 fn ffi_corrupt_vault_detail_is_logged_but_stripped_on_serialize() {
     let mapped: AppError = FfiVaultError::CorruptVault {
-        detail: "dev-facing crypto failure context".to_string(),
+        detail: Detail::for_test("dev-facing crypto failure context"),
     }
     .into();
     let v = round_trip(&mapped);
@@ -208,7 +209,7 @@ fn trash_entry_not_found_carries_hex() {
 #[test]
 fn ffi_block_uuid_already_live_maps_to_restore_conflict() {
     let mapped = map_ffi_error(FfiVaultError::BlockUuidAlreadyLive {
-        detail: "abcd".into(),
+        detail: Detail::for_test("abcd"),
     });
     assert!(
         matches!(mapped, AppError::BlockRestoreConflict { block_uuid_hex } if block_uuid_hex == "abcd"),
@@ -219,7 +220,7 @@ fn ffi_block_uuid_already_live_maps_to_restore_conflict() {
 #[test]
 fn ffi_block_not_in_trash_maps_to_trash_entry_not_found() {
     let mapped = map_ffi_error(FfiVaultError::BlockNotInTrash {
-        detail: "ef01".into(),
+        detail: Detail::for_test("ef01"),
     });
     assert!(
         matches!(mapped, AppError::TrashEntryNotFound { block_uuid_hex } if block_uuid_hex == "ef01"),
@@ -239,7 +240,7 @@ fn block_purged_carries_hex() {
 #[test]
 fn ffi_block_purged_maps_to_block_purged() {
     let mapped = map_ffi_error(FfiVaultError::BlockPurged {
-        detail: "ef01".into(),
+        detail: Detail::for_test("ef01"),
     });
     assert!(
         matches!(mapped, AppError::BlockPurged { block_uuid_hex } if block_uuid_hex == "ef01"),
@@ -267,12 +268,12 @@ fn share_errors_serialize_typed() {
         "missing_recipient_card"
     );
     let v = round_trip(&AppError::ContactAlreadyExists {
-        contact_uuid_hex: "ab".into(),
+        contact_uuid_hex: "ab".to_string(),
     });
     assert_eq!(v["code"], "contact_already_exists");
     assert_eq!(v["contact_uuid_hex"], "ab");
     let v = round_trip(&AppError::ContactNotFound {
-        contact_uuid_hex: "cd".into(),
+        contact_uuid_hex: "cd".to_string(),
     });
     assert_eq!(v["code"], "contact_not_found");
     assert_eq!(v["contact_uuid_hex"], "cd");
@@ -323,16 +324,16 @@ fn ffi_share_variants_route_to_typed_app_errors() {
     let m: AppError = map_ffi_error(FfiVaultError::CannotRevokeOwner);
     assert_eq!(round_trip(&m)["code"], "cannot_revoke_owner");
     let m = map_ffi_error(FfiVaultError::ContactAlreadyExists {
-        uuid_hex: "ab".into(),
+        uuid_hex: Detail::for_test("ab"),
     });
     assert_eq!(round_trip(&m)["contact_uuid_hex"], "ab");
     let m = map_ffi_error(FfiVaultError::ContactNotFound {
-        uuid_hex: "cd".into(),
+        uuid_hex: Detail::for_test("cd"),
     });
     assert_eq!(round_trip(&m)["contact_uuid_hex"], "cd");
     let m = map_ffi_error(FfiVaultError::NotAuthor {
-        expected_fingerprint_hex: "x".into(),
-        got_fingerprint_hex: "y".into(),
+        expected_fingerprint_hex: Detail::for_test("x"),
+        got_fingerprint_hex: Detail::for_test("y"),
     });
     let v = round_trip(&m);
     assert_eq!(v["code"], "not_author");
@@ -370,7 +371,7 @@ fn repair_rejected_carries_block_uuid_hex_and_detail() {
 #[test]
 fn map_ffi_error_routes_vault_needs_repair() {
     let mapped = map_ffi_error(FfiVaultError::VaultNeedsRepair {
-        block_uuid_hex: "11223344-5566-7788-99aa-bbccddeeff00".to_string(),
+        block_uuid_hex: Detail::for_test("11223344-5566-7788-99aa-bbccddeeff00"),
     });
     let AppError::VaultNeedsRepair { block_uuid_hex } = mapped else {
         panic!("expected VaultNeedsRepair");
@@ -381,8 +382,8 @@ fn map_ffi_error_routes_vault_needs_repair() {
 #[test]
 fn map_ffi_error_routes_repair_rejected() {
     let mapped = map_ffi_error(FfiVaultError::RepairRejected {
-        block_uuid_hex: "11223344-5566-7788-99aa-bbccddeeff00".to_string(),
-        detail: "clock relation Concurrent".to_string(),
+        block_uuid_hex: Detail::for_test("11223344-5566-7788-99aa-bbccddeeff00"),
+        detail: Detail::for_test("clock relation Concurrent"),
     });
     let AppError::RepairRejected {
         block_uuid_hex,

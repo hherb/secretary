@@ -240,11 +240,12 @@ pub(crate) fn decrypt_block_file_bytes(
     // post-unlock memory corruption rather than a deliberate close.
     let (reader_x_sk, reader_pq_sk) = identity.reader_secret_keys().map_err(|e| match e {
         ReaderSecretKeysError::HandleClosed => FfiVaultError::CorruptVault {
-            detail: "identity handle has been closed".to_string(),
+            detail: detail::literal("identity handle has been closed"),
         },
         ReaderSecretKeysError::MlKem768ParseFailed => FfiVaultError::CorruptVault {
-            detail: "identity ML-KEM-768 secret key parse failed (post-unlock memory corruption?)"
-                .to_string(),
+            detail: detail::literal(
+                "identity ML-KEM-768 secret key parse failed (post-unlock memory corruption?)",
+            ),
         },
     })?;
 
@@ -281,7 +282,7 @@ pub(crate) fn decrypt_block_file_bytes(
 
 pub(crate) fn handle_wiped() -> FfiVaultError {
     FfiVaultError::CorruptVault {
-        detail: "vault manifest handle has been wiped".to_string(),
+        detail: detail::literal("vault manifest handle has been wiped"),
     }
 }
 
@@ -325,7 +326,7 @@ mod tests {
         let FfiVaultError::CorruptVault { detail } = err else {
             panic!("expected CorruptVault");
         };
-        assert!(detail.contains("wiped"), "detail: {detail}");
+        assert!(detail.as_str().contains("wiped"), "detail: {detail}");
     }
 
     #[test]

@@ -121,7 +121,7 @@ pub fn auto_purge_expired(
     let (manifest_body, manifest_file, owner_card, ibk, vault_folder) = manifest
         .snapshot_for_save_block()
         .ok_or_else(|| FfiVaultError::CorruptVault {
-            detail: "vault manifest handle has been closed".into(),
+            detail: detail::literal("vault manifest handle has been closed"),
         })?;
 
     // Step 2: snapshot identity (re-sign needs the secret keys).
@@ -129,7 +129,7 @@ pub fn auto_purge_expired(
         identity
             .clone_inner_bundle()
             .ok_or_else(|| FfiVaultError::CorruptVault {
-                detail: "identity handle has been closed".into(),
+                detail: detail::literal("identity handle has been closed"),
             })?;
 
     // Step 3: build a temporary OpenVault from the snapshots.

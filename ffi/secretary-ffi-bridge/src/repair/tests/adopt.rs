@@ -27,7 +27,7 @@ fn repair_vault_with_password_adopts_interrupted_save_then_reopens() {
         open_vault_with_password(&folder, &pw).expect_err("crash residue must fail the plain open");
     match err {
         FfiVaultError::VaultNeedsRepair { block_uuid_hex } => {
-            assert_eq!(block_uuid_hex, format_uuid_hyphenated(&block_uuid));
+            assert_eq!(block_uuid_hex.as_str(), format_uuid_hyphenated(&block_uuid));
         }
         other => panic!("expected VaultNeedsRepair, got {other:?}"),
     }
@@ -156,13 +156,15 @@ fn repair_vault_with_password_rejects_recipient_widening_residue() {
             block_uuid_hex,
             detail,
         } => {
-            assert_eq!(block_uuid_hex, format_uuid_hyphenated(&block_uuid));
+            assert_eq!(block_uuid_hex.as_str(), format_uuid_hyphenated(&block_uuid));
             assert!(
-                detail.contains("would ADD recipients"),
+                detail.as_str().contains("would ADD recipients"),
                 "detail must name the widening reason: {detail}"
             );
             assert!(
-                detail.contains(&format_uuid_hyphenated(&card_c.contact_uuid)),
+                detail
+                    .as_str()
+                    .contains(&format_uuid_hyphenated(&card_c.contact_uuid)),
                 "detail must name the would-be-added recipient: {detail}"
             );
         }

@@ -171,9 +171,11 @@ fn repair_refuses_stale_approval_as_repair_rejected() {
             block_uuid_hex,
             detail,
         } => {
-            assert_eq!(block_uuid_hex, format_uuid_hyphenated(&block_uuid));
+            assert_eq!(block_uuid_hex.as_str(), format_uuid_hyphenated(&block_uuid));
             assert!(
-                detail.contains("does not match the on-disk residue"),
+                detail
+                    .as_str()
+                    .contains("does not match the on-disk residue"),
                 "must be the stale-consent rejection arm specifically: {detail}"
             );
         }

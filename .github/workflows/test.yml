@@ -63,6 +63,20 @@ jobs:
       # probe")` before a single assertion runs.
       - name: 'install uv'
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
+      # A NON-TEST build. `cargo test` and `cargo clippy --tests` both unify
+      # dev-dependency features in, so a production call to the
+      # `test-support`-gated `Detail::for_test` compiles clean through both
+      # once a consumer wires the dev-dependency. RE-VERIFIED on this
+      # workspace (#500 Task 3 Step 6b), with a production `pub fn` calling
+      # `Detail::for_test` planted in the bridge and ffi-uniffi + desktop
+      # requesting the feature from [dev-dependencies] — error counts:
+      # build 2, clippy 2, test 0, clippy --tests 0, rustdoc 4. The rustdoc
+      # gate is NOT a blind spot: this crate is depended on by other
+      # workspace members, so `cargo doc` must build its rmeta and
+      # type-checks its bodies too. Only a non-test build catches what
+      # `cargo test` / `cargo clippy --tests` miss.
+      - name: cargo build --release --workspace
+        run: cargo build --release --workspace
       # Mirrors the documented local command in CLAUDE.md. The
       # differential-replay tests (which also shell out to `uv`) are behind an
       # opt-in Cargo feature and stay off here.
@@ -266,6 +280,10 @@ jobs:
         run: uv run scripts/check-error-payload-hygiene.py --self-test
       - name: 'check-error-payload-hygiene.py'
         run: uv run scripts/check-error-payload-hygiene.py
+      - name: 'check-test-support-placement.py --self-test'
+        run: uv run scripts/check-test-support-placement.py --self-test
+      - name: 'check-test-support-placement.py'
+        run: uv run scripts/check-test-support-placement.py
 
   android-host:
     name: android host (:vault-access:test)

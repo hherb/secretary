@@ -1,8 +1,10 @@
 """The real scan driver: `run_real_scan` walks every `ScanRoot` in
 `payload_guard.roots.SCAN_ROOTS` and runs whichever rules that root's data
 says apply (bridge_mode E1 plus E2/E3/E4 on the bridge root; E1/E2/E3 plus
-E3 shape 5 on the two wrapper roots) against every `.rs` file, honouring the
-allowlist. Moved out of the former single-file
+E5 on the two wrapper roots) against every `.rs` file, honouring the
+allowlist. The wrapper roots also carried E3's shape-5 acceptance until
+#497/#500 retired it; `allow_field_access` is False on every root now.
+Moved out of the former single-file
 `scripts/check-error-payload-hygiene.py` in #486 (task 4); rewritten in
 #486 (task 9) to loop over `SCAN_ROOTS` instead of open-coding two hand-written
 passes — see `payload_guard.roots` for why.
@@ -15,7 +17,8 @@ import sys
 from payload_guard.allowlist import load_allowlist
 from payload_guard.config import ALLOWLIST_PATH, DETAIL_MODULE_REL, REPO_ROOT
 from payload_guard.discovery import (
-    _discover_tier_inputs, discover_scanned_error_type_names, foreign_use_names,
+    _discover_tier_inputs, discover_local_detail_decoys,
+    discover_scanned_error_type_names, foreign_use_names,
 )
 from payload_guard.roots import SCAN_ROOTS
 from payload_guard.rules.e1 import scan_source
@@ -23,6 +26,7 @@ from payload_guard.rules.e2 import scan_bridge_plain_declarations
 from payload_guard.rules.e3 import sanctioned_constructor_names, scan_bridge_construction_sites
 from payload_guard.rules.e4 import is_detail_module, scan_bridge_gated_detail_impls
 from payload_guard.rules.e5 import scan_wrapper_format_confinement
+from payload_guard.rules.e6 import scan_bridge_detail_construction
 from payload_guard.types import Finding
 
 
@@ -101,7 +105,7 @@ def run_real_scan() -> int:
     # that file's namespace contradicts.
     violations: list[Finding] = []
     for root in SCAN_ROOTS:
-        enums, aliases, consts = tiers[root.label]
+        enums, aliases, consts, alias_candidate_names = tiers[root.label]
         detail_src = (
             next(
                 (
@@ -114,16 +118,33 @@ def run_real_scan() -> int:
             if root.detail_module_rel
             else None
         )
-        sanctioned = sanctioned_constructor_names(detail_src)
+        sanctioned = sanctioned_constructor_names(
+            detail_src, owns_detail_type=root.owns_detail_type
+        )
+        # #500 fix round 2: every `gated_field_types` spelling shadowed by a
+        # same-named local declaration ELSEWHERE in this root — a raw
+        # `type X = Y;` alias candidate (collision or not — see
+        # `_discover_tier_inputs`'s docstring for why this must be the
+        # PRE-collision-drop set, not `frozenset(aliases)`) union a decoy
+        # `struct|enum|union|type Detail` outside the sanctioned module (see
+        # `discover_local_detail_decoys`). Computed ONCE PER ROOT, same as
+        # `sanctioned` above, and threaded unchanged into every file's scan.
+        shadowed_type_names = alias_candidate_names | discover_local_detail_decoys(
+            sources[root.label], root.detail_module_rel
+        )
         for label, raw in sources[root.label]:
             foreign = foreign_use_names(raw)
             findings = scan_source(
                 label, raw, enums, aliases, consts, foreign,
                 bridge_mode=root.bridge_mode,
+                gated_field_types=root.gated_field_types,
+                shadowed_type_names=shadowed_type_names,
             )
             if root.bridge_mode:
                 findings += scan_bridge_plain_declarations(
-                    label, raw, enums, aliases, foreign
+                    label, raw, enums, aliases, foreign,
+                    gated_field_types=root.gated_field_types,
+                    shadowed_type_names=shadowed_type_names,
                 )
             if root.construction_sites:
                 findings += scan_bridge_construction_sites(
@@ -134,6 +155,12 @@ def run_real_scan() -> int:
                 findings += scan_bridge_gated_detail_impls(
                     label, raw, scanned_error_type_names
                 )
+                # #515 I5: rule E6 rides the SAME flag rather than adding a
+                # new one. A flag nothing reads is the fail-open class #496
+                # closed, and `gated_detail_impls` already means exactly
+                # "this root owns the `Detail`/`GatedDetail` machinery" —
+                # so `_check_root_rule_flags` pins E6's scope for free.
+                findings += scan_bridge_detail_construction(label, raw)
             if root.format_confinement:
                 findings += scan_wrapper_format_confinement(
                     label, raw, root.detail_module_rel

@@ -1,1 +1,1 @@
-docs/handoffs/2026-08-09-486-guard-residual-closeout-shipped.md
+docs/handoffs/2026-08-09-500-detail-newtype-shipped.md

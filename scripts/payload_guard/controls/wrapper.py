@@ -1,17 +1,23 @@
-"""Rule E3 shape 5's, and rule E5's, self-test control corpus (#486):
+"""The wrapper-root self-test control corpus (#486):
 `WRAPPER_POSITIVE_CONTROLS` / `WRAPPER_NEGATIVE_CONTROLS`, run through
 `payload_guard.selftest.scan_wrapper_control` — the wrapper-root rule set
-(`bridge_mode=True` plus E2/E3, E3's `allow_field_access` ON, no E4; rule E5
-runs separately, over `path_label` + `raw` + the root's
-`detail_module_rel`, since it needs the WHOLE FILE TEXT rather than a single
-self-contained fixture string — see `WP4`/`WN2`/`WN3` below and
-`payload_guard.scan.run_real_scan`'s `format_confinement` wiring).
+(`bridge_mode=True` plus E2/E3, no E4; rule E5 runs separately, over
+`path_label` + `raw` + the root's `detail_module_rel`, since it needs the
+WHOLE FILE TEXT rather than a single self-contained fixture string — see
+`WP4`/`WN2`/`WN3` below and `payload_guard.scan.run_real_scan`'s
+`format_confinement` wiring).
+
+Written for rule E3's shape 5, which #497/#500 RETIRED on every root once
+its four DTO pass-through sites moved onto `detail::project(...)`;
+`allow_field_access` is False everywhere now and `WP7` pins the denial. E5
+is the rule the wrapper roots take and the bridge does not.
 
 Mirrors `payload_guard.controls.bridge`'s self-contained-fixture design.
-The BRIDGE-scoping half of shape 5's story is NOT here: it is a BRIDGE
-control (`BP43` in `payload_guard.controls.bridge`), because it asserts what
-the bridge root does, not what a wrapper root does. Read the entry point's
-module docstring first for the WHY.
+`BP43` lives in the BRIDGE corpus rather than here because it asserts what
+the bridge root does, not what a wrapper root does — it used to be the
+bridge half of shape 5's per-root SCOPING story, and with the flag off
+everywhere it and `WP7` now simply pin the same expression denying on both
+sides. Read the entry point's module docstring first for the WHY.
 
 A fixture asserting a construct MUST DENY (produce a finding) is a
 POSITIVE control here, matching `WP1`'s own precedent ("... is not a
@@ -31,29 +37,107 @@ brief.
 
 from __future__ import annotations
 
+# A wrapper `detail.rs` stand-in that declares the #500 projection constructor.
+# `project`'s only parameter is a `Detail`, which sits in rule E3's
+# `SAFE_PARAM_TYPES` — so unlike `passthrough(&str)` (BP49) the constructor
+# survives the signature gate and its call sites are sanctioned.
+SELF_TEST_WRAPPER_DETAIL_SRC_WITH_PROJECT = '''
+pub(crate) fn arg_len(field: &'static str, n: usize) -> String {
+    format!("{field}: {n}")
+}
+
+pub(crate) fn project(d: Detail) -> String {
+    d.into_string()
+}
+'''
+
+# A wrapper `detail.rs` stand-in carrying a DECOY type called `Detail` (#500
+# fix round 1). `SAFE_PARAM_TYPES` matches the spelling, not the resolved
+# type, so before the fix this sanctioned `detail::launder(<anything>)`.
+SELF_TEST_WRAPPER_DETAIL_SRC_WITH_DECOY = '''
+pub(crate) struct Detail(pub String);
+
+pub(crate) fn launder(d: Detail) -> String {
+    d.0
+}
+'''
+
+# The BY-REFERENCE twin of the fixture above (#504). `&Detail` joined
+# `SAFE_PARAM_TYPES` for ffi-py's `fingerprint_mismatch`/`uuid_prefixed`,
+# and `_ctor_params_are_safe`'s decoy withdrawal originally subtracted only
+# `{"Detail"}` from `allowed` — never `"&Detail"` — so a decoy declared
+# beside a BY-REFERENCE constructor sanctioned it while the by-value form
+# (WP8) correctly denied (verified by execution before the fix landed).
+SELF_TEST_WRAPPER_DETAIL_SRC_WITH_REF_DECOY = '''
+pub(crate) struct Detail(pub String);
+
+pub(crate) fn launder(d: &Detail) -> String {
+    d.0.clone()
+}
+'''
+
+# A wrapper `detail.rs` stand-in carrying a DECOY TRAIT called `GatedDetail`
+# (#504 review R3) — the same class of hole as the two fixtures above, one
+# type over. A wrapper crate cannot implement the BRIDGE's `pub(crate)`
+# (sealed) `GatedDetail`, but nothing stops it declaring its OWN local trait
+# of the same name and implementing it for `String`; before the fix this
+# sanctioned `detail::launder(&impl GatedDetail)` on any wrapper root.
+# #515 C3: a decoy for a `SAFE_PARAM_TYPES` member that had NO withdrawal
+# of its own. `Path` is representative rather than special — `ErrorKind` and
+# `VaultError` decoy identically, and the withdrawal is derived from the set
+# so all three (and any future member) are covered by one rule.
+SELF_TEST_WRAPPER_DETAIL_SRC_WITH_PATH_DECOY = '''
+pub(crate) struct Path(pub String);
+
+pub(crate) fn launder(p: &Path) -> String {
+    p.0.clone()
+}
+'''
+
+SELF_TEST_WRAPPER_DETAIL_SRC_WITH_GATED_DETAIL_DECOY = '''
+pub(crate) trait GatedDetail {
+    fn render(&self) -> String;
+}
+
+impl GatedDetail for String {
+    fn render(&self) -> String {
+        self.clone()
+    }
+}
+
+pub(crate) fn launder(d: &impl GatedDetail) -> String {
+    d.render()
+}
+'''
+
 WRAPPER_POSITIVE_CONTROLS: list[tuple] = [
     (
-        "WP1 shape 5 trusts the FINAL SEGMENT only: a field access whose "
-        "last segment is NOT the gated field's own name is not a "
-        "pass-through and must deny",
+        "WP1 a field access whose last segment is NOT the gated field's own "
+        "name is not a DTO pass-through and must deny. This was shape 5's "
+        "final-segment test; with `allow_field_access` OFF (#497/#500) it "
+        "denies one step earlier, at the flag. Kept because it must STILL "
+        "deny if the acceptance is ever re-enabled — re-enabling it and "
+        "re-running is the check a future author owes this control",
         ''' fn f(a: &A) -> E { E::V { uuid_hex: a.some_other_field } } ''',
         {"rule": "E3", "field": "uuid_hex"},
     ),
     (
         "WP2 a hand-rolled format! into a gated field denies in a wrapper "
-        "root exactly as it does in the bridge — shape 5 widens the accepted "
-        "set, it does not disable the rule",
+        "root exactly as it does in the bridge — a per-root E3 acceptance "
+        "widens the accepted set, it never disables the rule",
         ''' fn f(n: usize) -> E { E::V { detail: format!("got {n}") } } ''',
         {"rule": "E3", "field": "detail"},
     ),
     (
-        "WP3 review finding (task 9): shape 5 is SINGLE-HOP only — a "
-        "depth-2 chain `a.b.uuid_hex` is a claim about an intermediate "
-        "value (`a.b`) this rule has no way to vouch for, is not the shape "
-        "any live site takes, and must DENY even though its final segment "
-        "is the gated name. An earlier, unbounded-depth version of "
+        "WP3 review finding (task 9): a depth-2 chain `a.b.uuid_hex` is a "
+        "claim about an intermediate value (`a.b`) this rule has no way to "
+        "vouch for, and must DENY even though its final segment is the "
+        "gated name. An earlier, unbounded-depth version of "
         "`FIELD_ACCESS_RE` accepted this — wider than the shape it was "
-        "written to recognise, and untested in the extra width",
+        "written to recognise, and untested in the extra width. Like `WP1` "
+        "this now denies at the `allow_field_access` flag (#497/#500) "
+        "rather than at the depth test; both must still hold if shape 5 is "
+        "re-enabled",
         ''' fn f(a: A) -> E { E::V { uuid_hex: a.b.uuid_hex } } ''',
         {"rule": "E3", "field": "uuid_hex"},
     ),
@@ -79,17 +163,106 @@ WRAPPER_POSITIVE_CONTROLS: list[tuple] = [
             fn f(a: &str) -> PyErr { VaultNotAuthor::new_err(format!("{a}")) } ''',
         {"rule": "E5"},
     ),
+    (
+        "WP6 #500: the INLINE unwrap `detail: detail.into_string()` still "
+        "DENIES. Adding `Detail` to SAFE_PARAM_TYPES sanctions a CALL to a "
+        "wrapper detail.rs constructor that takes one; it must not also make "
+        "a trailing transform legal in a gated initializer. This is the "
+        "shape all ~27 wrapper projection arms took before they were routed "
+        "through `detail::project`, and it matches neither arm 4 (the "
+        "expression is not the bare field name) nor arm 5 (shape 5 is a "
+        "single-hop field access, nothing appended)",
+        ''' fn f(e: FfiVaultError) -> E { E::V { detail: detail.into_string() } } ''',
+        {"rule": "E3", "field": "detail"},
+    ),
+    (
+        "WP7 #497/#500: the single-hop DTO pass-through `uuid_hex: "
+        "a.uuid_hex` now DENIES on a wrapper root. It was E3 shape 5's whole "
+        "purpose and this control was `WN1`, asserting the opposite; #500 "
+        "moved all four live sites onto `detail::project(...)`, so the "
+        "acceptance had ZERO users, and shape 5 admits an ARBITRARY "
+        "single-hop receiver — a local of any type, including one declared "
+        "outside every scan root — which is wider than the four DTOs that "
+        "justified it. `ScanRoot.allow_field_access`'s own docstring says an "
+        "acceptance granted where nothing needs it is a laundering door for "
+        "free, so it was switched off. Flipping either wrapper root back to "
+        "True must make this control stop firing",
+        ''' fn f(a: A) -> E { E::V { uuid_hex: a.uuid_hex } } ''',
+        {"rule": "E3", "field": "uuid_hex"},
+    ),
+    (
+        "WP8 #500 fix round 1: a LOCALLY-DECLARED decoy type named `Detail` "
+        "in a wrapper's own detail.rs must NOT satisfy SAFE_PARAM_TYPES' "
+        "spelling test. The set matches the TEXT `Detail`, not the resolved "
+        "type, and only the BRIDGE declares the authentic newtype — so "
+        "`pub(crate) struct Detail(pub String)` plus `launder(d: Detail)` "
+        "made `detail::launder(Detail(anything))` scan OK (verified by "
+        "execution). The constructor must now be DROPPED from the "
+        "sanctioned set, so its call site denies. Setting "
+        "`owns_detail_type=True` on a wrapper root must make this stop firing",
+        ''' fn f(x: String) -> E { E::V { detail: detail::launder(Detail(x)) } } ''',
+        {"rule": "E3", "field": "detail"},
+        {"detail_src": SELF_TEST_WRAPPER_DETAIL_SRC_WITH_DECOY},
+    ),
+    (
+        # NOTE: labelled `WP10`, not `WP9` — `WP9` was already taken by
+        # `check_wrapper_alias_collision_isolated_from_decoy_check` in
+        # `selftest.py` (#500 fix round 2, "Important 1"), a DIFFERENT
+        # control (wrapper cross-file alias collision) that predates this
+        # one. Caught during this control's own review before it shipped
+        # with a colliding label.
+        "WP10 #504: the BY-REFERENCE twin of WP8. Adding `&Detail` to "
+        "SAFE_PARAM_TYPES (for ffi-py's fingerprint_mismatch/uuid_prefixed) "
+        "must not admit a wrapper decoy `&Detail` any more than the by-value "
+        "form does. `_ctor_params_are_safe`'s decoy withdrawal originally "
+        "subtracted only `{\"Detail\"}` from `allowed`, leaving `&Detail` "
+        "sanctioned for a locally-declared decoy beside a by-reference "
+        "constructor (verified by execution before the fix; the withdrawal "
+        "is now DERIVED via `\\bDetail\\b`, see `_ctor_params_are_safe`'s "
+        "own docstring). Setting `owns_detail_type=True` on a wrapper root "
+        "must make this stop firing, same as WP8",
+        ''' fn f(x: String) -> E { E::V { detail: detail::launder(&Detail(x)) } } ''',
+        {"rule": "E3", "field": "detail"},
+        {"detail_src": SELF_TEST_WRAPPER_DETAIL_SRC_WITH_REF_DECOY},
+    ),
+    (
+        "WP11 #504 review R3: a LOCALLY-DECLARED decoy TRAIT named "
+        "`GatedDetail` reproduces the WP8/WP10 bypass one type over. A "
+        "wrapper crate cannot implement the BRIDGE's `pub(crate)` (sealed) "
+        "`GatedDetail`, but nothing stops it declaring its OWN local trait "
+        "of that name, implementing it for `String`, and writing "
+        "`fn launder(d: &impl GatedDetail) -> String` — before the fix this "
+        "sanctioned `detail::launder(&some_runtime_string)` on any wrapper "
+        "root (verified by execution). Census: zero live wrapper "
+        "constructors take `&impl GatedDetail` today, so closing this cost "
+        "no call-site fallout. Setting `owns_detail_type=True` on a "
+        "wrapper root must make this stop firing, same as WP8/WP10 — see "
+        "`sanctioned_constructor_names`'s docstring for why the SAME flag "
+        "gates both the `Detail` and `GatedDetail` decoys",
+        ''' fn f(x: String) -> E { E::V { detail: detail::launder(&x) } } ''',
+        {"rule": "E3", "field": "detail"},
+        {"detail_src": SELF_TEST_WRAPPER_DETAIL_SRC_WITH_GATED_DETAIL_DECOY},
+    ),
+    (
+        "WP12 #515 C3: the GENERAL form of WP8/WP10/WP11. Every "
+        "`SAFE_PARAM_TYPES` member is matched by SPELLING and none is "
+        "resolved, so `&Path` — like `ErrorKind` and "
+        "`&secretary_core::vault::VaultError` — was decoy-able by a local "
+        "`struct Path(pub String)` in a wrapper's own detail.rs, with NO "
+        "withdrawal behind it. Verified by execution against the REAL scan "
+        "before the fix: `detail::launder(&detail::Path(x))` for an "
+        "arbitrary runtime `x` produced ZERO findings. CLAUDE.md described "
+        "the residual as 'two members', which was the overclaim — the "
+        "withdrawal set is now DERIVED from `SAFE_PARAM_TYPES` "
+        "(`SHADOWABLE_PARAM_IDENTS`), so a future member brings its own "
+        "identifiers and cannot be forgotten here",
+        ''' fn f(x: String) -> E { E::V { detail: detail::launder(&detail::Path(x)) } } ''',
+        {"rule": "E3", "field": "detail"},
+        {"detail_src": SELF_TEST_WRAPPER_DETAIL_SRC_WITH_PATH_DECOY},
+    ),
 ]
 
 WRAPPER_NEGATIVE_CONTROLS: list[tuple] = [
-    (
-        "WN1 shape 5: the DTO pass-through `uuid_hex: a.uuid_hex` is the "
-        "shape all four live sites take. It is arm 4's name-trust one level "
-        "deeper — it trusts that a field named `uuid_hex` was gated where "
-        "ITS type declared it, which rules E2/E3 in the bridge do establish "
-        "for these four",
-        ''' fn f(a: A) -> E { E::V { uuid_hex: a.uuid_hex } } ''',
-    ),
     (
         "WN2 rule E5: format! INSIDE the sanctioned detail module is the "
         "whole point of having one",
@@ -107,5 +280,16 @@ WRAPPER_NEGATIVE_CONTROLS: list[tuple] = [
             fn renders() { let rendered = format!("{err}"); assert!(!rendered.is_empty()); }
         }
         ''',
+    ),
+    (
+        "WN4 #500: `uuid_hex: detail::project(a.uuid_hex)` — the shape every "
+        "wrapper projection arm takes once the bridge's gated fields are "
+        "`Detail`. Accepted as E3 shape 2 (a sanctioned call consuming the "
+        "WHOLE initializer), which requires `project` to survive the #496 "
+        "signature gate; that in turn requires `Detail` in SAFE_PARAM_TYPES. "
+        "Removing `Detail` from that set must make this control FIRE — and "
+        "reds the real scan at 27 sites",
+        ''' fn f(a: A) -> E { E::V { uuid_hex: detail::project(a.uuid_hex) } } ''',
+        {"detail_src": SELF_TEST_WRAPPER_DETAIL_SRC_WITH_PROJECT},
     ),
 ]

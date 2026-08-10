@@ -244,13 +244,13 @@ fn save_plaintext(
     let (manifest_body, manifest_file, owner_card, ibk, vault_folder) = manifest
         .snapshot_for_save_block()
         .ok_or_else(|| FfiVaultError::CorruptVault {
-            detail: "vault manifest handle has been closed".into(),
+            detail: detail::literal("vault manifest handle has been closed"),
         })?;
     let identity_clone =
         identity
             .clone_inner_bundle()
             .ok_or_else(|| FfiVaultError::CorruptVault {
-                detail: "identity handle has been closed".into(),
+                detail: detail::literal("identity handle has been closed"),
             })?;
 
     // Clone owner_card a second time so it can serve as both the

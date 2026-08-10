@@ -8,6 +8,7 @@
 
 use secretary_cli::pipeline::InspectOutcome;
 
+use crate::error::detail;
 use crate::error::FfiVaultError;
 
 /// Result of one [`super::orchestration::sync_vault`] pass. Mirrors
@@ -95,10 +96,10 @@ impl VetoDecisionDto {
 /// 16-byte hex → [u8;16]; typed error otherwise (exactly 16 bytes / 32 hex chars).
 pub(crate) fn hex_to_16(s: &str) -> Result<[u8; 16], FfiVaultError> {
     let bytes = hex::decode(s).map_err(|_| FfiVaultError::SyncFailed {
-        detail: "invalid record_uuid hex".into(),
+        detail: detail::literal("invalid record_uuid hex"),
     })?;
     bytes.try_into().map_err(|_| FfiVaultError::SyncFailed {
-        detail: "record_uuid must be 16 bytes".into(),
+        detail: detail::literal("record_uuid must be 16 bytes"),
     })
 }
 

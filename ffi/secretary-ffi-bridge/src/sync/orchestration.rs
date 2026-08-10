@@ -37,7 +37,7 @@ pub fn sync_vault(
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, FfiVaultError> {
     let state_dir = default_state_dir().ok_or_else(|| FfiVaultError::SyncFailed {
-        detail: "no platform data directory available for the sync state cache".into(),
+        detail: detail::literal("no platform data directory available for the sync state cache"),
     })?;
     sync_vault_in(&state_dir, vault_folder, password, now_ms)
 }
@@ -143,7 +143,7 @@ pub fn sync_commit_decisions(
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, FfiVaultError> {
     let state_dir = default_state_dir().ok_or_else(|| FfiVaultError::SyncFailed {
-        detail: "no platform data directory available for the sync state cache".into(),
+        detail: detail::literal("no platform data directory available for the sync state cache"),
     })?;
     sync_commit_decisions_in(
         &state_dir,
@@ -173,7 +173,7 @@ pub fn sync_commit_decisions_in(
     //    detail rather than a panic.
     let expected = ManifestHash(<[u8; 32]>::try_from(manifest_hash.as_slice()).map_err(|_| {
         FfiVaultError::SyncFailed {
-            detail: "manifest_hash must be 32 bytes".into(),
+            detail: detail::literal("manifest_hash must be 32 bytes"),
         }
     })?);
 
@@ -237,7 +237,7 @@ pub fn sync_commit_decisions_in(
         SyncPassOutcome::RollbackRejected => SyncOutcomeDto::RollbackRejected,
         SyncPassOutcome::ConflictsPending { .. } => {
             return Err(FfiVaultError::SyncFailed {
-                detail: "commit unexpectedly returned ConflictsPending".into(),
+                detail: detail::literal("commit unexpectedly returned ConflictsPending"),
             })
         }
     };
@@ -486,7 +486,7 @@ mod tests {
             panic!("expected SyncFailed, got {err:?}");
         };
         assert!(
-            detail.contains("manifest_hash must be 32 bytes"),
+            detail.as_str().contains("manifest_hash must be 32 bytes"),
             "got detail {detail:?}"
         );
     }

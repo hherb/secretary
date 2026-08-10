@@ -235,11 +235,13 @@ fn repair_refuses_unreadable_rollback_baseline_and_leaves_manifest_untouched() {
     match err {
         FfiVaultError::CorruptVault { detail } => {
             assert!(
-                detail.contains("rollback baseline"),
+                detail.as_str().contains("rollback baseline"),
                 "detail must name the failing store: {detail}"
             );
             assert!(
-                detail.contains("resets this device's rollback history"),
+                detail
+                    .as_str()
+                    .contains("resets this device's rollback history"),
                 "detail must carry the documented remedy: {detail}"
             );
         }

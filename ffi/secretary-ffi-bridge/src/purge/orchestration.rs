@@ -93,7 +93,7 @@ pub fn purge_block(
     let (manifest_body, manifest_file, owner_card, ibk, vault_folder) = manifest
         .snapshot_for_save_block()
         .ok_or_else(|| FfiVaultError::CorruptVault {
-            detail: "vault manifest handle has been closed".into(),
+            detail: detail::literal("vault manifest handle has been closed"),
         })?;
 
     // Step 2: snapshot identity. purge_block re-signs the manifest
@@ -104,7 +104,7 @@ pub fn purge_block(
         identity
             .clone_inner_bundle()
             .ok_or_else(|| FfiVaultError::CorruptVault {
-                detail: "identity handle has been closed".into(),
+                detail: detail::literal("identity handle has been closed"),
             })?;
 
     // Step 3: build temporary OpenVault from the snapshots.
@@ -275,7 +275,7 @@ pub fn empty_trash(
     let (manifest_body, manifest_file, owner_card, ibk, vault_folder) = manifest
         .snapshot_for_save_block()
         .ok_or_else(|| FfiVaultError::CorruptVault {
-            detail: "vault manifest handle has been closed".into(),
+            detail: detail::literal("vault manifest handle has been closed"),
         })?;
 
     // Step 2: snapshot identity. empty_trash re-signs the manifest
@@ -286,7 +286,7 @@ pub fn empty_trash(
         identity
             .clone_inner_bundle()
             .ok_or_else(|| FfiVaultError::CorruptVault {
-                detail: "identity handle has been closed".into(),
+                detail: detail::literal("identity handle has been closed"),
             })?;
 
     // Step 3: build temporary OpenVault from the snapshots.
@@ -393,7 +393,7 @@ mod tests {
         let FfiVaultError::BlockNotInTrash { detail } = ffi else {
             panic!("expected BlockNotInTrash");
         };
-        assert!(detail.contains("bb"));
+        assert!(detail.as_str().contains("bb"));
     }
 
     #[test]

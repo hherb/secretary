@@ -577,8 +577,15 @@ pub fn add_device_slot(
 /// `device_uuid` must be exactly 16 bytes; `device_secret` must be exactly 32 bytes.
 /// Both are validated before the bridge call. `device_secret` is a zero-copy
 /// borrow of the foreign buffer (`[ByRef] bytes`, #307) — the foreign adapter
-/// owns it and its scrub; the transient `[u8; 32]` stack copy made here is
-/// zeroized on all paths.
+/// owns it and its scrub. The single transient `[u8; 32]` stack copy made
+/// here is written through by `array32_from_vec_into` (so no second copy
+/// exists in a callee frame, #503) and is zeroized on every RETURN path,
+/// including the error path — which is why the bridge `Result` is deferred
+/// into a `let`, wiped, and only then `?`-ed. An UNWINDING PANIC still
+/// skips it; that is #513, filed on this branch, and this comment said
+/// "zeroized on all paths" until #515 pointed out it contradicted the issue
+/// the same branch had just filed. `zeroize::Zeroizing<[u8; 32]>` closes it
+/// via `Drop`; #513 asks for a repo-wide census of the idiom first.
 ///
 /// # Errors
 ///
@@ -595,7 +602,10 @@ pub fn open_with_device_secret(
     let uuid_arr = uuid_from_vec(&device_uuid, "device_uuid")?;
     // `mut` so the [u8; 32] stack copy is zeroized IN PLACE below — a
     // re-binding `let mut` would copy the array and wipe only the copy.
-    let mut secret_arr = array32_from_vec(device_secret, "device_secret")?;
+    // Written through by `array32_from_vec_into` rather than returned by
+    // value, so this slot is the ONLY [u8; 32] in play (#503).
+    let mut secret_arr = [0u8; 32];
+    array32_from_vec_into(device_secret, &mut secret_arr, "device_secret")?;
 
     let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
         match std::str::from_utf8(&folder_path) {
@@ -657,14 +667,34 @@ pub(crate) fn uuid_from_vec(bytes: &[u8], field: &'static str) -> Result<[u8; 16
     })
 }
 
-/// Validate a 32-byte slice (e.g. an `ApprovedWidening.file_fingerprint`);
-/// surface wrong length as [`VaultError::InvalidArgument`] with the field
-/// name in the detail. Mirrors [`uuid_from_vec`] exactly, for the 32-byte
-/// case. (#374; `&'static str` tightening #486)
-pub(crate) fn array32_from_vec(bytes: &[u8], field: &'static str) -> Result<[u8; 32], VaultError> {
-    bytes.try_into().map_err(|_| VaultError::InvalidArgument {
-        detail: crate::detail::arg_len(field, 32, bytes.len()),
-    })
+/// Copy a SECRET 32-byte input into the caller's slot (#503).
+///
+/// This replaces a by-value predecessor (`array32_from_vec`, deleted in the
+/// same commit) that materialized its `[u8; 32]` in its OWN frame and returned
+/// it: the caller zeroized only the copy it received, leaving the callee's
+/// frame un-wiped. Release-mode inlining will usually collapse the two frames,
+/// but the helper was not `#[inline]` and CLAUDE.md's zeroize discipline is
+/// explicit about not resting on codegen. Writing through `out` means the
+/// array exists in exactly one place as a SOURCE-LEVEL fact.
+///
+/// The indexed sibling [`array32_from_vec_at`] still returns by value. That is
+/// deliberate and NOT an oversight: its callers are `ApprovedWidening`
+/// fingerprints (`repair.rs:60`, `:61`), which are not secret, so there is
+/// nothing to wipe and an out-parameter would only read worse.
+///
+/// `out` is left UNTOUCHED when `bytes` is the wrong length.
+pub(crate) fn array32_from_vec_into(
+    bytes: &[u8],
+    out: &mut [u8; 32],
+    field: &'static str,
+) -> Result<(), VaultError> {
+    if bytes.len() != 32 {
+        return Err(VaultError::InvalidArgument {
+            detail: crate::detail::arg_len(field, 32, bytes.len()),
+        });
+    }
+    out.copy_from_slice(bytes);
+    Ok(())
 }
 
 /// [`uuid_from_vec`] for an element of a caller-supplied list. The index is
@@ -680,7 +710,7 @@ pub(crate) fn uuid_from_vec_at(
     })
 }
 
-/// [`array32_from_vec`] for an element of a caller-supplied list. (#486)
+/// [`uuid_from_vec_at`] for a 32-byte field instead of a 16-byte one. (#486)
 pub(crate) fn array32_from_vec_at(
     bytes: &[u8],
     field: &'static str,
@@ -991,5 +1021,31 @@ mod tests {
             Err(other) => panic!("expected InvalidArgument for out-of-range, got {other:?}"),
             Ok(()) => panic!("expected Err for out-of-range settings"),
         }
+    }
+
+    #[test]
+    fn array32_from_vec_into_writes_through_and_rejects_wrong_length() {
+        let mut out = [0u8; 32];
+        let src: Vec<u8> = (0u8..32).collect();
+        array32_from_vec_into(&src, &mut out, "device_secret").expect("32 bytes is valid");
+        assert_eq!(out.to_vec(), src);
+
+        // A non-zero sentinel: `out2 == [0u8; 32]` would be indistinguishable
+        // between "untouched" and "wiped-then-rejected" (the #496-class bug
+        // this test exists to catch), so the assertion below only proves the
+        // claim if the sentinel isn't the value a wipe would also produce.
+        let mut out2 = [0xA5u8; 32];
+        let err = array32_from_vec_into(&[1u8, 2, 3], &mut out2, "device_secret")
+            .expect_err("3 bytes must be rejected");
+        match err {
+            VaultError::InvalidArgument { detail } => {
+                assert_eq!(detail, "device_secret must be 32 bytes, got 3");
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+        assert_eq!(
+            out2, [0xA5u8; 32],
+            "the out slot must be untouched on error"
+        );
     }
 }

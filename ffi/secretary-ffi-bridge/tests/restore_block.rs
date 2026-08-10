@@ -123,7 +123,7 @@ fn restore_block_live_collision_returns_block_uuid_already_live() {
     match result {
         Err(FfiVaultError::BlockUuidAlreadyLive { detail }) => {
             assert!(
-                detail.contains("ab") || detail.contains("AB"),
+                detail.as_str().contains("ab") || detail.as_str().contains("AB"),
                 "detail must carry the UUID hex: {detail}"
             );
         }
@@ -173,7 +173,7 @@ fn restore_block_tampered_file_returns_corrupt_vault() {
     match result {
         Err(FfiVaultError::CorruptVault { detail }) => {
             assert!(
-                detail.contains("verification"),
+                detail.as_str().contains("verification"),
                 "detail must mention verification: {detail}"
             );
         }

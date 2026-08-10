@@ -104,7 +104,7 @@ fn trash_block_unknown_uuid_returns_block_not_found() {
     );
     match result {
         Err(FfiVaultError::BlockNotFound { uuid_hex }) => {
-            assert!(uuid_hex.contains("ff"));
+            assert!(uuid_hex.as_str().contains("ff"));
         }
         other => panic!("expected BlockNotFound, got {other:?}"),
     }

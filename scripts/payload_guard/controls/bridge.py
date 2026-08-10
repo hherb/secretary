@@ -431,10 +431,13 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         {"rule": "E3", "field": "<io::Error payload>"},
     ),
     (
-        "BP43 #486: E3 shape 5 (field access) is scoped to the WRAPPER roots "
-        "and must still DENY in the bridge, where nothing needs it. A new "
-        "acceptance granted where it is not required is a laundering door "
-        "for free",
+        "BP43 #486: a single-hop field access into a gated field DENIES in "
+        "the bridge. Its original reason was that E3 shape 5 was scoped to "
+        "the WRAPPER roots and the bridge must not inherit an acceptance "
+        "nothing there needed; #497/#500 retired shape 5 on every root, so "
+        "there is no wrapper-side grant left to contrast with and the "
+        "control now simply pins the bridge denial. `WP7` pins the wrapper "
+        "side of the same expression",
         ''' fn f(a: A) -> E { E::V { uuid_hex: a.uuid_hex } } ''',
         {"rule": "E3", "field": "uuid_hex"},
     ),
@@ -503,16 +506,141 @@ BRIDGE_POSITIVE_CONTROLS: list[tuple] = [
         {"rule": "E3", "field": "detail"},
         {"detail_src": SELF_TEST_DETAIL_SRC_WITH_UNSAFE_CTOR},
     ),
+    (
+        "BP50 #500: a gated field declared with a NEAR-MISS spelling still "
+        "denies — ScanRoot.gated_field_types's carve-out is for the LITERAL "
+        "named types (`String`, `Detail`), not 'close enough'; "
+        "`normalize_type` strips attribute/visibility noise but does not "
+        "unwrap a generic",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: Option<Detail> },
+        }
+        ''',
+        {"rule": "E2", "field": "detail"},
+    ),
+    (
+        "BP51 #500: after the bridge narrows ScanRoot.gated_field_types to "
+        "{'Detail'} alone, a gated field still declared bare `String` must "
+        "DENY. The carve-out accepted `String` only for the duration of the "
+        "migration off it; leaving it accepted afterward would let a new "
+        "bridge error type opt out of the `Detail` newtype simply by "
+        "declaring the old spelling",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: String },
+        }
+        ''',
+        {"rule": "E2", "field": "detail"},
+    ),
+    (
+        "BP53 #500: a gated field spelled `Detail` still DENIES when THIS "
+        "file also declares a local `type Detail = String;` — is_bridge_"
+        "field_safe compares the SPELLING only and never resolves an alias, "
+        "so without this fix a one-line local alias reintroduces a plain, "
+        "unwrapped `String` under the newtype's own name the instant the "
+        "bridge narrows to {'Detail'} alone (BP51). Mirrors "
+        "`alias_shadowed_names`'s drop-don't-resolve discipline, applied to "
+        "the gated-field carve-out — a THIRD credit tier with the identical "
+        "hole and, until now, no equivalent guard",
+        '''
+        type Detail = String;
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: Detail },
+        }
+        ''',
+        {"rule": "E2", "field": "detail"},
+    ),
+    (
+        "BP54 #500 fix round 2 (review finding 'Important 2'): a gated field "
+        "spelled `Detail` still DENIES when THIS file ALSO declares "
+        "`pub struct Detail(pub String);` — a local STRUCT, not a `type` "
+        "alias, so BP53's `type X = Y;` fix does not reach it. Rule E3's own "
+        "`SAFE_PARAM_TYPES`/`LOCAL_DETAIL_TYPE_RE` check does not help "
+        "either: it inspects only the ONE sanctioned `detail.rs` file, "
+        "because its job is 'is this CONSTRUCTOR call sanctioned', not 'is "
+        "this DECLARATION's type spelling trustworthy'. Reuses "
+        "`LOCAL_DETAIL_TYPE_RE` (moved to discovery.py) via "
+        "`discover_local_detail_decoys` rather than a second matcher",
+        '''
+        pub struct Detail(pub String);
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: Detail },
+        }
+        ''',
+        {"rule": "E2", "field": "detail"},
+    ),
+    (
+        "BP55 #500 fix round 2: the ENUM spelling of the same decoy — "
+        "`pub enum Detail { ... }` — must ALSO deny; `LOCAL_DETAIL_TYPE_RE` "
+        "names struct, enum AND union, and BP54 alone would leave two of "
+        "the three keywords the coordinator asked for unpinned",
+        '''
+        pub enum Detail { Wrapped(String) }
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: Detail },
+        }
+        ''',
+        {"rule": "E2", "field": "detail"},
+    ),
+    (
+        "BP52",
+        # #498: a `&'static str` hint is NOT leak-proof — safe stable Rust
+        # mints one from runtime data via `Box::leak`. The hint position must
+        # be a string LITERAL, not merely a `&'static str`-typed expression.
+        'fn f(e: &E) -> X {\n'
+        '    let leaked: &\'static str = Box::leak(format!("{e}").into_boxed_str());\n'
+        '    X::V { detail: detail::gated_with_context(leaked, e) }\n'
+        '}\n',
+        {"rule": "E3", "field": "detail"},
+    ),
+    (
+        "BP58 #515 I8: the SAME BP52 leak, hidden behind an UNPAIRED `>` in "
+        "an earlier argument. `_split_call_arg_spans` counted every `<`/`>` "
+        "as a bracket, so the `>` of `>=` (or a closure's `-> T`, or any "
+        "comparison) drove the depth counter down and the commas inside a "
+        "nested call read as TOP-LEVEL separators — mis-splitting the "
+        "argument list and moving the #498 hint check onto a different, "
+        "literal argument while the real hint went unchecked. Two "
+        "independent fixes, either of which alone denies this: `<`/`>` are "
+        "now counted only inside a turbofish-introduced generic context, "
+        "and the split must produce exactly the constructor's declared "
+        "ARITY or the call denies outright",
+        'fn f(e: &E, k: usize) -> X {\n'
+        '    let leaked: &\'static str = Box::leak(format!("{e}").into_boxed_str());\n'
+        '    X::V { detail: detail::gated_with_context(if k >= 1 { leaked } else { leaked }, e) }\n'
+        '}\n',
+        {"rule": "E3", "field": "detail"},
+    ),
 ]
 
 BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
     (
-        "BN1 detail: String under a gated name passes the declaration scan",
+        "BN1 detail: Detail under a gated name passes the declaration scan "
+        "— retargeted from `String` to `Detail` by #500 (task 4), which "
+        "narrowed the bridge's accepted spelling to the newtype alone; "
+        "`BN28` already covered the `Detail` acceptance shape, but this "
+        "control's OWN claim ('the canonical gated-field declaration "
+        "passes') would otherwise silently start asserting something false "
+        "for the bridge root",
         '''
         #[derive(thiserror::Error, Debug)]
         pub enum E {
             #[error("sync failed: {detail}")]
-            SyncFailed { detail: String },
+            SyncFailed { detail: Detail },
         }
         ''',
     ),
@@ -566,9 +694,10 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
         ''' fn f(e: X) -> E { E::V { detail: detail::gated(&e) } } ''',
     ),
     (
-        "BN9 declaration shape `detail: String` is not an E3 finding — E2 "
-        "owns declarations (brief BN8)",
-        ''' pub enum E { #[error("x: {detail}")] V { detail: String } } ''',
+        "BN9 declaration shape `detail: Detail` is not an E3 finding — E2 "
+        "owns declarations (brief BN8; retargeted from `String` to `Detail` "
+        "by #500 task 4, which narrowed the bridge's accepted spelling)",
+        ''' pub enum E { #[error("x: {detail}")] V { detail: Detail } } ''',
     ),
     (
         "BN10 detail: detail passthrough (brief BN9)",
@@ -705,6 +834,72 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
                 FfiVaultError::Boom { detail: detail::gated(e) }
             } ''',
     ),
+    (
+        "BN28 #500: a gated field declared `Detail` must be ACCEPTED on the "
+        "bridge and must NOT fire. Before the newtype (#500 task 1) the only "
+        "spelling `is_bridge_field_safe` accepted under a GATED_FIELD_NAMES "
+        "name was the hardcoded literal `String`; task 4 narrowed "
+        "`ScanRoot.gated_field_types` for the bridge to `{'Detail'}` alone "
+        "now that every bridge declaration has moved off `String` — see "
+        "`BP51` for the mirror-image control pinning that `String` now "
+        "denies",
+        '''
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: Detail },
+        }
+        ''',
+    ),
+    (
+        "BN29 #500 fix round 2: `pub struct Detail(pub String);` declared "
+        "INSIDE the sanctioned detail module itself is the LEGITIMATE "
+        "declaration (this is what `error/detail.rs` actually contains), "
+        "and a gated field referencing it in the SAME fixture must not be "
+        "shadowed by its own authentic declaration — proves "
+        "`discover_local_detail_decoys`'s exemption for the root's own "
+        "`detail_module_rel` actually fires, not merely that BP54/BP55 "
+        "deny everywhere else",
+        '''
+        pub struct Detail(pub String);
+
+        #[derive(thiserror::Error, Debug)]
+        pub enum FooError {
+            #[error("boom: {detail}")]
+            Boom { detail: Detail },
+        }
+        ''',
+        {"path_label": DETAIL_MODULE_REL},
+    ),
+    (
+        "BN30 #498: a genuine string-literal hint argument still PASSES — "
+        "the mirror image of BP52. Every real `gated_with_context` call site "
+        "in the tree takes this exact shape",
+        ''' fn f(e: &E) -> X { X::V { detail: detail::gated_with_context("read foo", e) } } ''',
+    ),
+    (
+        "BN31 #498: a RAW STRING hint literal (`r\"…\"`) passes too — the "
+        "check must not be narrower than the two forms #498's own definition "
+        "names (`r?#*\"` covers both plain and raw)",
+        ''' fn f(e: &E) -> X { X::V { detail: detail::gated_with_context(r"read foo", e) } } ''',
+    ),
+    (
+        "BN32 #498: a MULTI-LINE call with the literal hint on its own line "
+        "passes — `io_gated_with_path_and_advice`'s and `literal_for_uuid`'s "
+        "production call sites are wrapped exactly this way, across several "
+        "physical lines, and the hint-argument span is offset-based so "
+        "wrapping must not matter",
+        '''
+        fn f(e: &E) -> X {
+            X::V {
+                detail: detail::gated_with_context(
+                    "read foo",
+                    e,
+                ),
+            }
+        }
+        ''',
+    ),
 ]
 
 # The `detail.rs` stand-in every self-test control's rule-E3 sanctioned-
@@ -713,11 +908,23 @@ BRIDGE_NEGATIVE_CONTROLS: list[tuple] = [
 # are sanctioned" must not silently change meaning when someone adds a
 # constructor to the real `error/detail.rs`. `test_only_helper` is
 # `#[cfg(test)]`-gated and must NOT be sanctioned (`BP34`).
+#
+# `gated_with_context` (#498) is the one HINT-bearing constructor in this
+# fixture — its `context: &'static str` parameter is what `BP52` needs a
+# sanctioned call to have, so the hint-literal check has something to deny
+# that isn't ALSO denied for the unrelated reason "unsanctioned
+# constructor". Neither `gated` nor `uuid_hex` above has a `&'static str`
+# parameter at all, so before this addition nothing in this fixture could
+# exercise `_hint_args_are_literal`.
 SELF_TEST_DETAIL_SRC = '''
 pub(crate) trait GatedDetail: std::fmt::Display {}
 
 pub(crate) fn gated(e: &impl GatedDetail) -> String {
     e.to_string()
+}
+
+pub(crate) fn gated_with_context(context: &'static str, e: &impl GatedDetail) -> String {
+    format!("{context}: {e}")
 }
 
 pub(crate) fn uuid_hex(uuid: &[u8; 16]) -> String {

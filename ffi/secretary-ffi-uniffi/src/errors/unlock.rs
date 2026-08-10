@@ -1,5 +1,6 @@
 //! uniffi-side `UnlockError` mirroring the bridge crate's `FfiUnlockError`.
 
+use crate::detail;
 use secretary_ffi_bridge::FfiUnlockError;
 
 /// uniffi-side error type. uniffi auto-marshals this to Swift `enum
@@ -52,9 +53,13 @@ impl From<FfiUnlockError> for UnlockError {
         match e {
             FfiUnlockError::WrongPasswordOrCorrupt => Self::WrongPasswordOrCorrupt,
             FfiUnlockError::WrongMnemonicOrCorrupt => Self::WrongMnemonicOrCorrupt,
-            FfiUnlockError::InvalidMnemonic { detail } => Self::InvalidMnemonic { detail },
+            FfiUnlockError::InvalidMnemonic { detail } => Self::InvalidMnemonic {
+                detail: detail::project(detail),
+            },
             FfiUnlockError::VaultMismatch => Self::VaultMismatch,
-            FfiUnlockError::CorruptVault { detail } => Self::CorruptVault { detail },
+            FfiUnlockError::CorruptVault { detail } => Self::CorruptVault {
+                detail: detail::project(detail),
+            },
         }
     }
 }
@@ -62,6 +67,7 @@ impl From<FfiUnlockError> for UnlockError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use secretary_ffi_bridge::Detail;
 
     // -------------------------------------------------------------------
     // B.2: pin the From<FfiUnlockError> for UnlockError mapping.
@@ -93,7 +99,7 @@ mod tests {
         // Both layers now use `detail`; the From translation is a struct-
         // shorthand pass-through.
         let bridge_err = FfiUnlockError::CorruptVault {
-            detail: "fnord".to_string(),
+            detail: Detail::for_test("fnord"),
         };
         let uniffi_err: UnlockError = bridge_err.into();
         let UnlockError::CorruptVault { detail } = uniffi_err else {
@@ -112,7 +118,7 @@ mod tests {
     #[test]
     fn from_bridge_invalid_mnemonic_preserves_detail() {
         let bridge_err = FfiUnlockError::InvalidMnemonic {
-            detail: "expected 24 words, got 3".to_string(),
+            detail: Detail::for_test("expected 24 words, got 3"),
         };
         let uniffi_err: UnlockError = bridge_err.into();
         let UnlockError::InvalidMnemonic { detail } = uniffi_err else {

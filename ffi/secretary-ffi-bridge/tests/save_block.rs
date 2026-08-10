@@ -202,7 +202,7 @@ fn save_block_on_wiped_manifest_returns_corrupt_vault() {
     match err {
         FfiVaultError::CorruptVault { detail } => {
             assert!(
-                detail.contains("manifest"),
+                detail.as_str().contains("manifest"),
                 "detail should name the manifest handle: {detail}",
             );
         }
@@ -223,7 +223,7 @@ fn save_block_on_wiped_identity_returns_corrupt_vault() {
     match err {
         FfiVaultError::CorruptVault { detail } => {
             assert!(
-                detail.contains("identity"),
+                detail.as_str().contains("identity"),
                 "detail should name the identity handle: {detail}",
             );
         }
@@ -528,7 +528,7 @@ fn save_block_wipe_during_call_returns_corrupt_vault_but_persists_on_disk() {
     match result {
         Err(FfiVaultError::CorruptVault { detail }) => {
             assert!(
-                detail.contains("closed during save"),
+                detail.as_str().contains("closed during save"),
                 "expected mid-call detail per ReplaceManifestError::HandleWiped \
                  Display impl; got: {detail}",
             );

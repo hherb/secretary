@@ -90,7 +90,7 @@ fn open_vault_with_recovery_invalid_phrase_returns_invalid_mnemonic() {
         panic!("expected InvalidMnemonic, got {err:?}");
     };
     assert!(
-        detail.contains("got 3"),
+        detail.as_str().contains("got 3"),
         "detail did not carry word count: {detail}",
     );
 }
@@ -105,8 +105,8 @@ fn open_vault_folder_does_not_exist_returns_folder_invalid() {
     // detail carries IO context + io::Error display; either substring
     // is sufficient — the underlying io::ErrorKind is NotFound.
     assert!(
-        detail.to_lowercase().contains("vault.toml")
-            || detail.to_lowercase().contains("no such file"),
+        detail.as_str().to_lowercase().contains("vault.toml")
+            || detail.as_str().to_lowercase().contains("no such file"),
         "FolderInvalid detail did not carry expected text: {detail}",
     );
 }
@@ -128,7 +128,7 @@ fn open_vault_folder_missing_identity_bundle_returns_folder_invalid() {
         panic!("expected FolderInvalid, got {err:?}");
     };
     assert!(
-        detail.contains("identity.bundle.enc"),
+        detail.as_str().contains("identity.bundle.enc"),
         "FolderInvalid detail did not mention identity.bundle.enc: {detail}",
     );
 }

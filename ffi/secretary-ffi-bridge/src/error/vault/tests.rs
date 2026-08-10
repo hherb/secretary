@@ -14,7 +14,7 @@ use secretary_core::vault::VaultError;
 #[test]
 fn vault_error_folder_invalid_display_uses_dedicated_text() {
     let ffi = FfiVaultError::FolderInvalid {
-        detail: "fnord".to_string(),
+        detail: detail::literal("fnord"),
     };
     let rendered = format!("{ffi}");
     assert!(
@@ -27,7 +27,7 @@ fn vault_error_folder_invalid_display_uses_dedicated_text() {
 #[test]
 fn vault_error_save_crypto_failure_display_uses_dedicated_text() {
     let ffi = FfiVaultError::SaveCryptoFailure {
-        detail: "encrypt_block aborted: pq sig generation failed".to_string(),
+        detail: detail::literal("encrypt_block aborted: pq sig generation failed"),
     };
     let rendered = format!("{ffi}");
     assert!(
@@ -61,7 +61,7 @@ fn from_core_vault_error_io_not_found_maps_to_folder_invalid() {
         panic!("expected FolderInvalid, got {ffi:?}");
     };
     assert!(
-        detail.contains("vault.toml") && detail.contains("no such file"),
+        detail.as_str().contains("vault.toml") && detail.as_str().contains("no such file"),
         "FolderInvalid detail did not carry context + source: {detail}",
     );
 }
@@ -267,7 +267,7 @@ fn vault_error_block_not_found_display_pins_uuid_hex() {
     // would degrade the foreign caller's debugging affordance and must
     // be a deliberate decision rather than a silent regression.
     let ffi = FfiVaultError::BlockNotFound {
-        uuid_hex: "112233445566778899aabbccddeeff00".to_string(),
+        uuid_hex: detail::literal("112233445566778899aabbccddeeff00"),
     };
     let rendered = format!("{ffi}");
     assert!(
@@ -288,12 +288,12 @@ fn vault_error_block_not_found_carries_uuid_hex_field() {
     // both binding-flavor crates without a compile error if they
     // stop using exhaustive `match`.
     let ffi = FfiVaultError::BlockNotFound {
-        uuid_hex: "deadbeef".to_string(),
+        uuid_hex: detail::literal("deadbeef"),
     };
     let FfiVaultError::BlockNotFound { uuid_hex } = ffi else {
         panic!("expected BlockNotFound variant");
     };
-    assert_eq!(uuid_hex, "deadbeef");
+    assert_eq!(uuid_hex.as_str(), "deadbeef");
 }
 
 // =============================================================================
@@ -304,8 +304,8 @@ fn vault_error_block_not_found_carries_uuid_hex_field() {
 #[test]
 fn vault_error_not_author_display_pins_string() {
     let e = FfiVaultError::NotAuthor {
-        expected_fingerprint_hex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-        got_fingerprint_hex: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        expected_fingerprint_hex: detail::literal("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        got_fingerprint_hex: detail::literal("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
     };
     assert_eq!(e.to_string(), "only the block author can share this block");
 }
@@ -322,8 +322,8 @@ fn vault_error_not_author_from_core_preserves_fingerprints_as_hex() {
             expected_fingerprint_hex,
             got_fingerprint_hex,
         } => {
-            assert_eq!(expected_fingerprint_hex, "aa".repeat(16));
-            assert_eq!(got_fingerprint_hex, "bb".repeat(16));
+            assert_eq!(expected_fingerprint_hex.as_str(), "aa".repeat(16));
+            assert_eq!(got_fingerprint_hex.as_str(), "bb".repeat(16));
         }
         other => panic!("expected NotAuthor, got {other:?}"),
     }
@@ -359,7 +359,7 @@ fn vault_error_cannot_revoke_owner_from_core_preserves_variant() {
 #[test]
 fn vault_error_missing_recipient_card_display_pins_hex() {
     let e = FfiVaultError::MissingRecipientCard {
-        recipient_fingerprint_hex: "cccccccccccccccccccccccccccccccc".to_string(),
+        recipient_fingerprint_hex: detail::literal("cccccccccccccccccccccccccccccccc"),
     };
     let rendered = e.to_string();
     assert!(
@@ -381,7 +381,7 @@ fn vault_error_missing_recipient_card_from_core_preserves_fingerprint_as_hex() {
     match ffi {
         FfiVaultError::MissingRecipientCard {
             recipient_fingerprint_hex,
-        } => assert_eq!(recipient_fingerprint_hex, "cc".repeat(16)),
+        } => assert_eq!(recipient_fingerprint_hex.as_str(), "cc".repeat(16)),
         other => panic!("expected MissingRecipientCard, got {other:?}"),
     }
 }
@@ -391,7 +391,7 @@ fn vault_error_card_decode_failure_display_pins_string() {
     // CardDecodeFailure is bridge-internal; never reachable through
     // From<core::VaultError>. Pin Display + field accessibility only.
     let e = FfiVaultError::CardDecodeFailure {
-        detail: "malformed CBOR".into(),
+        detail: detail::literal("malformed CBOR"),
     };
     assert_eq!(
         e.to_string(),
@@ -408,7 +408,7 @@ fn from_core_block_uuid_already_live_routes_to_block_uuid_already_live() {
     let FfiVaultError::BlockUuidAlreadyLive { detail } = ffi else {
         panic!("expected BlockUuidAlreadyLive");
     };
-    assert!(detail.contains("aa"));
+    assert!(detail.as_str().contains("aa"));
 }
 
 #[test]
@@ -420,7 +420,7 @@ fn from_core_block_not_in_trash_routes_to_block_not_in_trash() {
     let FfiVaultError::BlockNotInTrash { detail } = ffi else {
         panic!("expected BlockNotInTrash");
     };
-    assert!(detail.contains("bb"));
+    assert!(detail.as_str().contains("bb"));
 }
 
 #[test]
@@ -432,13 +432,13 @@ fn from_core_block_purged_routes_to_block_purged() {
     let FfiVaultError::BlockPurged { detail } = ffi else {
         panic!("expected BlockPurged, got {ffi:?}");
     };
-    assert!(detail.contains("07"));
+    assert!(detail.as_str().contains("07"));
 }
 
 #[test]
 fn block_purged_display_format() {
     let e = FfiVaultError::BlockPurged {
-        detail: "[7, 7, 7]".into(),
+        detail: detail::literal("[7, 7, 7]"),
     };
     assert_eq!(
         e.to_string(),
@@ -456,17 +456,17 @@ fn from_core_restore_verification_failed_folds_to_corrupt_vault() {
     let FfiVaultError::CorruptVault { detail } = ffi else {
         panic!("expected CorruptVault");
     };
-    assert!(detail.contains("sig mismatch"));
-    assert!(detail.contains("verification"));
+    assert!(detail.as_str().contains("sig mismatch"));
+    assert!(detail.as_str().contains("verification"));
     // #480: the fold renders core's own Display, whose `{block_uuid:?}` is
     // a Debug byte array — pin the shape so a drift back to the pre-#480
     // hand-rolled hex rendering is caught, not silently shipped.
     assert!(
-        detail.contains("[204, 204,"),
+        detail.as_str().contains("[204, 204,"),
         "Debug-array uuid rendering missing: {detail}"
     );
     assert!(
-        !detail.contains("cccc"),
+        !detail.as_str().contains("cccc"),
         "unexpected hex uuid rendering: {detail}"
     );
 }
@@ -474,7 +474,7 @@ fn from_core_restore_verification_failed_folds_to_corrupt_vault() {
 #[test]
 fn block_uuid_already_live_display_format() {
     let e = FfiVaultError::BlockUuidAlreadyLive {
-        detail: "[1, 2, 3]".into(),
+        detail: detail::literal("[1, 2, 3]"),
     };
     assert_eq!(
         e.to_string(),
@@ -485,7 +485,7 @@ fn block_uuid_already_live_display_format() {
 #[test]
 fn block_not_in_trash_display_format() {
     let e = FfiVaultError::BlockNotInTrash {
-        detail: "[4, 5, 6]".into(),
+        detail: detail::literal("[4, 5, 6]"),
     };
     assert_eq!(e.to_string(), "block is not in trash: [4, 5, 6]");
 }
@@ -507,15 +507,15 @@ fn from_core_vault_error_restore_target_missing_maps_to_corrupt_vault() {
     // (`{block_uuid:?}` Debug byte array + the signed timestamp), and a
     // type-only assertion here is the exact #475 anti-pattern.
     assert!(
-        detail.contains("restore target for block"),
+        detail.as_str().contains("restore target for block"),
         "context phrase missing: {detail}"
     );
     assert!(
-        detail.contains("[17, 17,"),
+        detail.as_str().contains("[17, 17,"),
         "Debug-array uuid rendering missing: {detail}"
     );
     assert!(
-        detail.contains("1714060900000"),
+        detail.as_str().contains("1714060900000"),
         "signed tombstoned_at_ms missing: {detail}"
     );
 }
@@ -541,7 +541,7 @@ fn from_core_block_fingerprint_mismatch_routes_to_vault_needs_repair() {
         panic!("expected VaultNeedsRepair, got {ffi:?}");
     };
     assert_eq!(
-        block_uuid_hex,
+        block_uuid_hex.as_str(),
         secretary_core::vault::format_uuid_hyphenated(&[0xAB; 16])
     );
 }
@@ -549,7 +549,7 @@ fn from_core_block_fingerprint_mismatch_routes_to_vault_needs_repair() {
 #[test]
 fn vault_needs_repair_display_pins_block_uuid_hex() {
     let e = FfiVaultError::VaultNeedsRepair {
-        block_uuid_hex: "11223344-5566-7788-99aa-bbccddeeff00".to_string(),
+        block_uuid_hex: detail::literal("11223344-5566-7788-99aa-bbccddeeff00"),
     };
     let rendered = e.to_string();
     assert!(rendered.contains("vault needs repair"), "got: {rendered}");
@@ -574,17 +574,17 @@ fn from_core_repair_rejected_routes_to_repair_rejected() {
         panic!("expected RepairRejected, got {ffi:?}");
     };
     assert_eq!(
-        block_uuid_hex,
+        block_uuid_hex.as_str(),
         secretary_core::vault::format_uuid_hyphenated(&[0xCD; 16])
     );
-    assert_eq!(detail, "clock relation Concurrent");
+    assert_eq!(detail.as_str(), "clock relation Concurrent");
 }
 
 #[test]
 fn repair_rejected_display_pins_block_uuid_hex_and_detail() {
     let e = FfiVaultError::RepairRejected {
-        block_uuid_hex: "11223344-5566-7788-99aa-bbccddeeff00".to_string(),
-        detail: "clock relation Concurrent".to_string(),
+        block_uuid_hex: detail::literal("11223344-5566-7788-99aa-bbccddeeff00"),
+        detail: detail::literal("clock relation Concurrent"),
     };
     let rendered = e.to_string();
     assert!(rendered.contains("repair rejected"), "got: {rendered}");

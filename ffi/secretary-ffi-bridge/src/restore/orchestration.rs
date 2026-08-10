@@ -55,13 +55,13 @@ pub fn restore_block(
     let (manifest_body, manifest_file, owner_card, ibk, vault_folder) = manifest
         .snapshot_for_save_block()
         .ok_or_else(|| FfiVaultError::CorruptVault {
-            detail: "vault manifest handle has been closed".into(),
+            detail: detail::literal("vault manifest handle has been closed"),
         })?;
     let identity_clone =
         identity
             .clone_inner_bundle()
             .ok_or_else(|| FfiVaultError::CorruptVault {
-                detail: "identity handle has been closed".into(),
+                detail: detail::literal("identity handle has been closed"),
             })?;
     let mut open_vault = OpenVault {
         identity_block_key: ibk,
@@ -190,7 +190,7 @@ mod tests {
         let FfiVaultError::BlockUuidAlreadyLive { detail } = ffi else {
             panic!("expected BlockUuidAlreadyLive");
         };
-        assert!(detail.contains("aa"));
+        assert!(detail.as_str().contains("aa"));
     }
 
     #[test]
@@ -202,7 +202,7 @@ mod tests {
         let FfiVaultError::BlockNotInTrash { detail } = ffi else {
             panic!("expected BlockNotInTrash");
         };
-        assert!(detail.contains("bb"));
+        assert!(detail.as_str().contains("bb"));
     }
 
     #[test]
@@ -214,7 +214,7 @@ mod tests {
         let FfiVaultError::BlockPurged { detail } = ffi else {
             panic!("expected BlockPurged, got {ffi:?}");
         };
-        assert!(detail.contains("ff"));
+        assert!(detail.as_str().contains("ff"));
     }
 
     #[test]
@@ -227,17 +227,17 @@ mod tests {
         let FfiVaultError::CorruptVault { detail } = ffi else {
             panic!("expected CorruptVault");
         };
-        assert!(detail.contains("sig mismatch"));
-        assert!(detail.contains("verification"));
+        assert!(detail.as_str().contains("sig mismatch"));
+        assert!(detail.as_str().contains("verification"));
         // #480: the fold renders core's own Display, whose `{block_uuid:?}`
         // is a Debug byte array — pin the shape so a drift back to the
         // pre-#480 hand-rolled hex rendering is caught.
         assert!(
-            detail.contains("[204, 204,"),
+            detail.as_str().contains("[204, 204,"),
             "Debug-array uuid rendering missing: {detail}"
         );
         assert!(
-            !detail.contains("cccc"),
+            !detail.as_str().contains("cccc"),
             "unexpected hex uuid rendering: {detail}"
         );
     }
@@ -256,15 +256,15 @@ mod tests {
             panic!("expected CorruptVault, got {ffi:?}");
         };
         assert!(
-            detail.contains("restore target for block"),
+            detail.as_str().contains("restore target for block"),
             "context phrase missing: {detail}"
         );
         assert!(
-            detail.contains("[17, 17,"),
+            detail.as_str().contains("[17, 17,"),
             "Debug-array uuid rendering missing: {detail}"
         );
         assert!(
-            detail.contains("1714060900000"),
+            detail.as_str().contains("1714060900000"),
             "signed tombstoned_at_ms missing: {detail}"
         );
     }
@@ -281,7 +281,7 @@ mod tests {
         else {
             panic!("expected MissingRecipientCard");
         };
-        assert!(recipient_fingerprint_hex.contains("dd"));
+        assert!(recipient_fingerprint_hex.as_str().contains("dd"));
     }
 
     #[test]

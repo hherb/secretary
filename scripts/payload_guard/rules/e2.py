@@ -1,5 +1,11 @@
 """Rule E2: every field of a bridge- OR WRAPPER-root error declaration must
-be data-free or a `String` under a `GATED_FIELD_NAMES` name.
+be data-free, or carry prose under a `GATED_FIELD_NAMES` name with the type
+spelling THAT ROOT accepts. The accepted spelling is PER-ROOT as of #500
+(`ScanRoot.gated_field_types`): `Detail` on the bridge, `String` on the two
+wrapper crates. The bridge permits NO `String` under a gated name — `BP51`
+pins that denial. This headline said "or a `String`" until #515, which is
+the pre-#500 rule and contradicted `bridge_declaration_findings` two lines
+of code below.
 
 Two sweeps — `scan_source`'s `bridge_mode` (thiserror-derived declarations,
 rule module `e1`) and this module's `scan_bridge_plain_declarations`
@@ -39,6 +45,8 @@ def bridge_declaration_findings(
     local_error_enums: frozenset[str],
     aliases: dict[str, str] | None,
     foreign_names: frozenset[str],
+    gated_field_types: frozenset[str],
+    shadowed_type_names: frozenset[str],
 ) -> list[Finding]:
     """Rule E2's structural sweep (#480): every PARSED field of a bridge
     declaration — interpolated or not, since uniffi/PyO3 project every field
@@ -53,10 +61,25 @@ def bridge_declaration_findings(
     `"<variant/struct name> <body>"` text — themselves, since sweep 1 has an
     `#[error(...)]` attribute's surrounding context to draw on and sweep 2
     does not.
+
+    `gated_field_types` (#500) is `ScanRoot.gated_field_types` — the per-root
+    set of type spellings `is_bridge_field_safe` accepts under a
+    `GATED_FIELD_NAMES` name. REQUIRED, no default, threaded from both
+    producers above, which each get it from their own caller in turn — see
+    `is_bridge_field_safe`'s docstring for why a default anywhere on this
+    chain would be unsafe.
+
+    `shadowed_type_names` (#500 fix round 2) is the same kind of REQUIRED,
+    no-default per-root set, threaded the same way — see
+    `is_bridge_field_safe`'s docstring for what feeds it and why a default
+    would be unsafe here too.
     """
     out: list[Finding] = []
     for fname, ftype in fields.items():
-        if is_bridge_field_safe(fname, ftype, local_error_enums, aliases, foreign_names):
+        if is_bridge_field_safe(
+            fname, ftype, local_error_enums, aliases, foreign_names,
+            gated_field_types, shadowed_type_names,
+        ):
             continue
         out.append(
             Finding(
@@ -95,6 +118,8 @@ def _bridge_plain_enum_variant_findings(
     local_error_enums: frozenset[str],
     aliases: dict[str, str] | None,
     foreign_names: frozenset[str],
+    gated_field_types: frozenset[str],
+    shadowed_type_names: frozenset[str],
 ) -> list[Finding]:
     """Rule E2 sweep 2's per-variant walk for a plain-derive enum BODY
     (`{...}`, outer braces included) — #480 review finding 1.
@@ -227,6 +252,8 @@ def _bridge_plain_enum_variant_findings(
                 local_error_enums,
                 aliases,
                 foreign_names,
+                gated_field_types,
+                shadowed_type_names,
             )
         )
     return findings
@@ -240,6 +267,8 @@ def _bridge_plain_struct_findings(
     local_error_enums: frozenset[str],
     aliases: dict[str, str] | None,
     foreign_names: frozenset[str],
+    gated_field_types: frozenset[str],
+    shadowed_type_names: frozenset[str],
 ) -> list[Finding]:
     """Rule E2 sweep 2's struct counterpart (#480 review finding 3): a
     plain-derive `*Error`/`*Warning` STRUCT (`SettingsBoundsError`) has no
@@ -259,6 +288,8 @@ def _bridge_plain_struct_findings(
         local_error_enums,
         aliases,
         foreign_names,
+        gated_field_types,
+        shadowed_type_names,
     )
 
 
@@ -268,6 +299,9 @@ def scan_bridge_plain_declarations(
     local_error_enums: frozenset[str] = frozenset(),
     aliases: dict[str, str] | None = None,
     foreign_names: frozenset[str] = frozenset(),
+    *,
+    gated_field_types: frozenset[str],
+    shadowed_type_names: frozenset[str],
 ) -> list[Finding]:
     """Rule E2's second sweep (#480) — bridge `enum`/`struct` declarations
     named `*Error`/`*Warning` (see `BRIDGE_PLAIN_ENUM_RE` /
@@ -298,6 +332,12 @@ def scan_bridge_plain_declarations(
     rather than being silently dropped (#480 review finding 1): an enum
     name matched but no `{` found anywhere after it, or a struct whose
     continuation after its name is none of `{`, `(`, or `;`.
+
+    `gated_field_types` (#500) is `ScanRoot.gated_field_types`, threaded
+    unchanged into both `bridge_declaration_findings` producers below.
+    REQUIRED, no default — see `is_bridge_field_safe`'s docstring.
+    `shadowed_type_names` (#500 fix round 2) is threaded the same way,
+    unchanged, same no-default reasoning.
     """
     src = strip_comments(raw)
     # STRICT: a skip here means the declaration is not swept (#496).
@@ -328,7 +368,15 @@ def scan_bridge_plain_declarations(
             continue  # thiserror-derived; already swept by scan_source's sweep 1
         findings.extend(
             _bridge_plain_enum_variant_findings(
-                path_label, line_no, name, body, local_error_enums, aliases, foreign_names
+                path_label,
+                line_no,
+                name,
+                body,
+                local_error_enums,
+                aliases,
+                foreign_names,
+                gated_field_types,
+                shadowed_type_names,
             )
         )
 
@@ -372,7 +420,15 @@ def scan_bridge_plain_declarations(
             continue
         findings.extend(
             _bridge_plain_struct_findings(
-                path_label, line_no, name, body, local_error_enums, aliases, foreign_names
+                path_label,
+                line_no,
+                name,
+                body,
+                local_error_enums,
+                aliases,
+                foreign_names,
+                gated_field_types,
+                shadowed_type_names,
             )
         )
     return findings

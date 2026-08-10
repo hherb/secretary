@@ -226,26 +226,82 @@ def is_data_free(
 def is_bridge_field_safe(
     name: str,
     ty: str,
-    local_error_enums: frozenset[str] = frozenset(),
-    aliases: dict[str, str] | None = None,
-    foreign_names: frozenset[str] = frozenset(),
+    local_error_enums: frozenset[str],
+    aliases: dict[str, str] | None,
+    foreign_names: frozenset[str],
+    gated_field_types: frozenset[str],
+    shadowed_type_names: frozenset[str],
 ) -> bool:
-    """True when a BRIDGE field is safe under rule E2's carve-out (#480).
+    """True when a BRIDGE- or WRAPPER-root field is safe under rule E2's
+    carve-out (#480, per-root types #500).
 
     Either it independently clears `is_data_free` — the ordinary tiers,
     data-free by TYPE, exactly as core requires — or its declared type is
-    EXACTLY `String` under a name in `GATED_FIELD_NAMES`: data-free by
-    CONSTRUCTION SITE instead, which rule E3 gates. `normalize_type`
-    is applied to `ty` for the exact-`String` comparison so a field-level
-    `#[from]` / visibility prefix does not defeat the match; `Option<String>`,
-    `&str`, or any other near-miss spelling still denies — the carve-out is
-    for the literal named type, not "close enough."
+    EXACTLY one of `gated_field_types` under a name in `GATED_FIELD_NAMES`,
+    AND that spelling is not in `shadowed_type_names`: data-free by
+    CONSTRUCTION SITE instead.
 
-    Shared by BOTH of rule E2's uses: the `bridge_mode` carve-out on the
-    ordinary interpolated-field scan (`scan_source`), and the structural
-    all-fields sweep (`bridge_declaration_findings`) that also checks fields
-    the `#[error(...)]` message never mentions.
+    `gated_field_types` is per-root (`ScanRoot.gated_field_types`) and has NO
+    DEFAULT on purpose. It used to be the hardcoded literal `"String"`, and a
+    default here would let a future caller inherit whichever spelling happened
+    to be listed first — the permissive outcome — without naming it. Callers
+    state which root they are scanning.
+
+    `normalize_type` is applied for the comparison so a field-level `#[from]`
+    or visibility prefix does not defeat the match; `Option<Detail>`, `&str`,
+    or any other near-miss spelling still denies — the carve-out is for the
+    literal named types, not "close enough."
+
+    `shadowed_type_names` (#500 fix round 2) is ALSO required, with NO
+    default, for the same reason `gated_field_types` has none: a spelling in
+    this set DENIES unconditionally, before the `gated_field_types`
+    membership check even runs, regardless of what caused the shadow or
+    whether `gated_field_types` currently accepts it. Two independent
+    sources feed it, both closing the SAME class of bypass the gated-field
+    carve-out's spelling-only match is exposed to — a same-named LOCAL
+    declaration elsewhere in the root makes "the field's type spelling"
+    stop meaning "the authentic newtype":
+
+    1. Every RAW candidate `type X = Y;` alias LHS spelling anywhere in the
+       root, collision or not (`discover_local_detail_decoys`'s sibling,
+       `_discover_tier_inputs`'s 4th return value — review finding
+       "Important 1", #500 fix round 2). Deliberately the PRE-collision-drop
+       candidate set, not `frozenset(aliases)`: `aliases` (the RESOLVED
+       dict, passed separately below for `is_data_free`'s tier-3
+       resolution) drops a colliding spelling ENTIRELY, so `normalized in
+       aliases` — this function's own fix-round-1 check — went fail-OPEN
+       the moment a SECOND, conflicting `type Detail = ...;` appeared
+       anywhere else in the root: a collision is stronger evidence the
+       spelling is untrustworthy, not weaker, and dropping it from the
+       DENY set was backwards. Verified by execution: the fix-round-1
+       fixture alone produced 2 findings; adding a second bridge-root file
+       declaring only `type Detail = Vec<u8>;` took it to zero.
+    2. `discover_local_detail_decoys` — a `struct|enum|union|type Detail`
+       declared anywhere in the root OTHER than the sanctioned detail
+       module (review finding "Important 2"). Rule E3's OWN
+       `SAFE_PARAM_TYPES`/`LOCAL_DETAIL_TYPE_RE` check does not reach this:
+       it inspects only the ONE `detail_src` file, because its job is "is
+       this CONSTRUCTOR call sanctioned", not "is this DECLARATION's type
+       spelling trustworthy" — a decoy `pub struct Detail(pub String);`
+       declared in any OTHER bridge file was credited identically, since
+       E2's carve-out never resolves the name any more than E3's does.
+       Verified by execution: that struct plus `Boom { detail: Detail }`
+       produced zero findings before this fix.
+
+    Both are the SAME discipline `is_data_free`'s `alias_shadowed_names`
+    already applies to tiers 1/2 (`DATA_FREE_TYPES`, `local_error_enums`): a
+    name that means two things has not been RESOLVED, and a guard that
+    guesses which meaning is "real" is a guard that can be aimed. The
+    gated-field carve-out is a THIRD credit tier with the identical hole.
+    The check is unconditional ACROSS ROOTS: it denies even for a root
+    whose `gated_field_types` does not currently accept the shadowed
+    spelling (e.g. a wrapper root's `type String = Vec<u8>;`), since the
+    claim being made is a name-resolution claim and the shadow is the
+    evidence it does not hold — not a claim about any one root's carve-out.
     """
     if is_data_free(ty, local_error_enums, aliases, foreign_names):
         return True
-    return normalize_type(ty) == "String" and name in GATED_FIELD_NAMES
+    normalized = normalize_type(ty)
+    if normalized in shadowed_type_names:
+        return False
+    return normalized in gated_field_types and name in GATED_FIELD_NAMES
