@@ -1,1 +1,1 @@
-docs/handoffs/2026-08-09-500-detail-newtype-shipped.md
+docs/handoffs/2026-08-11-513-panic-safe-secret-slots-shipped.md
