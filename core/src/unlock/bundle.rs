@@ -359,11 +359,25 @@ impl IdentityBundle {
 
         let mut user_uuid: Option<[u8; USER_UUID_LEN]> = None;
         let mut display_name: Option<String> = None;
-        let mut x25519_sk_bytes: Option<[u8; X25519_SK_LEN]> = None;
+        // #518: these two are wrapped in `Sensitive` at decode time, not
+        // copied into a plain `[u8; N]` local and wiped after the fact
+        // below. That makes each slot `ZeroizeOnDrop`-covered from the
+        // moment the loop populates it — including the
+        // `.ok_or(BundleError::MissingField(_))?` early-return paths in the
+        // struct construction below, and any earlier `?` return later in
+        // this loop (e.g. `UnknownField`, `DuplicateField`). The old plain
+        // `Option<[u8; N]>` locals left no such coverage: `Option<[u8; N]>`
+        // is `Copy`, so the struct construction below copied rather than
+        // moved them out, leaving whichever key was already decoded sitting
+        // on the stack when a later field's `?` returned early. See the
+        // wipe block at the end of this function for what remains covered
+        // there.
+        let mut x25519_sk_bytes: Option<Sensitive<[u8; X25519_SK_LEN]>> = None;
         let mut x25519_pk: Option<[u8; X25519_PK_LEN]> = None;
         let mut ml_kem_768_sk_bytes: Option<Vec<u8>> = None;
         let mut ml_kem_768_pk: Option<Vec<u8>> = None;
-        let mut ed25519_sk_bytes: Option<[u8; ED25519_SK_LEN]> = None;
+        // Same rationale as `x25519_sk_bytes` above.
+        let mut ed25519_sk_bytes: Option<Sensitive<[u8; ED25519_SK_LEN]>> = None;
         let mut ed25519_pk: Option<[u8; ED25519_PK_LEN]> = None;
         let mut ml_dsa_65_sk_bytes: Option<Vec<u8>> = None;
         let mut ml_dsa_65_pk: Option<Vec<u8>> = None;
@@ -378,7 +392,7 @@ impl IdentityBundle {
                 KEY_DISPLAY_NAME => set_once(&mut display_name, take_text(v)?, KEY_DISPLAY_NAME)?,
                 KEY_X25519_SK => set_once(
                     &mut x25519_sk_bytes,
-                    take_fixed_bytes::<X25519_SK_LEN>(v, KEY_X25519_SK)?,
+                    Sensitive::new(take_fixed_bytes::<X25519_SK_LEN>(v, KEY_X25519_SK)?),
                     KEY_X25519_SK,
                 )?,
                 KEY_X25519_PK => set_once(
@@ -398,7 +412,7 @@ impl IdentityBundle {
                 )?,
                 KEY_ED25519_SK => set_once(
                     &mut ed25519_sk_bytes,
-                    take_fixed_bytes::<ED25519_SK_LEN>(v, KEY_ED25519_SK)?,
+                    Sensitive::new(take_fixed_bytes::<ED25519_SK_LEN>(v, KEY_ED25519_SK)?),
                     KEY_ED25519_SK,
                 )?,
                 KEY_ED25519_PK => set_once(
@@ -426,17 +440,17 @@ impl IdentityBundle {
         let bundle = IdentityBundle {
             user_uuid: user_uuid.ok_or(BundleError::MissingField(KEY_USER_UUID))?,
             display_name: display_name.ok_or(BundleError::MissingField(KEY_DISPLAY_NAME))?,
-            x25519_sk: Sensitive::new(
-                x25519_sk_bytes.ok_or(BundleError::MissingField(KEY_X25519_SK))?,
-            ),
+            // Already `Sensitive`-wrapped by the decode loop above (#518) —
+            // no `Sensitive::new` needed here, and none of the leak this
+            // fixed depended on where in this struct literal these two
+            // fields sit.
+            x25519_sk: x25519_sk_bytes.ok_or(BundleError::MissingField(KEY_X25519_SK))?,
             x25519_pk: x25519_pk.ok_or(BundleError::MissingField(KEY_X25519_PK))?,
             ml_kem_768_sk: Sensitive::new(
                 ml_kem_768_sk_bytes.ok_or(BundleError::MissingField(KEY_ML_KEM_768_SK))?,
             ),
             ml_kem_768_pk: ml_kem_768_pk.ok_or(BundleError::MissingField(KEY_ML_KEM_768_PK))?,
-            ed25519_sk: Sensitive::new(
-                ed25519_sk_bytes.ok_or(BundleError::MissingField(KEY_ED25519_SK))?,
-            ),
+            ed25519_sk: ed25519_sk_bytes.ok_or(BundleError::MissingField(KEY_ED25519_SK))?,
             ed25519_pk: ed25519_pk.ok_or(BundleError::MissingField(KEY_ED25519_PK))?,
             ml_dsa_65_sk: Sensitive::new(
                 ml_dsa_65_sk_bytes.ok_or(BundleError::MissingField(KEY_ML_DSA_65_SK))?,
@@ -453,14 +467,21 @@ impl IdentityBundle {
         {
             use zeroize::Zeroize as _;
             // `canonical` is a full cleartext CBOR copy of every secret key;
-            // wipe it before returning on either branch. The two Copy-typed
-            // sk stack copies (`Option<[u8; N]>` is `Copy`, so the struct
-            // construction above copied rather than moved them out — the
-            // Vec-typed sk locals were moved and leave no residue) are wiped
-            // here too. See #357.
+            // wipe it before returning on either branch. See #357.
+            //
+            // The `x25519_sk_bytes` / `ed25519_sk_bytes` locals that used to
+            // be wiped here explicitly are gone by this point regardless:
+            // they are `Option<Sensitive<[u8; N]>>` now (see the
+            // declarations above), so `.ok_or(...)?` in the struct
+            // construction above MOVED each one — `Sensitive` is not
+            // `Copy` — either into the `bundle` field it became, or, on an
+            // early return from a field further down the struct literal,
+            // into a temporary that is then dropped (and zeroized) right
+            // there. Neither path leaves anything at this local's name left
+            // to wipe (#518). The Vec-typed `ml_kem_768_sk_bytes` /
+            // `ml_dsa_65_sk_bytes` locals were always moved, not copied, and
+            // never needed a wipe here either.
             canonical.zeroize();
-            x25519_sk_bytes.zeroize();
-            ed25519_sk_bytes.zeroize();
         }
         if !is_canonical {
             // `bundle` drops here at scope exit, zeroizing its sensitive
@@ -640,6 +661,55 @@ mod tests {
         let bytes_1 = b.to_canonical_cbor().expect("encode");
         let bytes_2 = b.to_canonical_cbor().expect("encode");
         assert_eq!(bytes_1, bytes_2, "canonical encoding must be deterministic");
+    }
+
+    // #518: the `.ok_or(BundleError::MissingField(_))?` chain in the struct
+    // construction returns BEFORE the explicit wipe block below it, leaving
+    // whichever secret keys were already decoded on the stack.
+    // `Option<[u8; N]>` is `Copy`, so struct construction copied rather than
+    // moved them out.
+    //
+    // As in mnemonic.rs, this pins the path and its error variant, not the
+    // wipe itself — a dead stack frame is not observable from safe Rust
+    // (spec §5.4). Do not read a passing error-variant match here as
+    // evidence the memory was zeroed. No pre-existing test in this file or
+    // in `core/tests/` covered `MissingField` before this one (checked via
+    // `grep -rn MissingField core/tests/ core/src/unlock/bundle.rs`).
+    #[test]
+    fn from_canonical_cbor_reports_the_missing_field_and_takes_the_early_return() {
+        // Build a valid, full-shape bundle, then drop `ed25519_sk` from its
+        // encoded map. `x25519_sk` (sorted earlier under canonical CBOR key
+        // order) is still present and gets decoded successfully into the
+        // now-`Sensitive`-wrapped `x25519_sk_bytes` local before the loop
+        // finishes; the missing `ed25519_sk` then makes the struct
+        // construction's `ed25519_sk_bytes.ok_or(MissingField(..))?` return
+        // early. Pre-fix, that early return skipped the explicit wipe block
+        // entirely, leaving the already-decoded `x25519_sk_bytes` Copy-typed
+        // stack slot behind — exactly the path this test pins.
+        let mut rng = ChaCha20Rng::from_seed([44u8; 32]);
+        let b = generate("Carol", 1_714_060_800_002, &mut rng);
+        let bytes = b.to_canonical_cbor().expect("encode");
+
+        let value: Value = ciborium::de::from_reader(&bytes[..]).expect("re-decode as CBOR");
+        let Value::Map(entries) = value else {
+            panic!("expected top-level map")
+        };
+        let truncated: Vec<(Value, Value)> = entries
+            .into_iter()
+            .filter(|(k, _)| !matches!(k, Value::Text(s) if s == KEY_ED25519_SK))
+            .collect();
+        // Removing one entry from an already-canonically-sorted map leaves
+        // the remainder sorted, so no re-sort is needed before re-encoding.
+        let mut truncated_bytes = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(truncated), &mut truncated_bytes)
+            .expect("re-encode");
+
+        let err = IdentityBundle::from_canonical_cbor(&truncated_bytes)
+            .expect_err("ed25519_sk is a required field");
+        assert!(
+            matches!(err, BundleError::MissingField(s) if s == KEY_ED25519_SK),
+            "expected MissingField(\"ed25519_sk\"), got {err:?}"
+        );
     }
 
     /// Build a minimal, canonical-shaped CBOR bundle map containing exactly
