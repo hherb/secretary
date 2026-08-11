@@ -981,14 +981,41 @@ Keep `#[allow(clippy::needless_pass_by_value)]` where it is present: the owned `
 
 The `len()`-before-`zeroize()` comment in that function documents a bug that **cannot recur** once the manual wipes are gone — `SecretBytes` does not clear until drop. Replace the comment rather than deleting it silently; it records real history.
 
-- [ ] **Step 3: Verify no manual wipes remain in the two wrapper crates**
+- [ ] **Step 3: Convert the four accessor helpers too — AMENDED**
+
+> **This step originally said to leave these four alone.** That instruction was wrong and was withdrawn after the Task 2 review, on the human partner's ruling. Recorded rather than silently rewritten, because the plan being wrong here is the interesting part.
+>
+> `take_secret` (`device.rs:57-64`, a device secret), `take_phrase` (`unlock.rs:33-41`, a full 24-word recovery mnemonic), `expose_text` (`record.rs:51-59`) and `expose_bytes` (`record.rs:66-74`, decrypted record fields) all have the window shape:
+>
+> ```rust
+> self.0.take_secret().map(|mut v| {
+>     let b = PyBytes::new(py, &v);   // ← call into another module, between fill and wipe
+>     v.zeroize();
+>     b
+> })
+> ```
+>
+> `PyBytes::new` / `PyString::new` genuinely panic — pyo3 0.29 `src/types/bytes.rs:76` documents "Panics if out of memory", and `assume_owned` → `Bound::from_owned_ptr` → `panic_on_null` (`instance.rs:2429`) unwinds. The receivers are plain `Vec<u8>` / `String` from the bridge (`device.rs:97`, `create.rs:130`, `record/field.rs:125`/`:152`) with no `ZeroizeOnDrop`.
+
+Convert each to wrap before handing out, so `Drop` covers the panic:
+
+```rust
+self.0.take_secret().map(|v| {
+    let v = SecretBytes::new(v);
+    PyBytes::new(py, v.expose())
+})
+```
+
+`expose_text` / `take_phrase` use `SecretString` and `PyString::new` correspondingly. Take the exact list of sites — including any further ones the Task 2 re-audit surfaced — from the census's conversion action list, not from this paragraph.
+
+- [ ] **Step 4: Verify no manual wipes remain in the two wrapper crates**
 
 ```bash
 cd /Users/hherb/src/secretary/.worktrees/513-panic-safe-secret-slots && \
   grep -rn "\.zeroize()" ffi/secretary-ffi-py/src/ ffi/secretary-ffi-uniffi/src/
 ```
 
-Expected after Tasks 8 and 9: only the four `take_*`/`expose_*` accessor helpers the census classified separately (`device.rs:62`, `unlock.rs:38`, `record.rs:56`, `record.rs:71`) — these wipe a value they are *handing out to Python*, a different pattern. Any other hit is an unconverted site.
+Expected after Tasks 8 and 9: **no output at all** outside `#[cfg(test)]`. Every secret local in both wrapper crates should now be wrapper-typed, with `Drop` doing the wiping. Any hit is an unconverted site — check it against the census's action list.
 
 - [ ] **Step 4: Run the Rust and Python test suites**
 
