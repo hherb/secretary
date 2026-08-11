@@ -462,8 +462,7 @@ impl IdentityBundle {
             ml_kem_768_pk: ml_kem_768_pk.ok_or(BundleError::MissingField(KEY_ML_KEM_768_PK))?,
             ed25519_sk: ed25519_sk_bytes.ok_or(BundleError::MissingField(KEY_ED25519_SK))?,
             ed25519_pk: ed25519_pk.ok_or(BundleError::MissingField(KEY_ED25519_PK))?,
-            ml_dsa_65_sk: ml_dsa_65_sk_bytes
-                .ok_or(BundleError::MissingField(KEY_ML_DSA_65_SK))?,
+            ml_dsa_65_sk: ml_dsa_65_sk_bytes.ok_or(BundleError::MissingField(KEY_ML_DSA_65_SK))?,
             ml_dsa_65_pk: ml_dsa_65_pk.ok_or(BundleError::MissingField(KEY_ML_DSA_65_PK))?,
             created_at_ms: created_at_ms.ok_or(BundleError::MissingField(KEY_CREATED_AT))?,
         };
