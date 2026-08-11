@@ -41,7 +41,7 @@
 | `core/src/unlock/bundle.rs` | `from_canonical_cbor`'s #518 leak | 5 |
 | `core/src/unlock/mod.rs` | `create_vault_unchecked`'s `bundle_plaintext` + `ibk` | 6 |
 | `ffi/secretary-ffi-py/src/errors.rs` | `array32_or_value_error` → write-through (#503) | 7 |
-| `ffi/secretary-ffi-py/src/{unlock,vault,device,repair,repair_preview}.rs` | 33 marshalling sites | 8 |
+| `ffi/secretary-ffi-py/src/{unlock,vault,device,repair,repair_preview,record}.rs` | 37 windowed sites | 8 |
 | `ffi/secretary-ffi-uniffi/src/namespace/{mod,repair}.rs` | the 3 sites #513 names | 9 |
 | `docs/manual/contributors/memory-hygiene-audit-internal.md` | census table + the corrected §3.4 claim | 10 |
 
@@ -916,12 +916,13 @@ MSG
 
 ---
 
-## Task 8: `ffi-py` — the 33 marshalling sites
+## Task 8: `ffi-py` — the 37 windowed sites
 
-Every one is a marshalled parameter or scratch slot live across a full bridge call (Argon2id, file I/O, CBOR, hybrid verify). This is where the manual choreography is thickest.
+33 are a marshalled parameter or scratch slot live across a full bridge call (Argon2id, file I/O, CBOR, hybrid verify) — this is where the manual choreography is thickest. The remaining 4 are the secret accessors Step 3 covers.
 
 **Files:**
-- Modify: `ffi/secretary-ffi-py/src/unlock.rs` (4 slots), `vault.rs` (2), `device.rs` (7), `repair.rs` (11), `repair_preview.rs` (9)
+- Modify: `ffi/secretary-ffi-py/src/unlock.rs`, `vault.rs`, `device.rs`, `repair.rs`, `repair_preview.rs`, `record.rs`
+- **Take the authoritative per-file site list from the census's conversion action list** (`docs/superpowers/plans/2026-08-11-513-census.md`), not from this file. The counts here drifted once already when the Task 2 review moved four accessor sites into scope; the census is the single source of truth and includes `record.rs`, which an earlier version of this list omitted entirely.
 
 **Interfaces:**
 - Consumes: `array32_into_or_value_error` from Task 7; existing `SecretBytes`.
@@ -1017,7 +1018,7 @@ cd /Users/hherb/src/secretary/.worktrees/513-panic-safe-secret-slots && \
 
 Expected after Tasks 8 and 9: **no output at all** outside `#[cfg(test)]`. Every secret local in both wrapper crates should now be wrapper-typed, with `Drop` doing the wiping. Any hit is an unconverted site — check it against the census's action list.
 
-- [ ] **Step 4: Run the Rust and Python test suites**
+- [ ] **Step 5: Run the Rust and Python test suites**
 
 ```bash
 cd /Users/hherb/src/secretary/.worktrees/513-panic-safe-secret-slots && \
@@ -1037,7 +1038,7 @@ If pytest sees a stale `.so` after the rebuild, nuke the venv and the `uv` cache
 
 `tests/test_device_slot.py:117` is the one to watch: it asserts on message *content* and is exactly the regression the wrong-length path must keep passing.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 cd /Users/hherb/src/secretary/.worktrees/513-panic-safe-secret-slots && \
@@ -1045,8 +1046,9 @@ git add ffi/secretary-ffi-py/src/ && \
 git commit -F - <<'MSG'
 fix(ffi-py): wrapper-typed secrets across every bridge call (#513)
 
-33 slots, every one a marshalled parameter or scratch slot live across a
-full bridge invocation — Argon2id, file I/O, CBOR decode, hybrid verify.
+37 slots. 33 are a marshalled parameter or scratch slot live across a full
+bridge invocation — Argon2id, file I/O, CBOR decode, hybrid verify. The
+other 4 are the secret accessors, added after the Task 2 review (see below).
 pyo3 0.29 catches an unwinding panic at the boundary
 (impl_/trampoline.rs:301) and converts it to PanicException, so the
 process SURVIVES with the residue on a frame later calls reuse. #513's
