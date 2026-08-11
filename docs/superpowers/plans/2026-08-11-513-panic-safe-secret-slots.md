@@ -830,8 +830,10 @@ Mirror the uniffi sibling's test (`array32_from_vec_into_writes_through_and_reje
         let short: Vec<u8> = (0u8..31).collect();
         let err = array32_into_or_value_error(&short, &mut out2, "device_secret")
             .expect_err("31 bytes must be rejected");
-        // The message must report the ACTUAL wrong length, not 0 — the bug
-        // #501 describes was exactly this, read after a zeroize() cleared it.
+        // The message must report the ACTUAL wrong length, not 0 — the same
+        // "always reports got 0" bug class device.rs's module doc describes:
+        // a length read after a manual `.zeroize()` call had already
+        // cleared it to 0 (#513).
         assert!(format!("{err}").contains("31"), "got: {err}");
         assert_eq!(out2, [0u8; 32], "a rejected input must not partially fill");
     }
@@ -907,8 +909,9 @@ this migration removes the shape from the crate rather than fixing a leak
 at those sites.
 
 The wrong-length assertion checks the message reports the ACTUAL length,
-pinning the #501-documented bug class where a length was read after a
-zeroize() had already cleared it to 0.
+pinning the same "always reports got 0" bug class device.rs's module doc
+describes (#513) — a length read after a zeroize() had already cleared
+it to 0.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 MSG

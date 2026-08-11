@@ -36,12 +36,19 @@ Sub-project-B/C codebase — see the "Cross-sub-project discipline" and
 "Re-verification" sections below. The line numbers cited in the
 stack-residue table and the file-anchor citations have drifted by a few
 lines per file as the modules have grown; the symbol-name citations
-remain authoritative and all twelve `.zeroize()` post-move calls have
-been confirmed present in the current code. **Extended 2026-08-11**
-(#513/#518/#503) — see "Panic- and error-safe secret slots" below: the
-2026-05-02 pass's own idiom wiped only on a normal-return exit, its count
-was one short, and a 101-site census across the Rust core and all three
-FFI crates closes both.
+remain authoritative and, as of the 2026-05-28 re-verification, all
+twelve `.zeroize()` post-move calls were confirmed present in the code as
+it stood then. **That is no longer true as of this branch's own
+2026-08-11 extension, and deliberately so**: two of the twelve — fix #1's
+`kdf::derive_master_kek::out.zeroize()` and fix #2's
+`unlock::create_vault`/`create_vault_unchecked::ibk.zeroize()` — are
+removed below, because both slots are converted to `Sensitive::build` /
+`try_build` and `Drop` covers the wipe unconditionally, leaving nothing
+for the explicit call to do. Ten of the twelve remain present. **Extended
+2026-08-11** (#513/#518/#503) — see "Panic- and error-safe secret slots"
+below: the 2026-05-02 pass's own idiom wiped only on a normal-return
+exit, its count was one short, and a 101-site census across the Rust core
+and all three FFI crates closes both.
 
 ---
 
@@ -191,8 +198,9 @@ the identical shape — `unlock::mnemonic::generate`'s `entropy: [u8; 32]`
 slot, moved into `Sensitive::new(entropy)` inside the returned struct
 literal and never wiped — was missed in that pass and not found until the
 per-slot census this section describes (design spec §3.4). It shares
-`generate()` with fix #11 above (`full`) and sits right next to fix #5's
-sibling function `parse()`, whose own `entropy` copy *is* wiped —
+`generate()` with fix #11 above (`full`) and sits right next to
+`generate`'s true sibling function `parse()` — fix #12 above, not fix #5
+— whose own `entropy` copy *is* wiped —
 `generate`'s own doc comment claimed the same of `entropy` ("the local
 32-byte entropy buffer is zeroized," true only of `entropy_buf`). This is
 recorded as a correction, not a silent renumbering: the original twelve
@@ -205,8 +213,14 @@ work below (row 5a in the table).
 
 Every fix in the table above — and the pattern the "Cross-sub-project
 discipline" section below holds Sub-projects B and C to — follows one
-shape: fill a stack slot, move it into a wrapper, then call `.zeroize()`
-on the now-empty source slot. That wipes on the **happy-path return
+shape: fill a stack slot, copy or move it into a wrapper, then call
+`.zeroize()` on the source slot to wipe the plaintext duplicate the
+wrapper's construction left behind. That source slot is **not** already
+empty at the point of that call — for the common `[u8; N]` (`Copy`) case
+`Sensitive::new(x)` duplicates the bytes rather than invalidating `x`,
+and that live duplicate is exactly the hazard the wipe exists to close;
+"now-empty" would only be true immediately *after* the call succeeds.
+This idiom wipes on the **happy-path return
 only**. A secret slot is dirty between its last write and its wipe, and
 there are three distinct ways to leave a function inside that window:
 
@@ -301,26 +315,46 @@ Section 3 holds, recorded as such — no CI guard enforces it (design spec
 make; it will drift as `core/` and the FFI crates change).
 
 The raw `grep -rn "\.zeroize()" core/src ffi --include="*.rs"` count
-**measured against the pre-conversion tree at merge-base `9c18794`** is
-**108**; 7 of those are comment references (doc comments, `//` lines
+**measured against the pre-conversion tree at merge-base `9c187946`** is
+**107**; 6 of those are comment references (doc comments, `//` lines
 describing the pattern) rather than calls, leaving **101 real call
-sites**, each classified below. **Running the same command against the
-tree this pass ships in gives different, smaller numbers — `79` raw /
-`51` real, re-verified by execution — and that is expected, not a
-discrepancy to chase.** The 49 WINDOW conversions below each replaced an
-explicit `.zeroize()` call with `Drop`, removing that raw grep hit;
-several of those same sites gained an explanatory comment mentioning
-`#513` or the old idiom, which the same grep also matches, so the drop
-in the *real*-call count (101 → 51) is larger than the drop in the raw
-count (108 → 79). Per-root, the post-conversion real-call counts are
-`core/src` 43, `ffi/secretary-ffi-bridge/src` 8 (unchanged — this crate
-needed no conversion), `ffi/secretary-ffi-uniffi/src` 0, `ffi/secretary-
+sites**, each classified below.
+
+**A prior version of this paragraph said 108 raw / 7 comment-only at the
+merge-base, not 107/6 — verified wrong, four independent ways** (a
+merge-base worktree checkout, an independent `git archive` extraction,
+and by-hand re-classification of every one of the matched lines as
+comment-or-real, all agreeing on 107/6/101). The 108th hit the wrong
+figure was counting is
+`ffi/secretary-ffi-py/tests/test_device_slot.py:122` — a `.py` file,
+which the `--include="*.rs"` flag in the command above excludes, so it
+cannot appear in that command's own output; the command was quoted
+verbatim just above the wrong number. `108`/`7` is real, but it is the
+count at a *later*, branch-local point in this pass's own history —
+commit `567a8dc3` (Task 1), which added a `.zeroize()` doc comment at
+`core/src/crypto/secret.rs:190` — and got misattributed here to the
+merge-base the census in the next section actually started from. The
+real-call total, **101**, is unaffected either way; only the raw count
+and the comment-only split at the starting point were wrong, by exactly
+one each.
+
+**Running the same command against the tree this pass ships in gives
+different, smaller numbers — `79` raw / `51` real, re-verified by
+execution — and that is expected, not a discrepancy to chase.** The 49
+WINDOW conversions below each replaced an explicit `.zeroize()` call with
+`Drop`, removing that raw grep hit; several of those same sites gained an
+explanatory comment mentioning `#513` or the old idiom, which the same
+grep also matches, so the drop in the *real*-call count (101 → 51) is
+larger than the drop in the raw count (107 → 79). Per-root, the
+post-conversion real-call counts are `core/src` 43,
+`ffi/secretary-ffi-bridge/src` 8 (unchanged — this crate needed no
+conversion), `ffi/secretary-ffi-uniffi/src` 0, `ffi/secretary-
 ffi-py/src` 0 — the last two hitting zero is the expected shape, since
 every real call site in those two roots was WINDOW and got converted. If
-you run the grep below and get `108`/`101`, you are reading `main`
+you run the grep below and get `107`/`101`, you are reading `main`
 before this pass landed; `79`/`51` is this tree, after:
 
-| root | real call sites (pre-conversion, at `9c18794`) | WINDOW (converted) | ADJACENT (no window, unchanged) | TEST-ONLY | DROP-IMPL | EARLY-WIPE-OF-WRAPPED |
+| root | real call sites (pre-conversion, at `9c187946`) | WINDOW (converted) | ADJACENT (no window, unchanged) | TEST-ONLY | DROP-IMPL | EARLY-WIPE-OF-WRAPPED |
 |---|---|---|---|---|---|---|
 | `core/src` | 53 | 9 | 40 | 3 | 1 | 0 |
 | `ffi/secretary-ffi-bridge/src` | 8 | 0 | 4 | 0 | 0 | 4 |
@@ -328,8 +362,8 @@ before this pass landed; `79`/`51` is this tree, after:
 | `ffi/secretary-ffi-py/src` | 37 | 37 | 0 | 0 | 0 | 0 |
 | **Total** | **101** | **49** | **44** | **3** | **1** | **4** |
 
-`49 + 44 + 3 + 1 + 4 = 101`; `101 + 7` (comment-only) `= 108`, matching
-the pre-conversion raw grep count at `9c18794`. This table is a
+`49 + 44 + 3 + 1 + 4 = 101`; `101 + 6` (comment-only) `= 107`, matching
+the pre-conversion raw grep count at `9c187946`. This table is a
 classification of that pre-conversion snapshot — the WINDOW column is
 "how many of these 101 got converted," so the table is necessarily
 historical; it does not re-measure against the post-conversion tree.
@@ -341,7 +375,8 @@ Category definitions:
 - **ADJACENT** — no fallible or panicking operation intervenes between
   the fill and the wipe (frequently a `?` that belongs to the *fill
   itself*, firing before the slot is even bound); left unconverted, per
-  design spec §6.
+  design spec §6 — with one deliberate exception, converted anyway; see
+  "A 50th conversion" after the WINDOW table below.
 - **TEST-ONLY** — a `.zeroize()` call inside `#[cfg(test)]` exercising a
   type's `Zeroize` derive directly, not the fill-then-wipe idiom.
 - **DROP-IMPL** — the call is inside a hand-written `Drop::drop` body,
@@ -354,55 +389,73 @@ Category definitions:
 
 The full per-site table — including the reasoning behind each of the 44
 ADJACENT / 3 TEST-ONLY / 1 DROP-IMPL / 4 EARLY-WIPE-OF-WRAPPED rows this
-summary doesn't reproduce in full — lived at
-`docs/superpowers/plans/2026-08-11-513-census.md` during implementation
-and is preserved in git history (`git log --all -- 'docs/superpowers/plans/2026-08-11-513-census.md'`
-finds the deleting commit; `git show <commit>^:docs/superpowers/plans/2026-08-11-513-census.md`
-recovers the full file). Most of those rows aren't duplicated here
-because none of those 48 changed any code and their reasoning is either
-trivial ("only `Sensitive::new` intervenes," the dominant shape below) or
-already in the design spec's §3.2/§3.3 — this memo's job is to record
-what changed and why, and to give a future auditor enough to re-derive
-the rest. The exception: the handful of ADJACENT judgements that needed
-third-party source verification are restored below rather than left
-git-history-only, since that verification is the least re-derivable
-content the census had.
+summary doesn't reproduce in full — lives in the tree at
+[`docs/superpowers/plans/2026-08-11-513-census.md`](../../superpowers/plans/2026-08-11-513-census.md).
+It was deleted once, at the end of implementation, on the theory that git
+history was sufficient recovery; it is restored here instead, because
+`main` squash-merges (its last several commits are single-parent with a
+trailing `(#N)`), so a plan file that exists only in branch history is
+gone the moment this branch lands on `main` — `git log --all -- '<path>'`
+and `git show <commit>^:<path>` both work in this feature-branch worktree
+and both return nothing against a squashed `main`. Keeping the file in
+the tree is the actual fix; a recovery recipe for an unreachable commit
+is not one. Most of the file's 52 rows aren't duplicated here because 51
+of them changed no code, and their reasoning is either trivial ("only
+`Sensitive::new` intervenes," the dominant shape below) or already in the
+design spec's §3.2/§3.3 — this memo's job is to record what changed and
+why, and to give a future auditor enough to re-derive the rest. The 52nd
+— `unlock/mod.rs::create_vault_unchecked`'s `ibk` slot, classified
+ADJACENT but converted anyway — is the one exception; see "A 50th
+conversion" after the WINDOW table below. Separately, the handful of
+ADJACENT judgements that needed third-party source verification are
+restored below rather than left to the census file alone, since that
+verification is the least re-derivable content the census had.
 
 ### The 49 WINDOW sites — fixed by this pass
 
-| # | File::function | Slot(s) | Exit class | Fixed by (commit) |
+The last column names the implementation-plan task
+([`docs/superpowers/plans/2026-08-11-513-panic-safe-secret-slots.md`](../../superpowers/plans/2026-08-11-513-panic-safe-secret-slots.md))
+that converted each site, not a commit SHA: `main` squash-merges (its last
+several commits are single-parent with a trailing `(#N)`), so the 8
+branch-local SHAs an earlier version of this table cited here go dangling
+the moment this branch lands — a reviewer cloning `main` and running
+`git show <sha>` gets "bad object." The task headings are a stable pointer
+because the plan file itself stays in the tree (unlike the census file
+above, which didn't and is restored for the same reason).
+
+| # | File::function | Slot(s) | Exit class | Fixed in (task) |
 |---|---|---|---|---|
-| 1 | `core/src/crypto/kdf.rs::derive_master_kek` | `out` | E2 (`?` on the Argon2 fill) | `try_build` — `fa36ce5b` |
-| 2 | `core/src/crypto/kdf.rs::derive_recovery_kek` | `out` | E1 (`.expect()` in fill) | `build` — `fa36ce5b` |
-| 3 | `core/src/crypto/kdf.rs::derive_device_kek` | `out` | E1 | `build` — `fa36ce5b` |
-| 4 | `core/src/crypto/kem.rs::derive_wrap_key` | `ikm` | E1 (holds *both* KEM shared secrets) | wrapped earlier — `SecretBytes::new` moved before the HKDF call — `fa36ce5b` |
-| 5 | `core/src/unlock/mnemonic.rs::generate` | `entropy_buf` | E1 | `build` — `039136b3` |
-| 5a | `core/src/unlock/mnemonic.rs::generate` | `entropy` (§3.4 — the thirteenth gap; never wiped at all, not itself a window) | n/a | built in place via `build`, alongside 5's conversion — `039136b3` |
-| 6 | `core/src/unlock/mnemonic.rs::parse` | `normalized` | E2 + E3 (#518) | `SecretString::new` — `039136b3` |
-| 7 | `core/src/unlock/bundle.rs::from_canonical_cbor` | `x25519_sk_bytes` | E2 (#518) | `Option<Sensitive<[u8; N]>>` decode-loop binding — `d7bb7c51` |
-| 8 | `core/src/unlock/bundle.rs::from_canonical_cbor` | `ed25519_sk_bytes` | E2 (#518) | same shape — `d7bb7c51` |
-| 9 | `core/src/unlock/mod.rs::create_vault_unchecked` | `bundle_plaintext` | E1 | `SecretBytes::new` — `916a624f` |
-| 10 | `ffi/secretary-ffi-uniffi/src/namespace/mod.rs::open_with_device_secret` | `secret_arr` | E1 (the site `#513` itself named) | `try_build` — `63f73dbd` |
-| 11 | `ffi/secretary-ffi-uniffi/src/namespace/repair.rs::repair_with_device_secret` | `secret_arr` | E1 | `try_build` — `63f73dbd` |
-| 12 | `ffi/secretary-ffi-uniffi/src/namespace/repair.rs::preview_repair_with_device_secret` | `secret_arr` | E1 | `try_build` — `63f73dbd` |
-| 13 | `ffi/secretary-ffi-py/src/repair_preview.rs::preview_repair_with_password` | `password` | E1 | wrapped before the bridge call — `b1d94d80` |
-| 14 | `ffi/secretary-ffi-py/src/repair_preview.rs::preview_repair_with_recovery` | `mnemonic` | E1 | wrapped before the bridge call — `b1d94d80` |
-| 15 | `ffi/secretary-ffi-py/src/repair_preview.rs::preview_repair_with_device_secret` | `device_secret`, `secret_arr` | E1 | wrapped before the bridge call — `b1d94d80` |
-| 16 | `ffi/secretary-ffi-py/src/device.rs::DeviceSecretOutput::take_secret` | `v` | E1 (fix round 1 — pyo3 `PyBytes::new` panics on OOM) | wrapped before the accessor call — `b1d94d80` |
-| 17 | `ffi/secretary-ffi-py/src/device.rs::add_device_slot` | `password` | E1 | wrapped before the bridge call — `b1d94d80` |
-| 18 | `ffi/secretary-ffi-py/src/device.rs::open_with_device_secret` | `device_secret`, `secret_arr` | E1 | wrapped before the bridge call — `b1d94d80` |
-| 19 | `ffi/secretary-ffi-py/src/repair.rs::repair_with_password` | `password` | E1 | wrapped before the bridge call — `b1d94d80` |
-| 20 | `ffi/secretary-ffi-py/src/repair.rs::repair_with_recovery` | `mnemonic` | E1 | wrapped before the bridge call — `b1d94d80` |
-| 21 | `ffi/secretary-ffi-py/src/repair.rs::repair_with_device_secret` | `device_secret`, `secret_arr` | E1 | wrapped before the bridge call — `b1d94d80` |
-| 22 | `ffi/secretary-ffi-py/src/unlock.rs::MnemonicOutput::take_phrase` | `v` | E1 (fix round 1) | wrapped before the accessor call — `b1d94d80` |
-| 23 | `ffi/secretary-ffi-py/src/unlock.rs::open_with_password` | `password` | E1 | wrapped before the bridge call — `b1d94d80` |
-| 24 | `ffi/secretary-ffi-py/src/unlock.rs::open_with_recovery` | `mnemonic` | E1 | wrapped before the bridge call — `b1d94d80` |
-| 25 | `ffi/secretary-ffi-py/src/unlock.rs::create_vault` | `password` | E1 | wrapped before the bridge call — `b1d94d80` |
-| 26 | `ffi/secretary-ffi-py/src/unlock.rs::create_vault_in_folder` | `password` | E1 | wrapped before the bridge call — `b1d94d80` |
-| 27 | `ffi/secretary-ffi-py/src/record.rs::FieldHandle::expose_text` | `s` | E1 (fix round 1) | wrapped before the accessor call — `b1d94d80` |
-| 28 | `ffi/secretary-ffi-py/src/record.rs::FieldHandle::expose_bytes` | `v` | E1 (fix round 1) | wrapped before the accessor call — `b1d94d80` |
-| 29 | `ffi/secretary-ffi-py/src/vault.rs::open_vault_with_password` | `password` | E1 | wrapped before the bridge call — `b1d94d80` |
-| 30 | `ffi/secretary-ffi-py/src/vault.rs::open_vault_with_recovery` | `mnemonic` | E1 | wrapped before the bridge call — `b1d94d80` |
+| 1 | `core/src/crypto/kdf.rs::derive_master_kek` | `out` | E2 (`?` on the Argon2 fill) | `try_build` — Task 3 |
+| 2 | `core/src/crypto/kdf.rs::derive_recovery_kek` | `out` | E1 (`.expect()` in fill) | `build` — Task 3 |
+| 3 | `core/src/crypto/kdf.rs::derive_device_kek` | `out` | E1 | `build` — Task 3 |
+| 4 | `core/src/crypto/kem.rs::derive_wrap_key` | `ikm` | E1 (holds *both* KEM shared secrets) | wrapped earlier — `SecretBytes::new` moved before the HKDF call — Task 3 |
+| 5 | `core/src/unlock/mnemonic.rs::generate` | `entropy_buf` | E1 | `build` — Task 4 |
+| 5a | `core/src/unlock/mnemonic.rs::generate` | `entropy` (§3.4 — the thirteenth gap; never wiped at all, not itself a window) | n/a | built in place via `build`, alongside 5's conversion — Task 4 |
+| 6 | `core/src/unlock/mnemonic.rs::parse` | `normalized` | E2 + E3 (#518) | `SecretString::new` — Task 4 |
+| 7 | `core/src/unlock/bundle.rs::from_canonical_cbor` | `x25519_sk_bytes` | E2 (#518) | `Option<Sensitive<[u8; N]>>` decode-loop binding — Task 5 |
+| 8 | `core/src/unlock/bundle.rs::from_canonical_cbor` | `ed25519_sk_bytes` | E2 (#518) | same shape — Task 5 |
+| 9 | `core/src/unlock/mod.rs::create_vault_unchecked` | `bundle_plaintext` | E1 | `SecretBytes::new` — Task 6 |
+| 10 | `ffi/secretary-ffi-uniffi/src/namespace/mod.rs::open_with_device_secret` | `secret_arr` | E1 (the site `#513` itself named) | `try_build` — Task 9 |
+| 11 | `ffi/secretary-ffi-uniffi/src/namespace/repair.rs::repair_with_device_secret` | `secret_arr` | E1 | `try_build` — Task 9 |
+| 12 | `ffi/secretary-ffi-uniffi/src/namespace/repair.rs::preview_repair_with_device_secret` | `secret_arr` | E1 | `try_build` — Task 9 |
+| 13 | `ffi/secretary-ffi-py/src/repair_preview.rs::preview_repair_with_password` | `password` | E1 | wrapped before the bridge call — Task 8 |
+| 14 | `ffi/secretary-ffi-py/src/repair_preview.rs::preview_repair_with_recovery` | `mnemonic` | E1 | wrapped before the bridge call — Task 8 |
+| 15 | `ffi/secretary-ffi-py/src/repair_preview.rs::preview_repair_with_device_secret` | `device_secret`, `secret_arr` | E1 | wrapped before the bridge call — Task 8 |
+| 16 | `ffi/secretary-ffi-py/src/device.rs::DeviceSecretOutput::take_secret` | `v` | E1 (fix round 1 — pyo3 `PyBytes::new` panics on OOM) | wrapped before the accessor call — Task 8 |
+| 17 | `ffi/secretary-ffi-py/src/device.rs::add_device_slot` | `password` | E1 | wrapped before the bridge call — Task 8 |
+| 18 | `ffi/secretary-ffi-py/src/device.rs::open_with_device_secret` | `device_secret`, `secret_arr` | E1 | wrapped before the bridge call — Task 8 |
+| 19 | `ffi/secretary-ffi-py/src/repair.rs::repair_with_password` | `password` | E1 | wrapped before the bridge call — Task 8 |
+| 20 | `ffi/secretary-ffi-py/src/repair.rs::repair_with_recovery` | `mnemonic` | E1 | wrapped before the bridge call — Task 8 |
+| 21 | `ffi/secretary-ffi-py/src/repair.rs::repair_with_device_secret` | `device_secret`, `secret_arr` | E1 | wrapped before the bridge call — Task 8 |
+| 22 | `ffi/secretary-ffi-py/src/unlock.rs::MnemonicOutput::take_phrase` | `v` | E1 (fix round 1) | wrapped before the accessor call — Task 8 |
+| 23 | `ffi/secretary-ffi-py/src/unlock.rs::open_with_password` | `password` | E1 | wrapped before the bridge call — Task 8 |
+| 24 | `ffi/secretary-ffi-py/src/unlock.rs::open_with_recovery` | `mnemonic` | E1 | wrapped before the bridge call — Task 8 |
+| 25 | `ffi/secretary-ffi-py/src/unlock.rs::create_vault` | `password` | E1 | wrapped before the bridge call — Task 8 |
+| 26 | `ffi/secretary-ffi-py/src/unlock.rs::create_vault_in_folder` | `password` | E1 | wrapped before the bridge call — Task 8 |
+| 27 | `ffi/secretary-ffi-py/src/record.rs::FieldHandle::expose_text` | `s` | E1 (fix round 1) | wrapped before the accessor call — Task 8 |
+| 28 | `ffi/secretary-ffi-py/src/record.rs::FieldHandle::expose_bytes` | `v` | E1 (fix round 1) | wrapped before the accessor call — Task 8 |
+| 29 | `ffi/secretary-ffi-py/src/vault.rs::open_vault_with_password` | `password` | E1 | wrapped before the bridge call — Task 8 |
+| 30 | `ffi/secretary-ffi-py/src/vault.rs::open_vault_with_recovery` | `mnemonic` | E1 | wrapped before the bridge call — Task 8 |
 
 Rows 13-30 (18 functions) account for all 37 `ffi/secretary-ffi-py/src`
 real call sites — several functions hold more than one windowed slot
@@ -417,11 +470,32 @@ windows, verified against pyo3 0.29.0 source (`PyBytes::new` /
 `PyString::new` → `assume_owned` → `Bound::from_owned_ptr` →
 `panic_on_null` on a null pointer, `src/instance.rs:2425-2430`).
 
+**A 50th conversion, outside this table.**
+`unlock/mod.rs::create_vault_unchecked`'s `ibk` slot — same function as
+row 9's `bundle_plaintext`, same commit, Task 6 — was also converted to
+`Sensitive::build`, even though the census classifies it ADJACENT: only
+`rng.fill_bytes` intervenes between the fill and the wrap, and that call
+cannot fail, so there is no window there to fix. Design spec §3.3
+pre-authorised converting it anyway ("adjacent (`fill_bytes`, converted
+opportunistically — see plan)"), on the reasoning that `Sensitive::build`
+states the invariant in one line where five lines of SECURITY comment
+previously explained why the post-move wipe was the best available
+discipline — it no longer is, so there was no reason to keep the weaker
+idiom on a site this cheap to upgrade. This pass therefore converts
+**50** sites total — the 49 WINDOW conversions in the table above, plus
+this one opportunistic ADJACENT conversion — not 49. It is also why
+"Don't convert a provably-adjacent site … for consistency" (the rule this
+pass adds to CLAUDE.md's memory-hygiene section) does not contradict this
+site being converted: the rule is about unforced churn on frozen-adjacent
+crypto code, and this conversion was forced by nothing but was authorised
+in the design spec before it was made, not applied after the fact "for
+consistency."
+
 Separately, **#503** (`array32_or_value_error(...) -> PyResult<[u8; 32]>`,
 a by-value producer that handed back an unwrapped stack array) is now
 closed on its ffi-py half — a prior fix had closed only the uniffi side.
 `array32_into_or_value_error` now writes through into an already-wrapped
-slot (commits `ead37e96`, `ece3720e`), so there is never an unwrapped
+slot (Task 7), so there is never an unwrapped
 `[u8; 32]` holding a secret on the stack at any point in either binding
 crate.
 
@@ -429,7 +503,10 @@ crate.
 
 Left exactly as-is, per design spec §6 ("no conversion of the no-window
 sites" — converting a non-windowed crypto site is churn on
-frozen-adjacent code for zero gain). The dominant ADJACENT shape, seen
+frozen-adjacent code for zero gain) — with one deliberate exception:
+`unlock/mod.rs::create_vault_unchecked`'s `ibk` slot is counted among the
+44 ADJACENT rows here but was converted anyway; see "A 50th conversion"
+above. The dominant ADJACENT shape, seen
 repeatedly across `crypto/kem.rs::decap`, `crypto/sig.rs`,
 `sync/prepare.rs`, `sync/commit/write.rs`,
 `vault/repair/orchestration.rs`, and `vault/device_slot.rs`:
@@ -440,14 +517,14 @@ let secret = Sensitive::new(sk_bytes);   // cannot panic, cannot return: no wind
 sk_bytes.zeroize();
 ```
 
-Three of the ADJACENT judgements above needed more than "only
-`Sensitive::new` intervenes" — the intervening call was into a
-third-party crate, so the "cannot panic" claim rests on having read that
-crate's own source at the pinned version. Restored here rather than left
-git-history-only, since design spec §3.2/§3.3 covers the trivial ADJACENT
-rows but carries none of these three vendor citations, and a future
-auditor re-deriving them would otherwise have to redo the source reading
-from scratch:
+Six of the ADJACENT judgements above, across three call sites, needed
+more than "only `Sensitive::new` intervenes" — the intervening call was
+into a third-party crate, so the "cannot panic" claim rests on having
+read that crate's own source at the pinned version. Restored here rather
+than left git-history-only, since design spec §3.2/§3.3 covers the
+trivial ADJACENT rows but carries none of these three vendor citations,
+and a future auditor re-deriving them would otherwise have to redo the
+source reading from scratch:
 
 - `crypto/kem.rs::decap`'s `sk_x_bytes` — the intervening
   `XStaticSecret::from(sk_x_bytes)` was checked against `x25519-dalek`
@@ -457,12 +534,13 @@ from scratch:
   `Dk::from_bytes(&dk_arr)` was checked against `ml-kem` 0.2.3
   (`kem.rs:53`, `pke.rs:85`/`138`: fixed-size polynomial decode over
   `hybrid_array::Array<u8, N>`, no fallible ops in the traced path).
-- `crypto/sig.rs::generate_ml_dsa_65`'s `seed_bytes`/`seed`, and
-  `crypto/sig.rs::sign`'s `seed_arr`/`seed` (same citation, since both
-  call through the identical `MlDsa65::from_seed(&seed)`) — checked
-  against `ml-dsa` 0.1.0-rc.8 (`lib.rs:889-940`: deterministic
-  XOF-based sampling over fixed-size `B32`/`B64`, no `unwrap`/`expect`/
-  `assert` in the traced path).
+- `crypto/sig.rs::generate_ml_dsa_65`'s `seed_bytes`/`seed` (two slots),
+  and `crypto/sig.rs::sign`'s `seed_arr`/`seed` (two more) — four slots
+  under one citation, since all four call through the identical
+  `MlDsa65::from_seed(&seed)` — checked against `ml-dsa` 0.1.0-rc.8
+  (`lib.rs:890-943`: the `impl<P> KeyGen for P` block's `from_seed`,
+  deterministic XOF-based sampling over fixed-size `B32`/`B64`, no
+  `unwrap`/`expect`/`assert` in the traced path).
 
 `ffi/secretary-ffi-bridge/src`'s 4 EARLY-WIPE-OF-WRAPPED sites
 (`revoke/orchestration.rs`, `share/orchestration.rs`) are an explicit
@@ -662,6 +740,15 @@ the cross-codebase expectation. New work that introduces a fresh
 `stack_var.zeroize()` will fail the FFI memo's "Adding a new bridge
 handle" checklist and should fail review here too.
 
+**This section predates, and is narrower than, the rule that supersedes
+it.** The trailing-wipe pattern above is correct only when the fill is
+provably adjacent to the wrap — see "Panic- and error-safe secret slots"
+below and CLAUDE.md's memory-hygiene section for the full E1/E2/E3
+analysis. A fresh site with a fallible or panicking call between the fill
+and the wrap needs `Sensitive::build` / `try_build` instead, not the
+`Sensitive::new(stack_var); stack_var.zeroize();` idiom this paragraph
+was written around.
+
 ## Deferred items (not addressed in this pass)
 
 The two type-level deferred items from the original audit (record-content
@@ -673,7 +760,7 @@ re-numbered §1 / §2 below.
 ### 1. HKDF internal state residue
 
 `hkdf = "0.12"` does not zeroize its internal HMAC state on drop.
-[core/src/crypto/kdf.rs:216-223](../../../core/src/crypto/kdf.rs#L216-L223)
+[core/src/crypto/kdf.rs:258-265](../../../core/src/crypto/kdf.rs#L258-L265)
 documents this as a SECURITY note on `derive_recovery_kek`, and the
 same applies to `hkdf_sha256_extract_and_expand`. Eliminating the
 residue requires either:

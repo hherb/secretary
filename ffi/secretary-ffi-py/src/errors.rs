@@ -298,12 +298,15 @@ mod tests {
         pyo3::Python::initialize();
 
         // `out`'s zero seed does NOT make this assertion vacuous: `src` is
-        // `0..32`, so 31 of its 32 bytes are non-zero, and `assert_eq!`
-        // compares the full arrays — a partial or missing write would show
-        // up as a mismatch against `src`, not blend into a zero seed the
-        // way `out2`'s zero-vs-zero comparison would have below.
+        // `1..=32`, which contains NO zero byte at all, so `assert_eq!`
+        // comparing the full arrays catches any partial or missing write —
+        // including one that omits exactly index 0 — as a mismatch against
+        // `src`, rather than that one byte blending into the zero seed the
+        // way it would if `src` started at 0 (as `0..32` does; a regression
+        // that wrote every index but 0 would then leave `out[0] == 0 ==
+        // src[0]` and pass by coincidence).
         let mut out = [0u8; 32];
-        let src: Vec<u8> = (0u8..32).collect();
+        let src: Vec<u8> = (1u8..=32).collect();
         array32_into_or_value_error(&src, &mut out, "device_secret").expect("32 bytes is valid");
         assert_eq!(out.to_vec(), src);
 
@@ -312,15 +315,19 @@ mod tests {
         // has no wipe to do here, but the assertion below only PROVES the
         // untouched claim because the sentinel isn't the value a wipe would
         // also produce). Mirrors the uniffi sibling test
-        // (`array32_from_vec_into_writes_through_and_rejects_wrong_length`,
-        // `ffi/secretary-ffi-uniffi/src/namespace/mod.rs:1027`), which
-        // makes the same choice for the same reason.
+        // `array32_from_vec_into_writes_through_and_rejects_wrong_length` in
+        // `ffi/secretary-ffi-uniffi/src/namespace/mod.rs` (cited by name,
+        // not line, so this comment can't drift when that file's lines
+        // move — it already has once), which makes the same choice for the
+        // same reason.
         let mut out2 = [0xA5u8; 32];
         let short: Vec<u8> = (0u8..31).collect();
         let err = array32_into_or_value_error(&short, &mut out2, "device_secret")
             .expect_err("31 bytes must be rejected");
-        // The message must report the ACTUAL wrong length, not 0 — the bug
-        // #501 describes was exactly this, read after a zeroize() cleared it.
+        // The message must report the ACTUAL wrong length, not 0 — the same
+        // "always reports got 0" bug class device.rs's module doc describes:
+        // a length read after a manual `.zeroize()` call had already
+        // cleared it to 0 (#513).
         assert!(format!("{err}").contains("31"), "got: {err}");
         assert_eq!(
             out2, [0xA5u8; 32],

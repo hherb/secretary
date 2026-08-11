@@ -1021,8 +1021,15 @@ mod tests {
 
     #[test]
     fn array32_from_vec_into_writes_through_and_rejects_wrong_length() {
+        // `src` is `1..=32`, which contains NO zero byte at all, so
+        // `assert_eq!` comparing the full arrays below catches any partial
+        // or missing write — including one that omits exactly index 0 — as
+        // a mismatch against `src`. A `0..32` range (this test's own
+        // ffi-py sibling used one until it was found to have exactly this
+        // blind spot) would let a regression that wrote every index but 0
+        // pass, since `out`'s zero seed and `src[0] == 0` would coincide.
         let mut out = [0u8; 32];
-        let src: Vec<u8> = (0u8..32).collect();
+        let src: Vec<u8> = (1u8..=32).collect();
         array32_from_vec_into(&src, &mut out, "device_secret").expect("32 bytes is valid");
         assert_eq!(out.to_vec(), src);
 

@@ -477,10 +477,19 @@ impl IdentityBundle {
             // `Copy` — either into the `bundle` field it became, or, on an
             // early return from a field further down the struct literal,
             // into a temporary that is then dropped (and zeroized) right
-            // there. Neither path leaves anything at this local's name left
-            // to wipe (#518). The Vec-typed `ml_kem_768_sk_bytes` /
-            // `ml_dsa_65_sk_bytes` locals were always moved, not copied, and
-            // never needed a wipe here either.
+            // there. This is a borrow-checker claim, not a memory one:
+            // the move is a memcpy, and the source stack slot still holds
+            // the bytes — the compiler only forbids NAMING that slot again
+            // (E0382), which is why the old trailing `.zeroize()` call on
+            // it had to be deleted rather than kept (#518). That residual
+            // slot is not a regression (the pre-#518 code left an
+            // equivalent unwiped temporary at the same point) — it is just
+            // not the "nothing left to wipe" completeness this comment used
+            // to claim; the wrapper's own `Drop` is what actually reclaims
+            // it, on whichever of the two paths above the value ends up on.
+            // The Vec-typed `ml_kem_768_sk_bytes` / `ml_dsa_65_sk_bytes`
+            // locals were always moved, not copied, and never needed a wipe
+            // here either.
             canonical.zeroize();
         }
         if !is_canonical {
@@ -749,7 +758,7 @@ mod tests {
         );
     }
 
-    /// `bundle.rs:406` carries an arbitrary map key from the DECRYPTED
+    /// `bundle.rs:435` carries an arbitrary map key from the DECRYPTED
     /// identity bundle. It must become an ordinal (#474).
     #[test]
     fn unknown_bundle_field_reports_an_index_not_the_key() {
