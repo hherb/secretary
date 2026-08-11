@@ -91,7 +91,9 @@ impl Mnemonic {
 /// only the local scratch buffer (`entropy_buf`), while the copy handed to
 /// the caller was moved into the returned [`Mnemonic`] via `Sensitive::new`,
 /// which, since `[u8; 32]` is `Copy`, left the source stack slot holding a
-/// dirty, unwiped copy with no wipe call anywhere for it (#518).
+/// dirty, unwiped copy with no wipe call anywhere for it — not an exit-path
+/// leak like `parse`'s below, just a missing wipe (spec §3.4, tracked under
+/// the #513 umbrella).
 pub fn generate(rng: &mut (impl RngCore + CryptoRng)) -> Mnemonic {
     let entropy_buf = Sensitive::build([0u8; 32], |buf| rng.fill_bytes(buf));
 
@@ -388,6 +390,15 @@ mod tests {
     // variants, so the converted code is covered by execution rather than
     // by inspection alone. Do not read a passing `Ok`/error-variant result
     // here as evidence the memory was zeroed.
+    //
+    // Each duplicates an assertion `parse_rejects_wrong_word_count` /
+    // `parse_rejects_unknown_word` above already made before this fix
+    // existed (fix-round-1 review finding); they're kept anyway, named
+    // explicitly after the two leaking paths, as the tests this fix's own
+    // history point to. `parse_rejects_an_unknown_word_by_index_only` below
+    // additionally carries over the #358 redaction assertion so it is a
+    // strict superset of the test it duplicates, not merely a same-input
+    // rerun of it.
 
     #[test]
     fn parse_rejects_a_short_phrase_with_wrong_length() {
@@ -411,6 +422,17 @@ mod tests {
         assert!(
             matches!(err, MnemonicError::UnknownWord { index: 7 }),
             "expected UnknownWord {{ index: 7 }}, got {err:?}"
+        );
+        // #358: the offending word must never appear in the error message
+        // (it would leak recovery-phrase material into logs / crash reporters).
+        let rendered = err.to_string();
+        assert!(
+            !rendered.contains("notaword"),
+            "error message leaked the phrase word: {rendered}",
+        );
+        assert!(
+            rendered.contains("#8"),
+            "expected 1-based position, got {rendered}"
         );
     }
 }
