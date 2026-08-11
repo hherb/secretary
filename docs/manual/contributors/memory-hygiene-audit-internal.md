@@ -451,7 +451,7 @@ from scratch:
 
 - `crypto/kem.rs::decap`'s `sk_x_bytes` — the intervening
   `XStaticSecret::from(sk_x_bytes)` was checked against `x25519-dalek`
-  2.0.1 (`x25519.rs:247`: `StaticSecret(bytes)`, a bare tuple-struct wrap
+  2.0.1 (`x25519.rs:248`: `StaticSecret(bytes)`, a bare tuple-struct wrap
   — cannot panic).
 - `crypto/kem.rs::decap`'s `dk_arr` — the intervening
   `Dk::from_bytes(&dk_arr)` was checked against `ml-kem` 0.2.3
