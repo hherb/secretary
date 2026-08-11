@@ -190,24 +190,22 @@ pub fn create_vault_unchecked(
     let recovery_mnemonic = mnemonic::generate(rng);
     let recovery_kek = derive_recovery_kek(recovery_mnemonic.entropy());
 
-    // Step 4: Identity Block Key — fresh CSPRNG bytes wrapped in Sensitive.
-    // `rng.fill_bytes` writes into the stack array `ibk`; `Sensitive::new`
-    // then copies it (`[u8; 32]: Copy`) into the wrapper. Zeroize the stack
-    // copy explicitly so the secret lives only inside `identity_block_key`.
-    // (`fill_bytes` itself cannot be MaybeUninit-aware; the post-move
-    // zeroize is the discipline we can apply.) Same pattern as
-    // `crypto::kem::derive_wrap_key` and `crypto::kdf::derive_recovery_kek`.
-    let mut ibk = [0u8; 32];
-    rng.fill_bytes(&mut ibk);
-    let identity_block_key = Sensitive::new(ibk);
-    ibk.zeroize();
+    // Step 4: Identity Block Key — fresh CSPRNG bytes, wrapped before fill.
+    // `Sensitive::build` constructs the wrapper first and fills it in place,
+    // so the 32 bytes are `ZeroizeOnDrop`-covered for their entire life —
+    // there is no separate stack copy left to wipe (#513).
+    let identity_block_key = Sensitive::build([0u8; 32], |slot| rng.fill_bytes(slot));
 
     // Step 5: generate identity + canonical CBOR
     let identity = bundle::generate(display_name, created_at_ms, rng);
     // `bundle_plaintext` is a cleartext CBOR copy of the entire secret-key set
-    // (all four sk's). It is AEAD-encrypted under the IBK below, then zeroized
-    // so the cleartext key material does not linger in freed heap. See #357.
-    let mut bundle_plaintext = identity.to_canonical_cbor()?;
+    // (all four sk's), wrapped in `SecretBytes` at construction. It is
+    // AEAD-encrypted under the IBK below via `.expose()`; `SecretBytes`'
+    // `ZeroizeOnDrop` wipes it at scope exit on every path — normal return,
+    // an early `?`, or an unwinding panic — rather than relying on a
+    // trailing `.zeroize()` call that only the happy path reaches (#513).
+    // See #357 for why the cleartext copy must not linger.
+    let bundle_plaintext = SecretBytes::new(identity.to_canonical_cbor()?);
 
     // Step 6: three independent 24-byte AEAD nonces — one per AEAD call below.
     // Each key (IBK, master_kek, recovery_kek) is used exactly once, but
@@ -226,10 +224,9 @@ pub fn create_vault_unchecked(
         &identity_block_key,
         &nonce_id,
         &bundle_aad,
-        &bundle_plaintext,
+        bundle_plaintext.expose(),
     )
     .expect("AEAD encrypt of §5 bundle plaintext is structurally infallible");
-    bundle_plaintext.zeroize();
 
     // Step 8: wrap_pw — AEAD-encrypt the IBK bytes under master_kek.
     // identity_block_key.expose() -> &[u8; 32] coerces to &[u8] (plaintext).
