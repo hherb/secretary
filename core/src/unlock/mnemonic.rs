@@ -21,7 +21,7 @@ use rand_core::{CryptoRng, RngCore};
 use unicode_normalization::UnicodeNormalization;
 use zeroize::Zeroize;
 
-use crate::crypto::secret::Sensitive;
+use crate::crypto::secret::{SecretString, Sensitive};
 
 /// 24-word BIP-39 mnemonic carrying 256 bits of entropy.
 ///
@@ -82,16 +82,22 @@ impl Mnemonic {
 /// equivalent), in tests it is typically a seeded `ChaCha20Rng` so that the
 /// generated phrase is reproducible.
 ///
-/// The local 32-byte entropy buffer is zeroized after the BIP-39 mnemonic has
-/// been constructed; the entropy survives only inside the returned
-/// [`Mnemonic`]'s [`Sensitive`] field.
+/// Both the local entropy buffer and the entropy stored in the returned
+/// [`Mnemonic`] are built in place inside a [`Sensitive`] wrapper via
+/// `Sensitive::build`: the wrapper exists *before* it is filled, so its
+/// `ZeroizeOnDrop` wipe covers every exit from this function, including an
+/// unwinding panic (#513). This closes a gap a prior version of this
+/// comment described inaccurately — it claimed a wipe that in fact covered
+/// only the local scratch buffer (`entropy_buf`), while the copy handed to
+/// the caller was moved into the returned [`Mnemonic`] via `Sensitive::new`,
+/// which, since `[u8; 32]` is `Copy`, left the source stack slot holding a
+/// dirty, unwiped copy with no wipe call anywhere for it (#518).
 pub fn generate(rng: &mut (impl RngCore + CryptoRng)) -> Mnemonic {
-    let mut entropy_buf = [0u8; 32];
-    rng.fill_bytes(&mut entropy_buf);
+    let entropy_buf = Sensitive::build([0u8; 32], |buf| rng.fill_bytes(buf));
 
     // `from_entropy` accepts any 16/20/24/28/32-byte input; 32 bytes always
     // succeeds and yields a 24-word English mnemonic.
-    let bip = Bip39Mnemonic::from_entropy(&entropy_buf)
+    let bip = Bip39Mnemonic::from_entropy(entropy_buf.expose())
         .expect("32 bytes is a valid BIP-39 entropy length (24 words)");
 
     let phrase = bip.to_string();
@@ -103,22 +109,19 @@ pub fn generate(rng: &mut (impl RngCore + CryptoRng)) -> Mnemonic {
     // 33-byte slot once the trimmed entropy has been copied out.
     let (mut full, len) = bip.to_entropy_array();
     debug_assert_eq!(len, 32, "24-word BIP-39 must produce 32 bytes of entropy");
-    let mut entropy = [0u8; 32];
-    entropy.copy_from_slice(&full[..32]);
 
     // The bip39 crate's `zeroize` feature is enabled in our build, so the
     // local `bip` value's internal `[u16; 24]` words array is wiped when it
-    // goes out of scope. We zeroize the local input buffer (`entropy_buf`)
-    // and the 33-byte output buffer (`full`) returned by `to_entropy_array`
-    // — both held the entropy bytes briefly and are not under the bip39
-    // crate's automatic zeroize coverage once they leave its API.
-    entropy_buf.zeroize();
+    // goes out of scope. `entropy_buf` wipes itself on drop regardless of how
+    // this function exits (`Sensitive` is `ZeroizeOnDrop`). `full`, the
+    // 33-byte output buffer returned by `to_entropy_array`, is not under the
+    // bip39 crate's automatic zeroize coverage once it leaves its API, so we
+    // zeroize it explicitly once the trimmed entropy has been copied out
+    // below.
+    let entropy = Sensitive::build([0u8; 32], |slot| slot.copy_from_slice(&full[..32]));
     full.zeroize();
 
-    Mnemonic {
-        phrase,
-        entropy: Sensitive::new(entropy),
-    }
+    Mnemonic { phrase, entropy }
 }
 
 /// Parse a mnemonic phrase, validating the wordlist and the BIP-39 checksum.
@@ -141,14 +144,18 @@ pub fn parse(words: &str) -> Result<Mnemonic, MnemonicError> {
     // string matches exactly what the bip39 crate expects.
     let mut nfkd: String = words.nfkd().collect();
     let mut parts: Vec<String> = nfkd.split_whitespace().map(str::to_lowercase).collect();
-    let mut normalized = parts.join(" ");
+    let normalized = SecretString::new(parts.join(" "));
     // `nfkd` and the per-word lowercase `parts` hold recovery-phrase material;
-    // wipe them now. `normalized` is wiped after parsing below (it must live
-    // until `parse_in_normalized` and `tokens` are done with it). See #357.
+    // wipe them now. `normalized` is a `SecretString`, whose `ZeroizeOnDrop`
+    // wipes it on every exit from here on — both early-return branches
+    // below, the happy path, and an unwinding panic (#518; the previous
+    // explicit `normalized.zeroize()` near the end of this function only ran
+    // on the path that reached it, which excluded both error returns). See
+    // #357.
     nfkd.zeroize();
     parts.iter_mut().for_each(Zeroize::zeroize);
 
-    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+    let tokens: Vec<&str> = normalized.expose().split_whitespace().collect();
     if tokens.len() != 24 {
         return Err(MnemonicError::WrongLength { got: tokens.len() });
     }
@@ -156,17 +163,17 @@ pub fn parse(words: &str) -> Result<Mnemonic, MnemonicError> {
     // The bip39 crate reports `UnknownWord` by index into the phrase. We carry
     // that index through verbatim — NOT the word content, which is
     // recovery-phrase material that must not leak into an error message (#358).
-    let bip =
-        Bip39Mnemonic::parse_in_normalized(Language::English, &normalized).map_err(
-            |e| match e {
-                bip39::Error::UnknownWord(idx) => MnemonicError::UnknownWord { index: idx },
-                other => map_bip39_error(other),
-            },
-        )?;
-    // `tokens` (borrowing `normalized`) is done; wipe the normalized phrase
-    // buffer now that parsing has consumed it. See #357.
+    let bip = Bip39Mnemonic::parse_in_normalized(Language::English, normalized.expose())
+        .map_err(|e| match e {
+            bip39::Error::UnknownWord(idx) => MnemonicError::UnknownWord { index: idx },
+            other => map_bip39_error(other),
+        })?;
+    // `tokens` borrows `normalized`; drop that borrow explicitly rather than
+    // let it ride to the end of the function, keeping the two bindings'
+    // lifetimes as narrow as they were before this change. `normalized`
+    // itself is no longer wiped here — its `SecretString` wipe now happens
+    // via `Drop` regardless of which exit this function takes. See #357.
     drop(tokens);
-    normalized.zeroize();
 
     // Same 33-byte stack residue as `generate`: zeroize the full buffer
     // after the trimmed 32-byte entropy has been copied out, since the
@@ -367,6 +374,43 @@ mod tests {
                 MnemonicError::BadChecksum | MnemonicError::UnknownWord { .. }
             ),
             "expected BadChecksum or UnknownWord, got {err:?}",
+        );
+    }
+
+    // #518: `parse` used to return on these two paths WITHOUT wiping
+    // `normalized`, the `String` (now `SecretString`) holding the user's
+    // full recovery phrase — including `UnknownWord`, which is what fires
+    // when a user mistypes one word while recovering a vault.
+    //
+    // A wipe of a freed heap buffer is not observable from safe Rust (spec
+    // §5.4), so these two tests do NOT assert the wipe itself. Their job is
+    // to pin that both leaking paths are reached and keep their exact error
+    // variants, so the converted code is covered by execution rather than
+    // by inspection alone. Do not read a passing `Ok`/error-variant result
+    // here as evidence the memory was zeroed.
+
+    #[test]
+    fn parse_rejects_a_short_phrase_with_wrong_length() {
+        let err = parse("abandon abandon abandon").unwrap_err();
+        assert!(
+            matches!(err, MnemonicError::WrongLength { got: 3 }),
+            "expected WrongLength {{ got: 3 }}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_an_unknown_word_by_index_only() {
+        // Take a valid 24-word phrase and corrupt exactly one word, which is
+        // the realistic failure: a typo during vault recovery.
+        let mut rng = ChaCha20Rng::from_seed([222u8; 32]);
+        let good = generate(&mut rng);
+        let mut words: Vec<&str> = good.phrase().split_whitespace().collect();
+        words[7] = "notaword";
+        let err = parse(&words.join(" ")).unwrap_err();
+
+        assert!(
+            matches!(err, MnemonicError::UnknownWord { index: 7 }),
+            "expected UnknownWord {{ index: 7 }}, got {err:?}"
         );
     }
 }
