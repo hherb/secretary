@@ -236,10 +236,22 @@ pub fn derive_master_kek(
     .map_err(|_| KdfError::Argon2ParamsRejected)?;
 
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
-    // Wrapped BEFORE the fill: `hash_password_into` writes into `out` and may
-    // then fail, so the pre-#513 form's trailing `out.zeroize()` was skipped by
-    // its own `?` — leaving a partially-derived KEK on the stack. `try_build`
-    // wipes on the error path and on an unwinding panic alike.
+    // Wrapped BEFORE the fill, so `Drop` covers every exit — return, `?`,
+    // and unwinding panic alike — with no statement for control flow to skip.
+    //
+    // Be precise about what this closed, because the obvious claim is wrong:
+    // the pre-#513 form's trailing `out.zeroize()` WAS skipped by this `?`,
+    // but in argon2 0.5.3 there was nothing to leak. For this call's concrete
+    // shape (`out: [u8; 32]`, `output_len = Some(32)`), every `Err` return
+    // happens strictly before any write to `out`: the two length checks and
+    // `verify_inputs` precede it, `initial_hash` takes `out` as an immutable
+    // `&[u8]`, `fill_blocks` never receives it, and `finalize`'s only write
+    // goes through `blake2b_long`'s `out.len() <= 64` short path, which
+    // writes on success alone. So the E2 path is closed BY CONSTRUCTION
+    // rather than because a leak was observed — the point is that the
+    // guarantee no longer depends on a reading of argon2's internal
+    // statement ordering, which a version bump could change silently.
+    // The E1 (unwinding panic) path is a genuine window and always was.
     let kek = Sensitive::try_build([0u8; 32], |out| {
         argon
             .hash_password_into(password.expose(), salt, out)
