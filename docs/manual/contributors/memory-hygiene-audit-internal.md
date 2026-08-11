@@ -331,28 +331,37 @@ which the `--include="*.rs"` flag in the command above excludes, so it
 cannot appear in that command's own output; the command was quoted
 verbatim just above the wrong number. `108`/`7` is real, but it is the
 count at a *later*, branch-local point in this pass's own history —
-commit `567a8dc3` (Task 1), which added a `.zeroize()` doc comment at
+Task 1, which added a `.zeroize()` doc comment at
 `core/src/crypto/secret.rs:190` — and got misattributed here to the
-merge-base the census in the next section actually started from. The
+merge-base the census in the next section actually started from. (Cited
+by task, not commit SHA, for the same reason as the WINDOW table below:
+`main` squash-merges, so a branch-local SHA dangles the moment this
+branch lands — the exact failure mode H1 exists to eliminate.) The
 real-call total, **101**, is unaffected either way; only the raw count
 and the comment-only split at the starting point were wrong, by exactly
 one each.
 
 **Running the same command against the tree this pass ships in gives
-different, smaller numbers — `79` raw / `51` real, re-verified by
+different, smaller numbers — `81` raw / `51` real, re-verified by
 execution — and that is expected, not a discrepancy to chase.** The 49
 WINDOW conversions below each replaced an explicit `.zeroize()` call with
 `Drop`, removing that raw grep hit; several of those same sites gained an
 explanatory comment mentioning `#513` or the old idiom, which the same
 grep also matches, so the drop in the *real*-call count (101 → 51) is
-larger than the drop in the raw count (107 → 79). Per-root, the
+larger than the drop in the raw count (107 → 81). Per-root, the
 post-conversion real-call counts are `core/src` 43,
 `ffi/secretary-ffi-bridge/src` 8 (unchanged — this crate needed no
 conversion), `ffi/secretary-ffi-uniffi/src` 0, `ffi/secretary-
 ffi-py/src` 0 — the last two hitting zero is the expected shape, since
 every real call site in those two roots was WINDOW and got converted. If
 you run the grep below and get `107`/`101`, you are reading `main`
-before this pass landed; `79`/`51` is this tree, after:
+before this pass landed; `81`/`51` is this tree, after — and that number
+moves again with every doc-comment edit this file itself makes to a
+`.zeroize()`-adjacent line, which is precisely how it went from `79` to
+`81`: two of this file's own review-response comments (in
+`core/src/unlock/bundle.rs` and `ffi/secretary-ffi-py/src/errors.rs`)
+themselves contain the literal text `` `.zeroize()` ``, and the grep
+below does not distinguish prose from code:
 
 | root | real call sites (pre-conversion, at `9c187946`) | WINDOW (converted) | ADJACENT (no window, unchanged) | TEST-ONLY | DROP-IMPL | EARLY-WIPE-OF-WRAPPED |
 |---|---|---|---|---|---|---|
@@ -743,7 +752,7 @@ handle" checklist and should fail review here too.
 **This section predates, and is narrower than, the rule that supersedes
 it.** The trailing-wipe pattern above is correct only when the fill is
 provably adjacent to the wrap — see "Panic- and error-safe secret slots"
-below and CLAUDE.md's memory-hygiene section for the full E1/E2/E3
+above and CLAUDE.md's memory-hygiene section for the full E1/E2/E3
 analysis. A fresh site with a fallible or panicking call between the fill
 and the wrap needs `Sensitive::build` / `try_build` instead, not the
 `Sensitive::new(stack_var); stack_var.zeroize();` idiom this paragraph
