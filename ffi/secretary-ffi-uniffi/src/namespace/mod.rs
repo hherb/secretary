@@ -15,7 +15,7 @@ use crate::wrappers::retention::{ExpiredEntry, RetentionPurgeReport};
 use crate::wrappers::settings::Settings;
 use crate::wrappers::trash::TrashedBlock;
 use crate::wrappers::vault::{OpenVaultManifest, OpenVaultOutput};
-use zeroize::Zeroize;
+use secretary_core::crypto::secret::Sensitive;
 
 mod block_crud;
 pub use block_crud::{create_block, move_record, rename_block};
@@ -579,13 +579,12 @@ pub fn add_device_slot(
 /// borrow of the foreign buffer (`[ByRef] bytes`, #307) — the foreign adapter
 /// owns it and its scrub. The single transient `[u8; 32]` stack copy made
 /// here is written through by `array32_from_vec_into` (so no second copy
-/// exists in a callee frame, #503) and is zeroized on every RETURN path,
-/// including the error path — which is why the bridge `Result` is deferred
-/// into a `let`, wiped, and only then `?`-ed. An UNWINDING PANIC still
-/// skips it; that is #513, filed on this branch, and this comment said
-/// "zeroized on all paths" until #515 pointed out it contradicted the issue
-/// the same branch had just filed. `zeroize::Zeroizing<[u8; 32]>` closes it
-/// via `Drop`; #513 asks for a repo-wide census of the idiom first.
+/// exists in a callee frame, #503), and as of #513 it is wrapped in a
+/// `Sensitive<[u8; 32]>` (via [`Sensitive::try_build`]) BEFORE it is
+/// filled, rather than a bare `[u8; 32]` plus a trailing `.zeroize()`.
+/// `Drop` therefore covers the wipe on every exit path — normal return, the
+/// length-check `?`, or an UNWINDING PANIC inside the bridge call below —
+/// with no manual `.zeroize()` call left in this function.
 ///
 /// # Errors
 ///
@@ -600,30 +599,27 @@ pub fn open_with_device_secret(
     device_secret: &[u8],
 ) -> Result<OpenVaultOutput, VaultError> {
     let uuid_arr = uuid_from_vec(&device_uuid, "device_uuid")?;
-    // `mut` so the [u8; 32] stack copy is zeroized IN PLACE below — a
-    // re-binding `let mut` would copy the array and wipe only the copy.
-    // Written through by `array32_from_vec_into` rather than returned by
-    // value, so this slot is the ONLY [u8; 32] in play (#503).
-    let mut secret_arr = [0u8; 32];
-    array32_from_vec_into(device_secret, &mut secret_arr, "device_secret")?;
+    // Wrapped BEFORE it is filled: the slot is live — and therefore
+    // ZeroizeOnDrop-covered — for the whole fill, so `Drop` wipes it on
+    // every exit path, including an unwinding panic inside the bridge call
+    // below (#513), with no trailing `.zeroize()` statement for control
+    // flow to skip. Written through by `array32_from_vec_into` rather than
+    // returned by value, so this slot is the ONLY [u8; 32] in play (#503).
+    let secret_arr = Sensitive::try_build([0u8; 32], |slot| {
+        array32_from_vec_into(device_secret, slot, "device_secret")
+    })?;
 
-    let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
-        match std::str::from_utf8(&folder_path) {
-            Ok(s) => {
-                let path = std::path::PathBuf::from(s);
-                secretary_ffi_bridge::open_with_device_secret(&path, &uuid_arr, &secret_arr)
-                    .map_err(VaultError::from)
-            }
-            Err(_) => Err(VaultError::FolderInvalid {
-                detail: "folder path contained invalid UTF-8".to_string(),
-            }),
-        };
+    let bridge_out = match std::str::from_utf8(&folder_path) {
+        Ok(s) => {
+            let path = std::path::PathBuf::from(s);
+            secretary_ffi_bridge::open_with_device_secret(&path, &uuid_arr, secret_arr.expose())
+                .map_err(VaultError::from)
+        }
+        Err(_) => Err(VaultError::FolderInvalid {
+            detail: "folder path contained invalid UTF-8".to_string(),
+        }),
+    }?;
 
-    // Zeroize the transient stack copy unconditionally — the borrowed
-    // `device_secret` itself is foreign-owned (scrubbed by the adapter).
-    secret_arr.zeroize();
-
-    let bridge_out = result?;
     Ok(OpenVaultOutput {
         identity: std::sync::Arc::new(UnlockedIdentity(bridge_out.identity)),
         manifest: std::sync::Arc::new(OpenVaultManifest(bridge_out.manifest)),
@@ -1047,5 +1043,43 @@ mod tests {
             out2, [0xA5u8; 32],
             "the out slot must be untouched on error"
         );
+    }
+
+    #[test]
+    fn open_with_device_secret_bad_uuid_and_bad_secret_reports_uuid_first() {
+        // Precedence pin (#513 Task 9): `device_uuid` is checked BEFORE
+        // `device_secret`. Before this task, `device_secret`'s length check
+        // was a visible `if device_secret.len() != 32` sitting inside a
+        // bare `[u8; 32]` fill; the conversion to
+        // `Sensitive::try_build(...)` moves the length check inside that
+        // call, and nothing enforces its position relative to the
+        // `device_uuid` check except where the call is written in the
+        // function body. A wrong-length `device_uuid` (15 bytes) alongside
+        // a wrong-length `device_secret` (31 bytes) must surface a message
+        // naming only `device_uuid` — matches the ffi-py precedence test of
+        // the same name in `tests/test_device_slot.py` (#513 Task 8).
+        match open_with_device_secret(b"irrelevant".to_vec(), vec![0u8; 15], &[0u8; 31]) {
+            Err(VaultError::InvalidArgument { detail }) => {
+                assert!(detail.contains("device_uuid"), "detail was: {detail}");
+                assert!(!detail.contains("device_secret"), "detail was: {detail}");
+            }
+            Err(other) => panic!("expected InvalidArgument, got {other:?}"),
+            Ok(_) => panic!("expected Err for wrong-length device_uuid and device_secret"),
+        }
+    }
+
+    #[test]
+    fn open_with_device_secret_bad_secret_beats_bad_folder_path() {
+        // Precedence pin (#513 Task 9): `device_secret` is checked BEFORE
+        // `folder_path`'s UTF-8 validation. A correct-length `device_uuid`
+        // with a wrong-length `device_secret` AND invalid-UTF-8
+        // `folder_path` must report the secret, not the path.
+        match open_with_device_secret(b"\xff\xfe".to_vec(), vec![0u8; 16], &[0u8; 31]) {
+            Err(VaultError::InvalidArgument { detail }) => {
+                assert!(detail.contains("device_secret"), "detail was: {detail}");
+            }
+            Err(other) => panic!("expected InvalidArgument, got {other:?}"),
+            Ok(_) => panic!("expected Err for wrong-length device_secret"),
+        }
     }
 }
