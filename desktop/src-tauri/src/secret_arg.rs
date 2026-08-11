@@ -15,9 +15,8 @@
 //! left a plain heap `String` un-zeroized for the GC), not a perfect
 //! end-to-end guarantee.
 
-use secretary_core::crypto::secret::SecretBytes;
+use secretary_core::crypto::secret::{SecretBytes, SecretString};
 use serde::{Deserialize, Deserializer};
-use zeroize::Zeroize;
 
 /// Zeroize-typed password argument. Construct only via `Deserialize` (the IPC
 /// boundary) or [`Password::from_bytes`] (tests).
@@ -48,12 +47,14 @@ impl<'de> Deserialize<'de> for Password {
     where
         D: Deserializer<'de>,
     {
-        let mut s = String::deserialize(deserializer)?;
-        let pw = SecretBytes::from(s.as_bytes());
-        // Overwrite our owned intermediate. (The serde_json parse buffer is
+        // #513: the intermediate is moved into a `SecretString` BEFORE the
+        // copy into `SecretBytes`, rather than wiped by a trailing
+        // `s.zeroize()` after it. `SecretBytes::from` allocates, and any
+        // panic between the fill and a trailing wipe would skip that wipe
+        // while `Drop` still runs. (The serde_json parse buffer remains
         // outside our control — see the module-level HONEST LIMITATION.)
-        s.zeroize();
-        Ok(Password(pw))
+        let s = SecretString::new(String::deserialize(deserializer)?);
+        Ok(Password(SecretBytes::from(s.expose().as_bytes())))
     }
 }
 

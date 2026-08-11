@@ -5,8 +5,8 @@
 //! shell and lets these be unit-tested without a Tauri runtime.
 
 use base64::Engine as _;
-use zeroize::Zeroize;
 
+use secretary_core::crypto::secret::SecretBytes;
 use secretary_ffi_bridge::{BlockReadOutput, FieldHandle, Record};
 
 use crate::dtos::{BlockDetailDto, FieldMetaDto, RecordDto};
@@ -85,13 +85,20 @@ pub fn locate_record(output: &BlockReadOutput, record_uuid_hex: &str) -> Option<
     None
 }
 
-/// Base64-encode revealed `bytes`-field plaintext, then zeroize the input
-/// buffer. The returned `String` is the (unavoidable) widening point; the
-/// raw `Vec<u8>` is overwritten before it drops.
-pub fn encode_revealed_bytes(mut bytes: Vec<u8>) -> String {
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    bytes.zeroize();
-    encoded
+/// Base64-encode revealed `bytes`-field plaintext. The returned `String` is
+/// the (unavoidable) widening point; the raw `Vec<u8>` is wiped on drop.
+///
+/// #513: the input is moved into a `SecretBytes` BEFORE the encode call
+/// rather than wiped by a trailing `bytes.zeroize()` after it.
+/// `Engine::encode` is not infallible in the panic sense — in base64 0.22.1
+/// its inner body carries two `.expect()` calls (`engine/mod.rs:121`, an
+/// overflow check on the output length, and `:127`, `String::from_utf8`) —
+/// and an unwinding panic skips a trailing statement while `Drop` still
+/// runs. The move is free: `SecretBytes::new` takes the `Vec` by value, so
+/// the heap buffer is not copied.
+pub fn encode_revealed_bytes(bytes: Vec<u8>) -> String {
+    let bytes = SecretBytes::new(bytes);
+    base64::engine::general_purpose::STANDARD.encode(bytes.expose())
 }
 
 #[cfg(test)]
