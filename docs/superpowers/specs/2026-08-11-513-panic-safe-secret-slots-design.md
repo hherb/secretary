@@ -206,7 +206,23 @@ Simpler *and* safer than both alternatives, so there is no trade to record here:
 one type instead of two, ~6 lines instead of ~30, strictly additive, and no
 existing `Sensitive` call site changes.
 
-A non-fallible `build` is deliberately **not** added — no site needs one today.
+A non-fallible sibling **is** needed — the full census (§3.3) found three sites
+whose fill cannot fail and whose function returns `Sensitive`, not `Result`
+(`kdf::derive_recovery_kek`, `kdf::derive_device_kek`, and
+`unlock::create_vault_unchecked`'s `rng.fill_bytes` IBK draw). Routing those
+through `try_build::<Infallible>` and unwrapping would be noise, so:
+
+```rust
+/// Infallible sibling of [`try_build`], for fills that cannot fail.
+pub fn build(init: T, f: impl FnOnce(&mut T)) -> Self {
+    let mut s = Self { inner: init };
+    f(&mut s.inner);
+    s
+}
+```
+
+An earlier draft of this section claimed no site needed one. The census
+falsified that; the claim is corrected here rather than quietly dropped.
 
 ---
 
@@ -244,6 +260,66 @@ The ffi-py sites carry the most hand-maintained choreography:
 returns, one inside a `map_err` closure, plus a comment recording a live bug that
 shape already caused (`len()` read after `zeroize()`, so every wrong-length
 secret reported `got 0`).
+
+### 3.3 Confirmed classification (`core/src`)
+
+The reclassification §3.2 anticipated is done, and the shortlist did shrink
+sharply. The dominant false positive is the shape below, where the `?` belongs
+to the **fill** and fires *before* the slot is bound, so there is no window:
+
+```rust
+let mut ibk_arr: [u8; 32] = ibk_bytes.expose().try_into()
+    .map_err(|_| UnlockError::CorruptVault)?;   // fill — `?` fires before binding
+let identity_block_key = Sensitive::new(ibk_arr);
+ibk_arr.zeroize();                              // adjacent: NO window
+```
+
+| site | slot | verdict |
+|---|---|---|
+| `crypto/kdf.rs::derive_master_kek` | `out` | **WINDOW — E2**, `?` on the Argon2 fill |
+| `crypto/kdf.rs::derive_recovery_kek` | `out` | **WINDOW — E1**, `.expect()` in fill |
+| `crypto/kdf.rs::derive_device_kek` | `out` | **WINDOW — E1** |
+| `crypto/kem.rs::derive_wrap_key` | `ikm` | **WINDOW — E1**; holds *both* KEM shared secrets in cleartext |
+| `unlock/mnemonic.rs::generate` | `entropy_buf` | **WINDOW — E1** |
+| `unlock/mnemonic.rs::generate` | `entropy` | **NEVER WIPED — see §3.4** |
+| `unlock/mnemonic.rs::parse` | `normalized` | **WINDOW — E2 + E3** (#518) |
+| `unlock/bundle.rs::from_canonical_cbor` | `x25519_sk_bytes`, `ed25519_sk_bytes` | **WINDOW — E2** (#518) |
+| `unlock/mod.rs::create_vault_unchecked` | `bundle_plaintext` | **WINDOW — E1**; cleartext CBOR of all four secret keys |
+| `crypto/kem.rs::derive_wrap_key` | `okm`, `key` | adjacent |
+| `crypto/kem.rs::encap` | `ss_x_bytes`, `ss_pq_bytes`, `ss_pq_arr` | adjacent |
+| `crypto/kem.rs::generate_x25519`, `generate_ml_kem_768` | `sk_bytes` | adjacent |
+| `unlock/mod.rs::create_vault_unchecked` | `ibk` | adjacent (`fill_bytes`, converted opportunistically — see plan) |
+| `unlock/mod.rs::open_with_password`, `open_with_recovery` | `ibk_arr` | adjacent — fill-`?` false positive |
+| `unlock/device.rs::secret_to_array`, `unwrap_device_slot` | `arr`, `ibk_arr` | adjacent — same |
+| `vault/block.rs::encrypt_block`, `decrypt_block` | `bck_bytes`, `bck_key_bytes` ×2 | adjacent |
+| `ffi/secretary-ffi-bridge/src` (all 4) | — | adjacent; **crate needs no conversion** |
+
+`crypto/kem.rs::decap` (6 slots), `crypto/sig.rs` (5), `sync/prepare.rs`,
+`sync/commit/write.rs`, `vault/repair/orchestration.rs` (2) and
+`vault/device_slot.rs` share the adjacent shapes above and are **expected to
+classify as adjacent**; the plan's census task confirms each rather than
+assuming it.
+
+### 3.4 A thirteenth stack-residue gap, unrelated to any window
+
+`unlock/mnemonic.rs::generate` moves `entropy` into `Sensitive::new(entropy)`
+inside the returned struct literal and **never wipes the source slot**:
+
+```rust
+entropy_buf.zeroize();
+full.zeroize();
+Mnemonic { phrase, entropy: Sensitive::new(entropy) }   // `entropy` slot left dirty
+```
+
+`[u8; 32]` is `Copy`, so the move copies. Its sibling `parse()` does call
+`entropy.zeroize()`; `generate()` does not, and the function's own doc comment
+claims "the local 32-byte entropy buffer is zeroized" — true of `entropy_buf`,
+false of `entropy`. The 2026-05-02 audit's table lists twelve such gaps
+including this function's `full` buffer, but not this slot.
+
+This is a plain missed wipe, not an exit-path defect. It is fixed here because
+the fix is the same one-line adoption of the wrapper and leaving a known
+residue unfixed while rewriting the function around it would be indefensible.
 
 ---
 
