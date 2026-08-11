@@ -42,7 +42,7 @@ use pyo3::prelude::*;
 use zeroize::Zeroize;
 
 use crate::errors::{
-    array32_or_value_error, ffi_vault_error_to_pyerr, indexed_uuid_array_or_value_error,
+    array32_into_or_value_error, ffi_vault_error_to_pyerr, indexed_uuid_array_or_value_error,
     uuid_array_or_value_error,
 };
 use crate::identity::UnlockedIdentity;
@@ -90,9 +90,18 @@ impl ApprovedWidening {
         added_recipients: Vec<Vec<u8>>,
     ) -> PyResult<Self> {
         let block_uuid = uuid_array_or_value_error(&block_uuid, "block_uuid")?;
-        let file_fingerprint = array32_or_value_error(&file_fingerprint, "file_fingerprint")?;
-        let committed_fingerprint =
-            array32_or_value_error(&committed_fingerprint, "committed_fingerprint")?;
+        let mut file_fingerprint_arr = [0u8; 32];
+        array32_into_or_value_error(
+            &file_fingerprint,
+            &mut file_fingerprint_arr,
+            "file_fingerprint",
+        )?;
+        let mut committed_fingerprint_arr = [0u8; 32];
+        array32_into_or_value_error(
+            &committed_fingerprint,
+            &mut committed_fingerprint_arr,
+            "committed_fingerprint",
+        )?;
         let added_recipients = added_recipients
             .iter()
             .enumerate()
@@ -100,8 +109,8 @@ impl ApprovedWidening {
             .collect::<PyResult<Vec<_>>>()?;
         Ok(Self {
             block_uuid,
-            file_fingerprint,
-            committed_fingerprint,
+            file_fingerprint: file_fingerprint_arr,
+            committed_fingerprint: committed_fingerprint_arr,
             added_recipients,
         })
     }

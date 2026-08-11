@@ -255,13 +255,60 @@ pub(crate) fn indexed_uuid_array_or_value_error(
     })
 }
 
-/// Validate a 32-byte slice (e.g. a BLAKE3-256 fingerprint); surface wrong
-/// length as `ValueError` with the field name embedded in the message.
-/// Sibling of [`uuid_array_or_value_error`] for the one non-16-byte
-/// fixed-size field on the FFI seam so far (#374's
-/// `ApprovedWidening.file_fingerprint`).
-pub(crate) fn array32_or_value_error(bytes: &[u8], field: &'static str) -> PyResult<[u8; 32]> {
-    bytes.try_into().map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err(crate::detail::arg_len(field, 32, bytes.len()))
-    })
+/// Write-through 32-byte extractor. Mirrors `array32_from_vec_into` in the
+/// uniffi crate (`ffi/secretary-ffi-uniffi/src/namespace/mod.rs`): the
+/// caller owns the destination slot, so no second `[u8; 32]` is minted on
+/// this function's frame for the caller to forget about (#503).
+///
+/// This replaces a by-value predecessor (`array32_or_value_error`, deleted
+/// in the same commit) that materialized its `[u8; 32]` in its OWN frame
+/// and returned it. Writing through `out` means the array exists in
+/// exactly one place as a SOURCE-LEVEL fact.
+///
+/// `out` is left UNTOUCHED when `bytes` is the wrong length.
+pub(crate) fn array32_into_or_value_error(
+    bytes: &[u8],
+    out: &mut [u8; 32],
+    field: &'static str,
+) -> PyResult<()> {
+    if bytes.len() != 32 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            crate::detail::arg_len(field, 32, bytes.len()),
+        ));
+    }
+    out.copy_from_slice(bytes);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn array32_into_writes_through_and_rejects_wrong_length() {
+        // `PyErr`'s `Display` impl attaches to the Python interpreter
+        // (`Python::attach`), which panics with "the Python interpreter is
+        // not initialized" unless one exists. `cargo test` on this crate
+        // never embeds one (no `auto-initialize` feature; that flag would
+        // also leak into `cargo build --release --workspace` outside the
+        // dev-dependency edge). `Python::initialize()` is the ungated
+        // public API for exactly this: an idempotent, `Once`-guarded
+        // `Py_InitializeEx` call requiring no feature flag and no Cargo.toml
+        // change.
+        pyo3::Python::initialize();
+
+        let mut out = [0u8; 32];
+        let src: Vec<u8> = (0u8..32).collect();
+        array32_into_or_value_error(&src, &mut out, "device_secret").expect("32 bytes is valid");
+        assert_eq!(out.to_vec(), src);
+
+        let mut out2 = [0u8; 32];
+        let short: Vec<u8> = (0u8..31).collect();
+        let err = array32_into_or_value_error(&short, &mut out2, "device_secret")
+            .expect_err("31 bytes must be rejected");
+        // The message must report the ACTUAL wrong length, not 0 — the bug
+        // #501 describes was exactly this, read after a zeroize() cleared it.
+        assert!(format!("{err}").contains("31"), "got: {err}");
+        assert_eq!(out2, [0u8; 32], "a rejected input must not partially fill");
+    }
 }
