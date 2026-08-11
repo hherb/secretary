@@ -30,7 +30,6 @@ secretary-ffi-bridge = { path = "../secretary-ffi-bridge" }
 # secretary_next_session.md "Begin Sub-project B.1.1" decisions.
 uniffi = { version = "0.32" }
 thiserror = "2"
-zeroize = "=1.8.2"
 
 [build-dependencies]
 uniffi = { version = "0.32", features = ["build"] }
