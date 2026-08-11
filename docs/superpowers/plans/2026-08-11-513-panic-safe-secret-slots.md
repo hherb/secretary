@@ -10,7 +10,7 @@
 
 **Spec:** [`docs/superpowers/specs/2026-08-11-513-panic-safe-secret-slots-design.md`](../specs/2026-08-11-513-panic-safe-secret-slots-design.md). Read §1.2 (the three exit classes E1/E2/E3), §2.2 (why not `expose_mut`), and §3.3 (the confirmed census) before starting.
 
-**Issues:** `#513` (panic path), `#518` (error paths — the two live leaks), `#503` (ffi-py's by-value `[u8; 32]` producer, still open; `#503` only ever fixed uniffi).
+**Issues:** `#513` (panic path), `#518` (error paths — the two live leaks), `#503` (ffi-py's by-value `[u8; 32]` producer, still open — note #503's title says `[ffi-py]` while its body names only ffi-uniffi paths; the "two halves" framing is our reconciliation of that, not the issue's own wording).
 
 ---
 
@@ -968,7 +968,7 @@ Keep `#[allow(clippy::needless_pass_by_value)]` where it is present: the owned `
 
 - [ ] **Step 2: Convert the multi-early-return functions**
 
-`device.rs::open_with_device_secret` is the worst case — **six** `.zeroize()` calls, one inside a `map_err` closure. After conversion it should have **zero**. Wrap the parameter once at the top, use `array32_into_or_value_error` with a `Sensitive`-wrapped destination for the `[u8; 32]`, and delete every manual wipe:
+`device.rs::open_with_device_secret` is the worst case — **five** `.zeroize()` calls, one inside a `map_err` closure (this said "six" while the branch was in flight; that counted the comment line at `device.rs:235` as a call). After conversion it should have **zero**. Wrap the parameter once at the top, use `array32_into_or_value_error` with a `Sensitive`-wrapped destination for the `[u8; 32]`, and delete every manual wipe:
 
 ```rust
     let device_secret = SecretBytes::new(device_secret);
@@ -1057,7 +1057,7 @@ pyo3 0.29 catches an unwinding panic at the boundary
 process SURVIVES with the residue on a frame later calls reuse. #513's
 "the process is typically about to die" does not hold here.
 
-open_with_device_secret went from six hand-placed `.zeroize()` calls
+open_with_device_secret went from five hand-placed `.zeroize()` calls
 across its early returns — one inside a map_err closure — to zero. The
 `let result = ..; wipe; result` dance disappears with them: it existed
 only to cover the error path, which Drop now covers alongside the panic

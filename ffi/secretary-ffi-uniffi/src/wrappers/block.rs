@@ -100,9 +100,20 @@ impl FieldHandle {
     pub fn is_bytes(&self) -> bool {
         self.0.is_bytes()
     }
+    /// Decrypted field plaintext, or `None` for a wiped/non-text field.
+    /// String is caller-owned; caller MUST zeroize after use.
+    ///
+    /// #519: there is no Rust-side wipe here and cannot be one — the value is
+    /// lowered across the FFI by UDL-generated code this crate does not own,
+    /// so there is no local to wrapper-type. The obligation genuinely crosses
+    /// the boundary. Closing it needs a custom UDL type with hand-authored
+    /// `Lower`/`Lift`, or upstream support.
     pub fn expose_text(&self) -> Option<String> {
         self.0.expose_text()
     }
+    /// Decrypted field plaintext, or `None` for a wiped/non-bytes field.
+    /// Bytes are caller-owned heap; caller MUST zeroize after use.
+    /// Same #519 caveat as [`Self::expose_text`].
     pub fn expose_bytes(&self) -> Option<Vec<u8>> {
         self.0.expose_bytes()
     }

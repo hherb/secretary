@@ -157,7 +157,7 @@ pattern used elsewhere in the crate
 | # | File:line | Site | Fix |
 |---|---|---|---|
 | 1 | `core/src/crypto/kdf.rs::derive_master_kek` | `out: [u8; 32]` after `Sensitive::new(out)` | `out.zeroize()` |
-| 2 | `core/src/unlock/mod.rs::create_vault` | `ibk: [u8; 32]` after `Sensitive::new(ibk)` | `ibk.zeroize()` (replaces a SECURITY note that acknowledged but didn't apply the fix) |
+| 2 | `core/src/unlock/mod.rs::create_vault` (the `ibk` slot moved to `create_vault_unchecked` when `create_vault` became a floor-check wrapper; converted again in 2026-08-11's Task 6) | `ibk: [u8; 32]` after `Sensitive::new(ibk)` | `ibk.zeroize()` (replaces a SECURITY note that acknowledged but didn't apply the fix) |
 | 3 | `core/src/unlock/mod.rs::open_with_password` | `ibk_arr: [u8; 32]` after `Sensitive::new(ibk_arr)` | `ibk_arr.zeroize()` |
 | 4 | `core/src/unlock/mod.rs::open_with_recovery` | `ibk_arr: [u8; 32]` after `Sensitive::new(ibk_arr)` | `ibk_arr.zeroize()` |
 | 5 | `core/src/vault/orchestrators.rs::save_block` | author Ed25519 SK temp `*expose()` | bind to `ed_sk_bytes`, zeroize after move |
@@ -177,16 +177,34 @@ Rust limitation, no MaybeUninit-aware fill_bytes"). The
 *post-move* zeroize is independently doable — and it's the fix the
 rest of the crate already used. The new comments make this explicit.
 
+> **Historical, as of 2026-08-11: none of those three comments still
+> exists.** Two were removed before this pass; the last (the `ibk` block)
+> was replaced by `Sensitive::build` in Task 6 — see "A 50th conversion"
+> below. `grep -n "MaybeUninit" core/src/unlock/mod.rs` now returns nothing.
+> The paragraph is kept because the *reasoning* is what a reviewer needs —
+> "inherent to Rust" was the wrong diagnosis then and would be the wrong
+> diagnosis again — but do not go looking for the comments it describes.
+
 **Note on existing well-disciplined sites** (all already correct, no
 fix needed): `crypto::kem::derive_wrap_key`'s `key.zeroize()`,
 `crypto::kem::generate_x25519`'s `sk_bytes.zeroize()`,
 `crypto::kem::generate_ed25519`'s `sk_bytes.zeroize()`,
-`crypto::kdf::derive_recovery_kek`'s `out.zeroize()`,
+~~`crypto::kdf::derive_recovery_kek`'s `out.zeroize()`~~,
 `crypto::kem::decap`'s `k.zeroize()`,
 `crypto::kem::encap+decap`'s `ss_pq_bytes.zeroize()`,
 `vault::block::encrypt_block`'s `bck_bytes.zeroize()`. The fixes
 above bring the sister sites in those same modules up to the same
 discipline.
+
+> **`derive_recovery_kek` is struck through as of 2026-08-11.** The 2026-05-02
+> pass called it correct, and by that pass's standard it was: the wipe ran on
+> every *return*. The 2026-08-11 pass reclassified it as WINDOW row 2 — an
+> `.expect()` sits between the fill and the wipe, so an unwinding panic
+> skipped it — and the call this entry cites no longer exists. The entry is
+> struck rather than deleted because the reclassification is the point: a
+> site can be exemplary under one threat model and a window under the next,
+> and the six survivors in this list are exemplary only under the narrower
+> one. Do not cite this list as evidence that a site needs no work.
 
 ---
 
@@ -408,11 +426,16 @@ gone the moment this branch lands on `main` — `git log --all -- '<path>'`
 and `git show <commit>^:<path>` both work in this feature-branch worktree
 and both return nothing against a squashed `main`. Keeping the file in
 the tree is the actual fix; a recovery recipe for an unreachable commit
-is not one. Most of the file's 52 rows aren't duplicated here because 51
-of them changed no code, and their reasoning is either trivial ("only
-`Sensitive::new` intervenes," the dominant shape below) or already in the
-design spec's §3.2/§3.3 — this memo's job is to record what changed and
-why, and to give a future auditor enough to re-derive the rest. The 52nd
+is not one. Of that file's rows, **52 are non-WINDOW** (44 ADJACENT + 3
+TEST-ONLY + 1 DROP-IMPL + 4 EARLY-WIPE, as enumerated just above) and are
+not duplicated here, because 51 of them changed no code and their reasoning
+is either trivial ("only `Sensitive::new` intervenes," the dominant shape
+below) or already in the design spec's §3.2/§3.3 — this memo's job is to
+record what changed and why, and to give a future auditor enough to
+re-derive the rest. (That 52 is a **subtotal, not the file's row count**;
+the census has considerably more rows than 52, and an earlier version of
+this sentence said "the file's 52 rows", which sent a reviewer counting for
+a number that appears nowhere in it.) The 52nd non-WINDOW row
 — `unlock/mod.rs::create_vault_unchecked`'s `ibk` slot, classified
 ADJACENT but converted anyway — is the one exception; see "A 50th
 conversion" after the WINDOW table below. Separately, the handful of
@@ -434,7 +457,7 @@ above, which didn't and is restored for the same reason).
 
 | # | File::function | Slot(s) | Exit class | Fixed in (task) |
 |---|---|---|---|---|
-| 1 | `core/src/crypto/kdf.rs::derive_master_kek` | `out` | E2 (`?` on the Argon2 fill) | `try_build` — Task 3 |
+| 1 | `core/src/crypto/kdf.rs::derive_master_kek` | `out` | E1; E2 only nominally — see note | `try_build` — Task 3 |
 | 2 | `core/src/crypto/kdf.rs::derive_recovery_kek` | `out` | E1 (`.expect()` in fill) | `build` — Task 3 |
 | 3 | `core/src/crypto/kdf.rs::derive_device_kek` | `out` | E1 | `build` — Task 3 |
 | 4 | `core/src/crypto/kem.rs::derive_wrap_key` | `ikm` | E1 (holds *both* KEM shared secrets) | wrapped earlier — `SecretBytes::new` moved before the HKDF call — Task 3 |
@@ -443,6 +466,7 @@ above, which didn't and is restored for the same reason).
 | 6 | `core/src/unlock/mnemonic.rs::parse` | `normalized` | E2 + E3 (#518) | `SecretString::new` — Task 4 |
 | 7 | `core/src/unlock/bundle.rs::from_canonical_cbor` | `x25519_sk_bytes` | E2 (#518) | `Option<Sensitive<[u8; N]>>` decode-loop binding — Task 5 |
 | 8 | `core/src/unlock/bundle.rs::from_canonical_cbor` | `ed25519_sk_bytes` | E2 (#518) | same shape — Task 5 |
+| 8a | `core/src/unlock/bundle.rs::from_canonical_cbor` | `ml_kem_768_sk_bytes`, `ml_dsa_65_sk_bytes` (the FOURTEENTH gap; never wiped at all, like 5a — see the note below this table) | E2 | `Option<Sensitive<Vec<u8>>>` decode-loop binding — review round 2 |
 | 9 | `core/src/unlock/mod.rs::create_vault_unchecked` | `bundle_plaintext` | E1 | `SecretBytes::new` — Task 6 |
 | 10 | `ffi/secretary-ffi-uniffi/src/namespace/mod.rs::open_with_device_secret` | `secret_arr` | E1 (the site `#513` itself named) | `try_build` — Task 9 |
 | 11 | `ffi/secretary-ffi-uniffi/src/namespace/repair.rs::repair_with_device_secret` | `secret_arr` | E1 | `try_build` — Task 9 |
@@ -478,6 +502,35 @@ code was converted (census "fix round 1"); all four are genuine E1
 windows, verified against pyo3 0.29.0 source (`PyBytes::new` /
 `PyString::new` → `assume_owned` → `Bound::from_owned_ptr` →
 `panic_on_null` on a null pointer, `src/instance.rs:2425-2430`).
+
+**Row 1's exit class, stated precisely.** The `?` on `derive_master_kek`'s
+Argon2 fill does skip the pre-#513 trailing wipe, which is why the row was
+first recorded as E2. But for that call's concrete shape (`out: [u8; 32]`,
+`output_len = Some(32)`) argon2 0.5.3 never writes `out` on an error path:
+the two length checks and `verify_inputs` precede any write, `initial_hash`
+takes `out` as an immutable `&[u8]`, `fill_blocks` never receives it, and
+`finalize`'s only write goes through `blake2b_long`'s `out.len() <= 64`
+short path, which writes on success alone. So there was no partially-derived
+KEK to leak, and the row's real window is E1. The conversion still earns its
+place — it stops the guarantee depending on a reading of a third-party
+crate's internal statement ordering — but this table claimed an observed
+leak where there was none, and the code comment at `kdf.rs` now records the
+distinction. Found in the whole-branch review; the same review found the
+FOURTEENTH gap at row 8a.
+
+**Row 8a — the fourteenth gap.** `ml_kem_768_sk_bytes` and
+`ml_dsa_65_sk_bytes` were `Option<Vec<u8>>` while their X25519 / Ed25519
+siblings (rows 7, 8) became `Sensitive` in Task 5. Being `Vec`, they are
+moved rather than copied out — but only on the path that REACHES the move;
+on any `?` at an earlier field of the struct literal they were still
+`Some(..)`, and a plain `Vec<u8>` frees its heap buffer without zeroizing.
+That released a 2400-byte ML-KEM-768 decapsulation key and an ML-DSA-65
+secret key to the allocator intact. Like row 5a this was invisible to the
+idiom census — the census greps for `.zeroize()` calls and these never had
+one — which is now the second time that method has missed a never-wiped
+slot. Treat "has no wipe to find" as its own search, not a corollary of the
+grep. Pinned by
+`from_canonical_cbor_early_return_leaves_both_pq_secret_keys_wrapped`.
 
 **A 50th conversion, outside this table.**
 `unlock/mod.rs::create_vault_unchecked`'s `ibk` slot — same function as

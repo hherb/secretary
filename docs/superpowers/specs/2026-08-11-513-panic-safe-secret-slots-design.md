@@ -129,7 +129,7 @@ wrappers deliberately reject:
 
 | wrapper | `Debug` | `PartialEq` |
 |---|---|---|
-| `Sensitive<T>` | redacted (`<redacted>`) | **intentionally absent**, with the reasoning written out at `secret.rs:166-190` |
+| `Sensitive<T>` | redacted (`<redacted>`) | **intentionally absent**, with the reasoning written out at `secret.rs:152-164` (the type's doc comment; `166-190` — cited here in an earlier version — is the struct declaration plus two impl blocks, and contains no reasoning) |
 | `SecretBytes` / `SecretString` | redacted (length only) | constant-time via `subtle::ConstantTimeEq` |
 | `zeroize::Zeroizing<Z>` | **forwards to `Z`** | **derived, variable-time** |
 
@@ -256,10 +256,13 @@ confirmed site-by-site during implementation:
 | `ffi/secretary-ffi-uniffi/src` | 3 | the sites `#513` names |
 
 The ffi-py sites carry the most hand-maintained choreography:
-`open_with_device_secret` has **six** `.zeroize()` calls across its early
+`open_with_device_secret` has **five** `.zeroize()` calls across its early
 returns, one inside a `map_err` closure, plus a comment recording a live bug that
 shape already caused (`len()` read after `zeroize()`, so every wrong-length
-secret reported `got 0`).
+secret reported `got 0`). (An earlier version of this spec said "six" — that
+was a `grep -c` LINE count, whose sixth match is the comment mentioned in the
+same sentence. The same slip in reverse is what the memo spends twenty lines
+correcting for the 107-vs-108 census figure.)
 
 ### 3.3 Confirmed classification (`core/src`)
 
@@ -276,7 +279,7 @@ ibk_arr.zeroize();                              // adjacent: NO window
 
 | site | slot | verdict |
 |---|---|---|
-| `crypto/kdf.rs::derive_master_kek` | `out` | **WINDOW — E2**, `?` on the Argon2 fill |
+| `crypto/kdf.rs::derive_master_kek` | `out` | **WINDOW — E1**; E2 nominally (the `?` skips the wipe, but argon2 0.5.3 writes `out` only on success — see `kdf.rs`) |
 | `crypto/kdf.rs::derive_recovery_kek` | `out` | **WINDOW — E1**, `.expect()` in fill |
 | `crypto/kdf.rs::derive_device_kek` | `out` | **WINDOW — E1** |
 | `crypto/kem.rs::derive_wrap_key` | `ikm` | **WINDOW — E1**; holds *both* KEM shared secrets in cleartext |
@@ -284,6 +287,7 @@ ibk_arr.zeroize();                              // adjacent: NO window
 | `unlock/mnemonic.rs::generate` | `entropy` | **NEVER WIPED — see §3.4** |
 | `unlock/mnemonic.rs::parse` | `normalized` | **WINDOW — E2 + E3** (#518) |
 | `unlock/bundle.rs::from_canonical_cbor` | `x25519_sk_bytes`, `ed25519_sk_bytes` | **WINDOW — E2** (#518) |
+| `unlock/bundle.rs::from_canonical_cbor` | `ml_kem_768_sk_bytes`, `ml_dsa_65_sk_bytes` | **WINDOW — E2**; missed by this census and found in the whole-branch review — `Vec`-typed, so they had no `.zeroize()` for the idiom grep to find (same blind spot as `generate`'s `entropy`, §3.4) |
 | `unlock/mod.rs::create_vault_unchecked` | `bundle_plaintext` | **WINDOW — E1**; cleartext CBOR of all four secret keys |
 | `crypto/kem.rs::derive_wrap_key` | `okm`, `key` | adjacent |
 | `crypto/kem.rs::encap` | `ss_x_bytes`, `ss_pq_bytes`, `ss_pq_arr` | adjacent |
@@ -328,7 +332,7 @@ residue unfixed while rewriting the function around it would be indefensible.
 1. **`Sensitive::try_build`** — [`core/src/crypto/secret.rs`](../../../core/src/crypto/secret.rs). The only new API in the slice, and needed only at the fallible-fill-through-`&mut` sites (§2.2).
 2. **Convert the windowed sites** to wrapper-typed locals. Adjacent sites are left exactly as they are.
 3. **Fix the two #518 leaks** — `mnemonic::parse` and `bundle::from_canonical_cbor`.
-4. **`array32_or_value_error(…) -> PyResult<[u8; 32]>` → write-through** ([`ffi/secretary-ffi-py/src/errors.rs:263`](../../../ffi/secretary-ffi-py/src/errors.rs)), mirroring `array32_from_vec_into` on the uniffi side. Removes the by-value producer, so the unsafe shape is awkward to write rather than merely discouraged — and closes **#503's ffi-py half**, which is still open (`#503` only ever fixed uniffi).
+4. **`array32_or_value_error(…) -> PyResult<[u8; 32]>` → write-through** ([`ffi/secretary-ffi-py/src/errors.rs:263`](../../../ffi/secretary-ffi-py/src/errors.rs)), mirroring `array32_from_vec_into` on the uniffi side. Removes the by-value producer, so the unsafe shape is awkward to write rather than merely discouraged — and closes what this spec calls **#503's ffi-py half**. A caveat on that phrasing, since a reviewer will cross-check it: #503 is internally inconsistent — its *title* is tagged `[ffi-py]`, but its *body* names only ffi-uniffi paths (`namespace/mod.rs:598`, `namespace/repair.rs:228`/`:356`, and the uniffi helper `array32_from_vec`). "Two halves" is our reconciliation of that inconsistency, not something the issue text says; the ffi-py work here is the same defect in the crate the title names.
 5. **Census table into [`memory-hygiene-audit-internal.md`](../../manual/contributors/memory-hygiene-audit-internal.md)** — per-site window classification with reasons, so the next reviewer inherits the judgement instead of re-deriving it. Its "Stack-residue gaps fixed in this pass" table is the established shape; this extends it with a window column. The memo's header still declares cross-FFI hygiene out of scope while its later "Cross-sub-project discipline" section already covers the bridge; that inconsistency is resolved in the same edit rather than deepened.
 
 ---
@@ -385,6 +389,15 @@ pins that the paths are reached.
 ---
 
 ## 6. Out of scope
+
+> **Scope correction (whole-branch review).** This section originally listed
+> the exclusions below without naming `desktop/src-tauri` or `cli/` — they
+> were outside the census's four scan roots by omission rather than by
+> decision, which is a different thing and read as neither. `cli/src` has no
+> trailing-wipe site; `desktop/src-tauri/src` had two (the master password in
+> `secret_arg.rs`, revealed field plaintext in `reveal.rs`), both genuine E1
+> windows, now converted and recorded in the census's Section 7. They are
+> IN scope and always should have been.
 
 - **No new CI guard.** The regression pressure here is structural (§4 item 4)
   and type-level (§5.4), not textual. A matcher for "a call sits in this slot's
