@@ -53,7 +53,10 @@ fn try_build_wipes_when_the_fill_closure_panics() {
             });
     }));
 
-    assert!(unwound.is_err(), "the fill closure must actually have panicked");
+    assert!(
+        unwound.is_err(),
+        "the fill closure must actually have panicked"
+    );
     assert!(
         WITNESS_DROPPED.load(Ordering::SeqCst),
         "try_build must wrap BEFORE filling, so a panic inside the fill still wipes"
@@ -81,7 +84,11 @@ fn build_runs_the_fill_and_the_writes_land() {
 
     let secret = Sensitive::build([0u8; 32], |slot| slot.copy_from_slice(&rng_bytes));
 
-    assert_eq!(secret.expose(), &rng_bytes, "build's closure writes must reach the wrapped value");
+    assert_eq!(
+        secret.expose(),
+        &rng_bytes,
+        "build's closure writes must reach the wrapped value"
+    );
 }
 
 #[test]
@@ -89,12 +96,11 @@ fn try_build_ok_path_returns_the_filled_value() {
     let mut rng_bytes = [0u8; 32];
     getrandom_fill(&mut rng_bytes);
 
-    let secret: Sensitive<[u8; 32]> =
-        Sensitive::try_build([0u8; 32], |slot| -> Result<(), ()> {
-            slot.copy_from_slice(&rng_bytes);
-            Ok(())
-        })
-        .expect("an Ok fill yields a Sensitive");
+    let secret: Sensitive<[u8; 32]> = Sensitive::try_build([0u8; 32], |slot| -> Result<(), ()> {
+        slot.copy_from_slice(&rng_bytes);
+        Ok(())
+    })
+    .expect("an Ok fill yields a Sensitive");
 
     assert_eq!(secret.expose(), &rng_bytes);
 }

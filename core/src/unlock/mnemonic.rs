@@ -165,11 +165,12 @@ pub fn parse(words: &str) -> Result<Mnemonic, MnemonicError> {
     // The bip39 crate reports `UnknownWord` by index into the phrase. We carry
     // that index through verbatim — NOT the word content, which is
     // recovery-phrase material that must not leak into an error message (#358).
-    let bip = Bip39Mnemonic::parse_in_normalized(Language::English, normalized.expose())
-        .map_err(|e| match e {
+    let bip = Bip39Mnemonic::parse_in_normalized(Language::English, normalized.expose()).map_err(
+        |e| match e {
             bip39::Error::UnknownWord(idx) => MnemonicError::UnknownWord { index: idx },
             other => map_bip39_error(other),
-        })?;
+        },
+    )?;
     // `tokens` borrows `normalized`; drop that borrow explicitly rather than
     // let it ride to the end of the function, keeping the two bindings'
     // lifetimes as narrow as they were before this change. `normalized`
