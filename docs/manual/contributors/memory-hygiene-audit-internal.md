@@ -300,12 +300,27 @@ Section 3 holds, recorded as such — no CI guard enforces it (design spec
 §6: a per-site judgement of this kind is not something a text matcher can
 make; it will drift as `core/` and the FFI crates change).
 
-The raw `grep -rn "\.zeroize()" core/src ffi --include="*.rs"` count is
+The raw `grep -rn "\.zeroize()" core/src ffi --include="*.rs"` count
+**measured against the pre-conversion tree at merge-base `9c18794`** is
 **108**; 7 of those are comment references (doc comments, `//` lines
 describing the pattern) rather than calls, leaving **101 real call
-sites**, each classified below:
+sites**, each classified below. **Running the same command against the
+tree this pass ships in gives different, smaller numbers — `79` raw /
+`51` real, re-verified by execution — and that is expected, not a
+discrepancy to chase.** The 49 WINDOW conversions below each replaced an
+explicit `.zeroize()` call with `Drop`, removing that raw grep hit;
+several of those same sites gained an explanatory comment mentioning
+`#513` or the old idiom, which the same grep also matches, so the drop
+in the *real*-call count (101 → 51) is larger than the drop in the raw
+count (108 → 79). Per-root, the post-conversion real-call counts are
+`core/src` 43, `ffi/secretary-ffi-bridge/src` 8 (unchanged — this crate
+needed no conversion), `ffi/secretary-ffi-uniffi/src` 0, `ffi/secretary-
+ffi-py/src` 0 — the last two hitting zero is the expected shape, since
+every real call site in those two roots was WINDOW and got converted. If
+you run the grep below and get `108`/`101`, you are reading `main`
+before this pass landed; `79`/`51` is this tree, after:
 
-| root | real call sites | WINDOW (converted) | ADJACENT (no window, unchanged) | TEST-ONLY | DROP-IMPL | EARLY-WIPE-OF-WRAPPED |
+| root | real call sites (pre-conversion, at `9c18794`) | WINDOW (converted) | ADJACENT (no window, unchanged) | TEST-ONLY | DROP-IMPL | EARLY-WIPE-OF-WRAPPED |
 |---|---|---|---|---|---|---|
 | `core/src` | 53 | 9 | 40 | 3 | 1 | 0 |
 | `ffi/secretary-ffi-bridge/src` | 8 | 0 | 4 | 0 | 0 | 4 |
@@ -314,7 +329,11 @@ sites**, each classified below:
 | **Total** | **101** | **49** | **44** | **3** | **1** | **4** |
 
 `49 + 44 + 3 + 1 + 4 = 101`; `101 + 7` (comment-only) `= 108`, matching
-the raw grep count. Category definitions:
+the pre-conversion raw grep count at `9c18794`. This table is a
+classification of that pre-conversion snapshot — the WINDOW column is
+"how many of these 101 got converted," so the table is necessarily
+historical; it does not re-measure against the post-conversion tree.
+Category definitions:
 
 - **WINDOW** — a real exit (E1, E2, or E3) is reachable between the fill
   and the wipe; converted to `Sensitive::build` / `try_build` (or an
@@ -335,14 +354,19 @@ the raw grep count. Category definitions:
 
 The full per-site table — including the reasoning behind each of the 44
 ADJACENT / 3 TEST-ONLY / 1 DROP-IMPL / 4 EARLY-WIPE-OF-WRAPPED rows this
-summary doesn't reproduce — lived at
+summary doesn't reproduce in full — lived at
 `docs/superpowers/plans/2026-08-11-513-census.md` during implementation
 and is preserved in git history (`git log --all -- 'docs/superpowers/plans/2026-08-11-513-census.md'`
 finds the deleting commit; `git show <commit>^:docs/superpowers/plans/2026-08-11-513-census.md`
-recovers the full file). It is not duplicated here because none of those
-48 rows changed any code — this memo's job is to record what changed and
-why, and to give a future auditor enough to re-derive the rest starting
-from the dominant ADJACENT shape below.
+recovers the full file). Most of those rows aren't duplicated here
+because none of those 48 changed any code and their reasoning is either
+trivial ("only `Sensitive::new` intervenes," the dominant shape below) or
+already in the design spec's §3.2/§3.3 — this memo's job is to record
+what changed and why, and to give a future auditor enough to re-derive
+the rest. The exception: the handful of ADJACENT judgements that needed
+third-party source verification are restored below rather than left
+git-history-only, since that verification is the least re-derivable
+content the census had.
 
 ### The 49 WINDOW sites — fixed by this pass
 
@@ -415,6 +439,30 @@ let mut sk_bytes = sk.to_bytes();
 let secret = Sensitive::new(sk_bytes);   // cannot panic, cannot return: no window
 sk_bytes.zeroize();
 ```
+
+Three of the ADJACENT judgements above needed more than "only
+`Sensitive::new` intervenes" — the intervening call was into a
+third-party crate, so the "cannot panic" claim rests on having read that
+crate's own source at the pinned version. Restored here rather than left
+git-history-only, since design spec §3.2/§3.3 covers the trivial ADJACENT
+rows but carries none of these three vendor citations, and a future
+auditor re-deriving them would otherwise have to redo the source reading
+from scratch:
+
+- `crypto/kem.rs::decap`'s `sk_x_bytes` — the intervening
+  `XStaticSecret::from(sk_x_bytes)` was checked against `x25519-dalek`
+  2.0.1 (`x25519.rs:247`: `StaticSecret(bytes)`, a bare tuple-struct wrap
+  — cannot panic).
+- `crypto/kem.rs::decap`'s `dk_arr` — the intervening
+  `Dk::from_bytes(&dk_arr)` was checked against `ml-kem` 0.2.3
+  (`kem.rs:53`, `pke.rs:85`/`138`: fixed-size polynomial decode over
+  `hybrid_array::Array<u8, N>`, no fallible ops in the traced path).
+- `crypto/sig.rs::generate_ml_dsa_65`'s `seed_bytes`/`seed`, and
+  `crypto/sig.rs::sign`'s `seed_arr`/`seed` (same citation, since both
+  call through the identical `MlDsa65::from_seed(&seed)`) — checked
+  against `ml-dsa` 0.1.0-rc.8 (`lib.rs:889-940`: deterministic
+  XOF-based sampling over fixed-size `B32`/`B64`, no `unwrap`/`expect`/
+  `assert` in the traced path).
 
 `ffi/secretary-ffi-bridge/src`'s 4 EARLY-WIPE-OF-WRAPPED sites
 (`revoke/orchestration.rs`, `share/orchestration.rs`) are an explicit
