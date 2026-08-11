@@ -23,7 +23,6 @@
 use argon2::{Algorithm, Argon2, Params, Version};
 use hkdf::Hkdf;
 use sha2::Sha256;
-use zeroize::Zeroize as _;
 
 use crate::crypto::secret::{SecretBytes, Sensitive};
 
@@ -237,15 +236,15 @@ pub fn derive_master_kek(
     .map_err(|_| KdfError::Argon2ParamsRejected)?;
 
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
-    let mut out = [0u8; 32];
-    argon
-        .hash_password_into(password.expose(), salt, &mut out)
-        .map_err(|_| KdfError::Argon2ParamsRejected)?;
-    let kek = Sensitive::new(out);
-    // `Sensitive::new` copied `out` (which is `[u8; 32]: Copy`); zeroize the
-    // stack copy so the secret only lives inside `kek`. Mirrors the pattern
-    // in `derive_recovery_kek` and `crypto::kem::derive_wrap_key`.
-    out.zeroize();
+    // Wrapped BEFORE the fill: `hash_password_into` writes into `out` and may
+    // then fail, so the pre-#513 form's trailing `out.zeroize()` was skipped by
+    // its own `?` — leaving a partially-derived KEK on the stack. `try_build`
+    // wipes on the error path and on an unwinding panic alike.
+    let kek = Sensitive::try_build([0u8; 32], |out| {
+        argon
+            .hash_password_into(password.expose(), salt, out)
+            .map_err(|_| KdfError::Argon2ParamsRejected)
+    })?;
     Ok(kek)
 }
 
@@ -267,18 +266,15 @@ pub fn derive_master_kek(
 #[must_use]
 pub fn derive_recovery_kek(entropy: &Sensitive<[u8; 32]>) -> Sensitive<[u8; 32]> {
     let salt = [0u8; 32];
-    let mut out = [0u8; 32];
-    {
-        // `Hkdf<Sha256>` has no `Drop` impl in upstream `hkdf` 0.12, so this
-        // scope only bounds the lexical lifetime of `hk` — there is no
-        // zeroization callback. See SECURITY note above.
+    // `Hkdf<Sha256>` has no `Drop` impl in upstream `hkdf` 0.12, so the inner
+    // scope only bounds the lexical lifetime of `hk` — there is no zeroization
+    // callback. See SECURITY note above. The `.expect()` can panic in
+    // principle, which the pre-#513 trailing wipe did not cover; `build` does.
+    Sensitive::build([0u8; 32], |out| {
         let hk = Hkdf::<Sha256>::new(Some(&salt), entropy.expose());
-        hk.expand(TAG_RECOVERY_KEK, &mut out)
+        hk.expand(TAG_RECOVERY_KEK, out)
             .expect("32 bytes is well within HKDF-SHA-256 output limits");
-    }
-    let kek = Sensitive::new(out);
-    out.zeroize();
-    kek
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -344,18 +340,15 @@ pub fn hkdf_sha256_extract_and_expand(salt: &[u8], ikm: &[u8], info: &[u8], len:
 #[must_use]
 pub fn derive_device_kek(secret: &Sensitive<[u8; 32]>) -> Sensitive<[u8; 32]> {
     let salt = [0u8; 32];
-    let mut out = [0u8; 32];
-    {
-        // `Hkdf<Sha256>` has no `Drop` impl in upstream `hkdf` 0.12, so this
-        // scope only bounds the lexical lifetime of `hk` — there is no
-        // zeroization callback. See SECURITY note above.
+    // `Hkdf<Sha256>` has no `Drop` impl in upstream `hkdf` 0.12, so the inner
+    // scope only bounds the lexical lifetime of `hk` — there is no zeroization
+    // callback. See SECURITY note above. The `.expect()` can panic in
+    // principle, which the pre-#513 trailing wipe did not cover; `build` does.
+    Sensitive::build([0u8; 32], |out| {
         let hk = Hkdf::<Sha256>::new(Some(&salt), secret.expose());
-        hk.expand(TAG_DEVICE_KEK, &mut out)
+        hk.expand(TAG_DEVICE_KEK, out)
             .expect("32 bytes is well within HKDF-SHA-256 output limits");
-    }
-    let kek = Sensitive::new(out);
-    out.zeroize();
-    kek
+    })
 }
 
 // ---------------------------------------------------------------------------
