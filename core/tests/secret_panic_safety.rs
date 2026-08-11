@@ -7,7 +7,31 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use zeroize::Zeroize;
 
-use secretary_core::crypto::secret::Sensitive;
+use secretary_core::crypto::secret::{SecretBytes, SecretString, Sensitive};
+
+/// The witness tests below observe `Sensitive<T>`'s drop-time wipe, and only
+/// `Sensitive<T>`'s. But `Sensitive` carries a minority of the #513 slice:
+/// most converted sites wrap in `SecretBytes` or `SecretString`, which are
+/// SEPARATE structs with their own `#[derive(Zeroize, ZeroizeOnDrop)]`.
+///
+/// `ZeroizeOnDrop` was, before this block, never used as a trait bound or a
+/// static assertion anywhere in the tree — only inside `derive` lists. So
+/// deleting it from either struct compiled clean and left the whole suite
+/// green, silently un-fixing every site that relies on those two types.
+/// Verified by mutation during the whole-branch review: removing it from
+/// both derives kept `cargo test --release -p secretary-core` at 50/50
+/// binaries passing.
+///
+/// This pins the derive itself. It is a compile-time check on the TRAIT, not
+/// on the behaviour — `ZeroizeOnDrop` is a marker and could in principle be
+/// hand-implemented without a wiping `Drop` — but combined with the derive it
+/// closes the silent-removal path, which is the actual regression risk.
+const _: fn() = || {
+    fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+    assert_zeroize_on_drop::<SecretBytes>();
+    assert_zeroize_on_drop::<SecretString>();
+    assert_zeroize_on_drop::<Sensitive<[u8; 32]>>();
+};
 
 /// A `Zeroize` payload that records whether it was zeroized, via a
 /// private `Arc<AtomicBool>` handle owned separately by the test rather
@@ -64,6 +88,36 @@ fn sensitive_wipes_the_inner_value_when_the_stack_unwinds() {
         dropped.load(Ordering::SeqCst),
         "Sensitive's Drop must zeroize the inner value while the stack unwinds; \
          if this fails, the entire #513 conversion rests on a false premise"
+    );
+}
+
+/// The negative control for every assertion in this file.
+///
+/// Each test above asserts "the flag became `true`". That is only evidence
+/// of a wipe if the flag cannot become `true` for any other reason — so this
+/// unwinds with a BARE `Witness`, not wrapped in anything, and asserts the
+/// flag stays `false`. `Witness` implements `Zeroize` but not `Drop`, so
+/// dropping one directly must do nothing; the only path to the flag is
+/// `Sensitive`'s `ZeroizeOnDrop` glue calling `zeroize()`.
+///
+/// Without this, a future change that set the flag incidentally would leave
+/// every test here passing while proving nothing. Same two-sided discipline
+/// as the repo's hygiene guards, which all require a known-negative control
+/// alongside the known-positive one.
+#[test]
+fn a_bare_witness_unwinding_does_not_set_the_flag() {
+    let (witness, dropped) = Witness::new();
+
+    let unwound = catch_unwind(AssertUnwindSafe(move || {
+        let _bare = witness;
+        panic!("simulated panic with no Sensitive wrapper in scope");
+    }));
+
+    assert!(unwound.is_err(), "the closure must actually have panicked");
+    assert!(
+        !dropped.load(Ordering::SeqCst),
+        "a bare Witness must NOT set its own flag — if this fails, the wipe \
+         assertions in this file are vacuous and prove nothing about Sensitive"
     );
 }
 

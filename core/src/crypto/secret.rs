@@ -198,6 +198,38 @@ impl<T: Zeroize> Sensitive<T> {
     /// deliberately scoped to one expression at the call site rather than
     /// exposed as a method on the type; every closure written here is a
     /// review point. See the design spec §2.2.
+    ///
+    /// The borrow itself cannot outlive the call — its lifetime is
+    /// higher-ranked, so stashing `slot` in an outer variable is `E0521`,
+    /// which is the property this constructor buys over a hypothetical
+    /// `expose_mut()`. Only the move-out family above evades it.
+    ///
+    /// ```compile_fail
+    /// # use secretary_core::crypto::secret::Sensitive;
+    /// // E0521: borrowed data escapes outside of closure.
+    /// let mut escaped: Option<&mut [u8; 32]> = None;
+    /// let _s = Sensitive::build([0u8; 32], |slot| escaped = Some(slot));
+    /// ```
+    ///
+    /// The companion below is identical except that it does not let the
+    /// borrow escape, and it compiles. Keep the pair together: a
+    /// `compile_fail` block passes when the code fails to build for *any*
+    /// reason, so on its own it would still "pass" if the import path or the
+    /// signature drifted, proving nothing.
+    ///
+    /// ```
+    /// # use secretary_core::crypto::secret::Sensitive;
+    /// let mut seen = 0usize;
+    /// let s = Sensitive::build([0u8; 32], |slot| { seen = slot.len(); slot[0] = 1; });
+    /// assert_eq!(seen, 32);
+    /// assert_eq!(s.expose()[0], 1);
+    /// ```
+    ///
+    /// Separately: because `f` returns `()`, a fill that silently does
+    /// nothing (`hk.expand(tag, out).ok();`, `let _ = …`) yields a
+    /// **fully-zero secret**, and `build` cannot detect it. Use
+    /// [`Sensitive::try_build`] for anything fallible so the failure
+    /// propagates instead of being wrapped.
     #[must_use]
     pub fn build(init: T, f: impl FnOnce(&mut T)) -> Self {
         let mut s = Self { inner: init };
