@@ -52,7 +52,7 @@ impl FieldHandle {
         self.0.expose_text().map(|s| {
             // PyString::new copies into Python-owned memory, but it also
             // documents "Panics if out of memory" (pyo3 0.29
-            // src/types/string.rs:179-187) — a genuine unwinding panic
+            // src/types/string.rs:178) — a genuine unwinding panic
             // between a fill and a trailing `.zeroize()` that the old
             // shape left open (#513). Wrapping BEFORE the call means
             // `Drop` covers the wipe on every exit path, panic included.

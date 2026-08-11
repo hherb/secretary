@@ -320,8 +320,11 @@ pub(crate) fn repair_with_device_secret(
     approvals: Option<Vec<ApprovedWidening>>,
 ) -> PyResult<OpenVaultOutput> {
     // Wrapped immediately, before any validation, so `Drop` covers the
-    // wipe on every exit path (mirrors `device::open_with_device_secret`,
-    // including retiring the same len()-after-wipe bug class).
+    // wipe on every exit path (mirrors `device::open_with_device_secret`'s
+    // wrap-and-Sensitive shape). Unlike that function, this one never had
+    // the len()-after-wipe bug: the pre-#513 version here already captured
+    // `device_secret.len()` into `got` BEFORE zeroizing — `device.rs`'s own
+    // old comment cited this function as the correct model to follow.
     let device_secret = SecretBytes::new(device_secret);
 
     if device_uuid.len() != 16 {
@@ -331,7 +334,12 @@ pub(crate) fn repair_with_device_secret(
     }
 
     // Same relative position as the original manual length check: after
-    // device_uuid, before the folder_path UTF-8 check.
+    // device_uuid, before the folder_path UTF-8 check. This placement is
+    // the ONLY thing preserving that order now that the check is no
+    // longer a visible `if` — pinned by `tests/test_repair.py`'s
+    // `test_repair_with_device_secret_bad_uuid_and_bad_secret_reports_uuid_first`
+    // and `test_repair_with_device_secret_bad_secret_beats_bad_folder_path`
+    // (#513).
     let secret_arr = Sensitive::try_build([0u8; 32], |slot| {
         array32_into_or_value_error(device_secret.expose(), slot, "device_secret")
     })?;

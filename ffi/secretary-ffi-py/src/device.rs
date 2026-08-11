@@ -15,19 +15,30 @@
 //! # Zeroize discipline
 //!
 //! - `password` / `device_secret` are owned `Vec<u8>` inputs; the wrapper
-//!   moves each into a wrapper type — `SecretBytes` for `password`, or a
-//!   `Sensitive<[u8; 32]>` built via `array32_into_or_value_error` for the
-//!   `device_secret` array — immediately at function entry, before any
-//!   validation runs. `Drop` then covers the wipe on every exit path,
+//!   moves each into `SecretBytes` immediately at function entry, before
+//!   any validation runs. `Drop` then covers the wipe on every exit path,
 //!   including an unwinding panic inside the bridge call (#513), rather
 //!   than relying on a trailing `.zeroize()` statement control flow could
 //!   skip. This matches the `open_with_password` / `open_vault_with_password`
 //!   patterns in [`crate::unlock`] and [`crate::vault`].
-//! - For `open_with_device_secret` this also structurally prevents a bug
-//!   class the function used to carry: reading `device_secret.len()` for
-//!   a `ValueError` message AFTER a manual `.zeroize()` call always
-//!   reported "got 0", since `Vec::zeroize()` clears the vector. With no
-//!   manual wipe preceding any read, that ordering mistake cannot recur.
+//! - For `open_with_device_secret` the 32-byte stack copy is a separate
+//!   `Sensitive<[u8; 32]>`, built from the already-wrapped `SecretBytes` via
+//!   `array32_into_or_value_error` at the point the length check used to sit
+//!   (**not** at function entry — see that function's own doc comment for
+//!   the exact position, which the precedence tests in
+//!   `tests/test_device_slot.py` pin).
+//! - This also structurally prevents, **in this shape**, a bug class the
+//!   function used to carry: reading `device_secret.len()` for a
+//!   `ValueError` message AFTER a manual `.zeroize()` call always reported
+//!   "got 0", since `Vec::zeroize()` clears the vector. `SecretBytes`
+//!   itself still derives `Zeroize` (re-exported at
+//!   `core/src/crypto/secret.rs:15`), so calling `.zeroize()` on it before
+//!   reading its length would reproduce the same class — the guarantee is
+//!   that nothing in this function does that, not that the type makes it
+//!   impossible. `errors.rs`'s
+//!   `array32_into_writes_through_and_rejects_wrong_length` test pins the
+//!   reported length against a non-zero sentinel, which is the stronger,
+//!   checked claim.
 //!
 //! # Context-manager protocol
 //!
@@ -238,13 +249,17 @@ pub(crate) fn open_with_device_secret(
     device_secret: Vec<u8>,
 ) -> PyResult<OpenVaultOutput> {
     // Wrapped immediately, before any validation, so `Drop` covers the
-    // wipe on every exit path. This also structurally retires a bug this
-    // function used to carry: a previous version read
+    // wipe on every exit path. This also structurally retires, IN THIS
+    // SHAPE, a bug this function used to carry: a previous version read
     // `device_secret.len()` for the ValueError message AFTER manually
     // zeroizing it (`Vec::zeroize()` calls `self.clear()`), so a
     // wrong-length secret always reported "got 0" regardless of what was
     // actually received. With no manual wipe preceding any read, that
-    // ordering mistake cannot recur.
+    // ordering mistake cannot recur here — though `SecretBytes` still
+    // derives `Zeroize`, so a future edit that explicitly wipes it before
+    // reading its length would reintroduce the same class. See
+    // `errors.rs`'s `array32_into_writes_through_and_rejects_wrong_length`
+    // test, which pins the reported length against a non-zero sentinel.
     let device_secret = SecretBytes::new(device_secret);
 
     if device_uuid.len() != 16 {
@@ -258,7 +273,11 @@ pub(crate) fn open_with_device_secret(
     // validation and the array fill happen together here —
     // `array32_into_or_value_error` reports the actual wrong length
     // (never a post-wipe zero) because nothing has zeroized `device_secret`
-    // by the time it reads it.
+    // by the time it reads it. This placement is the ONLY thing preserving
+    // that order now that the check is no longer a visible `if` — pinned by
+    // `tests/test_device_slot.py`'s
+    // `test_open_bad_uuid_and_bad_secret_reports_uuid_first` and
+    // `test_open_bad_secret_beats_bad_folder_path` (#513).
     let secret_arr = Sensitive::try_build([0u8; 32], |slot| {
         array32_into_or_value_error(device_secret.expose(), slot, "device_secret")
     })?;

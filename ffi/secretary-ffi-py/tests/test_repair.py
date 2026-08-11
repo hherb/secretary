@@ -313,3 +313,75 @@ def test_repair_with_device_secret_wrong_length_secret_raises_value_error(
         secretary_ffi_py.repair_with_device_secret(
             str(vault).encode(), bytes(16), bytes(31), NOW_MS_BASE
         )
+
+
+# ---------------------------------------------------------------------------
+# Precedence pins (#513 Task 8) — device_uuid / device_secret / folder_path
+# ---------------------------------------------------------------------------
+#
+# `repair_with_device_secret` and `preview_repair_with_device_secret` carry
+# the same restructured shape as `open_with_device_secret`
+# (ffi/secretary-ffi-py/src/device.rs): the device_secret length check used
+# to be a visible `if` at the second validation position and is now folded
+# into a `Sensitive::try_build` call. Nothing but where that call is
+# WRITTEN preserves its position relative to the device_uuid check (before)
+# and the folder_path UTF-8 check (after) — a future refactor could move it
+# silently, with type-only `pytest.raises(ValueError)` assertions staying
+# green throughout. These tests assert on message CONTENT so a precedence
+# flip fails visibly.
+
+
+def test_repair_with_device_secret_bad_uuid_and_bad_secret_reports_uuid_first(
+    tmp_path: Path,
+) -> None:
+    vault = _fresh_writable_vault(tmp_path)
+    with pytest.raises(ValueError) as exc_info:
+        secretary_ffi_py.repair_with_device_secret(
+            str(vault).encode(),
+            bytes(15),   # wrong length — must be 16
+            bytes(31),   # also wrong length — must be 32
+            NOW_MS_BASE,
+        )
+    message = str(exc_info.value)
+    assert "device_uuid" in message
+    assert "device_secret" not in message
+
+
+def test_repair_with_device_secret_bad_secret_beats_bad_folder_path() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        secretary_ffi_py.repair_with_device_secret(
+            b"\xff\xfe",  # invalid UTF-8 — would fail the folder_path check
+            bytes(16),
+            bytes(31),    # wrong length — must be 32
+            NOW_MS_BASE,
+        )
+    message = str(exc_info.value)
+    assert "device_secret" in message
+    assert "folder_path" not in message
+
+
+def test_preview_repair_with_device_secret_bad_uuid_and_bad_secret_reports_uuid_first(
+    tmp_path: Path,
+) -> None:
+    vault = _fresh_writable_vault(tmp_path)
+    with pytest.raises(ValueError) as exc_info:
+        secretary_ffi_py.preview_repair_with_device_secret(
+            str(vault).encode(),
+            bytes(15),   # wrong length — must be 16
+            bytes(31),   # also wrong length — must be 32
+        )
+    message = str(exc_info.value)
+    assert "device_uuid" in message
+    assert "device_secret" not in message
+
+
+def test_preview_repair_with_device_secret_bad_secret_beats_bad_folder_path() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        secretary_ffi_py.preview_repair_with_device_secret(
+            b"\xff\xfe",  # invalid UTF-8 — would fail the folder_path check
+            bytes(16),
+            bytes(31),    # wrong length — must be 32
+        )
+    message = str(exc_info.value)
+    assert "device_secret" in message
+    assert "folder_path" not in message
