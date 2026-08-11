@@ -297,18 +297,34 @@ mod tests {
         // change.
         pyo3::Python::initialize();
 
+        // `out`'s zero seed does NOT make this assertion vacuous: `src` is
+        // `0..32`, so 31 of its 32 bytes are non-zero, and `assert_eq!`
+        // compares the full arrays — a partial or missing write would show
+        // up as a mismatch against `src`, not blend into a zero seed the
+        // way `out2`'s zero-vs-zero comparison would have below.
         let mut out = [0u8; 32];
         let src: Vec<u8> = (0u8..32).collect();
         array32_into_or_value_error(&src, &mut out, "device_secret").expect("32 bytes is valid");
         assert_eq!(out.to_vec(), src);
 
-        let mut out2 = [0u8; 32];
+        // A non-zero sentinel: `out2 == [0u8; 32]` would be indistinguishable
+        // between "untouched" and "wiped-then-rejected" (the reject path
+        // has no wipe to do here, but the assertion below only PROVES the
+        // untouched claim because the sentinel isn't the value a wipe would
+        // also produce). Mirrors the uniffi sibling test
+        // (`array32_from_vec_into_writes_through_and_rejects_wrong_length`,
+        // `ffi/secretary-ffi-uniffi/src/namespace/mod.rs:1027`), which
+        // makes the same choice for the same reason.
+        let mut out2 = [0xA5u8; 32];
         let short: Vec<u8> = (0u8..31).collect();
         let err = array32_into_or_value_error(&short, &mut out2, "device_secret")
             .expect_err("31 bytes must be rejected");
         // The message must report the ACTUAL wrong length, not 0 — the bug
         // #501 describes was exactly this, read after a zeroize() cleared it.
         assert!(format!("{err}").contains("31"), "got: {err}");
-        assert_eq!(out2, [0u8; 32], "a rejected input must not partially fill");
+        assert_eq!(
+            out2, [0xA5u8; 32],
+            "a rejected input must not partially fill"
+        );
     }
 }
