@@ -2,11 +2,11 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyString, PyType};
+use secretary_core::crypto::secret::{SecretBytes, SecretString};
 use secretary_ffi_bridge::{
     BlockReadOutput as BridgeBlockReadOutput, FieldHandle as BridgeFieldHandle,
     Record as BridgeRecord,
 };
-use zeroize::Zeroize;
 
 use crate::errors::ffi_vault_error_to_pyerr;
 use crate::identity::UnlockedIdentity;
@@ -49,12 +49,15 @@ impl FieldHandle {
     /// handed back to Python is a fresh caller-owned heap copy that
     /// outlives the bridge wipe.
     fn expose_text<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyString>> {
-        self.0.expose_text().map(|mut s| {
-            // PyString::new copies into Python-owned memory; zeroize our transient
-            // Rust String so the field secret does not linger in freed heap (#360).
-            let py_s = PyString::new(py, &s);
-            s.zeroize();
-            py_s
+        self.0.expose_text().map(|s| {
+            // PyString::new copies into Python-owned memory, but it also
+            // documents "Panics if out of memory" (pyo3 0.29
+            // src/types/string.rs:179-187) — a genuine unwinding panic
+            // between a fill and a trailing `.zeroize()` that the old
+            // shape left open (#513). Wrapping BEFORE the call means
+            // `Drop` covers the wipe on every exit path, panic included.
+            let s = SecretString::new(s);
+            PyString::new(py, s.expose())
         })
     }
     /// Pull the secret payload as `bytes`. Returns `None` if the field
@@ -64,12 +67,15 @@ impl FieldHandle {
     /// handed back to Python is a fresh caller-owned heap copy that
     /// outlives the bridge wipe.
     fn expose_bytes<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
-        self.0.expose_bytes().map(|mut v| {
-            // PyBytes::new copies into Python-owned memory; zeroize our transient
-            // Rust copy so the field secret does not linger in freed heap (#360).
-            let b = PyBytes::new(py, &v);
-            v.zeroize();
-            b
+        self.0.expose_bytes().map(|v| {
+            // PyBytes::new copies into Python-owned memory, but it also
+            // documents "Panics if out of memory" (pyo3 0.29
+            // src/types/bytes.rs:76) — a genuine unwinding panic between a
+            // fill and a trailing `.zeroize()` that the old shape left
+            // open (#513). Wrapping BEFORE the call means `Drop` covers
+            // the wipe on every exit path, panic included.
+            let v = SecretBytes::new(v);
+            PyBytes::new(py, v.expose())
         })
     }
     /// Drop the underlying secret now. Idempotent.
