@@ -109,8 +109,8 @@ let result = bridge::open_with_device_secret(&path, &uuid, &secret_arr);
 secret_arr.zeroize();
 
 // after — wiped unconditionally by Drop
-let mut secret = Sensitive::new([0u8; 32]);
-array32_from_vec_into(src, secret.expose_mut(), "device_secret")?;
+let secret = Sensitive::try_build([0u8; 32],
+    |slot| array32_from_vec_into(src, slot, "device_secret"))?;
 let result = bridge::open_with_device_secret(&path, &uuid, secret.expose());
 ```
 
@@ -138,30 +138,75 @@ the two properties `memory-hygiene-audit-internal.md` records as deliberate. All
 three FFI crates already depend on `secretary-core`, so its wrappers are
 available at every site in question.
 
-### 2.2 Why `Sensitive::expose_mut` rather than a new type
+### 2.2 A fill-in-place constructor, not a `&mut` accessor
 
-The `Vec<u8>` / `String` sites need no new API at all — `SecretBytes` and
-`SecretString` already fit; those functions simply were not using them. Only the
-`[u8; N]` scratch slots need something new, because the slot must be written
-through after being wrapped.
+Most windowed sites need **no new API at all**. `SecretBytes::new(password)` and
+`SecretString::new(parts.join(" "))` already fit the `Vec<u8>` and `String`
+cases; those functions simply were not using the wrappers that exist. New API is
+needed only where a **fallible fill writes through a `&mut`** — a handful of
+sites in `crypto/kdf.rs` and the FFI device-secret paths.
 
-One additive method covers it:
+Two shapes were considered and rejected before settling:
+
+**Rejected — `expose_mut(&mut self) -> &mut T`.** This hands out a mutable borrow
+of the secret, permanently, on every live `Sensitive` in the codebase. It enables
+the following in safe code, with nothing for a guard to catch:
 
 ```rust
-/// Mutably borrow the wrapped secret, so a slot can be WRAPPED FIRST and
-/// filled through the wrapper rather than filled, copied in, and wiped by a
-/// separate statement that an early return or an unwinding panic can skip.
-#[must_use]
-pub fn expose_mut(&mut self) -> &mut T {
-    &mut self.inner
+let mut plain = [0u8; 32];
+std::mem::swap(secret.expose_mut(), &mut plain);   // secret escapes the wrapper
+// `secret` drops and wipes the zeros. `plain` is never wiped.
+```
+
+That silently defeats `ZeroizeOnDrop` — the same laundering-shape class #474 →
+#480 → #486 → #500 were spent closing, reintroduced at the type level.
+
+**Rejected — a `Scratch<T>` newtype.** It does not fix the above: if `Scratch`
+also exposes `&mut T`, it has the identical hole. It costs a fourth wrapper
+spelling in a codebase that deliberately standardised on three, plus its own
+tests and review surface, and buys only the confinement of a capability that
+need not exist at all.
+
+**Adopted — `Sensitive::try_build`.** The fill sites do not need a mutable borrow
+*available at any time*; they need one *once, at construction*. That is a
+constructor, not an accessor:
+
+```rust
+/// Build a secret by filling a zeroed slot IN PLACE. The wrapper is live for
+/// the whole fill, so an early `?` or an unwinding panic inside `f` drops it
+/// and wipes — there is no window (#513).
+pub fn try_build<E>(init: T, f: impl FnOnce(&mut T) -> Result<(), E>) -> Result<Self, E> {
+    let mut s = Self { inner: init };   // wrapped FIRST
+    f(&mut s.inner)?;                   // private field — no public `&mut` escapes
+    Ok(s)
 }
 ```
 
-**Accepted cost:** `Sensitive<T>` is today write-once-at-construction, and
-`expose_mut` widens that. Weighed against inventing a fourth wrapper — with its
-own tests, its own spelling to learn, and its own review surface — the widening
-is the smaller change. `expose_mut` grants no capability a caller lacks today:
-the same caller can already construct a `Sensitive` from any value it likes.
+```rust
+// ffi/uniffi
+let secret = Sensitive::try_build([0u8; 32],
+    |slot| array32_from_vec_into(device_secret, slot, "device_secret"))?;
+
+// core/src/crypto/kdf.rs — closes E1 here too, which the deferred-`?`
+// restructure alone would not
+let kek = Sensitive::try_build([0u8; 32],
+    |slot| argon2.hash_password_into(pw, salt, slot)
+                 .map_err(|_| KdfError::Argon2ParamsRejected))?;
+```
+
+The `&mut` is scoped to one closure written at the call site rather than being a
+capability on the type forever. A closure could still `mem::swap`, but that is
+one reviewable expression, not an open door for all future code. `Sensitive`'s
+"you cannot get a mutable borrow of a live secret" invariant survives — and
+stays *statable*, which is what keeps it reviewable. A constructor is also a
+safer category of API than an accessor: it runs once, before anyone holds the
+value.
+
+Simpler *and* safer than both alternatives, so there is no trade to record here:
+one type instead of two, ~6 lines instead of ~30, strictly additive, and no
+existing `Sensitive` call site changes.
+
+A non-fallible `build` is deliberately **not** added — no site needs one today.
 
 ---
 
@@ -204,7 +249,7 @@ secret reported `got 0`).
 
 ## 4. Components
 
-1. **`Sensitive::expose_mut`** — [`core/src/crypto/secret.rs`](../../../core/src/crypto/secret.rs). The only new API in the slice.
+1. **`Sensitive::try_build`** — [`core/src/crypto/secret.rs`](../../../core/src/crypto/secret.rs). The only new API in the slice, and needed only at the fallible-fill-through-`&mut` sites (§2.2).
 2. **Convert the windowed sites** to wrapper-typed locals. Adjacent sites are left exactly as they are.
 3. **Fix the two #518 leaks** — `mnemonic::parse` and `bundle::from_canonical_cbor`.
 4. **`array32_or_value_error(…) -> PyResult<[u8; 32]>` → write-through** ([`ffi/secretary-ffi-py/src/errors.rs:263`](../../../ffi/secretary-ffi-py/src/errors.rs)), mirroring `array32_from_vec_into` on the uniffi side. Removes the by-value producer, so the unsafe shape is awkward to write rather than merely discouraged — and closes **#503's ffi-py half**, which is still open (`#503` only ever fixed uniffi).
@@ -232,10 +277,14 @@ fn sensitive_wipes_when_the_stack_unwinds() {
 }
 ```
 
-### 5.2 API — `expose_mut`, written before the method exists
+### 5.2 API — `try_build`, written before the method exists
 
-Standard unit tests: the borrow writes through to the wrapped value, and the
-value is still wiped on drop afterwards.
+Three cases, all observable: the closure's writes reach the wrapped value; a
+closure returning `Err` propagates it and yields no `Sensitive`; and — the one
+that matters — a closure that **panics** still wipes, asserted with the same
+`Drop`-witness technique as §5.1. That last case is what distinguishes
+`try_build` from a plain `new` after the fill, so it is the test that must fail
+first.
 
 ### 5.3 Sites — behaviour-preservation plus path coverage
 
@@ -278,9 +327,13 @@ pins that the paths are reached.
 
 ## 7. Risks and open questions
 
-- **`expose_mut` widens a security type** (§2.2). Accepted, with the reasoning
-  recorded above so a future reviewer sees it was a decision and not an
-  oversight.
+- **`try_build`'s closure still receives a `&mut T`** (§2.2), so a closure
+  written to `mem::swap` the secret out would defeat the wrapper. The borrow is
+  confined to one expression at the call site rather than exposed on the type,
+  which makes this reviewable; it does not make it impossible. Every closure
+  added under this API is a review point. This is the residual of the rejected
+  `expose_mut`, reduced but not eliminated — recorded so a future reviewer sees
+  it was a decision, not an oversight.
 - **The census is a point-in-time claim** (§3.1). It will drift as `core/`
   changes. Recording it in the memo with per-site reasons is what makes the drift
   detectable by a reader; nothing makes it detectable by CI.
