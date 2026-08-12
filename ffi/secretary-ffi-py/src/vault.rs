@@ -9,10 +9,10 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyType;
+use secretary_core::crypto::secret::SecretBytes;
 use secretary_ffi_bridge::{
     BlockSummary as BridgeBlockSummary, OpenVaultManifest as BridgeOpenVaultManifest,
 };
-use zeroize::Zeroize;
 
 use crate::errors::ffi_vault_error_to_pyerr;
 use crate::identity::UnlockedIdentity;
@@ -249,11 +249,14 @@ impl OpenVaultOutput {
 ///
 /// # Caller zeroize
 ///
-/// `password` is owned bytes (`Vec<u8>`); the bridge wraps it in
-/// `SecretBytes` (zeroize-on-drop). The wrapper here additionally zeroizes
-/// the wrapper-side `Vec<u8>` after the bridge call returns. The foreign
-/// caller's input buffer (e.g. a Python `bytearray`) is the foreign side's
-/// responsibility — wipe it after the call returns.
+/// `password` is owned bytes (`Vec<u8>`); the wrapper immediately moves it
+/// into a `SecretBytes` (zeroize-on-drop), so the wrapper-side copy is
+/// wiped on every exit path — normal return, `?`, or an unwinding panic
+/// inside the bridge call (#513) — rather than only on a trailing
+/// statement control flow could skip. The bridge crate separately wraps
+/// its own copy the same way. The foreign caller's input buffer (e.g. a
+/// Python `bytearray`) is the foreign side's responsibility — wipe it
+/// after the call returns.
 ///
 /// # Raises
 ///
@@ -266,15 +269,16 @@ impl OpenVaultOutput {
 /// - `VaultFolderInvalid` — folder doesn't exist, isn't readable, or is
 ///   missing one of the four required files.
 #[pyfunction]
-#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required for zeroize discipline
+#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required to move into SecretBytes
 pub(crate) fn open_vault_with_password(
     folder: std::path::PathBuf,
-    mut password: Vec<u8>,
+    password: Vec<u8>,
 ) -> PyResult<OpenVaultOutput> {
-    let result = secretary_ffi_bridge::open_vault_with_password(&folder, &password)
-        .map_err(ffi_vault_error_to_pyerr);
-    password.zeroize();
-    let bridge_out = result?;
+    // Wrapped immediately so `Drop` covers the wipe on every exit path,
+    // including an unwinding panic inside the bridge call (#513).
+    let password = SecretBytes::new(password);
+    let bridge_out = secretary_ffi_bridge::open_vault_with_password(&folder, password.expose())
+        .map_err(ffi_vault_error_to_pyerr)?;
     let secretary_ffi_bridge::OpenVaultOutput { identity, manifest } = bridge_out;
     Ok(OpenVaultOutput::from_bridge(
         UnlockedIdentity(identity),
@@ -292,8 +296,9 @@ pub(crate) fn open_vault_with_password(
 ///
 /// # Caller zeroize
 ///
-/// `mnemonic` is owned bytes; the wrapper zeroizes them after the
-/// bridge call returns. The foreign caller's input buffer is the foreign
+/// `mnemonic` is owned bytes; the wrapper immediately moves it into a
+/// `SecretBytes`, so it is wiped on every exit path (#513), not only a
+/// trailing statement. The foreign caller's input buffer is the foreign
 /// side's responsibility.
 ///
 /// # Raises
@@ -310,15 +315,16 @@ pub(crate) fn open_vault_with_password(
 /// - `VaultFolderInvalid` — folder doesn't exist, isn't readable, or is
 ///   missing one of the four required files.
 #[pyfunction]
-#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required for zeroize discipline
+#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required to move into SecretBytes
 pub(crate) fn open_vault_with_recovery(
     folder: std::path::PathBuf,
-    mut mnemonic: Vec<u8>,
+    mnemonic: Vec<u8>,
 ) -> PyResult<OpenVaultOutput> {
-    let result = secretary_ffi_bridge::open_vault_with_recovery(&folder, &mnemonic)
-        .map_err(ffi_vault_error_to_pyerr);
-    mnemonic.zeroize();
-    let bridge_out = result?;
+    // Wrapped immediately so `Drop` covers the wipe on every exit path,
+    // including an unwinding panic inside the bridge call (#513).
+    let mnemonic = SecretBytes::new(mnemonic);
+    let bridge_out = secretary_ffi_bridge::open_vault_with_recovery(&folder, mnemonic.expose())
+        .map_err(ffi_vault_error_to_pyerr)?;
     let secretary_ffi_bridge::OpenVaultOutput { identity, manifest } = bridge_out;
     Ok(OpenVaultOutput::from_bridge(
         UnlockedIdentity(identity),

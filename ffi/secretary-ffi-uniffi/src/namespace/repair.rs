@@ -28,7 +28,7 @@
 //! `FfiApprovedWidening` trusts its caller (see
 //! `ffi/secretary-ffi-bridge/src/repair/types.rs` module docs).
 
-use zeroize::Zeroize;
+use secretary_core::crypto::secret::Sensitive;
 
 use crate::errors::VaultError;
 use crate::wrappers::repair::{ApprovedWidening, RepairPreview};
@@ -198,7 +198,11 @@ pub fn repair_with_recovery(
 /// the empty-vec safe zero-value. All credential/approval fields are
 /// validated before the bridge call. `device_secret` is a zero-copy borrow
 /// of the foreign buffer (`[ByRef] bytes`, #307); the transient `[u8; 32]`
-/// stack copy made here is zeroized on all paths.
+/// stack copy made here is wrapped in a `Sensitive<[u8; 32]>` (via
+/// [`Sensitive::try_build`]) BEFORE it is filled, so `Drop` covers the
+/// wipe on every exit path — including an unwinding panic inside the
+/// bridge call (#513) — rather than a bare array plus a trailing
+/// `.zeroize()`.
 ///
 /// # Errors
 ///
@@ -222,38 +226,32 @@ pub fn repair_with_device_secret(
     let approvals = convert_approvals(approvals)?;
 
     let uuid_arr = uuid_from_vec(&device_uuid, "device_uuid")?;
-    // `mut` so the [u8; 32] stack copy is zeroized IN PLACE below. Binding it
-    // immutably and later doing `let mut secret_arr = secret_arr;` would COPY
-    // the array (`[u8; 32]: Copy`) into a fresh slot and wipe only the copy,
-    // leaving this original slot's 32 plaintext bytes as stack residue.
-    // Written through by `array32_from_vec_into` rather than returned by
-    // value, so this slot is the ONLY [u8; 32] in play (#503).
-    let mut secret_arr = [0u8; 32];
-    array32_from_vec_into(device_secret, &mut secret_arr, "device_secret")?;
+    // Wrapped BEFORE it is filled, not a bare [u8; 32] + trailing
+    // `.zeroize()`: `Drop` covers the wipe on every exit path, including an
+    // unwinding panic inside the bridge call below (#513). Written through
+    // by `array32_from_vec_into` rather than returned by value, so this
+    // slot is the ONLY [u8; 32] in play (#503).
+    let secret_arr = Sensitive::try_build([0u8; 32], |slot| {
+        array32_from_vec_into(device_secret, slot, "device_secret")
+    })?;
 
-    let result: Result<secretary_ffi_bridge::OpenVaultOutput, VaultError> =
-        match std::str::from_utf8(&folder_path) {
-            Ok(s) => {
-                let path = std::path::PathBuf::from(s);
-                secretary_ffi_bridge::repair_vault_with_device_secret(
-                    &path,
-                    &uuid_arr,
-                    &secret_arr,
-                    now_ms,
-                    &approvals,
-                )
-                .map_err(VaultError::from)
-            }
-            Err(_) => Err(VaultError::FolderInvalid {
-                detail: "folder path contained invalid UTF-8".to_string(),
-            }),
-        };
+    let bridge_out = match std::str::from_utf8(&folder_path) {
+        Ok(s) => {
+            let path = std::path::PathBuf::from(s);
+            secretary_ffi_bridge::repair_vault_with_device_secret(
+                &path,
+                &uuid_arr,
+                secret_arr.expose(),
+                now_ms,
+                &approvals,
+            )
+            .map_err(VaultError::from)
+        }
+        Err(_) => Err(VaultError::FolderInvalid {
+            detail: "folder path contained invalid UTF-8".to_string(),
+        }),
+    }?;
 
-    // Zeroize the transient stack copy unconditionally — the borrowed
-    // `device_secret` itself is foreign-owned (scrubbed by the adapter).
-    secret_arr.zeroize();
-
-    let bridge_out = result?;
     Ok(OpenVaultOutput {
         identity: std::sync::Arc::new(crate::wrappers::identity::UnlockedIdentity(
             bridge_out.identity,
@@ -337,7 +335,10 @@ pub fn preview_repair_with_recovery(
 /// `device_uuid` must be exactly 16 bytes; `device_secret` must be exactly
 /// 32 bytes; both are validated before the bridge call. `device_secret` is
 /// a zero-copy borrow of the foreign buffer (`[ByRef] bytes`, #307); the
-/// transient `[u8; 32]` stack copy made here is zeroized on all paths.
+/// transient `[u8; 32]` stack copy made here is wrapped in a
+/// `Sensitive<[u8; 32]>` before it is filled, so `Drop` covers the wipe on
+/// every exit path — including an unwinding panic inside the bridge call
+/// (#513) — rather than a bare array plus a trailing `.zeroize()`.
 ///
 /// # Errors
 ///
@@ -354,34 +355,30 @@ pub fn preview_repair_with_device_secret(
     // foreign buffer — no owned Vec, so the pre-0.32 early-return zeroize
     // choreography is gone.
     let uuid_arr = uuid_from_vec(&device_uuid, "device_uuid")?;
-    // `mut` so the [u8; 32] stack copy is zeroized IN PLACE below — see
-    // repair_with_device_secret for why a re-binding `let mut` would leave
-    // stack residue. Written through by `array32_from_vec_into` rather than
-    // returned by value, so this slot is the ONLY [u8; 32] in play (#503).
-    let mut secret_arr = [0u8; 32];
-    array32_from_vec_into(device_secret, &mut secret_arr, "device_secret")?;
+    // Wrapped BEFORE it is filled — see repair_with_device_secret for why a
+    // bare [u8; 32] + trailing `.zeroize()` leaves stack residue on an
+    // unwinding panic (#513). Written through by `array32_from_vec_into`
+    // rather than returned by value, so this slot is the ONLY [u8; 32] in
+    // play (#503).
+    let secret_arr = Sensitive::try_build([0u8; 32], |slot| {
+        array32_from_vec_into(device_secret, slot, "device_secret")
+    })?;
 
-    let result: Result<secretary_ffi_bridge::FfiRepairPreview, VaultError> =
-        match std::str::from_utf8(&folder_path) {
-            Ok(s) => {
-                let path = std::path::PathBuf::from(s);
-                secretary_ffi_bridge::preview_repair_with_device_secret(
-                    &path,
-                    &uuid_arr,
-                    &secret_arr,
-                )
-                .map_err(VaultError::from)
-            }
-            Err(_) => Err(VaultError::FolderInvalid {
-                detail: "folder path contained invalid UTF-8".to_string(),
-            }),
-        };
+    let bridge_out = match std::str::from_utf8(&folder_path) {
+        Ok(s) => {
+            let path = std::path::PathBuf::from(s);
+            secretary_ffi_bridge::preview_repair_with_device_secret(
+                &path,
+                &uuid_arr,
+                secret_arr.expose(),
+            )
+            .map_err(VaultError::from)
+        }
+        Err(_) => Err(VaultError::FolderInvalid {
+            detail: "folder path contained invalid UTF-8".to_string(),
+        }),
+    }?;
 
-    // Zeroize the transient stack copy unconditionally — the borrowed
-    // `device_secret` itself is foreign-owned (scrubbed by the adapter).
-    secret_arr.zeroize();
-
-    let bridge_out = result?;
     Ok(RepairPreview::from(bridge_out))
 }
 
@@ -611,6 +608,32 @@ mod tests {
     }
 
     #[test]
+    fn repair_with_device_secret_bad_uuid_and_bad_secret_reports_uuid_first() {
+        // Precedence pin (#513 Task 9): with approvals valid (empty vec,
+        // the documented safe zero-value), `device_uuid` is checked BEFORE
+        // `device_secret`. Mirrors
+        // `open_with_device_secret_bad_uuid_and_bad_secret_reports_uuid_first`
+        // in `namespace/mod.rs` — the `Sensitive::try_build` conversion
+        // moves `device_secret`'s length check inside that call, and
+        // nothing enforces its position relative to the `device_uuid`
+        // check except where the call is written in the function body.
+        match repair_with_device_secret(
+            b"irrelevant".to_vec(),
+            vec![0u8; 15],
+            &[0u8; 31],
+            1_700_000_000_000,
+            vec![],
+        ) {
+            Err(VaultError::InvalidArgument { detail }) => {
+                assert!(detail.contains("device_uuid"), "detail was: {detail}");
+                assert!(!detail.contains("device_secret"), "detail was: {detail}");
+            }
+            Err(other) => panic!("expected InvalidArgument, got {other:?}"),
+            Ok(_) => panic!("expected Err for wrong-length device_uuid and device_secret"),
+        }
+    }
+
+    #[test]
     fn preview_repair_with_device_secret_wrong_length_device_uuid_returns_invalid_argument() {
         match preview_repair_with_device_secret(b"\xff\xfe".to_vec(), vec![0u8; 15], &[0u8; 32]) {
             Err(VaultError::InvalidArgument { detail }) => {
@@ -629,6 +652,21 @@ mod tests {
             }
             Err(other) => panic!("expected InvalidArgument, got {other:?}"),
             Ok(_) => panic!("expected Err for wrong-length device_secret"),
+        }
+    }
+
+    #[test]
+    fn preview_repair_with_device_secret_bad_uuid_and_bad_secret_reports_uuid_first() {
+        // Precedence pin (#513 Task 9): same shape as
+        // `repair_with_device_secret_bad_uuid_and_bad_secret_reports_uuid_first`,
+        // for the preview (no-approvals) sibling.
+        match preview_repair_with_device_secret(b"irrelevant".to_vec(), vec![0u8; 15], &[0u8; 31]) {
+            Err(VaultError::InvalidArgument { detail }) => {
+                assert!(detail.contains("device_uuid"), "detail was: {detail}");
+                assert!(!detail.contains("device_secret"), "detail was: {detail}");
+            }
+            Err(other) => panic!("expected InvalidArgument, got {other:?}"),
+            Ok(_) => panic!("expected Err for wrong-length device_uuid and device_secret"),
         }
     }
 

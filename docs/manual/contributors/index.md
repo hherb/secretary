@@ -63,14 +63,28 @@ layer ([`core/src/sync/`](../../../core/src/sync/), Sub-project C) and the
 FFI bridge ([`ffi/secretary-ffi-bridge/`](../../../ffi/secretary-ffi-bridge/),
 Sub-project B) — both layers were written after the audit landed and
 follow the established `bind → wrap → zeroize` pattern at every secret-
-material site. New cross-module sites are expected to keep that pattern.
+material site.
+
+**That pattern is no longer the default for new code (2026-08-11, #513).**
+It wipes on every *return* but is skipped by an unwinding panic and by an
+early `?` / `return Err` after the fill. For a new secret-bearing local
+that is live across anything fallible or panicking, wrap FIRST and fill
+through the wrapper — `Sensitive::build` / `Sensitive::try_build`, or an
+equivalently-early `SecretBytes::new` / `SecretString::new` for a heap
+value. `bind → wrap → zeroize` remains correct, and remains the pattern
+in the tree, only where the fill is *provably adjacent* to the wrap. See
+CLAUDE.md's "Memory hygiene: zeroize discipline" for the decision rule
+and the memo's "Panic- and error-safe secret slots" for the per-site
+table.
 
 #### [`ffi-secret-handling-internal.md`](ffi-secret-handling-internal.md)
 
 The cross-FFI memory-hygiene companion that the earlier two audits
-explicitly deferred (under "Out of scope: cross-FFI memory hygiene
-(Sub-project B)"). Walks the six opaque handles exposed across the
-FFI (`UnlockedIdentity`, `MnemonicOutput`, `OpenVaultManifest`,
+explicitly deferred. (That deferral was worded as an out-of-scope line in
+the memory-hygiene memo; the 2026-08-11 pass removed it, because the memo
+now covers all three FFI crates itself. Quoting it here would be quoting
+a sentence that no longer exists.) Walks the six opaque handles exposed
+across the FFI (`UnlockedIdentity`, `MnemonicOutput`, `OpenVaultManifest`,
 `BlockReadOutput`, `Record`, `FieldHandle`), the `Arc<Mutex<Option<T>>>`
 pattern they share, the wipe-cascade discipline, and the
 foreign-runtime heap-copy caveat that the bridge cannot close from the

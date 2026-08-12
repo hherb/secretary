@@ -7,7 +7,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyType};
-use zeroize::Zeroize;
+use secretary_core::crypto::secret::SecretBytes;
 
 use crate::errors::{ffi_unlock_error_to_pyerr, ffi_vault_error_to_pyerr};
 use crate::identity::UnlockedIdentity;
@@ -31,12 +31,15 @@ impl MnemonicOutput {
     /// converting to `bytearray` and overwriting in place; PyO3 cannot
     /// hand back a mutable buffer typed as a foreign Sensitive analog).
     fn take_phrase<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
-        self.0.take_phrase().map(|mut v| {
-            // PyBytes::new copies into Python-owned memory; zeroize our transient
-            // Rust copy so the recovery phrase does not linger in freed heap (#360).
-            let b = PyBytes::new(py, &v);
-            v.zeroize();
-            b
+        self.0.take_phrase().map(|v| {
+            // PyBytes::new copies into Python-owned memory, but it also
+            // documents "Panics if out of memory" (pyo3 0.29
+            // src/types/bytes.rs:76) — a genuine unwinding panic between a
+            // fill and a trailing `.zeroize()` that the old shape left
+            // open (#513). Wrapping BEFORE the call means `Drop` covers
+            // the wipe on every exit path, panic included.
+            let v = SecretBytes::new(v);
+            PyBytes::new(py, v.expose())
         })
     }
 
@@ -147,22 +150,20 @@ impl CreateVaultOutput {
 pub(crate) fn open_with_password(
     vault_toml_bytes: &[u8],
     identity_bundle_bytes: &[u8],
-    mut password: Vec<u8>,
+    password: Vec<u8>,
 ) -> PyResult<UnlockedIdentity> {
-    // The bridge crate copies into SecretBytes (which zeroizes on drop).
-    // This Vec is a transient cleartext residue on the wrapper's heap;
-    // zero it explicitly so we don't leave the password lingering after
-    // the call returns. Mirrors the stack-residue discipline in
-    // docs/manual/contributors/memory-hygiene-audit-internal.md.
-    let result = secretary_ffi_bridge::open_with_password(
+    // Wrap immediately so `Drop` covers the wipe on every exit path —
+    // normal return, `?`, or an unwinding panic inside the bridge call
+    // (#513). The bridge crate separately copies into its own
+    // `SecretBytes`; this wrapper-side copy is a distinct zeroize domain.
+    let password = SecretBytes::new(password);
+    secretary_ffi_bridge::open_with_password(
         vault_toml_bytes,
         identity_bundle_bytes,
-        &password,
+        password.expose(),
     )
     .map(UnlockedIdentity)
-    .map_err(ffi_unlock_error_to_pyerr);
-    password.zeroize();
-    result
+    .map_err(ffi_unlock_error_to_pyerr)
 }
 
 /// Unlock a vault using its 24-word BIP-39 recovery phrase. See
@@ -171,22 +172,21 @@ pub(crate) fn open_with_password(
 pub(crate) fn open_with_recovery(
     vault_toml_bytes: &[u8],
     identity_bundle_bytes: &[u8],
-    mut mnemonic: Vec<u8>,
+    mnemonic: Vec<u8>,
 ) -> PyResult<UnlockedIdentity> {
-    // Mirrors the open_with_password wrapper-side zeroize discipline:
-    // the bridge takes &[u8] and never retains; this Vec is the wrapper's
-    // owned copy of the foreign caller's bytes-like input. Zero it after
-    // the bridge returns so the password-equivalent doesn't linger on
-    // the wrapper heap.
-    let result = secretary_ffi_bridge::open_with_recovery(
+    // Mirrors the open_with_password wrapper-side wrap discipline: the
+    // bridge takes &[u8] and never retains; this is the wrapper's owned
+    // copy of the foreign caller's bytes-like input. Wrapping it means
+    // `Drop` covers the wipe on every exit path, including a panic
+    // unwinding through the bridge call (#513).
+    let mnemonic = SecretBytes::new(mnemonic);
+    secretary_ffi_bridge::open_with_recovery(
         vault_toml_bytes,
         identity_bundle_bytes,
-        &mnemonic,
+        mnemonic.expose(),
     )
     .map(UnlockedIdentity)
-    .map_err(ffi_unlock_error_to_pyerr);
-    mnemonic.zeroize();
-    result
+    .map_err(ffi_unlock_error_to_pyerr)
 }
 
 /// Create a fresh v1 vault. Bridge instantiates `OsRng` and
@@ -203,18 +203,19 @@ pub(crate) fn open_with_recovery(
 /// See module-level docs for the exception classes raised on failure.
 #[pyfunction]
 pub(crate) fn create_vault(
-    mut password: Vec<u8>,
+    password: Vec<u8>,
     display_name: &str,
     created_at_ms: u64,
 ) -> PyResult<CreateVaultOutput> {
     // Mirrors the open_with_password / open_with_recovery wrapper-side
-    // zeroize discipline: the bridge's create_vault wraps password into
-    // SecretBytes (which zeroizes on drop). This Vec is a transient
-    // cleartext residue on the wrapper's heap; zero it explicitly so we
-    // don't leave the password lingering after the call returns.
-    let result = secretary_ffi_bridge::create_vault(&password, display_name, created_at_ms);
-    password.zeroize();
-    let bridge_out = result.map_err(ffi_unlock_error_to_pyerr)?;
+    // wrap discipline: the bridge's create_vault separately wraps
+    // password into its own SecretBytes. This wrapper-side copy is
+    // wrapped immediately so `Drop` covers the wipe on every exit path,
+    // panic included (#513).
+    let password = SecretBytes::new(password);
+    let bridge_out =
+        secretary_ffi_bridge::create_vault(password.expose(), display_name, created_at_ms)
+            .map_err(ffi_unlock_error_to_pyerr)?;
 
     let secretary_ffi_bridge::CreateVaultOutput {
         vault_toml_bytes,
@@ -246,20 +247,21 @@ pub(crate) fn create_vault(
 #[pyfunction]
 pub(crate) fn create_vault_in_folder(
     folder: std::path::PathBuf,
-    mut password: Vec<u8>,
+    password: Vec<u8>,
     display_name: &str,
     created_at_ms: u64,
 ) -> PyResult<(Vec<u8>, MnemonicOutput)> {
-    // Mirrors create_vault's wrapper-side zeroize discipline: the bridge
-    // wraps password into SecretBytes; this Vec is the projection-side
-    // cleartext transient. Zero it whether the call succeeds or fails.
-    let result = secretary_ffi_bridge::create_vault_in_folder(
+    // Mirrors create_vault's wrapper-side wrap discipline: the bridge
+    // separately wraps password into its own SecretBytes; this
+    // projection-side copy is wrapped immediately so `Drop` covers the
+    // wipe on every exit path, panic included (#513).
+    let password = SecretBytes::new(password);
+    let out = secretary_ffi_bridge::create_vault_in_folder(
         &folder,
-        &password,
+        password.expose(),
         display_name,
         created_at_ms,
-    );
-    password.zeroize();
-    let out = result.map_err(ffi_vault_error_to_pyerr)?;
+    )
+    .map_err(ffi_vault_error_to_pyerr)?;
     Ok((out.vault_uuid.to_vec(), MnemonicOutput(out.mnemonic)))
 }

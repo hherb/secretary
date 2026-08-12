@@ -39,10 +39,10 @@
 //! bind as stale consent (`VaultRepairRejected`).
 
 use pyo3::prelude::*;
-use zeroize::Zeroize;
+use secretary_core::crypto::secret::{SecretBytes, Sensitive};
 
 use crate::errors::{
-    array32_or_value_error, ffi_vault_error_to_pyerr, indexed_uuid_array_or_value_error,
+    array32_into_or_value_error, ffi_vault_error_to_pyerr, indexed_uuid_array_or_value_error,
     uuid_array_or_value_error,
 };
 use crate::identity::UnlockedIdentity;
@@ -90,9 +90,18 @@ impl ApprovedWidening {
         added_recipients: Vec<Vec<u8>>,
     ) -> PyResult<Self> {
         let block_uuid = uuid_array_or_value_error(&block_uuid, "block_uuid")?;
-        let file_fingerprint = array32_or_value_error(&file_fingerprint, "file_fingerprint")?;
-        let committed_fingerprint =
-            array32_or_value_error(&committed_fingerprint, "committed_fingerprint")?;
+        let mut file_fingerprint_arr = [0u8; 32];
+        array32_into_or_value_error(
+            &file_fingerprint,
+            &mut file_fingerprint_arr,
+            "file_fingerprint",
+        )?;
+        let mut committed_fingerprint_arr = [0u8; 32];
+        array32_into_or_value_error(
+            &committed_fingerprint,
+            &mut committed_fingerprint_arr,
+            "committed_fingerprint",
+        )?;
         let added_recipients = added_recipients
             .iter()
             .enumerate()
@@ -100,8 +109,8 @@ impl ApprovedWidening {
             .collect::<PyResult<Vec<_>>>()?;
         Ok(Self {
             block_uuid,
-            file_fingerprint,
-            committed_fingerprint,
+            file_fingerprint: file_fingerprint_arr,
+            committed_fingerprint: committed_fingerprint_arr,
             added_recipients,
         })
     }
@@ -140,8 +149,9 @@ fn bridge_approvals(
 /// # Inputs
 ///
 /// - `folder_path` — UTF-8 path to the vault directory as raw bytes.
-/// - `password` — master password as raw bytes (owned; zeroized after the
-///   bridge call returns on all paths).
+/// - `password` — master password as raw bytes (owned; wrapped in a
+///   `SecretBytes` at function entry so it is wiped on every exit path,
+///   panic included — #513).
 /// - `device_uuid` — 16-byte device UUID; keys the manifest-clock tick on
 ///   adoption. `ValueError` if not exactly 16 bytes.
 /// - `now_ms` — caller-supplied wall-clock milliseconds for the repair's
@@ -163,38 +173,40 @@ fn bridge_approvals(
 ///   length.
 #[pyfunction]
 #[pyo3(signature = (folder_path, password, device_uuid, now_ms, approvals=None))]
-#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required for zeroize discipline
+#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required to move into SecretBytes
 pub(crate) fn repair_with_password(
     folder_path: &[u8],
-    mut password: Vec<u8>,
+    password: Vec<u8>,
     device_uuid: &[u8],
     now_ms: u64,
     approvals: Option<Vec<ApprovedWidening>>,
 ) -> PyResult<OpenVaultOutput> {
+    // Wrapped immediately so `Drop` covers the wipe on every exit path,
+    // including an unwinding panic inside the bridge call (#513).
+    let password = SecretBytes::new(password);
+
     if device_uuid.len() != 16 {
-        password.zeroize();
         return Err(pyo3::exceptions::PyValueError::new_err(
             crate::detail::arg_len("device_uuid", 16, device_uuid.len()),
         ));
     }
 
-    let folder_str = std::str::from_utf8(folder_path).map_err(|_| {
-        password.zeroize();
-        pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8")
-    })?;
+    let folder_str = std::str::from_utf8(folder_path)
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8"))?;
     let folder = std::path::Path::new(folder_str);
 
     // SAFETY: length checked above; unwrap cannot panic here.
     let uuid_arr: [u8; 16] = device_uuid.try_into().expect("length checked above");
     let approvals = bridge_approvals(approvals);
 
-    let result = secretary_ffi_bridge::repair_vault_with_password(
-        folder, &password, &uuid_arr, now_ms, &approvals,
+    let bridge_out = secretary_ffi_bridge::repair_vault_with_password(
+        folder,
+        password.expose(),
+        &uuid_arr,
+        now_ms,
+        &approvals,
     )
-    .map_err(ffi_vault_error_to_pyerr);
-    password.zeroize();
-
-    let bridge_out = result?;
+    .map_err(ffi_vault_error_to_pyerr)?;
     let secretary_ffi_bridge::OpenVaultOutput { identity, manifest } = bridge_out;
     Ok(OpenVaultOutput::from_bridge(
         UnlockedIdentity(identity),
@@ -208,7 +220,8 @@ pub(crate) fn repair_with_password(
 ///
 /// - `folder_path` — UTF-8 path to the vault directory as raw bytes.
 /// - `mnemonic` — UTF-8-encoded recovery phrase as raw bytes (owned;
-///   zeroized after the bridge call returns on all paths).
+///   wrapped in a `SecretBytes` at function entry so it is wiped on every
+///   exit path, panic included — #513).
 /// - `device_uuid` — 16-byte device UUID. `ValueError` if not exactly 16
 ///   bytes.
 /// - `now_ms` — caller-supplied wall-clock milliseconds for the repair's
@@ -225,38 +238,40 @@ pub(crate) fn repair_with_password(
 ///   length.
 #[pyfunction]
 #[pyo3(signature = (folder_path, mnemonic, device_uuid, now_ms, approvals=None))]
-#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required for zeroize discipline
+#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required to move into SecretBytes
 pub(crate) fn repair_with_recovery(
     folder_path: &[u8],
-    mut mnemonic: Vec<u8>,
+    mnemonic: Vec<u8>,
     device_uuid: &[u8],
     now_ms: u64,
     approvals: Option<Vec<ApprovedWidening>>,
 ) -> PyResult<OpenVaultOutput> {
+    // Wrapped immediately so `Drop` covers the wipe on every exit path,
+    // including an unwinding panic inside the bridge call (#513).
+    let mnemonic = SecretBytes::new(mnemonic);
+
     if device_uuid.len() != 16 {
-        mnemonic.zeroize();
         return Err(pyo3::exceptions::PyValueError::new_err(
             crate::detail::arg_len("device_uuid", 16, device_uuid.len()),
         ));
     }
 
-    let folder_str = std::str::from_utf8(folder_path).map_err(|_| {
-        mnemonic.zeroize();
-        pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8")
-    })?;
+    let folder_str = std::str::from_utf8(folder_path)
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8"))?;
     let folder = std::path::Path::new(folder_str);
 
     // SAFETY: length checked above; unwrap cannot panic here.
     let uuid_arr: [u8; 16] = device_uuid.try_into().expect("length checked above");
     let approvals = bridge_approvals(approvals);
 
-    let result = secretary_ffi_bridge::repair_vault_with_recovery(
-        folder, &mnemonic, &uuid_arr, now_ms, &approvals,
+    let bridge_out = secretary_ffi_bridge::repair_vault_with_recovery(
+        folder,
+        mnemonic.expose(),
+        &uuid_arr,
+        now_ms,
+        &approvals,
     )
-    .map_err(ffi_vault_error_to_pyerr);
-    mnemonic.zeroize();
-
-    let bridge_out = result?;
+    .map_err(ffi_vault_error_to_pyerr)?;
     let secretary_ffi_bridge::OpenVaultOutput { identity, manifest } = bridge_out;
     Ok(OpenVaultOutput::from_bridge(
         UnlockedIdentity(identity),
@@ -271,12 +286,20 @@ pub(crate) fn repair_with_recovery(
 /// - `folder_path` — UTF-8 path to the vault directory as raw bytes.
 /// - `device_uuid` — the 16-byte device UUID (also selects the
 ///   `devices/<uuid>.wrap` slot). `ValueError` if not exactly 16 bytes.
-/// - `device_secret` — the 32-byte device secret (owned; zeroized on all
-///   paths, including the `[u8; 32]` stack-copy). `ValueError` if not
-///   exactly 32 bytes.
+/// - `device_secret` — the 32-byte device secret (owned). `ValueError` if
+///   not exactly 32 bytes.
 /// - `now_ms` — caller-supplied wall-clock milliseconds for the repair's
 ///   freshness gate.
 /// - `approvals` — see [`repair_with_password`].
+///
+/// # Caller zeroize
+///
+/// `device_secret` is wrapped in a `SecretBytes` at function entry, and
+/// the 32-byte array built from it is a `Sensitive<[u8; 32]>` via
+/// [`array32_into_or_value_error`](crate::errors::array32_into_or_value_error).
+/// `Drop` covers the wipe of both on every exit path — normal return, an
+/// early `ValueError`, or an unwinding panic inside the bridge call
+/// (#513) — with no manual `.zeroize()` call anywhere in this function.
 ///
 /// # Raises
 ///
@@ -288,61 +311,55 @@ pub(crate) fn repair_with_recovery(
 ///   `device_secret` wrong length.
 #[pyfunction]
 #[pyo3(signature = (folder_path, device_uuid, device_secret, now_ms, approvals=None))]
-#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required for zeroize discipline
+#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required to move into SecretBytes
 pub(crate) fn repair_with_device_secret(
     folder_path: &[u8],
     device_uuid: &[u8],
-    mut device_secret: Vec<u8>,
+    device_secret: Vec<u8>,
     now_ms: u64,
     approvals: Option<Vec<ApprovedWidening>>,
 ) -> PyResult<OpenVaultOutput> {
-    // Length pre-checks: zeroize device_secret before every early return.
+    // Wrapped immediately, before any validation, so `Drop` covers the
+    // wipe on every exit path (mirrors `device::open_with_device_secret`'s
+    // wrap-and-Sensitive shape). Unlike that function, this one never had
+    // the len()-after-wipe bug: the pre-#513 version here already captured
+    // `device_secret.len()` into `got` BEFORE zeroizing — `device.rs`'s own
+    // old comment cited this function as the correct model to follow.
+    let device_secret = SecretBytes::new(device_secret);
+
     if device_uuid.len() != 16 {
-        device_secret.zeroize();
         return Err(pyo3::exceptions::PyValueError::new_err(
             crate::detail::arg_len("device_uuid", 16, device_uuid.len()),
         ));
     }
-    if device_secret.len() != 32 {
-        // Capture the length BEFORE zeroize(): `Vec::zeroize()` calls
-        // `self.clear()` (zeroize crate's Vec impl), so reading
-        // `device_secret.len()` after zeroizing would always report 0
-        // rather than the actual wrong length.
-        let got = device_secret.len();
-        device_secret.zeroize();
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            crate::detail::arg_len("device_secret", 32, got),
-        ));
-    }
 
-    let folder_str = std::str::from_utf8(folder_path).map_err(|_| {
-        device_secret.zeroize();
-        pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8")
+    // Same relative position as the original manual length check: after
+    // device_uuid, before the folder_path UTF-8 check. This placement is
+    // the ONLY thing preserving that order now that the check is no
+    // longer a visible `if` — pinned by `tests/test_repair.py`'s
+    // `test_repair_with_device_secret_bad_uuid_and_bad_secret_reports_uuid_first`
+    // and `test_repair_with_device_secret_bad_secret_beats_bad_folder_path`
+    // (#513).
+    let secret_arr = Sensitive::try_build([0u8; 32], |slot| {
+        array32_into_or_value_error(device_secret.expose(), slot, "device_secret")
     })?;
+
+    let folder_str = std::str::from_utf8(folder_path)
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8"))?;
     let folder = std::path::Path::new(folder_str);
 
-    // SAFETY: lengths were checked above; unwrap cannot panic here.
+    // SAFETY: length checked above; unwrap cannot panic here.
     let uuid_arr: [u8; 16] = device_uuid.try_into().expect("length checked above");
-    let mut secret_arr: [u8; 32] = device_secret
-        .as_slice()
-        .try_into()
-        .expect("length checked above");
     let approvals = bridge_approvals(approvals);
 
-    let result = secretary_ffi_bridge::repair_vault_with_device_secret(
+    let bridge_out = secretary_ffi_bridge::repair_vault_with_device_secret(
         folder,
         &uuid_arr,
-        &secret_arr,
+        secret_arr.expose(),
         now_ms,
         &approvals,
     )
-    .map_err(ffi_vault_error_to_pyerr);
-
-    // Zeroize the stack copy AND the owned Vec on ALL paths.
-    secret_arr.zeroize();
-    device_secret.zeroize();
-
-    let bridge_out = result?;
+    .map_err(ffi_vault_error_to_pyerr)?;
     let secretary_ffi_bridge::OpenVaultOutput { identity, manifest } = bridge_out;
     Ok(OpenVaultOutput::from_bridge(
         UnlockedIdentity(identity),

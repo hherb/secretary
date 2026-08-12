@@ -19,9 +19,9 @@
 
 use crate::detail;
 use pyo3::prelude::*;
-use zeroize::Zeroize;
+use secretary_core::crypto::secret::{SecretBytes, Sensitive};
 
-use crate::errors::ffi_vault_error_to_pyerr;
+use crate::errors::{array32_into_or_value_error, ffi_vault_error_to_pyerr};
 
 /// One recipient a consent-eligible widening would add, projected with
 /// display-oriented hex fields. Secret-free — mirrors
@@ -114,8 +114,9 @@ impl From<secretary_ffi_bridge::FfiRepairPreview> for RepairPreview {
 /// # Inputs
 ///
 /// - `folder_path` — UTF-8 path to the vault directory as raw bytes.
-/// - `password` — master password as raw bytes (owned; zeroized after the
-///   bridge call returns on all paths).
+/// - `password` — master password as raw bytes (owned; wrapped in a
+///   `SecretBytes` at function entry so it is wiped on every exit path,
+///   panic included — #513).
 ///
 /// # Raises
 ///
@@ -125,46 +126,48 @@ impl From<secretary_ffi_bridge::FfiRepairPreview> for RepairPreview {
 /// nothing to consent to on a vault that cannot be repaired.
 /// - `ValueError` — `folder_path` not valid UTF-8.
 #[pyfunction]
-#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required for zeroize discipline
+#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required to move into SecretBytes
 pub(crate) fn preview_repair_with_password(
     folder_path: &[u8],
-    mut password: Vec<u8>,
+    password: Vec<u8>,
 ) -> PyResult<RepairPreview> {
-    let folder_str = std::str::from_utf8(folder_path).map_err(|_| {
-        password.zeroize();
-        pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8")
-    })?;
+    // Wrapped immediately so `Drop` covers the wipe on every exit path,
+    // including an unwinding panic inside the bridge call (#513).
+    let password = SecretBytes::new(password);
+
+    let folder_str = std::str::from_utf8(folder_path)
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8"))?;
     let folder = std::path::Path::new(folder_str);
 
-    let result = secretary_ffi_bridge::preview_repair_with_password(folder, &password)
-        .map_err(ffi_vault_error_to_pyerr);
-    password.zeroize();
-
-    result.map(RepairPreview::from)
+    secretary_ffi_bridge::preview_repair_with_password(folder, password.expose())
+        .map(RepairPreview::from)
+        .map_err(ffi_vault_error_to_pyerr)
 }
 
 /// Preview a crash-residue vault's consent-eligible recipient widenings
 /// using its 24-word BIP-39 recovery phrase, without writing anything.
 /// See [`preview_repair_with_password`] for the shared semantics.
 ///
-/// `mnemonic` is zeroized after the bridge call returns on all paths.
+/// `mnemonic` is wrapped in a `SecretBytes` at function entry, so it is
+/// wiped on every exit path — including an unwinding panic inside the
+/// bridge call (#513) — rather than only a trailing statement.
 #[pyfunction]
-#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required for zeroize discipline
+#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required to move into SecretBytes
 pub(crate) fn preview_repair_with_recovery(
     folder_path: &[u8],
-    mut mnemonic: Vec<u8>,
+    mnemonic: Vec<u8>,
 ) -> PyResult<RepairPreview> {
-    let folder_str = std::str::from_utf8(folder_path).map_err(|_| {
-        mnemonic.zeroize();
-        pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8")
-    })?;
+    // Wrapped immediately so `Drop` covers the wipe on every exit path,
+    // including an unwinding panic inside the bridge call (#513).
+    let mnemonic = SecretBytes::new(mnemonic);
+
+    let folder_str = std::str::from_utf8(folder_path)
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8"))?;
     let folder = std::path::Path::new(folder_str);
 
-    let result = secretary_ffi_bridge::preview_repair_with_recovery(folder, &mnemonic)
-        .map_err(ffi_vault_error_to_pyerr);
-    mnemonic.zeroize();
-
-    result.map(RepairPreview::from)
+    secretary_ffi_bridge::preview_repair_with_recovery(folder, mnemonic.expose())
+        .map(RepairPreview::from)
+        .map_err(ffi_vault_error_to_pyerr)
 }
 
 /// Preview a crash-residue vault's consent-eligible recipient widenings
@@ -172,58 +175,53 @@ pub(crate) fn preview_repair_with_recovery(
 /// See [`preview_repair_with_password`] for the shared semantics.
 ///
 /// `device_uuid` must be exactly 16 bytes; `device_secret` must be
-/// exactly 32 bytes (owned; zeroized on all paths, including the
-/// `[u8; 32]` stack copy).
+/// exactly 32 bytes (owned; wrapped in a `SecretBytes`/`Sensitive<[u8;
+/// 32]>` pair at construction so both are wiped on every exit path,
+/// panic included — #513).
 ///
 /// # Raises
 ///
 /// - `ValueError` — `folder_path` not valid UTF-8, or `device_uuid` /
 ///   `device_secret` wrong length.
 #[pyfunction]
-#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required for zeroize discipline
+#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required to move into SecretBytes
 pub(crate) fn preview_repair_with_device_secret(
     folder_path: &[u8],
     device_uuid: &[u8],
-    mut device_secret: Vec<u8>,
+    device_secret: Vec<u8>,
 ) -> PyResult<RepairPreview> {
+    // Wrapped immediately, before any validation, so `Drop` covers the
+    // wipe on every exit path (mirrors `device::open_with_device_secret`'s
+    // wrap-and-Sensitive shape). Unlike that function, this one never had
+    // the len()-after-wipe bug: the pre-#513 version here already captured
+    // `device_secret.len()` into `got` BEFORE zeroizing.
+    let device_secret = SecretBytes::new(device_secret);
+
     if device_uuid.len() != 16 {
-        device_secret.zeroize();
         return Err(pyo3::exceptions::PyValueError::new_err(
             crate::detail::arg_len("device_uuid", 16, device_uuid.len()),
         ));
     }
-    if device_secret.len() != 32 {
-        // Capture the length BEFORE zeroize(): `Vec::zeroize()` calls
-        // `self.clear()`, so reading `device_secret.len()` after
-        // zeroizing would always report 0 rather than the actual wrong
-        // length (mirrors `repair::repair_with_device_secret`).
-        let got = device_secret.len();
-        device_secret.zeroize();
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            crate::detail::arg_len("device_secret", 32, got),
-        ));
-    }
 
-    let folder_str = std::str::from_utf8(folder_path).map_err(|_| {
-        device_secret.zeroize();
-        pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8")
+    // Same relative position as the original manual length check: after
+    // device_uuid, before the folder_path UTF-8 check. This placement is
+    // the ONLY thing preserving that order now that the check is no
+    // longer a visible `if` — pinned by `tests/test_repair.py`'s
+    // `test_preview_repair_with_device_secret_bad_uuid_and_bad_secret_reports_uuid_first`
+    // and `test_preview_repair_with_device_secret_bad_secret_beats_bad_folder_path`
+    // (#513).
+    let secret_arr = Sensitive::try_build([0u8; 32], |slot| {
+        array32_into_or_value_error(device_secret.expose(), slot, "device_secret")
     })?;
+
+    let folder_str = std::str::from_utf8(folder_path)
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8"))?;
     let folder = std::path::Path::new(folder_str);
 
-    // SAFETY: lengths were checked above; unwrap cannot panic here.
+    // SAFETY: length checked above; unwrap cannot panic here.
     let uuid_arr: [u8; 16] = device_uuid.try_into().expect("length checked above");
-    let mut secret_arr: [u8; 32] = device_secret
-        .as_slice()
-        .try_into()
-        .expect("length checked above");
 
-    let result =
-        secretary_ffi_bridge::preview_repair_with_device_secret(folder, &uuid_arr, &secret_arr)
-            .map_err(ffi_vault_error_to_pyerr);
-
-    // Zeroize the stack copy AND the owned Vec on ALL paths.
-    secret_arr.zeroize();
-    device_secret.zeroize();
-
-    result.map(RepairPreview::from)
+    secretary_ffi_bridge::preview_repair_with_device_secret(folder, &uuid_arr, secret_arr.expose())
+        .map(RepairPreview::from)
+        .map_err(ffi_vault_error_to_pyerr)
 }

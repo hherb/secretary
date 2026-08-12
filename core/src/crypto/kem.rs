@@ -235,7 +235,9 @@ pub fn transcript(
 /// - `info` is [`TAG_BLOCK_CONTENT_KEY_WRAP`] `|| transcript`.
 ///
 /// The intermediate `ikm` buffer contains both shared secrets in cleartext
-/// and is zeroized after the HKDF call returns.
+/// while it is built; it is then moved into a [`SecretBytes`] before the
+/// HKDF call runs, so it wipes on drop regardless of whether that call
+/// returns normally or unwinds (#513).
 #[must_use]
 pub fn derive_wrap_key(
     ss_x: &Sensitive<[u8; X25519_SS_LEN]>,
@@ -246,7 +248,7 @@ pub fn derive_wrap_key(
     recipient_pk_bundle: &[u8],
     transcript_hash: &[u8; 32],
 ) -> AeadKey {
-    let mut ikm = Vec::with_capacity(
+    let mut ikm_buf = Vec::with_capacity(
         X25519_SS_LEN
             + ML_KEM_768_SS_LEN
             + X25519_PK_LEN
@@ -254,19 +256,24 @@ pub fn derive_wrap_key(
             + sender_pk_bundle.len()
             + recipient_pk_bundle.len(),
     );
-    ikm.extend_from_slice(ss_x.expose());
-    ikm.extend_from_slice(ss_pq.expose());
-    ikm.extend_from_slice(ct_x);
-    ikm.extend_from_slice(ct_pq);
-    ikm.extend_from_slice(sender_pk_bundle);
-    ikm.extend_from_slice(recipient_pk_bundle);
+    ikm_buf.extend_from_slice(ss_x.expose());
+    ikm_buf.extend_from_slice(ss_pq.expose());
+    ikm_buf.extend_from_slice(ct_x);
+    ikm_buf.extend_from_slice(ct_pq);
+    ikm_buf.extend_from_slice(sender_pk_bundle);
+    ikm_buf.extend_from_slice(recipient_pk_bundle);
+    // `ikm` holds both KEM shared secrets in cleartext, live across the HKDF
+    // call below; wrap it BEFORE that call so an unwinding panic inside
+    // `hkdf_sha256_extract_and_expand` (its own internal `.expect()`, see
+    // that function's doc comment) still wipes it via `Drop`, rather than
+    // relying on a trailing `ikm.zeroize()` a panic would skip (#513).
+    let ikm = SecretBytes::new(ikm_buf);
 
     let mut info = Vec::with_capacity(TAG_BLOCK_CONTENT_KEY_WRAP.len() + 32);
     info.extend_from_slice(TAG_BLOCK_CONTENT_KEY_WRAP);
     info.extend_from_slice(transcript_hash);
 
-    let mut okm = hkdf_sha256_extract_and_expand(TAG_HYBRID_KEM, &ikm, &info, 32);
-    ikm.zeroize();
+    let mut okm = hkdf_sha256_extract_and_expand(TAG_HYBRID_KEM, ikm.expose(), &info, 32);
 
     let mut key = [0u8; 32];
     key.copy_from_slice(&okm);

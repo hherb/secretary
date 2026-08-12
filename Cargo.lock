@@ -4038,7 +4038,6 @@ dependencies = [
  "pyo3",
  "secretary-core",
  "secretary-ffi-bridge",
- "zeroize",
 ]
 
 [[package]]
@@ -4052,7 +4051,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "uniffi",
- "zeroize",
 ]
 
 [[package]]

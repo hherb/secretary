@@ -139,6 +139,55 @@ def test_open_wrong_length_secret_raises_value_error(tmp_path: Path) -> None:
     assert "got 31" in str(exc_info.value)
 
 
+def test_open_bad_uuid_and_bad_secret_reports_uuid_first(tmp_path: Path) -> None:
+    """Precedence pin (#513 Task 8): ``device_uuid`` is checked BEFORE
+    ``device_secret``.
+
+    In the Rust source, the ``device_secret`` length check used to be a
+    visible ``if device_secret.len() != 32`` sitting at the second position
+    in ``open_with_device_secret``. #513 replaced it with a
+    ``Sensitive::try_build`` call built from the already-wrapped
+    ``SecretBytes`` (so `Drop` covers the wipe on every exit path,
+    including an unwinding panic) — the length check now lives *inside*
+    that call. Nothing enforces its position relative to the
+    ``device_uuid`` check except where the call is written in the
+    function body; a future "wrap everything at entry" refactor could
+    silently move it and flip which exception a caller sees. This test
+    passes both a wrong-length ``device_uuid`` (15 bytes) and a
+    wrong-length ``device_secret`` (31 bytes) and asserts the *content* of
+    the resulting message names only ``device_uuid`` — type-only
+    assertions (``pytest.raises(ValueError)``) would pass regardless of
+    which field the message names.
+    """
+    vault = _fresh_writable_vault(tmp_path)
+    with pytest.raises(ValueError) as exc_info:
+        secretary_ffi_py.open_with_device_secret(
+            str(vault).encode(),
+            bytes(15),   # wrong length — must be 16
+            bytes(31),   # also wrong length — must be 32
+        )
+    message = str(exc_info.value)
+    assert "device_uuid" in message
+    assert "device_secret" not in message
+
+
+def test_open_bad_secret_beats_bad_folder_path(tmp_path: Path) -> None:
+    """Precedence pin (#513 Task 8): ``device_secret`` is checked BEFORE
+    ``folder_path``'s UTF-8 validation. A correct-length ``device_uuid``
+    with a wrong-length ``device_secret`` AND invalid-UTF-8 ``folder_path``
+    must report the secret, not the path — asserted on message content for
+    the same reason as the sibling precedence test above."""
+    with pytest.raises(ValueError) as exc_info:
+        secretary_ffi_py.open_with_device_secret(
+            b"\xff\xfe",  # invalid UTF-8 — would fail the folder_path check
+            bytes(16),
+            bytes(31),    # wrong length — must be 32
+        )
+    message = str(exc_info.value)
+    assert "device_secret" in message
+    assert "folder_path" not in message
+
+
 def test_remove_twice_raises_device_slot_not_found(tmp_path: Path) -> None:
     """Enrol a slot, remove it once (OK), remove again → VaultDeviceSlotNotFound."""
     vault = _fresh_writable_vault(tmp_path)

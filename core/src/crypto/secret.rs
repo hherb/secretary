@@ -179,6 +179,74 @@ impl<T: Zeroize> Sensitive<T> {
     pub fn expose(&self) -> &T {
         &self.inner
     }
+
+    /// Build a secret by filling a zeroed slot **in place**.
+    ///
+    /// The wrapper is constructed *before* `f` runs, so the value is live —
+    /// and therefore `ZeroizeOnDrop`-covered — for the whole fill. An
+    /// unwinding panic inside `f` drops it and wipes.
+    ///
+    /// Prefer this over `let mut buf = …; fill(&mut buf); let s =
+    /// Sensitive::new(buf); buf.zeroize();`, where the trailing wipe is a
+    /// separate statement that a panic can skip (#513).
+    ///
+    /// # Security
+    ///
+    /// `f` receives `&mut T`. A closure that moves the secret out — e.g. via
+    /// `std::mem::swap` or `std::mem::replace` — defeats the wipe, because
+    /// the wrapper would then zeroize whatever was swapped in. This borrow is
+    /// deliberately scoped to one expression at the call site rather than
+    /// exposed as a method on the type; every closure written here is a
+    /// review point. See the design spec §2.2.
+    ///
+    /// The borrow itself cannot outlive the call — its lifetime is
+    /// higher-ranked, so stashing `slot` in an outer variable is `E0521`,
+    /// which is the property this constructor buys over a hypothetical
+    /// `expose_mut()`. Only the move-out family above evades it.
+    ///
+    /// ```compile_fail
+    /// # use secretary_core::crypto::secret::Sensitive;
+    /// // E0521: borrowed data escapes outside of closure.
+    /// let mut escaped: Option<&mut [u8; 32]> = None;
+    /// let _s = Sensitive::build([0u8; 32], |slot| escaped = Some(slot));
+    /// ```
+    ///
+    /// The companion below is identical except that it does not let the
+    /// borrow escape, and it compiles. Keep the pair together: a
+    /// `compile_fail` block passes when the code fails to build for *any*
+    /// reason, so on its own it would still "pass" if the import path or the
+    /// signature drifted, proving nothing.
+    ///
+    /// ```
+    /// # use secretary_core::crypto::secret::Sensitive;
+    /// let mut seen = 0usize;
+    /// let s = Sensitive::build([0u8; 32], |slot| { seen = slot.len(); slot[0] = 1; });
+    /// assert_eq!(seen, 32);
+    /// assert_eq!(s.expose()[0], 1);
+    /// ```
+    ///
+    /// Separately: because `f` returns `()`, a fill that silently does
+    /// nothing (`hk.expand(tag, out).ok();`, `let _ = …`) yields a
+    /// **fully-zero secret**, and `build` cannot detect it. Use
+    /// [`Sensitive::try_build`] for anything fallible so the failure
+    /// propagates instead of being wrapped.
+    #[must_use]
+    pub fn build(init: T, f: impl FnOnce(&mut T)) -> Self {
+        let mut s = Self { inner: init };
+        f(&mut s.inner);
+        s
+    }
+
+    /// Fallible sibling of [`Sensitive::build`], for fills that can fail.
+    ///
+    /// On `Err`, the partially-filled wrapper is dropped — and wiped — before
+    /// the error propagates, so an early `?` leaves no residue. Carries the
+    /// same `&mut` caveat as [`Sensitive::build`].
+    pub fn try_build<E>(init: T, f: impl FnOnce(&mut T) -> Result<(), E>) -> Result<Self, E> {
+        let mut s = Self { inner: init };
+        f(&mut s.inner)?;
+        Ok(s)
+    }
 }
 
 impl<T: Zeroize> fmt::Debug for Sensitive<T> {

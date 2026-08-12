@@ -261,8 +261,14 @@ Three sites worth flagging for contributors modifying the bridge:
    owns the residual) or passes through to a Rust-side
    `Sensitive::new(...)` construction. Sites where future bridge work
    might need to copy secret bytes between the inner `Sensitive` and
-   a new Rust-side `Sensitive` should follow the
-   `bind → wrap → zeroize` pattern verbatim.
+   a new Rust-side `Sensitive` should wrap the destination slot BEFORE
+   filling it — `Sensitive::build` / `Sensitive::try_build` — rather than
+   following the older `bind → wrap → zeroize` pattern verbatim. That
+   pattern's trailing wipe is skipped by an unwinding panic and by an
+   early `?` after the fill (#513, 2026-08-11), which is exactly the
+   shape a bridge call has; it remains correct only where the fill is
+   provably adjacent to the wrap. The "Adding a new bridge handle"
+   checklist below is updated to match.
 
 ---
 
@@ -475,6 +481,19 @@ the compiler; it's enforced by review.
    `ffi/secretary-ffi-bridge/tests/`** that exercises the
    wipe + use-after-wipe path against `golden_vault_001` (or
    `golden_vault_002`).
+8. **Wrap any secret-bearing local BEFORE the call that could panic**
+   (#513, 2026-08-11). If the handle's implementation builds a secret
+   stack slot — a `[u8; 32]` device secret, a password copy, a decoded
+   key — construct it with `Sensitive::build` / `Sensitive::try_build`,
+   or move it into `SecretBytes` / `SecretString` before any fallible or
+   panicking call, so `Drop` covers the unwind and `?` paths. Do **not**
+   write `let mut buf = ...; let s = Sensitive::new(buf); buf.zeroize();`
+   with a bridge call, an FFI accessor, or a `?` in between — that
+   trailing wipe is exactly what an unwinding panic skips. Both FFI
+   boundaries catch unwinds rather than aborting (uniffi
+   `rustcalls.rs`, pyo3 `trampoline.rs`), so the process survives to
+   reuse the stack. The older `bind → wrap → zeroize` form stays correct
+   only where the fill is provably adjacent to the wrap.
 
 ---
 

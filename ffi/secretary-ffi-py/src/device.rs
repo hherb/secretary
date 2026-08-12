@@ -15,12 +15,30 @@
 //! # Zeroize discipline
 //!
 //! - `password` / `device_secret` are owned `Vec<u8>` inputs; the wrapper
-//!   zeroizes them on ALL paths (including early `ValueError` returns) before
-//!   returning.  This matches the `open_with_password` / `open_vault_with_password`
+//!   moves each into `SecretBytes` immediately at function entry, before
+//!   any validation runs. `Drop` then covers the wipe on every exit path,
+//!   including an unwinding panic inside the bridge call (#513), rather
+//!   than relying on a trailing `.zeroize()` statement control flow could
+//!   skip. This matches the `open_with_password` / `open_vault_with_password`
 //!   patterns in [`crate::unlock`] and [`crate::vault`].
-//! - For `open_with_device_secret` the `[u8; 32]` stack-copy from the
-//!   `try_into()` conversion is also zeroized explicitly (it is `Copy`, so
-//!   the `Vec<u8>` zeroize leaves a residue in the array).
+//! - For `open_with_device_secret` the 32-byte stack copy is a separate
+//!   `Sensitive<[u8; 32]>`, built from the already-wrapped `SecretBytes` via
+//!   `array32_into_or_value_error` at the point the length check used to sit
+//!   (**not** at function entry — see that function's own doc comment for
+//!   the exact position, which the precedence tests in
+//!   `tests/test_device_slot.py` pin).
+//! - This also structurally prevents, **in this shape**, a bug class the
+//!   function used to carry: reading `device_secret.len()` for a
+//!   `ValueError` message AFTER a manual `.zeroize()` call always reported
+//!   "got 0", since `Vec::zeroize()` clears the vector. `SecretBytes`
+//!   itself still derives `Zeroize` (re-exported at
+//!   `core/src/crypto/secret.rs:15`), so calling `.zeroize()` on it before
+//!   reading its length would reproduce the same class — the guarantee is
+//!   that nothing in this function does that, not that the type makes it
+//!   impossible. `errors.rs`'s
+//!   `array32_into_writes_through_and_rejects_wrong_length` test pins the
+//!   reported length against a non-zero sentinel, which is the stronger,
+//!   checked claim.
 //!
 //! # Context-manager protocol
 //!
@@ -31,9 +49,9 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyType};
-use zeroize::Zeroize;
+use secretary_core::crypto::secret::{SecretBytes, Sensitive};
 
-use crate::errors::ffi_vault_error_to_pyerr;
+use crate::errors::{array32_into_or_value_error, ffi_vault_error_to_pyerr};
 use crate::identity::UnlockedIdentity;
 use crate::vault::{OpenVaultManifest, OpenVaultOutput};
 
@@ -55,12 +73,15 @@ impl DeviceSecretOutput {
     /// is responsible for zeroizing it after delivering it to the Secure
     /// Enclave / biometric release layer.
     fn take_secret<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
-        self.0.take_secret().map(|mut v| {
-            // PyBytes::new copies into Python-owned memory; zeroize our transient
-            // Rust copy so the device secret does not linger in freed heap (#360).
-            let b = PyBytes::new(py, &v);
-            v.zeroize();
-            b
+        self.0.take_secret().map(|v| {
+            // PyBytes::new copies into Python-owned memory, but it also
+            // documents "Panics if out of memory" (pyo3 0.29
+            // src/types/bytes.rs:76) — a genuine unwinding panic between a
+            // fill and a trailing `.zeroize()` that the old shape left
+            // open (#513). Wrapping BEFORE the call means `Drop` covers
+            // the wipe on every exit path, panic included.
+            let v = SecretBytes::new(v);
+            PyBytes::new(py, v.expose())
         })
     }
 
@@ -165,21 +186,21 @@ impl DeviceEnrollOutput {
 /// - `VaultFolderInvalid` — folder doesn't exist or is missing required files.
 /// - `ValueError` — `folder_path` is not valid UTF-8.
 #[pyfunction]
-#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required for zeroize discipline
+#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required to move into SecretBytes
 pub(crate) fn add_device_slot(
     folder_path: &[u8],
-    mut password: Vec<u8>,
+    password: Vec<u8>,
 ) -> PyResult<DeviceEnrollOutput> {
-    let folder_str = std::str::from_utf8(folder_path).map_err(|_| {
-        password.zeroize();
-        pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8")
-    })?;
+    // Wrapped immediately so `Drop` covers the wipe on every exit path,
+    // including an unwinding panic inside the bridge call (#513).
+    let password = SecretBytes::new(password);
+
+    let folder_str = std::str::from_utf8(folder_path)
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8"))?;
     let folder = std::path::Path::new(folder_str);
 
-    let result =
-        secretary_ffi_bridge::add_device_slot(folder, &password).map_err(ffi_vault_error_to_pyerr);
-    password.zeroize();
-    let bridge_out = result?;
+    let bridge_out = secretary_ffi_bridge::add_device_slot(folder, password.expose())
+        .map_err(ffi_vault_error_to_pyerr)?;
 
     Ok(DeviceEnrollOutput {
         device_uuid: bridge_out.device_uuid,
@@ -199,14 +220,17 @@ pub(crate) fn add_device_slot(
 ///
 /// - `device_uuid` must be exactly 16 bytes → `ValueError` if not.
 /// - `device_secret` must be exactly 32 bytes → `ValueError` if not.
-///   Both checks zeroize `device_secret` before returning.
 ///
 /// # Caller zeroize
 ///
-/// `device_secret` is owned bytes; the wrapper zeroizes the `Vec<u8>` AND
-/// the `[u8; 32]` stack-copy on ALL return paths (including early `ValueError`
-/// paths). The `[u8; 32]` is `Copy`, so the `Vec<u8>` zeroize alone would
-/// leave a residue; both are zeroized explicitly.
+/// `device_secret` is owned bytes; the wrapper moves it into a
+/// `SecretBytes` at function entry, before either length check runs, and
+/// the 32-byte stack copy is built via [`Sensitive::try_build`] +
+/// [`array32_into_or_value_error`] rather than a bare `[u8; 32]` +
+/// trailing `.zeroize()`. `Drop` therefore covers the wipe of both on
+/// every exit path — normal return, an early `ValueError`, or an
+/// unwinding panic inside the bridge call (#513) — with no manual
+/// `.zeroize()` call anywhere in this function.
 ///
 /// # Raises
 ///
@@ -218,56 +242,56 @@ pub(crate) fn add_device_slot(
 /// - `VaultFolderInvalid` — folder doesn't exist or is missing required files.
 /// - `ValueError` — `folder_path` not valid UTF-8, or UUID / secret wrong length.
 #[pyfunction]
-#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required for zeroize discipline
+#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required to move into SecretBytes
 pub(crate) fn open_with_device_secret(
     folder_path: &[u8],
     device_uuid: &[u8],
-    mut device_secret: Vec<u8>,
+    device_secret: Vec<u8>,
 ) -> PyResult<OpenVaultOutput> {
-    // Length pre-checks: zeroize device_secret before every early return.
+    // Wrapped immediately, before any validation, so `Drop` covers the
+    // wipe on every exit path. This also structurally retires, IN THIS
+    // SHAPE, a bug this function used to carry: a previous version read
+    // `device_secret.len()` for the ValueError message AFTER manually
+    // zeroizing it (`Vec::zeroize()` calls `self.clear()`), so a
+    // wrong-length secret always reported "got 0" regardless of what was
+    // actually received. With no manual wipe preceding any read, that
+    // ordering mistake cannot recur here — though `SecretBytes` still
+    // derives `Zeroize`, so a future edit that explicitly wipes it before
+    // reading its length would reintroduce the same class. See
+    // `errors.rs`'s `array32_into_writes_through_and_rejects_wrong_length`
+    // test, which pins the reported length against a non-zero sentinel.
+    let device_secret = SecretBytes::new(device_secret);
+
     if device_uuid.len() != 16 {
-        device_secret.zeroize();
         return Err(pyo3::exceptions::PyValueError::new_err(
             crate::detail::arg_len("device_uuid", 16, device_uuid.len()),
         ));
     }
-    if device_secret.len() != 32 {
-        // Capture the length BEFORE zeroize(): `Vec::zeroize()` calls
-        // `self.clear()` (zeroize crate's Vec impl), so reading
-        // `device_secret.len()` after zeroizing would always report 0
-        // rather than the actual wrong length (mirrors
-        // `repair::repair_with_device_secret`). This was a live bug here —
-        // the previous version read `device_secret.len()` for the message
-        // AFTER zeroizing, so a wrong-length `device_secret` always
-        // reported "got 0" regardless of what was actually received.
-        let got = device_secret.len();
-        device_secret.zeroize();
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            crate::detail::arg_len("device_secret", 32, got),
-        ));
-    }
 
-    let folder_str = std::str::from_utf8(folder_path).map_err(|_| {
-        device_secret.zeroize();
-        pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8")
+    // Same relative position as the original manual length check: after
+    // device_uuid, before the folder_path UTF-8 check. The length
+    // validation and the array fill happen together here —
+    // `array32_into_or_value_error` reports the actual wrong length
+    // (never a post-wipe zero) because nothing has zeroized `device_secret`
+    // by the time it reads it. This placement is the ONLY thing preserving
+    // that order now that the check is no longer a visible `if` — pinned by
+    // `tests/test_device_slot.py`'s
+    // `test_open_bad_uuid_and_bad_secret_reports_uuid_first` and
+    // `test_open_bad_secret_beats_bad_folder_path` (#513).
+    let secret_arr = Sensitive::try_build([0u8; 32], |slot| {
+        array32_into_or_value_error(device_secret.expose(), slot, "device_secret")
     })?;
+
+    let folder_str = std::str::from_utf8(folder_path)
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("folder_path must be valid UTF-8"))?;
     let folder = std::path::Path::new(folder_str);
 
-    // SAFETY: lengths were checked above; unwrap cannot panic here.
+    // SAFETY: length checked above; unwrap cannot panic here.
     let uuid_arr: [u8; 16] = device_uuid.try_into().expect("length checked above");
-    let mut secret_arr: [u8; 32] = device_secret
-        .as_slice()
-        .try_into()
-        .expect("length checked above");
 
-    let result = secretary_ffi_bridge::open_with_device_secret(folder, &uuid_arr, &secret_arr)
-        .map_err(ffi_vault_error_to_pyerr);
-
-    // Zeroize the stack copy AND the owned Vec on ALL paths.
-    secret_arr.zeroize();
-    device_secret.zeroize();
-
-    let bridge_out = result?;
+    let bridge_out =
+        secretary_ffi_bridge::open_with_device_secret(folder, &uuid_arr, secret_arr.expose())
+            .map_err(ffi_vault_error_to_pyerr)?;
     let secretary_ffi_bridge::OpenVaultOutput { identity, manifest } = bridge_out;
     Ok(OpenVaultOutput::from_bridge(
         UnlockedIdentity(identity),
