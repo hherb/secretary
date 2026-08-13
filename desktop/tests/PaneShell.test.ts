@@ -67,6 +67,26 @@ describe('PaneShell — splitters are accessible', () => {
     const { getAllByRole } = renderShell(true);
     expect(getAllByRole('separator')).toHaveLength(1);
   });
+
+  it('exposes aria-valuenow reflecting the pane width, and it updates on resize', async () => {
+    // A FOCUSABLE separator is a widget under WAI-ARIA, not a static
+    // divider, so it must expose its current position (#526 review). Derive
+    // the expected value from the rendered CSS var rather than hardcoding a
+    // default percentage, since localStorage state can carry over between
+    // tests in this file.
+    const { getByRole, container } = renderShell();
+    const shell = container.querySelector('.pane-shell') as HTMLElement;
+    const separator = getByRole('separator', { name: /sidebar/i });
+
+    const initialPct = parseFloat(shell.style.getPropertyValue('--pane-sidebar-w'));
+    expect(separator.getAttribute('aria-valuenow')).toBe(String(Math.round(initialPct)));
+    expect(separator.getAttribute('aria-valuemin')).toBe('0');
+    expect(separator.getAttribute('aria-valuemax')).toBe('100');
+
+    await fireEvent.keyDown(separator, { key: 'ArrowRight' });
+    const afterPct = parseFloat(shell.style.getPropertyValue('--pane-sidebar-w'));
+    expect(separator.getAttribute('aria-valuenow')).toBe(String(Math.round(afterPct)));
+  });
 });
 
 describe('PaneShell — keyboard resize', () => {
@@ -95,5 +115,26 @@ describe('PaneShell — keyboard resize', () => {
     const before = shell.style.getPropertyValue('--pane-sidebar-w');
     await fireEvent.keyDown(getByRole('separator', { name: /sidebar/i }), { key: 'a' });
     expect(shell.style.getPropertyValue('--pane-sidebar-w')).toBe(before);
+  });
+
+  it('keeps aria-valuenow within 0-100 under many repeated presses in the zero-width (jsdom) path', async () => {
+    // jsdom always reports a zero-width container, so every keydown here
+    // takes onSplitterKeydown's fallback percentage-step branch — the one
+    // the #526 review found unclamped. 60 presses (120 percentage points)
+    // overshoots either bound from any starting percentage, in both
+    // directions, so the exact 0 / 100 landing proves the clamp rather than
+    // merely "didn't blow up".
+    const { getByRole } = renderShell();
+    const separator = getByRole('separator', { name: /sidebar/i });
+
+    for (let i = 0; i < 60; i++) {
+      await fireEvent.keyDown(separator, { key: 'ArrowLeft' });
+    }
+    expect(Number(separator.getAttribute('aria-valuenow'))).toBe(0);
+
+    for (let i = 0; i < 60; i++) {
+      await fireEvent.keyDown(separator, { key: 'ArrowRight' });
+    }
+    expect(Number(separator.getAttribute('aria-valuenow'))).toBe(100);
   });
 });

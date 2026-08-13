@@ -67,7 +67,13 @@
     // the keyboard path stays exercisable in tests and on a not-yet-laid-out
     // first frame.
     if (width <= 0) {
-      const next = (pane === 'sidebar' ? sidebarPct : listPct) + direction * KEYBOARD_STEP_PCT;
+      // Clamped to 0-100: this value feeds aria-valuenow directly, and an
+      // out-of-range percentage there would be as incoherent to assistive
+      // tech as an out-of-range pixel width would be visually.
+      const next = Math.min(
+        100,
+        Math.max(0, (pane === 'sidebar' ? sidebarPct : listPct) + direction * KEYBOARD_STEP_PCT)
+      );
       if (pane === 'sidebar') sidebarPct = next;
       else listPct = next;
       saveFraction(localStorage, pane, next / 100);
@@ -110,12 +116,22 @@
   <!-- Custom-widget separator: WAI-ARIA has no native interactive element
        for a resizable splitter, so the recommended pattern is `role="separator"`
        (a noninteractive role by default) plus a keyboard handler and
-       `tabindex="0"` — exactly what trips this heuristic. -->
+       `tabindex="0"` — exactly what trips this heuristic. A FOCUSABLE
+       separator is a widget, not a static divider, so it must also expose
+       its current position: aria-valuenow tracks sidebarPct (already
+       $state, so this is reactive for free). The min/max are the honest
+       0-100 percentage range rather than a computed achievable range —
+       the true bounds depend on a container width that isn't measurable
+       on the first frame or in jsdom, and a wrong or NaN bound would be
+       worse than a wider-than-strictly-true one. -->
   <div
     class="pane-shell__splitter"
     role="separator"
     aria-orientation="vertical"
     aria-label="Resize sidebar"
+    aria-valuenow={Math.round(sidebarPct)}
+    aria-valuemin="0"
+    aria-valuemax="100"
     tabindex="0"
     onkeydown={(e) => onSplitterKeydown('sidebar', e)}
     onpointerdown={(e) => onPointerDown('sidebar', e)}
@@ -128,11 +144,15 @@
   {#if !spanDetail}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <!-- See the sidebar splitter above for why aria-valuenow/min/max are here. -->
     <div
       class="pane-shell__splitter"
       role="separator"
       aria-orientation="vertical"
       aria-label="Resize record list"
+      aria-valuenow={Math.round(listPct)}
+      aria-valuemin="0"
+      aria-valuemax="100"
       tabindex="0"
       onkeydown={(e) => onSplitterKeydown('list', e)}
       onpointerdown={(e) => onPointerDown('list', e)}
