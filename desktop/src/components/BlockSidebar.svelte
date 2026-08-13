@@ -16,6 +16,14 @@
     onTrashBlock: (block: BlockSummaryDto) => void;
     onShareBlock: (block: BlockSummaryDto) => void;
     onRenameBlock: (block: BlockSummaryDto) => void;
+    /** #526 review — an editor is open in the detail pane. Every control
+        this sidebar owns goes non-interactive, mirroring RecordList's
+        freeze: before this branch, blocks were a different screen and a
+        stray click here could never discard an unsaved edit. Three panes
+        made it reachable. `ListPane.frozen` (panes.ts) is the single
+        source of truth — Vault.svelte passes it straight through rather
+        than deriving a second signal here. */
+    frozen?: boolean;
   };
   let {
     blocks,
@@ -27,7 +35,8 @@
     onOpenContacts,
     onTrashBlock,
     onShareBlock,
-    onRenameBlock
+    onRenameBlock,
+    frozen = false
   }: Props = $props();
 
   function isSelectedBlock(block: BlockSummaryDto): boolean {
@@ -36,7 +45,15 @@
 </script>
 
 <nav class="block-sidebar" aria-label="Vault blocks">
-  <button type="button" class="block-sidebar__new" onclick={onNewBlock}>+ New block</button>
+  <button
+    type="button"
+    class="block-sidebar__new"
+    class:block-sidebar__control--frozen={frozen}
+    disabled={frozen}
+    onclick={() => {
+      if (!frozen) onNewBlock();
+    }}
+  >+ New block</button>
 
   <div class="block-sidebar__count">
     {blockCount} block{blockCount === 1 ? '' : 's'}
@@ -47,6 +64,7 @@
       <BlockCard
         {block}
         selected={isSelectedBlock(block)}
+        {frozen}
         onClick={onOpenBlock}
         onTrash={onTrashBlock}
         onShare={onShareBlock}
@@ -64,18 +82,26 @@
     <button
       type="button"
       class="block-sidebar__destination"
+      class:block-sidebar__control--frozen={frozen}
       aria-label="Trash"
       aria-current={selection.kind === 'trash' ? 'true' : undefined}
-      onclick={onOpenTrash}
+      disabled={frozen}
+      onclick={() => {
+        if (!frozen) onOpenTrash();
+      }}
     >
       <Trash />Trash
     </button>
     <button
       type="button"
       class="block-sidebar__destination"
+      class:block-sidebar__control--frozen={frozen}
       aria-label="Contacts"
       aria-current={selection.kind === 'contacts' ? 'true' : undefined}
-      onclick={onOpenContacts}
+      disabled={frozen}
+      onclick={() => {
+        if (!frozen) onOpenContacts();
+      }}
     >
       <Users />Contacts
     </button>
@@ -137,5 +163,13 @@
     background: var(--color-bg-elevated);
     color: var(--color-primary);
     font-weight: 600;
+  }
+
+  /* Frozen: an editor is open. Dimmed and non-interactive, matching
+     BlockCard/RecordRow's frozen treatment so the whole sidebar reads
+     consistently with the frozen middle pane. */
+  .block-sidebar__control--frozen {
+    opacity: 0.45;
+    pointer-events: none;
   }
 </style>

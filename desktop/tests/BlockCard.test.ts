@@ -101,3 +101,50 @@ describe('BlockCard.svelte — selection (#526)', () => {
     expect(getByRole('button', { name: /rename block/i })).toBeTruthy();
   });
 });
+
+describe('BlockCard.svelte — frozen (#526 review)', () => {
+  // Mirrors RecordRow's frozen tests: an editor open in the detail pane
+  // must make the sidebar's block cards non-interactive too, so a stray
+  // click cannot silently discard an unsaved edit.
+  it('disables the card when frozen', () => {
+    const { getByRole } = render(BlockCard, {
+      props: { block: BLOCK, onClick: () => {}, frozen: true }
+    });
+    expect((getByRole('button', { name: /banking/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('does not fire onClick when frozen', async () => {
+    const onClick = vi.fn();
+    const { getByRole } = render(BlockCard, {
+      props: { block: BLOCK, onClick, frozen: true }
+    });
+    await fireEvent.click(getByRole('button', { name: /banking/i }));
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('hides Rename/Share/Trash actions when frozen', () => {
+    const { queryByRole } = render(BlockCard, {
+      props: {
+        block: BLOCK,
+        onClick: () => {},
+        onRename: () => {},
+        onShare: () => {},
+        onTrash: () => {},
+        frozen: true
+      }
+    });
+    expect(queryByRole('button', { name: /rename block/i })).toBeNull();
+    expect(queryByRole('button', { name: /share block/i })).toBeNull();
+    expect(queryByRole('button', { name: /trash block/i })).toBeNull();
+  });
+
+  it('stays interactive when not frozen', async () => {
+    const onClick = vi.fn();
+    const { getByRole } = render(BlockCard, {
+      props: { block: BLOCK, onClick, frozen: false }
+    });
+    expect((getByRole('button', { name: /banking/i }) as HTMLButtonElement).disabled).toBe(false);
+    await fireEvent.click(getByRole('button', { name: /banking/i }));
+    expect(onClick).toHaveBeenCalledWith(BLOCK);
+  });
+});

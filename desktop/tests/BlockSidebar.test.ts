@@ -97,6 +97,75 @@ describe('BlockSidebar — callbacks', () => {
     await fireEvent.click(getByRole('button', { name: 'Contacts' }));
     expect(onOpenContacts).toHaveBeenCalled();
   });
+
+  it('calls onNewBlock', async () => {
+    const onNewBlock = vi.fn();
+    const { getByRole } = render(BlockSidebar, { props: props({ kind: 'none' }, { onNewBlock }) });
+    await fireEvent.click(getByRole('button', { name: /new block/i }));
+    expect(onNewBlock).toHaveBeenCalled();
+  });
+});
+
+describe('BlockSidebar — frozen while an editor is open (#526 review)', () => {
+  // Before this branch, blocks were a different screen and a stray sidebar
+  // click could never discard an unsaved edit — this freeze restores that
+  // property now that the three panes are visible together. The in-handler
+  // guard is belt-and-braces alongside `disabled`, because jsdom's
+  // fireEvent.click does not respect the `disabled` attribute (same
+  // discipline as RecordRow's frozen tests).
+  it('does not call onOpenBlock when a block card is clicked', async () => {
+    const onOpenBlock = vi.fn();
+    const { getByRole } = render(BlockSidebar, {
+      props: props({ kind: 'none' }, { onOpenBlock, frozen: true })
+    });
+    await fireEvent.click(getByRole('button', { name: /banking/i }));
+    expect(onOpenBlock).not.toHaveBeenCalled();
+  });
+
+  it('does not call onOpenTrash when Trash is clicked', async () => {
+    const onOpenTrash = vi.fn();
+    const { getByRole } = render(BlockSidebar, {
+      props: props({ kind: 'none' }, { onOpenTrash, frozen: true })
+    });
+    await fireEvent.click(getByRole('button', { name: 'Trash' }));
+    expect(onOpenTrash).not.toHaveBeenCalled();
+  });
+
+  it('does not call onOpenContacts when Contacts is clicked', async () => {
+    const onOpenContacts = vi.fn();
+    const { getByRole } = render(BlockSidebar, {
+      props: props({ kind: 'none' }, { onOpenContacts, frozen: true })
+    });
+    await fireEvent.click(getByRole('button', { name: 'Contacts' }));
+    expect(onOpenContacts).not.toHaveBeenCalled();
+  });
+
+  it('does not call onNewBlock when "+ New block" is clicked', async () => {
+    const onNewBlock = vi.fn();
+    const { getByRole } = render(BlockSidebar, {
+      props: props({ kind: 'none' }, { onNewBlock, frozen: true })
+    });
+    await fireEvent.click(getByRole('button', { name: /new block/i }));
+    expect(onNewBlock).not.toHaveBeenCalled();
+  });
+
+  it('disables every control it owns', () => {
+    const { getByRole } = render(BlockSidebar, { props: props({ kind: 'none' }, { frozen: true }) });
+    expect((getByRole('button', { name: /new block/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((getByRole('button', { name: 'Trash' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((getByRole('button', { name: 'Contacts' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((getByRole('button', { name: /banking/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('remains fully interactive when not frozen', async () => {
+    const onOpenBlock = vi.fn();
+    const { getByRole } = render(BlockSidebar, {
+      props: props({ kind: 'none' }, { onOpenBlock, frozen: false })
+    });
+    expect((getByRole('button', { name: /banking/i }) as HTMLButtonElement).disabled).toBe(false);
+    await fireEvent.click(getByRole('button', { name: /banking/i }));
+    expect(onOpenBlock).toHaveBeenCalledWith(BLOCKS[0]);
+  });
 });
 
 describe('BlockSidebar — selection is reflected for assistive tech', () => {
