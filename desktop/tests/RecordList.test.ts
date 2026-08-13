@@ -5,16 +5,23 @@ const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
 
 import RecordList from '../src/components/RecordList.svelte';
-import type { BlockSummaryDto } from '../src/lib/ipc';
+import type { BlockSummaryDto, RecordDto } from '../src/lib/ipc';
 
 const BLOCK: BlockSummaryDto = { blockUuidHex: 'ab', blockName: 'Personal logins', createdAtMs: 1, lastModifiedMs: 2 };
 
 /** Answer both IPC calls that RecordList fires on mount: read_block (records)
  *  and block_recipients (banner). Tests that only care about one can pass an
  *  empty override for the other. Unknown commands resolve to null so that
- *  any cleanup-phase stale calls don't throw and pollute the next test. */
+ *  any cleanup-phase stale calls don't throw and pollute the next test.
+ *
+ *  `records` is typed `RecordDto[]` (not `unknown[]`) deliberately (#526):
+ *  an `unknown[]` fixture here previously bypassed RecordDto's required
+ *  `title`/`subtitle` fields entirely, so svelte-check stayed green while
+ *  a row rendered `aria-label="undefined, login record, 2 fields"` at
+ *  runtime. A real type annotation makes the next such drift a
+ *  type-checker error instead of a silent `undefined` in the DOM. */
 function bothCalls(
-  records: unknown[],
+  records: RecordDto[],
   recipients: unknown[] = [{ uuidHex: '00', kind: 'owner', displayName: null }]
 ) {
   invokeMock.mockImplementation((cmd: string) => {
@@ -29,10 +36,18 @@ describe('RecordList', () => {
 
   it('fetches read_block on mount and renders a row per record', async () => {
     bothCalls([
-      { recordUuidHex: 'cd', recordType: 'login', tags: ['work'], createdAtMs: 1, lastModMs: 2, fieldCount: 2, fields: [] }
+      {
+        recordUuidHex: 'cd', recordType: 'login', title: 'Acme Corp login', subtitle: 'alice@example.test',
+        tags: ['work'], createdAtMs: 1, lastModMs: 2, fieldCount: 2, fields: []
+      }
     ]);
     const { getByText } = render(RecordList, { props: { block: BLOCK, blockCount: 2 } });
-    await waitFor(() => expect(getByText('login')).toBeTruthy());
+    // Assert on the record's title — RecordRow renders it directly, unlike
+    // recordType, which never appears as its own text node (only folded
+    // into the row's composed aria-label). A placeholder like 'x' would
+    // pass even if the title wiring silently broke, so this uses a
+    // realistic title distinct from the block name / record type.
+    await waitFor(() => expect(getByText('Acme Corp login')).toBeTruthy());
     expect(invokeMock).toHaveBeenCalledWith('read_block', { blockUuidHex: 'ab', includeDeleted: false });
   });
 

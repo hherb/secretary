@@ -285,10 +285,14 @@ body {
 }
 
 /* Vault route */
+/* #526 — the vault route is now a full-height three-pane shell (PaneShell)
+   rather than a centered single-column list, so it fills the viewport
+   instead of being padded and width-capped. */
 .vault {
-  padding: var(--space-4);
-  max-width: 720px;
-  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
 }
 .vault__warning {
   padding: var(--space-3) var(--space-4);
@@ -305,17 +309,13 @@ body {
   font-size: var(--font-size-xs);
   opacity: 0.85;
 }
-.vault__block-count {
-  margin: var(--space-5) 0 var(--space-2);
-  font-size: var(--font-size-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+/* #526 — the empty-state prompt shown in the list/detail panes ("Select a
+   block" / "Select a record") before anything is selected. */
+.vault__pane-prompt {
+  padding: var(--space-6);
   color: var(--color-text-muted);
-}
-.vault__block-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  text-align: center;
 }
 
 /* TopBar */
@@ -1028,24 +1028,6 @@ body {
   cursor: not-allowed;
 }
 
-/* Vault trash entry — sits below "+ New block" on the blocks pane. */
-.vault__trash-entry {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  align-self: flex-start;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-elevated);
-  color: var(--color-text);
-  cursor: pointer;
-  font-size: var(--font-size-sm);
-  margin-left: var(--space-2);
-}
-.vault__trash-entry:hover {
-  background: var(--color-border);
-}
 .vault__trash-error {
   margin-top: var(--space-2);
   padding: var(--space-3);
@@ -1460,25 +1442,6 @@ body {
   color: var(--color-danger);
 }
 
-/* Vault contacts entry — sits next to the Trash button on the blocks pane. */
-.vault__contacts-entry {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  align-self: flex-start;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-elevated);
-  color: var(--color-text);
-  cursor: pointer;
-  font-size: var(--font-size-sm);
-  margin-left: var(--space-2);
-}
-.vault__contacts-entry:hover {
-  background: var(--color-border);
-}
-
 /* RecordList "Show deleted" toggle. */
 .record-list__show-deleted {
   display: flex;
@@ -1506,19 +1469,10 @@ body {
   flex-direction: column;
   gap: var(--space-2);
 }
-.field-viewer__back {
-  align-self: flex-start;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-elevated);
+.field-viewer__title {
+  margin: 0;
+  font-size: var(--font-size-lg);
   color: var(--color-text);
-  cursor: pointer;
-  font-size: var(--font-size-sm);
-  margin-bottom: var(--space-2);
-}
-.field-viewer__back:hover {
-  background: var(--color-border);
 }
 .field-viewer__tag {
   display: inline-block;

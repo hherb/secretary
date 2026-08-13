@@ -3,7 +3,6 @@
   import { userMessageForWarning, userMessageFor, type AppError } from '../lib/errors';
   import { trashBlock, isAppError, type BlockSummaryDto } from '../lib/ipc';
   import { authorizeWrite, ReauthCancelled } from '../lib/writeGuard';
-  import BlockCard from '../components/BlockCard.svelte';
   import TopBar from '../components/TopBar.svelte';
   import SettingsDialog from '../components/SettingsDialog.svelte';
   import { get } from 'svelte/store';
@@ -17,8 +16,9 @@
   import ConfirmDialog from '../components/delete/ConfirmDialog.svelte';
   import ShareDialog from '../components/share/ShareDialog.svelte';
   import ReauthPasswordDialog from '../components/ReauthPasswordDialog.svelte';
-  import Trash from '../components/icons/Trash.svelte';
-  import Users from '../components/icons/Users.svelte';
+  import { panesFor } from '../lib/panes';
+  import PaneShell from '../components/PaneShell.svelte';
+  import BlockSidebar from '../components/BlockSidebar.svelte';
 
   // First N hex chars of the vault UUID are visible in the TopBar; the
   // rest is collapsed to an ellipsis. 8 is enough to disambiguate
@@ -41,6 +41,10 @@
   let unlocked = $derived(
     $sessionState.status === 'unlocked' ? $sessionState : null
   );
+
+  // #526 — the three panes are a pure projection of browseNav, never new
+  // state. See lib/panes.ts for why.
+  let panes = $derived(panesFor($browseNav));
 
   let settingsOpen = $state(false);
   // Block awaiting trash confirmation; ConfirmDialog mounts while set.
@@ -113,60 +117,67 @@
       </div>
     {/each}
 
-    {#if $browseNav.level === 'blocks'}
-      <button type="button" class="vault__new-block" onclick={() => openNewBlock()}>+ New block</button>
-      <button type="button" class="vault__trash-entry" onclick={() => openTrash()}><Trash />Trash</button>
-      <button type="button" class="vault__contacts-entry" onclick={() => openContacts()}><Users />Contacts</button>
-      {#if trashError}
-        {@const msg = userMessageFor(trashError)}
-        <p class="vault__trash-error" role="alert">{msg.title}{msg.actionHint ? ` — ${msg.actionHint}` : ''}</p>
-      {/if}
-      <div class="vault__block-count">
-        {manifest.blockCount} block{manifest.blockCount === 1 ? '' : 's'}
-      </div>
-      <div class="vault__block-list">
-        {#each manifest.blockSummaries as block (block.blockUuidHex)}
-          <BlockCard
-            {block}
-            onClick={openBlock}
-            onTrash={(b) => (pendingTrash = b)}
-            onShare={(b) => (blockToShare = b)}
-            onRename={openRenameBlock}
+    <PaneShell spanDetail={panes.detail.kind === 'spanned'}>
+      {#snippet sidebar()}
+        <BlockSidebar
+          blocks={manifest.blockSummaries}
+          blockCount={manifest.blockCount}
+          selection={panes.sidebar}
+          onOpenBlock={openBlock}
+          onNewBlock={openNewBlock}
+          onOpenTrash={openTrash}
+          onOpenContacts={openContacts}
+          onTrashBlock={(b) => (pendingTrash = b)}
+          onShareBlock={(b) => (blockToShare = b)}
+          onRenameBlock={openRenameBlock}
+        />
+        {#if trashError}
+          {@const msg = userMessageFor(trashError)}
+          <p class="vault__trash-error" role="alert">
+            {msg.title}{msg.actionHint ? ` — ${msg.actionHint}` : ''}
+          </p>
+        {/if}
+      {/snippet}
+
+      {#snippet list()}
+        {#if panes.list.kind === 'prompt'}
+          <p class="vault__pane-prompt">{panes.list.message}</p>
+        {:else if panes.list.kind === 'records'}
+          <RecordList
+            block={panes.list.block}
+            blockCount={manifest.blockCount}
+            selectedRecordUuidHex={panes.list.selectedRecordUuidHex}
+            frozen={panes.list.frozen}
           />
-        {/each}
-      </div>
-    {:else if $browseNav.level === 'trash'}
-      <TrashView />
-    {:else if $browseNav.level === 'contacts'}
-      <ContactsPane />
-    {:else if $browseNav.level === 'records'}
-      <RecordList block={$browseNav.block} blockCount={manifest.blockCount} />
-    {:else if $browseNav.level === 'fields'}
-      <FieldViewer block={$browseNav.block} record={$browseNav.record} />
-    {:else if $browseNav.level === 'newBlock'}
+        {:else if panes.list.kind === 'trash'}
+          <TrashView />
+        {:else}
+          <ContactsPane />
+        {/if}
+      {/snippet}
+
+      {#snippet detail()}
+        {#if panes.detail.kind === 'prompt'}
+          <p class="vault__pane-prompt">{panes.detail.message}</p>
+        {:else if panes.detail.kind === 'viewer'}
+          {#key panes.detail.record.recordUuidHex}
+            <FieldViewer block={panes.detail.block} record={panes.detail.record} />
+          {/key}
+        {:else if panes.detail.kind === 'editor'}
+          <RecordEditor
+            block={panes.detail.block}
+            record={panes.detail.record}
+            onSaved={async () => { try { await refreshManifest(); } finally { back(); } }}
+            onCancel={() => back()}
+          />
+        {/if}
+      {/snippet}
+    </PaneShell>
+
+    {#if panes.modal.kind === 'blockName'}
       <BlockNameDialog
-        mode={{ kind: 'create' }}
+        mode={panes.modal.mode}
         onDone={async () => { try { await refreshManifest(); } finally { back(); } }}
-        onCancel={() => back()}
-      />
-    {:else if $browseNav.level === 'renameBlock'}
-      <BlockNameDialog
-        mode={{ kind: 'rename', block: $browseNav.block }}
-        onDone={async () => { try { await refreshManifest(); } finally { back(); } }}
-        onCancel={() => back()}
-      />
-    {:else if $browseNav.level === 'newRecord'}
-      <RecordEditor
-        block={$browseNav.block}
-        record={null}
-        onSaved={async () => { try { await refreshManifest(); } finally { back(); } }}
-        onCancel={() => back()}
-      />
-    {:else}
-      <RecordEditor
-        block={$browseNav.block}
-        record={$browseNav.record}
-        onSaved={async () => { try { await refreshManifest(); } finally { back(); } }}
         onCancel={() => back()}
       />
     {/if}
