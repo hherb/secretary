@@ -15,7 +15,7 @@
         "title": "Secretary",
         "width": 1024,
         "height": 768,
-        "minWidth": 600,
+        "minWidth": 760,
         "minHeight": 400,
         "resizable": true,
         "fullscreen": false

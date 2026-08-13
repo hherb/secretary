@@ -44,6 +44,19 @@
   --radius-md: 6px;
   --radius-lg: 10px;
 
+  /* Three-pane layout (#526). Fractions of the container, not pixels, so the
+     panes scale with the window in pure CSS. These are DEFAULTS — a persisted
+     value is applied as an inline style on .pane-shell and wins by cascade.
+     Pixel floors live in paneWidths.ts; there is deliberately no maximum. */
+  --pane-sidebar-w: 18%;
+  --pane-list-w: 26%;
+
+  /* Text/foreground laid over a --color-primary fill (e.g. the selected
+     record row, Task 7). Kept separate from --color-on-danger — same value
+     today, but the two fills are unrelated and reusing the danger token
+     over a primary fill would be a token misuse. */
+  --color-on-primary: #fff;
+
   /* Typography */
   --font-stack: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-stack-mono: ui-monospace, "SF Mono", Menlo, monospace;
@@ -72,6 +85,7 @@
     --color-danger: #f87171;
     --color-danger-bg: #2a1414;
     --color-on-danger: #fff;
+    --color-on-primary: #fff;
     --color-warning: #fbbf24;
     --color-warning-bg: #2a2014;
     --color-success: #4ade80;
