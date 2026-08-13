@@ -123,6 +123,7 @@
           blocks={manifest.blockSummaries}
           blockCount={manifest.blockCount}
           selection={panes.sidebar}
+          frozen={panes.list.kind === 'records' && panes.list.frozen}
           onOpenBlock={openBlock}
           onNewBlock={openNewBlock}
           onOpenTrash={openTrash}
@@ -151,7 +152,7 @@
           />
         {:else if panes.list.kind === 'trash'}
           <TrashView />
-        {:else}
+        {:else if panes.list.kind === 'contacts'}
           <ContactsPane />
         {/if}
       {/snippet}
@@ -164,12 +165,14 @@
             <FieldViewer block={panes.detail.block} record={panes.detail.record} />
           {/key}
         {:else if panes.detail.kind === 'editor'}
-          <RecordEditor
-            block={panes.detail.block}
-            record={panes.detail.record}
-            onSaved={async () => { try { await refreshManifest(); } finally { back(); } }}
-            onCancel={() => back()}
-          />
+          {#key panes.detail.record?.recordUuidHex ?? 'new-record'}
+            <RecordEditor
+              block={panes.detail.block}
+              record={panes.detail.record}
+              onSaved={async () => { try { await refreshManifest(); } finally { back(); } }}
+              onCancel={() => back()}
+            />
+          {/key}
         {/if}
       {/snippet}
     </PaneShell>
