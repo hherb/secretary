@@ -417,6 +417,11 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  /* #526 review — the middle pane had no padding of its own, so rows
+     touched both splitter lines. var(--space-3) matches BlockSidebar's own
+     padding so all three panes read consistently, without eating into the
+     dense three-pane layout's already-tight width budget. */
+  padding: var(--space-3);
 }
 .record-list__heading {
   margin: 0;
@@ -1468,6 +1473,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  /* #526 review — matches .record-list's padding so the detail pane reads
+     consistently with the middle pane rather than sitting flush against
+     the splitter and the window edge. */
+  padding: var(--space-3);
 }
 .field-viewer__title {
   margin: 0;
