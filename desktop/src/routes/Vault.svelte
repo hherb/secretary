@@ -161,10 +161,25 @@
         {#if panes.detail.kind === 'prompt'}
           <p class="vault__pane-prompt">{panes.detail.message}</p>
         {:else if panes.detail.kind === 'viewer'}
+          <!-- SECURITY BOUNDARY — do not remove this {#key}.
+               It forces Svelte to tear down and re-allocate FieldViewer when
+               the selected record changes. Without it Svelte reuses the
+               instance, and each FieldRow's `revealed` state survives with it:
+               a value you revealed on record A would still be on screen,
+               unmasked, after clicking record B. Under the old one-record-at-
+               a-time UI the component was unmounted by navigation anyway; the
+               persistent detail pane is what made this load-bearing.
+               NO TEST COVERS THIS. FieldViewer.test.ts:49-66 says so
+               explicitly — it does not render Vault.svelte, so it cannot
+               observe the remount. Enforced by review only (#526). -->
           {#key panes.detail.record.recordUuidHex}
             <FieldViewer block={panes.detail.block} record={panes.detail.record} />
           {/key}
         {:else if panes.detail.kind === 'editor'}
+          <!-- Same mechanism, different failure: without the {#key} the editor
+               keeps record A's draft when the pane switches to record B. The
+               `?? 'new-record'` arm keys the "new record" editor distinctly so
+               it cannot inherit a previously-edited record's draft either. -->
           {#key panes.detail.record?.recordUuidHex ?? 'new-record'}
             <RecordEditor
               block={panes.detail.block}

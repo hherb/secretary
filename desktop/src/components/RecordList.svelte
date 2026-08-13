@@ -74,6 +74,17 @@
     // its first await), but these `void` reads are what subscribe the effect.
     // We deliberately do NOT read `records`/`error` here — writing them is
     // fine, but reading would make the effect self-trigger into a loop.
+    //
+    // DO NOT "optimize" this to depend on the UUID string only (#526 review).
+    // `block` arrives as `panes.list.block`, and `panes` is
+    // `$derived(panesFor($browseNav))` — panesFor returns a FRESH object every
+    // call and Svelte's derived equality is identity, so this effect really
+    // re-runs on every browseNav transition, not only on a block switch. That
+    // looks like an over-broad dependency and is instead the only thing
+    // keeping the list fresh: in the three-pane layout RecordList is no longer
+    // unmounted across records → fields → editRecord (it was under the old
+    // stacked screens), so narrowing the dependency would mean a newly saved
+    // record never appears — indistinguishable, on screen, from a failed save.
     void block.blockUuidHex;
     void showDeleted;
     void load();
@@ -165,16 +176,31 @@
 
 <section class="record-list">
   <h2 class="record-list__heading">{block.blockName}</h2>
-  <BlockRecipients {block} />
+  <BlockRecipients {block} {frozen} />
+  <!-- The in-handler `if (!frozen)` is not redundant with `disabled`, and this
+       button is the one that most needs both: activating it navigates to
+       `newRecord`, which re-keys Vault's {#key} and remounts the editor,
+       silently discarding an unsaved draft. Every sibling frozen control
+       (RecordRow, BlockCard, BlockSidebar's three) already checks both; this
+       one carried the attribute alone, with no test touching it at all
+       (#526 review). -->
   <button
     type="button"
     class="record-list__add"
     disabled={frozen}
-    onclick={() => openNewRecord(block)}
+    onclick={() => {
+      if (!frozen) openNewRecord(block);
+    }}
   >+ Add record</button>
 
+  <!-- Frozen too, so the pane's contract holds for every control it owns and
+       not just the navigating ones. Toggling this refires `load()`, which
+       blanks the list to "Loading…" underneath an open editor; it cannot
+       discard the draft today, but "this pane is inert while you edit" should
+       not have exceptions a reader has to discover one control at a time
+       (#526 review). -->
   <label class="record-list__show-deleted">
-    <input type="checkbox" bind:checked={showDeleted} />
+    <input type="checkbox" bind:checked={showDeleted} disabled={frozen} />
     Show deleted
   </label>
 

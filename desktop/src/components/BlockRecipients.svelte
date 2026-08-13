@@ -16,8 +16,16 @@
   import ConfirmDialog from './delete/ConfirmDialog.svelte';
   import { authorizeWrite, ReauthCancelled } from '../lib/writeGuard';
 
-  type Props = { block: BlockSummaryDto };
-  let { block }: Props = $props();
+  type Props = {
+    block: BlockSummaryDto;
+    /** Mirrors `ListPane.frozen` — see panes.ts. This banner lives inside the
+        record-list pane, so it is covered by that pane's "inert while an
+        editor is open" contract. Revoke especially: it is a full write flow
+        (re-auth prompt → confirm dialog → block re-key) that was startable
+        from a pane the UI dims and advertises as frozen (#526 review). */
+    frozen?: boolean;
+  };
+  let { block, frozen = false }: Props = $props();
 
   let recipients = $state<RecipientDto[] | null>(null);
   let error = $state<AppError | null>(null);
@@ -89,7 +97,10 @@
       class="block-recipients__toggle"
       aria-expanded={expanded}
       aria-controls={`recipients-${block.blockUuidHex}`}
-      onclick={() => (expanded = !expanded)}
+      disabled={frozen}
+      onclick={() => {
+        if (!frozen) expanded = !expanded;
+      }}
     >
       Shared with: {summary} {expanded ? '▴' : '▾'}
     </button>
@@ -103,7 +114,10 @@
                 type="button"
                 class="block-recipients__revoke"
                 aria-label={`Revoke ${recipientLabel(r)}’s access to “${block.blockName}”`}
-                onclick={() => (pendingRevoke = r)}
+                disabled={frozen}
+                onclick={() => {
+                  if (!frozen) pendingRevoke = r;
+                }}
               >
                 ✕
               </button>

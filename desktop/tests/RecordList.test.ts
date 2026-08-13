@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, waitFor } from '@testing-library/svelte';
+import { render, waitFor, fireEvent } from '@testing-library/svelte';
+import { get } from 'svelte/store';
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
 
 import RecordList from '../src/components/RecordList.svelte';
 import type { BlockSummaryDto, RecordDto } from '../src/lib/ipc';
+import { browseNav, resetBrowse } from '../src/lib/browse';
 
 const BLOCK: BlockSummaryDto = { blockUuidHex: 'ab', blockName: 'Personal logins', createdAtMs: 1, lastModifiedMs: 2 };
 
@@ -32,7 +34,10 @@ function bothCalls(
 }
 
 describe('RecordList', () => {
-  beforeEach(() => invokeMock.mockReset());
+  beforeEach(() => {
+    invokeMock.mockReset();
+    resetBrowse();
+  });
 
   it('fetches read_block on mount and renders a row per record', async () => {
     bothCalls([
@@ -86,5 +91,54 @@ describe('RecordList', () => {
     });
     await waitFor(() => expect(getByText(/Shared with:/)).toBeTruthy());
     expect(invokeMock).toHaveBeenCalledWith('block_recipients', { blockUuidHex: 'deadbeef' });
+  });
+
+  // ---- the freeze contract (#526 review) ----
+  //
+  // With no dirty-tracking in this frontend, navigating away from an open
+  // editor discards the draft silently. `frozen` is what stops a stray click
+  // doing that — but only the ROWS were tested, and "+ Add record" (the one
+  // control here that navigates, and so the one that can destroy the draft)
+  // had the `disabled` attribute alone, with no in-handler guard and no test
+  // touching it at all.
+
+  it('disables every control it owns while an editor is open', async () => {
+    bothCalls([]);
+    const { getByRole, getByLabelText } = render(RecordList, {
+      props: { block: BLOCK, blockCount: 2, frozen: true }
+    });
+    await waitFor(() => expect(getByRole('button', { name: /add record/i })).toBeTruthy());
+
+    // The attribute, asserted separately from behaviour: an in-handler guard
+    // alone still leaves the control focusable and activatable by keyboard.
+    expect((getByRole('button', { name: /add record/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((getByLabelText(/show deleted/i) as HTMLInputElement).disabled).toBe(true);
+    await waitFor(() =>
+      expect((getByRole('button', { name: /shared with/i }) as HTMLButtonElement).disabled).toBe(true)
+    );
+  });
+
+  it('leaves those controls interactive when no editor is open', async () => {
+    bothCalls([]);
+    const { getByRole, getByLabelText } = render(RecordList, {
+      props: { block: BLOCK, blockCount: 2, frozen: false }
+    });
+    await waitFor(() => expect(getByRole('button', { name: /add record/i })).toBeTruthy());
+    expect((getByRole('button', { name: /add record/i }) as HTMLButtonElement).disabled).toBe(false);
+    expect((getByLabelText(/show deleted/i) as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it('a click on a frozen "+ Add record" does not navigate', async () => {
+    // The behavioural half. `disabled` already blocks a real user click, so
+    // this pins the in-handler guard that backs it up — the belt-and-braces
+    // every sibling frozen control already had.
+    bothCalls([]);
+    const { getByRole } = render(RecordList, {
+      props: { block: BLOCK, blockCount: 2, frozen: true }
+    });
+    const add = await waitFor(() => getByRole('button', { name: /add record/i }));
+    const before = get(browseNav).level;
+    await fireEvent.click(add);
+    expect(get(browseNav).level).toBe(before);
   });
 });
