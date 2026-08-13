@@ -29,6 +29,34 @@ describe('browse-nav store', () => {
     if (s.level === 'fields') expect(s.record.recordUuidHex).toBe('cd');
   });
 
+  // #526 review — the three-pane list stays rendered and non-frozen at
+  // `fields`, so selecting a DIFFERENT record without first popping back to
+  // `records` is the primary interaction, not an edge case. openRecord used
+  // to guard on `level === 'records'` alone, which made every row click after
+  // the first a silent no-op.
+  it('openRecord from fields level selects the new record', () => {
+    const OTHER: RecordDto = { ...RECORD, recordUuidHex: 'ef', title: 'bob@example.test' };
+    openBlock(BLOCK);
+    openRecord(RECORD);
+    openRecord(OTHER);
+    const s = get(browseNav);
+    expect(s.level).toBe('fields');
+    if (s.level === 'fields') {
+      expect(s.record.recordUuidHex).toBe('ef');
+      expect(s.block.blockUuidHex).toBe('ab');
+    }
+  });
+
+  it('openRecord is still inert at levels with no record list', () => {
+    // blocks / trash / contacts render no rows, so a call there would mean a
+    // caller bug rather than a click; the store must not invent a block.
+    openRecord(RECORD);
+    expect(get(browseNav).level).toBe('blocks');
+    openContacts();
+    openRecord(RECORD);
+    expect(get(browseNav).level).toBe('contacts');
+  });
+
   it('back pops one level: fields → records → blocks', () => {
     openBlock(BLOCK); openRecord(RECORD);
     back();
@@ -63,10 +91,18 @@ describe('browse-nav store', () => {
     if (s.level === 'renameBlock') expect(s.block.blockUuidHex).toBe('ab');
   });
 
-  it('back from renameBlock returns to blocks', () => {
+  // #526 review — this is the half panes.test.ts structurally cannot see. The
+  // projection keeps the block selected BEHIND the rename dialog; back() is
+  // what decides where Cancel (and a successful rename, which also calls
+  // back()) actually lands. Popping to `blocks` cleared the selection and
+  // emptied the middle pane, so the user lost their place on every rename.
+  it('back from renameBlock returns to that block’s records, not the root', () => {
+    openBlock(BLOCK);
     openRenameBlock(BLOCK);
     back();
-    expect(get(browseNav).level).toBe('blocks');
+    const s = get(browseNav);
+    expect(s.level).toBe('records');
+    if (s.level === 'records') expect(s.block.blockUuidHex).toBe('ab');
   });
 });
 

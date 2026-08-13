@@ -25,8 +25,15 @@ export type ListPane =
       kind: 'records';
       block: BlockSummaryDto;
       selectedRecordUuidHex: string | null;
-      /** Rows are non-interactive while an editor is open, so a stray click
-          cannot silently discard an unsaved edit. */
+      /** Set while an editor occupies the detail pane. This frontend has NO
+          dirty-tracking, so any navigation away from an open editor discards
+          the draft silently — freezing is what stops a stray click doing that.
+          It is the single source of truth for THREE consumers, not just this
+          pane: RecordList's rows and its "+ Add record" button, and — via
+          Vault.svelte — the entire left sidebar (every BlockCard, Trash,
+          Contacts, "+ New block"). Widen all three together, and keep the
+          `detail.kind === 'editor'` ⇒ `frozen` invariant that
+          panes.test.ts asserts over every arm. */
       frozen: boolean;
     }
   | { kind: 'trash' }
@@ -93,8 +100,12 @@ export function panesFor(nav: BrowseNav): PaneLayout {
         modal: NO_MODAL
       };
     case 'renameBlock':
-      // The block stays selected behind the dialog, so cancelling lands the
-      // user exactly where they were — the projection gives us this for free.
+      // The block stays selected behind the dialog. That is only HALF of
+      // "cancelling lands the user where they were": this projection decides
+      // what renders behind the dialog, and `back()` decides where Cancel and
+      // a completed rename actually go. Both must agree — browse.ts's
+      // renameBlock arm pops to `records` for this block, pinned by
+      // browse.test.ts, because this file cannot observe it (#526 review).
       return {
         sidebar: blockSelected(nav.block),
         list: recordsIn(nav.block, null, false),

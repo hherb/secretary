@@ -28,9 +28,17 @@ export function openBlock(block: BlockSummaryDto): void {
   store.set({ level: 'records', block });
 }
 
+// #526 review — `fields` is accepted as well as `records`. Under the old
+// stacked-screen UI the record list existed ONLY at `records`, so guarding on
+// that alone was correct. The three-pane layout keeps the list rendered and
+// non-frozen at `fields` too (panes.ts's `fields` arm), so without this the
+// second and every subsequent row click was a silent no-op — the list looked
+// interactive and was inert.
 export function openRecord(record: RecordDto): void {
   store.update((s) =>
-    s.level === 'records' ? { level: 'fields', block: s.block, record } : s
+    s.level === 'records' || s.level === 'fields'
+      ? { level: 'fields', block: s.block, record }
+      : s
   );
 }
 
@@ -63,7 +71,12 @@ export function back(): void {
     if (s.level === 'editRecord') return { level: 'fields', block: s.block, record: s.record };
     if (s.level === 'newRecord') return { level: 'records', block: s.block };
     if (s.level === 'newBlock') return { level: 'blocks' };
-    if (s.level === 'renameBlock') return { level: 'blocks' };
+    // #526 review — back to the block's own records, NOT the blocks root.
+    // `renameBlock` is now a dialog over a persistent three-pane layout with
+    // the block still selected behind it, so popping to `blocks` cleared the
+    // selection and emptied the middle pane — both on Cancel and after a
+    // successful rename, which also routes through back().
+    if (s.level === 'renameBlock') return { level: 'records', block: s.block };
     if (s.level === 'fields') return { level: 'records', block: s.block };
     if (s.level === 'records') return { level: 'blocks' };
     if (s.level === 'trash') return { level: 'blocks' };
