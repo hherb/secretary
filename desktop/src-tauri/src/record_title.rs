@@ -46,7 +46,7 @@ pub struct RecordLabels {
 /// allowlisted. Lower rank wins. Matching is exact and case-sensitive —
 /// `vault-format.md` §6.3.1 field names are lowercase, and accepting case
 /// variants would widen the gate on names nobody reviewed.
-pub fn allowlist_rank(name: &str) -> Option<usize> {
+pub(crate) fn allowlist_rank(name: &str) -> Option<usize> {
     TITLE_NAMES.iter().position(|candidate| *candidate == name)
 }
 
@@ -62,7 +62,7 @@ fn truncate(value: &str) -> String {
 /// present-but-blank field cannot produce a blank row. The subtitle comes from
 /// the first candidate whose *name* differs from the title's, so a record with
 /// two same-named fields yields one label, not two.
-pub fn select_labels(
+pub(crate) fn select_labels(
     record_type: &str,
     mut candidates: Vec<(usize, String, String)>,
 ) -> RecordLabels {
