@@ -13,6 +13,21 @@
 // data, never anything derived from a decrypted record. This is the first and
 // so far only localStorage use in the frontend; keep it that way.
 
+// These three floors are consumed in TWO places: the drag/keyboard clamp
+// below, and PaneShell.svelte's `grid-template-columns` `minmax()` floors —
+// set as CSS custom properties (`--pane-*-min`) from these exact constants,
+// so CSS never hand-copies the numbers (#526 review).
+//
+// Their SUM must also equal `app.windows[0].minWidth` in
+// `desktop/src-tauri/tauri.conf.json` (currently 760 = 180 + 260 + 320),
+// which guarantees the three floors are always simultaneously satisfiable.
+// That file is strict JSON, not JSON5 — Tauri's `Config`/`WindowConfig`
+// structs derive `#[serde(deny_unknown_fields)]` and this crate does not
+// enable the `config-json5` Cargo feature, so neither a `//` comment nor an
+// extra key can be added there without breaking `cargo build`. This comment
+// is the closest a reader gets to a reference from that value back to these
+// constants — if you change SIDEBAR_MIN_PX / LIST_MIN_PX / DETAIL_MIN_PX,
+// update tauri.conf.json's minWidth by hand to match.
 export const SIDEBAR_MIN_PX = 180;
 export const LIST_MIN_PX = 260;
 export const DETAIL_MIN_PX = 320;

@@ -88,7 +88,15 @@
   }
 
   function onPointerMove(e: PointerEvent): void {
-    if (!dragging || !shellEl) return;
+    // #526 review — `e.buttons === 0` means no button is currently held. A
+    // `pointercancel` (a touch interrupted by a system gesture, or a
+    // browser-initiated cancel) is handled below, but this is a second,
+    // independent guard: if `dragging` were ever left set by some other
+    // path without a matching cancel/up event, a stray hover would resize
+    // the pane with no button held at all. Checking both is belt-and-braces
+    // for the same reason RecordRow's frozen click guard checks both
+    // `disabled` and the handler body.
+    if (!dragging || !shellEl || e.buttons === 0) return;
     const left = shellEl.getBoundingClientRect().left;
     // The sidebar splitter sets the sidebar's right edge; the list splitter
     // sets the list's right edge, so the list width is the remainder.
@@ -101,13 +109,22 @@
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     dragging = null;
   }
+
+  // #526 review — dragging was cleared only on pointerup. A pointercancel
+  // (touch interrupted by a system gesture, or a browser-initiated cancel)
+  // never fires pointerup, so `dragging` stayed set and a later hover would
+  // resize the pane with no button held. Shares onPointerUp's body: same
+  // "release capture, clear dragging" cleanup applies to both terminations.
+  const onPointerCancel = onPointerUp;
 </script>
 
 <div
   class="pane-shell"
   class:pane-shell--spanned={spanDetail}
   bind:this={shellEl}
-  style="--pane-sidebar-w: {sidebarPct}%; --pane-list-w: {listPct}%;"
+  style="--pane-sidebar-w: {sidebarPct}%; --pane-list-w: {listPct}%;
+    --pane-sidebar-min: {SIDEBAR_MIN_PX}px; --pane-list-min: {LIST_MIN_PX}px;
+    --pane-detail-min: {DETAIL_MIN_PX}px;"
 >
   <div class="pane-shell__sidebar">{@render sidebar()}</div>
 
@@ -137,6 +154,7 @@
     onpointerdown={(e) => onPointerDown('sidebar', e)}
     onpointermove={onPointerMove}
     onpointerup={onPointerUp}
+    onpointercancel={onPointerCancel}
   ></div>
 
   <div class="pane-shell__list">{@render list()}</div>
@@ -158,6 +176,7 @@
       onpointerdown={(e) => onPointerDown('list', e)}
       onpointermove={onPointerMove}
       onpointerup={onPointerUp}
+      onpointercancel={onPointerCancel}
     ></div>
 
     <div class="pane-shell__detail">{@render detail()}</div>
@@ -167,12 +186,17 @@
 <style>
   .pane-shell {
     display: grid;
+    /* Floors come from --pane-*-min, set inline from paneWidths.ts's
+       SIDEBAR_MIN_PX / LIST_MIN_PX / DETAIL_MIN_PX (#526 review) — CSS can't
+       import a TS constant, so this keeps paneWidths.ts the single source
+       instead of the same three numbers being hand-copied here too, where
+       they could silently drift from the drag clamp. */
     grid-template-columns:
-      minmax(180px, var(--pane-sidebar-w))
+      minmax(var(--pane-sidebar-min), var(--pane-sidebar-w))
       auto
-      minmax(260px, var(--pane-list-w))
+      minmax(var(--pane-list-min), var(--pane-list-w))
       auto
-      minmax(320px, 1fr);
+      minmax(var(--pane-detail-min), 1fr);
     height: 100%;
     min-height: 0;
     overflow: hidden;
@@ -180,7 +204,7 @@
 
   /* Trash / Contacts: sidebar, one splitter, then everything else. */
   .pane-shell--spanned {
-    grid-template-columns: minmax(180px, var(--pane-sidebar-w)) auto 1fr;
+    grid-template-columns: minmax(var(--pane-sidebar-min), var(--pane-sidebar-w)) auto 1fr;
   }
 
   .pane-shell__sidebar,

@@ -16,6 +16,7 @@ import {
   SIDEBAR_KEY,
   LIST_KEY
 } from '../src/lib/paneWidths';
+import tauriConf from '../src-tauri/tauri.conf.json';
 
 function storageOf(entries: Record<string, string>) {
   return { getItem: (k: string) => entries[k] ?? null };
@@ -139,5 +140,21 @@ describe('clampPaneWidthPx — upper bound is derived, not an arbitrary cap', ()
       siblingsMinPx: LIST_MIN_PX + DETAIL_MIN_PX
     });
     expect(px).toBe(SIDEBAR_MIN_PX);
+  });
+});
+
+describe('the three floors stay in sync with tauri.conf.json (#526 review)', () => {
+  // JSON cannot import a TS constant, and tauri.conf.json is strict JSON —
+  // not JSON5 — so it can't even hold a `//` comment pointing back here
+  // (Tauri's Config/WindowConfig structs derive
+  // #[serde(deny_unknown_fields)], and this crate doesn't enable the
+  // config-json5 Cargo feature; either would break `cargo build`). This
+  // test is the mechanical substitute: it fails the moment a floor changes
+  // here without minWidth changing to match, instead of the two silently
+  // drifting apart.
+  it('SIDEBAR_MIN_PX + LIST_MIN_PX + DETAIL_MIN_PX equals app.windows[0].minWidth', () => {
+    expect(SIDEBAR_MIN_PX + LIST_MIN_PX + DETAIL_MIN_PX).toBe(
+      tauriConf.app.windows[0].minWidth
+    );
   });
 });
