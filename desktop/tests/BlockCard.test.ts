@@ -76,3 +76,28 @@ describe('BlockCard.svelte — empty / edge-case block names', () => {
     expect(getByText(/2024/)).toBeTruthy();
   });
 });
+
+describe('BlockCard.svelte — selection (#526)', () => {
+  it('sets aria-current when selected', () => {
+    const { getByRole } = render(BlockCard, {
+      props: { block: BLOCK, onClick: () => {}, selected: true }
+    });
+    expect(getByRole('button', { name: /banking/i }).getAttribute('aria-current')).toBe('true');
+  });
+
+  it('omits aria-current when not selected', () => {
+    const { getByRole } = render(BlockCard, {
+      props: { block: BLOCK, onClick: () => {}, selected: false }
+    });
+    expect(getByRole('button', { name: /banking/i }).getAttribute('aria-current')).toBeNull();
+  });
+
+  it('still exposes its actions to assistive tech when they are visually hidden', () => {
+    // Actions reveal on hover/selection VISUALLY (CSS opacity), but must stay
+    // in the accessibility tree — a keyboard user never hovers.
+    const { getByRole } = render(BlockCard, {
+      props: { block: BLOCK, onClick: () => {}, onRename: () => {}, selected: false }
+    });
+    expect(getByRole('button', { name: /rename block/i })).toBeTruthy();
+  });
+});
