@@ -19,6 +19,8 @@
 //! Values are truncated to [`MAX_LABEL_CHARS`] here, in Rust, so an oversized
 //! field never reaches the webview.
 
+use secretary_ffi_bridge::Record;
+
 /// Field names eligible to become a row's title, in priority order.
 ///
 /// Adding a name here is a **security decision**: it asserts the field's
@@ -75,6 +77,39 @@ pub fn select_labels(record_type: &str, mut candidates: Vec<(usize, String, Stri
         .map(|(_, name, value)| format!("{name}: {}", truncate(value)));
 
     RecordLabels { title, subtitle }
+}
+
+/// Derive a record's row labels, gating **before** any plaintext is exposed.
+///
+/// The ordering in the loop body is the security property: `allowlist_rank`
+/// and `is_text` are both checked before `expose_text` is called, so a
+/// non-allowlisted or binary field's plaintext is never materialised — not
+/// even into a local that is immediately dropped.
+///
+/// Not unit-testable: `Record` cannot be constructed outside the bridge
+/// (`Record::new` is `pub(crate)`). Covered by `title_path` in
+/// `tests/ipc_integration.rs`, which drives the real read path over a real
+/// vault.
+pub fn labels_for_record(record: &Record) -> RecordLabels {
+    let mut candidates: Vec<(usize, String, String)> = Vec::new();
+    for i in 0..record.field_count() {
+        let Some(handle) = record.field_at(i) else {
+            continue;
+        };
+        let name = handle.name();
+        // GATE — both checks precede expose_text. Do not reorder.
+        let Some(rank) = allowlist_rank(&name) else {
+            continue;
+        };
+        if !handle.is_text() {
+            continue;
+        }
+        let Some(value) = handle.expose_text() else {
+            continue;
+        };
+        candidates.push((rank, name, value));
+    }
+    select_labels(&record.record_type(), candidates)
 }
 
 #[cfg(test)]

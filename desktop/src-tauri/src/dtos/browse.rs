@@ -20,6 +20,12 @@ pub struct BlockDetailDto {
 pub struct RecordDto {
     pub record_uuid_hex: String,
     pub record_type: String,
+    /// Human-readable row label, derived by `crate::record_title` behind an
+    /// allowlist of field names. Falls back to `record_type`. Never carries a
+    /// non-allowlisted field's plaintext.
+    pub title: String,
+    /// Secondary row label, `"<field name>: <value>"`, same allowlist.
+    pub subtitle: Option<String>,
     pub tags: Vec<String>,
     pub created_at_ms: u64,
     pub last_mod_ms: u64,
@@ -85,6 +91,8 @@ mod tests {
         let dto = RecordDto {
             record_uuid_hex: SAMPLE_UUID_HEX.to_string(),
             record_type: "login".to_string(),
+            title: "login".to_string(),
+            subtitle: None,
             tags: vec!["work".to_string()],
             created_at_ms: 100,
             last_mod_ms: 200,
@@ -95,6 +103,8 @@ mod tests {
         let v = to_json(&dto);
         assert_eq!(v["recordUuidHex"], SAMPLE_UUID_HEX);
         assert_eq!(v["recordType"], "login");
+        assert_eq!(v["title"], "login");
+        assert!(v["subtitle"].is_null());
         assert_eq!(v["tags"][0], "work");
         assert_eq!(v["fieldCount"], 2);
         assert_eq!(v["tombstoned"], false);
