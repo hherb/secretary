@@ -4,7 +4,8 @@ import RecordRow from '../src/components/RecordRow.svelte';
 import type { RecordDto } from '../src/lib/ipc';
 
 const REC: RecordDto = {
-  recordUuidHex: 'cd', recordType: 'login', tags: ['work', 'bank'],
+  recordUuidHex: 'cd', recordType: 'login', title: 'alice@example.test', subtitle: null,
+  tags: ['work', 'bank'],
   createdAtMs: 1, lastModMs: 1_700_000_000_000, fieldCount: 4, fields: []
 };
 

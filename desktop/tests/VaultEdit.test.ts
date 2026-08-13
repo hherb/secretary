@@ -65,6 +65,8 @@ function recordFixture(type: string, uuidHex: string): RecordDto {
   return {
     recordUuidHex: uuidHex,
     recordType: type,
+    title: 'alice@example.test',
+    subtitle: null,
     tags: [],
     createdAtMs: 0,
     lastModMs: 0,

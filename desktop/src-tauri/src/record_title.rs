@@ -62,12 +62,18 @@ fn truncate(value: &str) -> String {
 /// present-but-blank field cannot produce a blank row. The subtitle comes from
 /// the first candidate whose *name* differs from the title's, so a record with
 /// two same-named fields yields one label, not two.
-pub fn select_labels(record_type: &str, mut candidates: Vec<(usize, String, String)>) -> RecordLabels {
+pub fn select_labels(
+    record_type: &str,
+    mut candidates: Vec<(usize, String, String)>,
+) -> RecordLabels {
     candidates.retain(|(_, _, value)| !value.is_empty());
     candidates.sort_by_key(|(rank, _, _)| *rank);
 
     let Some((_, title_name, title_value)) = candidates.first() else {
-        return RecordLabels { title: record_type.to_owned(), subtitle: None };
+        return RecordLabels {
+            title: record_type.to_owned(),
+            subtitle: None,
+        };
     };
     let title = truncate(title_value);
 
@@ -86,10 +92,20 @@ pub fn select_labels(record_type: &str, mut candidates: Vec<(usize, String, Stri
 /// non-allowlisted or binary field's plaintext is never materialised — not
 /// even into a local that is immediately dropped.
 ///
-/// Not unit-testable: `Record` cannot be constructed outside the bridge
-/// (`Record::new` is `pub(crate)`). Covered by `title_path` in
-/// `tests/ipc_integration.rs`, which drives the real read path over a real
-/// vault.
+/// **What is and isn't tested.** `title_path` in `tests/ipc_integration.rs`
+/// pins the OUTPUT half of this property black-box: a non-allowlisted
+/// field's plaintext never reaches the serialized DTO. It cannot pin the
+/// ORDERING half — that the value is never materialised in the first place,
+/// as opposed to materialised-then-discarded — because materialisation is
+/// invisible from the wire: moving `expose_text` above the `allowlist_rank`
+/// check, or deleting the `is_text` guard, would produce byte-identical
+/// output (the value is dropped by `continue` either way) and every existing
+/// test would still pass. That half is enforced by code structure and by
+/// review, not by a test. Do not reorder.
+///
+/// Not unit-testable either way: `Record` cannot be constructed outside the
+/// bridge (`Record::new` is `pub(crate)`), so `title_path` drives the real
+/// read path over a real vault instead of calling this function directly.
 pub fn labels_for_record(record: &Record) -> RecordLabels {
     let mut candidates: Vec<(usize, String, String)> = Vec::new();
     for i in 0..record.field_count() {
@@ -130,8 +146,18 @@ mod tests {
 
     #[test]
     fn secret_bearing_names_are_not_allowlisted() {
-        for name in ["password", "key_secret", "private_key", "passphrase", "totp_seed"] {
-            assert_eq!(allowlist_rank(name), None, "{name} must never be title-eligible");
+        for name in [
+            "password",
+            "key_secret",
+            "private_key",
+            "passphrase",
+            "totp_seed",
+        ] {
+            assert_eq!(
+                allowlist_rank(name),
+                None,
+                "{name} must never be title-eligible"
+            );
         }
     }
 
@@ -213,11 +239,17 @@ mod tests {
         let long = "b".repeat(MAX_LABEL_CHARS + 50);
         let out = select_labels(
             "login",
-            vec![(0, "title".into(), "T".into()), (3, "username".into(), long)],
+            vec![
+                (0, "title".into(), "T".into()),
+                (3, "username".into(), long),
+            ],
         );
         let subtitle = out.subtitle.expect("subtitle present");
         // "username: " prefix is not part of the value cap.
-        assert_eq!(subtitle, format!("username: {}", "b".repeat(MAX_LABEL_CHARS)));
+        assert_eq!(
+            subtitle,
+            format!("username: {}", "b".repeat(MAX_LABEL_CHARS))
+        );
     }
 
     #[test]
@@ -225,7 +257,10 @@ mod tests {
         // A present-but-empty allowlisted field must not produce a blank row.
         let out = select_labels(
             "login",
-            vec![(0, "title".into(), "".into()), (3, "username".into(), "alice".into())],
+            vec![
+                (0, "title".into(), "".into()),
+                (3, "username".into(), "alice".into()),
+            ],
         );
         assert_eq!(out.title, "alice");
         assert_eq!(out.subtitle, None);

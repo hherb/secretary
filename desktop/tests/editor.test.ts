@@ -79,7 +79,7 @@ describe('draftToRecordInputDto', () => {
 
 describe('recordToDraft', () => {
   it('prefills type + tags from the record and values from the reveal', () => {
-    const rec: RecordDto = { recordUuidHex: 'cd', recordType: 'login', tags: ['work'], createdAtMs: 1, lastModMs: 1, fieldCount: 2, fields: [] };
+    const rec: RecordDto = { recordUuidHex: 'cd', recordType: 'login', title: 'alice@example.test', subtitle: null, tags: ['work'], createdAtMs: 1, lastModMs: 1, fieldCount: 2, fields: [] };
     const reveal: RecordRevealDto = { fields: [
       { name: 'u', isText: true, value: 'alice' },
       { name: 'seed', isText: false, value: 'aGVsbG8=' }

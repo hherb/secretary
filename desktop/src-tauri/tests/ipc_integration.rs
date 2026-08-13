@@ -776,6 +776,14 @@ fn read_block_projects_records_and_fields_without_secrets() {
         !json.contains("hunter2"),
         "plaintext password must not be in read_block DTO"
     );
+    // The username is expected to appear once, as the title. Asserting the
+    // count (not just presence) rules out it legitimately being the title
+    // AND also leaking a second time elsewhere in the payload.
+    assert_eq!(
+        json.matches("owner@example.com").count(),
+        1,
+        "username must appear exactly once (as the title), not leak a second time"
+    );
 }
 
 #[test]
@@ -2305,7 +2313,10 @@ mod title_path {
     #[test]
     fn a_record_of_only_secret_fields_falls_back_to_its_type() {
         let out = save_then_read(
-            vec![text_field("password", "hunter2"), text_field("totp_seed", "JBSWY3DP")],
+            vec![
+                text_field("password", "hunter2"),
+                text_field("totp_seed", "JBSWY3DP"),
+            ],
             "login",
         );
         assert_eq!(out.title, "login", "must fall back, never show a secret");
@@ -2325,10 +2336,16 @@ mod title_path {
             "login",
         );
         let wire = serde_json::to_string(&out.json).expect("serialize");
-        assert!(!wire.contains("correct-horse-battery-staple"), "password leaked into {wire}");
+        assert!(
+            !wire.contains("correct-horse-battery-staple"),
+            "password leaked into {wire}"
+        );
         assert!(!wire.contains("Rosenberg"), "notes leaked into {wire}");
         // Field NAMES are metadata and legitimately present; only values must not be.
-        assert!(wire.contains("password"), "field name metadata should still be present");
+        assert!(
+            wire.contains("password"),
+            "field name metadata should still be present"
+        );
         assert_eq!(out.title, "alice");
     }
 
@@ -2346,7 +2363,9 @@ mod title_path {
         let out = save_then_read(
             vec![FieldInputDto {
                 name: "name".into(),
-                value: FieldValueDto::Bytes { base64: "aHVudGVyMg==".into() },
+                value: FieldValueDto::Bytes {
+                    base64: "aHVudGVyMg==".into(),
+                },
             }],
             "api_key",
         );

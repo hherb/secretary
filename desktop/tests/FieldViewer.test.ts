@@ -8,7 +8,8 @@ import type { BlockSummaryDto, RecordDto } from '../src/lib/ipc';
 
 const BLOCK: BlockSummaryDto = { blockUuidHex: 'ab', blockName: 'B', createdAtMs: 1, lastModifiedMs: 2 };
 const RECORD: RecordDto = {
-  recordUuidHex: 'cd', recordType: 'login', tags: ['work'], createdAtMs: 1, lastModMs: 2, fieldCount: 2,
+  recordUuidHex: 'cd', recordType: 'login', title: 'alice@example.test', subtitle: null,
+  tags: ['work'], createdAtMs: 1, lastModMs: 2, fieldCount: 2,
   fields: [
     { name: 'username', lastModMs: 2, isText: true, isBytes: false },
     { name: 'password', lastModMs: 2, isText: true, isBytes: false }

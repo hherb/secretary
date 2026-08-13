@@ -5,7 +5,7 @@ import type { BlockSummaryDto, RecordDto } from '../src/lib/ipc';
 import type { BrowseNav } from '../src/lib/browse';
 
 const BLOCK: BlockSummaryDto = { blockUuidHex: 'ab', blockName: 'B', createdAtMs: 1, lastModifiedMs: 2 };
-const RECORD: RecordDto = { recordUuidHex: 'cd', recordType: 'login', tags: [], createdAtMs: 1, lastModMs: 2, fieldCount: 0, fields: [] };
+const RECORD: RecordDto = { recordUuidHex: 'cd', recordType: 'login', title: 'alice@example.test', subtitle: null, tags: [], createdAtMs: 1, lastModMs: 2, fieldCount: 0, fields: [] };
 
 describe('browse-nav store', () => {
   beforeEach(() => resetBrowse());
