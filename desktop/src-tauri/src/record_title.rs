@@ -7,12 +7,12 @@
 //! a security decision, enforced here and nowhere else.
 //!
 //! The rule is an **allowlist**, not a denylist: a field name absent from
-//! [`TITLE_NAMES`] is never rendered, so `password`, `totp_seed`, freeform
+//! TITLE_NAMES is never rendered, so `password`, `totp_seed`, freeform
 //! `notes`/`body`, and every name nobody has thought of yet are excluded by
 //! construction rather than by enumeration. A denylist would be the only gate
 //! in this repository that fails open.
 //!
-//! [`labels_for_record`] applies the gate **before** `expose_text` is ever
+//! labels_for_record applies the gate **before** `expose_text` is ever
 //! called, so a non-allowlisted field's plaintext is never materialised at
 //! all — not even into a discarded local.
 //!
@@ -40,7 +40,7 @@ pub struct RecordLabels {
     pub subtitle: Option<String>,
 }
 
-/// Priority rank of `name` within [`TITLE_NAMES`], or `None` if it is not
+/// Priority rank of `name` within TITLE_NAMES, or `None` if it is not
 /// allowlisted. Lower rank wins. Matching is exact and case-sensitive —
 /// `vault-format.md` §6.3.1 field names are lowercase, and accepting case
 /// variants would widen the gate on names nobody reviewed.
