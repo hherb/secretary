@@ -102,13 +102,21 @@
     white-space: nowrap;
   }
 
-  .record-row--selected {
+  /* Selected: the fill must land on the BUTTON (.record-row), not the wrap
+     div — the button paints its own opaque --color-bg-elevated background
+     over whatever the wrap sets, so a wrap-level fill was only ever visible
+     in the ~8px flex gap between the button and the row actions (#526
+     review). Selecting via the descendant combinator here beats theme.css's
+     bare `.record-row` rule on specificity regardless of sheet order. */
+  .record-row-wrap.record-row--selected .record-row {
     background: var(--color-primary);
-    border-radius: var(--radius-sm);
+    border-color: var(--color-primary);
   }
 
-  .record-row--selected .record-row__title,
-  .record-row--selected .record-row__subtitle {
+  .record-row-wrap.record-row--selected .record-row__title,
+  .record-row-wrap.record-row--selected .record-row__subtitle,
+  .record-row-wrap.record-row--selected .record-row__meta,
+  .record-row-wrap.record-row--selected .record-row__no-content {
     color: var(--color-on-primary);
   }
 
