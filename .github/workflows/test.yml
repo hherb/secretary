@@ -112,6 +112,17 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: pnpm test (vitest)
         run: pnpm test
+      # #526 review — svelte-check was a local-only gate, and #526 leans on it
+      # for a correctness argument: `panesFor`'s exhaustiveness over the
+      # browseNav union is enforced by the type checker (tsconfig sets
+      # `strict` + `noImplicitReturns`), not by vitest. Deleting a `case` is
+      # caught by panes.test.ts, but ADDING a tenth union arm without
+      # extending panesFor is caught by nothing else. Same job, so this adds
+      # no new required-check name to the branch ruleset.
+      - name: pnpm svelte-check
+        run: pnpm svelte-check
+      - name: pnpm lint (eslint)
+        run: pnpm lint
 
   swift-conformance:
     name: swift conformance
