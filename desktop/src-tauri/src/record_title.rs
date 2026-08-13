@@ -9,8 +9,11 @@
 //! The rule is an **allowlist**, not a denylist: a field name absent from
 //! TITLE_NAMES is never rendered, so `password`, `totp_seed`, freeform
 //! `notes`/`body`, and every name nobody has thought of yet are excluded by
-//! construction rather than by enumeration. A denylist would be the only gate
-//! in this repository that fails open.
+//! construction rather than by enumeration. A denylist here would fail open —
+//! it would ship a title for every name nobody thought to exclude — and that
+//! is not how the gates in this repository are built. (`check-public-log-
+//! hygiene.sh`'s rule 3 is a denylist, but an explicitly-labelled best-effort
+//! one backing two default-deny rules, not a gate standing on its own.)
 //!
 //! labels_for_record applies the gate **before** `expose_text` is ever
 //! called, so a non-allowlisted field's plaintext is never materialised at
@@ -26,20 +29,68 @@ use secretary_ffi_bridge::Record;
 /// Adding a name here is a **security decision**: it asserts the field's
 /// value is safe to display persistently in a list, unmasked, for as long as
 /// the list is on screen. Unlike a revealed field it does not auto-hide.
+///
+/// Which makes it a **test** edit too — `title_names_are_pinned` asserts this
+/// exact array. Without that pin, appending a seventh entry passed every test
+/// in the tree, and this doc comment was the only thing standing between a new
+/// name and a persistent, unmasked render of its plaintext (#526 review).
 const TITLE_NAMES: [&str; 6] = ["title", "name", "service", "username", "url", "key_id"];
 
 /// Maximum characters of a field value that may reach the frontend as a label.
 pub const MAX_LABEL_CHARS: usize = 120;
 
+/// Last-resort row label when a record has neither an allowlisted value nor a
+/// record type. `record_type` is genuinely optional in the editor ("Type
+/// (optional)"), so this is reachable in ordinary use, not just under a wiped
+/// handle — and an empty title renders as a blank, unidentifiable row and a
+/// blank detail-pane heading (#526 review).
+const UNTITLED_LABEL: &str = "Untitled record";
+
 /// A record's derived row labels.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Secret-bearing → redacted `Debug`: both fields hold a decrypted field
+/// value. See `dtos::browse`'s module doc.
+#[derive(Clone, PartialEq, Eq)]
 pub struct RecordLabels {
-    /// Always populated — falls back to the record type when no allowlisted
-    /// field carries a usable value.
+    /// Never empty. Falls back to the record type, then to a fixed
+    /// `UNTITLED_LABEL` constant.
     pub title: String,
     /// `"<field name>: <value>"`, or `None` when there is no second distinct
     /// allowlisted field.
     pub subtitle: Option<String>,
+}
+
+impl std::fmt::Debug for RecordLabels {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecordLabels")
+            .field("title", &format_args!("<redacted>"))
+            .field(
+                "subtitle",
+                &format_args!(
+                    "{}",
+                    if self.subtitle.is_some() {
+                        "<redacted>"
+                    } else {
+                        "None"
+                    }
+                ),
+            )
+            .finish()
+    }
+}
+
+/// One allowlisted field that cleared the gate, with its priority.
+///
+/// A named struct rather than the `(usize, String, String)` this used to be:
+/// the two `String`s are adjacent and same-typed, so `push((rank, value,
+/// name))` compiled cleanly and silently swapped the label with the field
+/// name. `labels_for_record` — the only production producer — is not
+/// unit-testable (see its doc), so nothing but the integration test's exact
+/// title string would have caught it (#526 review).
+pub(crate) struct Candidate {
+    pub(crate) rank: usize,
+    pub(crate) name: String,
+    pub(crate) value: String,
 }
 
 /// Priority rank of `name` within TITLE_NAMES, or `None` if it is not
@@ -55,32 +106,48 @@ fn truncate(value: &str) -> String {
     value.chars().take(MAX_LABEL_CHARS).collect()
 }
 
+/// The label shown when no allowlisted field yielded a usable value.
+///
+/// Truncated like any other label — `record_type` is user-authored and
+/// unbounded — and never empty, so a row always has something to identify it.
+fn fallback_title(record_type: &str) -> String {
+    let trimmed = record_type.trim();
+    if trimmed.is_empty() {
+        UNTITLED_LABEL.to_owned()
+    } else {
+        truncate(trimmed)
+    }
+}
+
 /// Pick title and subtitle from already-gated candidates.
 ///
-/// `candidates` is `(rank, field name, value)`, in whatever order the record
-/// yielded them; this function sorts by rank. Empty values are skipped so a
-/// present-but-blank field cannot produce a blank row. The subtitle comes from
-/// the first candidate whose *name* differs from the title's, so a record with
-/// two same-named fields yields one label, not two.
-pub(crate) fn select_labels(
-    record_type: &str,
-    mut candidates: Vec<(usize, String, String)>,
-) -> RecordLabels {
-    candidates.retain(|(_, _, value)| !value.is_empty());
-    candidates.sort_by_key(|(rank, _, _)| *rank);
+/// Candidates arrive in whatever order the record yielded them; this function
+/// sorts by rank. Values that are empty **or whitespace-only** are skipped, so
+/// a present-but-blank field cannot produce a blank row — `is_empty()` alone
+/// let a lone `" "` through and rendered an unidentifiable row (#526 review).
+/// Surviving values are trimmed for display for the same reason.
+///
+/// The subtitle comes from the first candidate whose *name* differs from the
+/// title's. In production, names are unique — `core`'s `Record` stores fields
+/// in a `BTreeMap` keyed by name — so this is simply "the next-ranked
+/// candidate"; the distinct-name check is defence-in-depth for direct callers
+/// of this function, which the unit tests are.
+pub(crate) fn select_labels(record_type: &str, mut candidates: Vec<Candidate>) -> RecordLabels {
+    candidates.retain(|c| !c.value.trim().is_empty());
+    candidates.sort_by_key(|c| c.rank);
 
-    let Some((_, title_name, title_value)) = candidates.first() else {
+    let Some(first) = candidates.first() else {
         return RecordLabels {
-            title: record_type.to_owned(),
+            title: fallback_title(record_type),
             subtitle: None,
         };
     };
-    let title = truncate(title_value);
+    let title = truncate(first.value.trim());
 
     let subtitle = candidates
         .iter()
-        .find(|(_, name, _)| name != title_name)
-        .map(|(_, name, value)| format!("{name}: {}", truncate(value)));
+        .find(|c| c.name != first.name)
+        .map(|c| format!("{}: {}", c.name, truncate(c.value.trim())));
 
     RecordLabels { title, subtitle }
 }
@@ -107,7 +174,7 @@ pub(crate) fn select_labels(
 /// bridge (`Record::new` is `pub(crate)`), so `title_path` drives the real
 /// read path over a real vault instead of calling this function directly.
 pub fn labels_for_record(record: &Record) -> RecordLabels {
-    let mut candidates: Vec<(usize, String, String)> = Vec::new();
+    let mut candidates: Vec<Candidate> = Vec::new();
     for i in 0..record.field_count() {
         let Some(handle) = record.field_at(i) else {
             continue;
@@ -123,7 +190,7 @@ pub fn labels_for_record(record: &Record) -> RecordLabels {
         let Some(value) = handle.expose_text() else {
             continue;
         };
-        candidates.push((rank, name, value));
+        candidates.push(Candidate { rank, name, value });
     }
     select_labels(&record.record_type(), candidates)
 }
@@ -132,7 +199,31 @@ pub fn labels_for_record(record: &Record) -> RecordLabels {
 mod tests {
     use super::*;
 
+    fn cand(rank: usize, name: &str, value: &str) -> Candidate {
+        Candidate {
+            rank,
+            name: name.to_owned(),
+            value: value.to_owned(),
+        }
+    }
+
     // ---- allowlist_rank: the security gate ----
+
+    #[test]
+    fn title_names_are_pinned() {
+        // The allowlist's CONTENTS, not just its behaviour. Every other test
+        // here is satisfied by a SUPERSET: appending "recovery_phrase" leaves
+        // all six existing ranks unchanged, is absent from every deny list,
+        // and passes the whole suite — while rendering that field's plaintext
+        // persistently and unmasked in the record list. Widening the gate must
+        // cost a deliberate edit here, where the security claim is reviewed.
+        assert_eq!(
+            TITLE_NAMES,
+            ["title", "name", "service", "username", "url", "key_id"],
+            "TITLE_NAMES changed — is every name still safe to render \
+             persistently and unmasked? See this module's doc comment."
+        );
+    }
 
     #[test]
     fn every_allowlisted_name_ranks_in_declaration_order() {
@@ -188,10 +279,7 @@ mod tests {
     fn lowest_rank_wins_regardless_of_field_order() {
         let out = select_labels(
             "login",
-            vec![
-                (3, "username".into(), "alice".into()),
-                (0, "title".into(), "Bank".into()),
-            ],
+            vec![cand(3, "username", "alice"), cand(0, "title", "Bank")],
         );
         assert_eq!(out.title, "Bank");
         assert_eq!(out.subtitle.as_deref(), Some("username: alice"));
@@ -203,10 +291,7 @@ mod tests {
         // and the name used for the title is never reused.
         let out = select_labels(
             "login",
-            vec![
-                (3, "username".into(), "alice".into()),
-                (3, "username".into(), "bob".into()),
-            ],
+            vec![cand(3, "username", "alice"), cand(3, "username", "bob")],
         );
         assert_eq!(out.title, "alice");
         assert_eq!(out.subtitle, None);
@@ -214,7 +299,7 @@ mod tests {
 
     #[test]
     fn single_candidate_yields_no_subtitle() {
-        let out = select_labels("login", vec![(4, "url".into(), "https://x.test".into())]);
+        let out = select_labels("login", vec![cand(4, "url", "https://x.test")]);
         assert_eq!(out.title, "https://x.test");
         assert_eq!(out.subtitle, None);
     }
@@ -222,7 +307,7 @@ mod tests {
     #[test]
     fn values_are_truncated_to_the_cap() {
         let long = "a".repeat(MAX_LABEL_CHARS + 50);
-        let out = select_labels("login", vec![(1, "name".into(), long)]);
+        let out = select_labels("login", vec![cand(1, "name", &long)]);
         assert_eq!(out.title.chars().count(), MAX_LABEL_CHARS);
     }
 
@@ -230,7 +315,7 @@ mod tests {
     fn truncation_is_char_safe_for_multibyte_values() {
         // Slicing by byte index would panic mid-codepoint.
         let long = "é".repeat(MAX_LABEL_CHARS + 10);
-        let out = select_labels("login", vec![(1, "name".into(), long)]);
+        let out = select_labels("login", vec![cand(1, "name", &long)]);
         assert_eq!(out.title.chars().count(), MAX_LABEL_CHARS);
     }
 
@@ -239,10 +324,7 @@ mod tests {
         let long = "b".repeat(MAX_LABEL_CHARS + 50);
         let out = select_labels(
             "login",
-            vec![
-                (0, "title".into(), "T".into()),
-                (3, "username".into(), long),
-            ],
+            vec![cand(0, "title", "T"), cand(3, "username", &long)],
         );
         let subtitle = out.subtitle.expect("subtitle present");
         // "username: " prefix is not part of the value cap.
@@ -257,12 +339,100 @@ mod tests {
         // A present-but-empty allowlisted field must not produce a blank row.
         let out = select_labels(
             "login",
-            vec![
-                (0, "title".into(), "".into()),
-                (3, "username".into(), "alice".into()),
-            ],
+            vec![cand(0, "title", ""), cand(3, "username", "alice")],
         );
         assert_eq!(out.title, "alice");
         assert_eq!(out.subtitle, None);
+    }
+
+    // ---- blank / missing values (#526 review) ----
+
+    #[test]
+    fn whitespace_only_value_is_ignored_like_an_empty_one() {
+        // `is_empty()` alone let these through and rendered a blank row that
+        // the user could neither identify nor distinguish from its neighbours.
+        for blank in [" ", "\t", "\n", "   \t\n "] {
+            let out = select_labels(
+                "login",
+                vec![cand(0, "title", blank), cand(3, "username", "alice")],
+            );
+            assert_eq!(out.title, "alice", "blank {blank:?} won the title");
+            assert_eq!(out.subtitle, None);
+        }
+    }
+
+    #[test]
+    fn a_lone_whitespace_value_falls_back_rather_than_blanking_the_row() {
+        let out = select_labels("login", vec![cand(0, "title", "   ")]);
+        assert_eq!(out.title, "login");
+        assert_eq!(out.subtitle, None);
+    }
+
+    #[test]
+    fn surviving_values_are_trimmed_for_display() {
+        let out = select_labels(
+            "login",
+            vec![
+                cand(0, "title", "  Bank  "),
+                cand(3, "username", "\talice\n"),
+            ],
+        );
+        assert_eq!(out.title, "Bank");
+        assert_eq!(out.subtitle.as_deref(), Some("username: alice"));
+    }
+
+    #[test]
+    fn a_typeless_record_with_no_candidates_still_gets_a_title() {
+        // `record_type` is "Type (optional)" in the editor, so an empty one is
+        // ordinary use — not merely a wiped-handle artefact. An empty title
+        // renders as a blank row AND a blank detail-pane heading.
+        for record_type in ["", "   ", "\t"] {
+            let out = select_labels(record_type, vec![]);
+            assert_eq!(out.title, UNTITLED_LABEL);
+            assert_eq!(out.subtitle, None);
+        }
+    }
+
+    #[test]
+    fn record_type_fallback_is_trimmed_and_truncated() {
+        let out = select_labels("  login  ", vec![]);
+        assert_eq!(out.title, "login");
+
+        let long = "t".repeat(MAX_LABEL_CHARS + 50);
+        let out = select_labels(&long, vec![]);
+        assert_eq!(out.title.chars().count(), MAX_LABEL_CHARS);
+    }
+
+    #[test]
+    fn title_is_never_empty_for_any_input_combination() {
+        // The invariant RecordLabels.title's doc comment claims, over every
+        // shape that reaches it: no candidates, blank candidates, blank type.
+        for record_type in ["", " ", "login"] {
+            for candidates in [
+                vec![],
+                vec![cand(0, "title", "")],
+                vec![cand(0, "title", "  ")],
+                vec![cand(0, "title", "Bank")],
+            ] {
+                let out = select_labels(record_type, candidates);
+                assert!(
+                    !out.title.is_empty(),
+                    "empty title for type {record_type:?}"
+                );
+            }
+        }
+    }
+
+    // ---- redacted Debug ----
+
+    #[test]
+    fn debug_redacts_both_labels() {
+        let labels = select_labels(
+            "login",
+            vec![cand(0, "title", "Bank"), cand(3, "username", "alice")],
+        );
+        let rendered = format!("{labels:?}");
+        assert!(!rendered.contains("Bank"), "{rendered}");
+        assert!(!rendered.contains("alice"), "{rendered}");
     }
 }

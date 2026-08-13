@@ -2220,6 +2220,7 @@ mod title_path {
     use super::*;
     use rand_core::{OsRng, RngCore};
     use secretary_core::crypto::secret::SecretBytes;
+    use secretary_desktop::record_title::MAX_LABEL_CHARS;
 
     const CREATE_DISPLAY_NAME: &str = "#526 title-path test identity";
 
@@ -2347,6 +2348,44 @@ mod title_path {
             "field name metadata should still be present"
         );
         assert_eq!(out.title, "alice");
+    }
+
+    #[test]
+    fn a_long_secret_cannot_leak_as_a_truncated_prefix() {
+        // #526 review — the sibling test above asserts on FULL literals, and
+        // every label is truncated to MAX_LABEL_CHARS on the way out. So a
+        // secret longer than the cap would reach the wire as its first 120
+        // characters and `wire.contains(<whole value>)` would still be false:
+        // test green, secret on screen. Assert on a PREFIX instead, which is
+        // the property actually claimed ("no part of this value is present").
+        let long_secret: String = std::iter::repeat_n('s', MAX_LABEL_CHARS + 40)
+            .chain("-TAIL".chars())
+            .collect();
+        let out = save_then_read(
+            vec![
+                text_field("username", "alice"),
+                text_field("notes", &long_secret),
+            ],
+            "login",
+        );
+        let wire = serde_json::to_string(&out.json).expect("serialize");
+        let prefix: String = long_secret.chars().take(40).collect();
+        assert!(
+            !wire.contains(&prefix),
+            "a truncated prefix of a non-allowlisted value reached the wire"
+        );
+        assert!(!wire.contains(&long_secret), "full value reached the wire");
+        assert_eq!(out.title, "alice");
+    }
+
+    #[test]
+    fn an_allowlisted_value_is_truncated_end_to_end() {
+        // Pins MAX_LABEL_CHARS across the real read path, not just in
+        // select_labels' unit tests — the cap is what the prefix test above
+        // relies on existing.
+        let long_name: String = std::iter::repeat_n('n', MAX_LABEL_CHARS + 40).collect();
+        let out = save_then_read(vec![text_field("name", &long_name)], "login");
+        assert_eq!(out.title.chars().count(), MAX_LABEL_CHARS);
     }
 
     #[test]
