@@ -4,9 +4,12 @@
     SIDEBAR_MIN_PX,
     LIST_MIN_PX,
     DETAIL_MIN_PX,
+    SPLITTER_PX,
+    SPLITTER_COUNT,
     loadFractions,
     saveFraction,
     clampPaneWidthPx,
+    paneStorage,
     type PaneKey
   } from '../lib/paneWidths';
 
@@ -25,7 +28,12 @@
   // fine enough to land on a chosen width.
   const KEYBOARD_STEP_PCT = 2;
 
-  const stored = loadFractions(localStorage);
+  // `paneStorage()`, never the bare global: the property access itself throws
+  // under a blocked-storage policy, and this runs during component init — an
+  // unguarded throw here took down the whole unlocked vault screen (#526
+  // review).
+  const storage = paneStorage();
+  const stored = loadFractions(storage);
   let sidebarPct = $state(stored.sidebar * 100);
   let listPct = $state(stored.list * 100);
 
@@ -36,8 +44,28 @@
     return shellEl?.getBoundingClientRect().width ?? 0;
   }
 
-  /** Commit a pane width given a desired pixel value, clamping against the
-      other panes' floors and persisting the resulting fraction. */
+  /** What the rest of the layout will actually occupy while `pane` is dragged:
+      the splitter columns, plus each other pane's effective width.
+
+      The detail pane contributes its FLOOR — it is the `1fr` track, so it
+      genuinely does yield down to that. The other fractioned pane contributes
+      its CURRENT width, because CSS grid will not shrink it below what its own
+      fraction asks for; assuming its floor here is what made the splitter lag
+      the cursor (#526 review). Consequence worth knowing: dragging one splitter
+      no longer pushes the neighbouring pane — it stops when the neighbour's
+      current width would be encroached. Shrink the neighbour first. */
+  function reservedPx(pane: PaneKey): number {
+    // Spanned (Trash / Contacts): one splitter, and the spanned region keeps
+    // the list floor. Only the sidebar splitter is rendered in that layout.
+    if (spanDetail) return SPLITTER_PX + LIST_MIN_PX;
+    const splitters = SPLITTER_COUNT * SPLITTER_PX;
+    return pane === 'sidebar'
+      ? splitters + currentPx('list') + DETAIL_MIN_PX
+      : splitters + currentPx('sidebar') + DETAIL_MIN_PX;
+  }
+
+  /** Commit a pane width given a desired pixel value, clamping against what
+      the rest of the layout needs and persisting the resulting fraction. */
   function setPaneFromPx(pane: PaneKey, requestedPx: number): void {
     const width = containerPx();
     if (width <= 0) return;
@@ -45,13 +73,12 @@
       requestedPx,
       ownMinPx: pane === 'sidebar' ? SIDEBAR_MIN_PX : LIST_MIN_PX,
       containerPx: width,
-      siblingsMinPx:
-        pane === 'sidebar' ? LIST_MIN_PX + DETAIL_MIN_PX : SIDEBAR_MIN_PX + DETAIL_MIN_PX
+      reservedPx: reservedPx(pane)
     });
     const pct = (px / width) * 100;
     if (pane === 'sidebar') sidebarPct = pct;
     else listPct = pct;
-    saveFraction(localStorage, pane, px / width);
+    saveFraction(storage, pane, px / width);
   }
 
   function currentPx(pane: PaneKey): number {
@@ -76,15 +103,35 @@
       );
       if (pane === 'sidebar') sidebarPct = next;
       else listPct = next;
-      saveFraction(localStorage, pane, next / 100);
+      // Persist only a fraction `parseFraction` will accept back. The bounds
+      // here are 0 and 100 inclusive, but a stored 0 or 1 is rejected on the
+      // next load and silently reset to the default — so a geometry the user
+      // deliberately chose would vanish at restart (#526 review).
+      if (next > 0 && next < 100) saveFraction(storage, pane, next / 100);
       return;
     }
     setPaneFromPx(pane, currentPx(pane) + direction * (KEYBOARD_STEP_PCT / 100) * width);
   }
 
+  // #526 review — both handlers order their DOM call BEFORE/AFTER the state
+  // write deliberately. `setPointerCapture` / `releasePointerCapture` throw
+  // (NotFoundError, InvalidStateError) when the pointerId no longer matches an
+  // active pointer — which is exactly the `pointercancel` situation the cancel
+  // handler below exists for. An exception thrown out of an event handler is
+  // swallowed by event dispatch, and a production Tauri build has no console
+  // to see it in, so whichever statement runs second may simply never run.
+  //
+  // Down: capture first, arm `dragging` only if it succeeded — otherwise we'd
+  // be armed with no capture, never see the pointerup outside the 5px
+  // splitter, and stay armed for the rest of the session.
   function onPointerDown(pane: PaneKey, e: PointerEvent): void {
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      // No capture, so no drag. Leaving `dragging` null is the safe state.
+      return;
+    }
     dragging = pane;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   }
 
   function onPointerMove(e: PointerEvent): void {
@@ -100,14 +147,31 @@
     const left = shellEl.getBoundingClientRect().left;
     // The sidebar splitter sets the sidebar's right edge; the list splitter
     // sets the list's right edge, so the list width is the remainder.
-    if (dragging === 'sidebar') setPaneFromPx('sidebar', e.clientX - left);
-    else setPaneFromPx('list', e.clientX - left - currentPx('sidebar'));
+    //
+    // Both subtract half a splitter so the divider is CENTRED on the pointer
+    // rather than starting at it, and the list additionally subtracts the
+    // whole first splitter, which sits between the sidebar and the list. The
+    // splitter columns are real grid tracks; ignoring them left the divider a
+    // few px behind the cursor for the whole drag (#526 review).
+    const half = SPLITTER_PX / 2;
+    if (dragging === 'sidebar') {
+      setPaneFromPx('sidebar', e.clientX - left - half);
+    } else {
+      setPaneFromPx('list', e.clientX - left - currentPx('sidebar') - SPLITTER_PX - half);
+    }
   }
 
+  // Up / cancel: disarm FIRST, then release. A throwing release must not be
+  // able to leave `dragging` set — that is the very stuck-drag this handler
+  // was added to prevent, and it would have survived its own fix.
   function onPointerUp(e: PointerEvent): void {
     if (!dragging) return;
-    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     dragging = null;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      // Already released or the pointer is gone — nothing left to clean up.
+    }
   }
 
   // #526 review — dragging was cleared only on pointerup. A pointercancel
@@ -124,7 +188,7 @@
   bind:this={shellEl}
   style="--pane-sidebar-w: {sidebarPct}%; --pane-list-w: {listPct}%;
     --pane-sidebar-min: {SIDEBAR_MIN_PX}px; --pane-list-min: {LIST_MIN_PX}px;
-    --pane-detail-min: {DETAIL_MIN_PX}px;"
+    --pane-detail-min: {DETAIL_MIN_PX}px; --pane-splitter-w: {SPLITTER_PX}px;"
 >
   <div class="pane-shell__sidebar">{@render sidebar()}</div>
 
@@ -225,7 +289,10 @@
   }
 
   .pane-shell__splitter {
-    width: 5px;
+    /* From paneWidths.ts's SPLITTER_PX — the same single-source discipline the
+       floors use. This width is a TERM in MIN_SHELL_WIDTH_PX, so a hand-copied
+       number here would silently invalidate the window's minWidth. */
+    width: var(--pane-splitter-w);
     cursor: col-resize;
     background: var(--color-border);
     /* Widen the hit area without widening the visual line. */

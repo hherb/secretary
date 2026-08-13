@@ -44,17 +44,19 @@
   --radius-md: 6px;
   --radius-lg: 10px;
 
-  /* Three-pane layout (#526). Fractions of the container, not pixels, so the
-     panes scale with the window in pure CSS. These are DEFAULTS — a persisted
-     value is applied as an inline style on .pane-shell and wins by cascade.
-     Pixel floors live in paneWidths.ts; there is deliberately no maximum. */
-  --pane-sidebar-w: 18%;
-  --pane-list-w: 26%;
+  /* Three-pane layout (#526): no --pane-* tokens live here on purpose.
+     PaneShell.svelte sets every one of them (widths, floors, splitter width)
+     as an inline style on .pane-shell, unconditionally, on every render —
+     loadFractions() always returns numbers, falling back to
+     SIDEBAR_DEFAULT_FRACTION / LIST_DEFAULT_FRACTION when storage is empty.
+     A :root default here would therefore never be read, and duplicating those
+     two fractions as hand-written percentages is exactly the drift the floors
+     avoid by being plumbed through --pane-*-min (#526 review). */
 
   /* Text/foreground laid over a --color-primary fill (e.g. the selected
-     record row, Task 7). Kept separate from --color-on-danger — same value
-     today, but the two fills are unrelated and reusing the danger token
-     over a primary fill would be a token misuse. */
+     record row — see RecordRow.svelte / BlockCard.svelte). Kept separate from
+     --color-on-danger — same value today, but the two fills are unrelated and
+     reusing the danger token over a primary fill would be a token misuse. */
   --color-on-primary: #fff;
 
   /* Typography */
