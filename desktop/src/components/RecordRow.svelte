@@ -12,26 +12,54 @@
     onDelete?: (record: RecordDto) => void;
     onRestore?: (record: RecordDto) => void;
     onMove?: (record: RecordDto) => void;
+    /** #526 — this row is the one open in the detail pane. */
+    selected?: boolean;
+    /** #526 — an editor is open in the detail pane. Rows go non-interactive
+        so a stray click cannot silently discard an unsaved edit. */
+    frozen?: boolean;
   };
-  let { record, onClick, onDelete, onRestore, onMove }: Props = $props();
+  let {
+    record,
+    onClick,
+    onDelete,
+    onRestore,
+    onMove,
+    selected = false,
+    frozen = false
+  }: Props = $props();
 
   let countLabel = $derived(`${record.fieldCount} field${record.fieldCount === 1 ? '' : 's'}`);
   let deleted = $derived(record.tombstoned === true);
   let contentless = $derived(isContentlessTombstone(record));
+  // Title first: it is what distinguishes one row from another, so it must
+  // lead the accessible name too.
   let ariaLabel = $derived(
-    `${record.recordType} record, ${countLabel}${contentless ? ', no recoverable contents' : ''}`
+    `${record.title}, ${record.recordType} record, ${countLabel}${
+      contentless ? ', no recoverable contents' : ''
+    }`
   );
 </script>
 
-<div class="record-row-wrap" class:record-row--deleted={deleted}>
+<div
+  class="record-row-wrap"
+  class:record-row--deleted={deleted}
+  class:record-row--selected={selected}
+  class:record-row--frozen={frozen}
+>
   <button
     type="button"
     class="record-row"
     aria-label={ariaLabel}
-    disabled={deleted}
-    onclick={() => onClick(record)}
+    aria-current={selected ? 'true' : undefined}
+    disabled={deleted || frozen}
+    onclick={() => {
+      if (!frozen) onClick(record);
+    }}
   >
-    <span class="record-row__type">{record.recordType}</span>
+    <span class="record-row__title">{record.title}</span>
+    {#if record.subtitle}
+      <span class="record-row__subtitle">{record.subtitle}</span>
+    {/if}
     {#each record.tags as tag (tag)}
       <span class="record-row__tag">{tag}</span>
     {/each}
@@ -41,14 +69,53 @@
     {/if}
   </button>
 
-  {#if deleted && onRestore}
-    <button type="button" class="record-row__restore" aria-label="Restore record" onclick={() => onRestore(record)}>Restore</button>
-  {:else if !deleted}
-    {#if onMove}
-      <button type="button" class="record-row__move" aria-label="Move record" onclick={() => onMove(record)}>Move</button>
-    {/if}
-    {#if onDelete}
-      <button type="button" class="record-row__delete" aria-label="Delete record" onclick={() => onDelete(record)}>Delete</button>
+  {#if !frozen}
+    {#if deleted && onRestore}
+      <button type="button" class="record-row__restore" aria-label="Restore record" onclick={() => onRestore(record)}>Restore</button>
+    {:else if !deleted}
+      {#if onMove}
+        <button type="button" class="record-row__move" aria-label="Move record" onclick={() => onMove(record)}>Move</button>
+      {/if}
+      {#if onDelete}
+        <button type="button" class="record-row__delete" aria-label="Delete record" onclick={() => onDelete(record)}>Delete</button>
+      {/if}
     {/if}
   {/if}
 </div>
+
+<style>
+  .record-row__title {
+    display: block;
+    font-size: var(--font-size-md);
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .record-row__subtitle {
+    display: block;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .record-row--selected {
+    background: var(--color-primary);
+    border-radius: var(--radius-sm);
+  }
+
+  .record-row--selected .record-row__title,
+  .record-row--selected .record-row__subtitle {
+    color: var(--color-on-primary);
+  }
+
+  /* Frozen: an editor is open. Dimmed and non-interactive, so the only way
+     out of the editor stays Save or Cancel. */
+  .record-row--frozen {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+</style>

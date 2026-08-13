@@ -11,8 +11,10 @@ const REC: RecordDto = {
 
 describe('RecordRow', () => {
   it('shows record type, field count, and tags', () => {
-    const { getByText } = render(RecordRow, { props: { record: REC, onClick: () => {} } });
-    expect(getByText('login')).toBeTruthy();
+    // #526: the row's primary visible text is now the derived title, not the
+    // record type — record type moved into the accessible name instead.
+    const { getByText, getByRole } = render(RecordRow, { props: { record: REC, onClick: () => {} } });
+    expect(getByRole('button', { name: /login record/ })).toBeTruthy();
     expect(getByText(/4 fields/)).toBeTruthy();
     expect(getByText('work')).toBeTruthy();
   });
@@ -41,5 +43,72 @@ describe('RecordRow', () => {
   it('shows no hint for a live record', () => {
     const { queryByText } = render(RecordRow, { props: { record: REC, onClick: () => {} } });
     expect(queryByText(/no recoverable contents/i)).toBeNull();
+  });
+});
+
+describe('RecordRow — derived labels (#526)', () => {
+  it('renders the derived title as the primary text', () => {
+    const record = { ...REC, title: 'alice@example.test', subtitle: 'url: https://bank.test' };
+    const { getByText } = render(RecordRow, { props: { record, onClick: () => {} } });
+    expect(getByText('alice@example.test')).toBeTruthy();
+  });
+
+  it('renders the subtitle when present', () => {
+    const record = { ...REC, title: 'Bank', subtitle: 'username: alice' };
+    const { getByText } = render(RecordRow, { props: { record, onClick: () => {} } });
+    expect(getByText('username: alice')).toBeTruthy();
+  });
+
+  it('renders no subtitle element when the record has none', () => {
+    const record = { ...REC, title: 'Bank', subtitle: null };
+    const { container } = render(RecordRow, { props: { record, onClick: () => {} } });
+    expect(container.querySelector('.record-row__subtitle')).toBeNull();
+  });
+
+  it('puts the title in the aria-label so rows are distinguishable by ear', () => {
+    const record = { ...REC, title: 'alice@example.test', subtitle: null };
+    const { getByRole } = render(RecordRow, { props: { record, onClick: () => {} } });
+    expect(getByRole('button', { name: /alice@example\.test/ })).toBeTruthy();
+  });
+});
+
+describe('RecordRow — selection and freezing (#526)', () => {
+  it('sets aria-current when selected', () => {
+    const { getByRole } = render(RecordRow, {
+      props: { record: REC, onClick: () => {}, selected: true }
+    });
+    expect(getByRole('button', { name: new RegExp(REC.title) }).getAttribute('aria-current')).toBe('true');
+  });
+
+  it('disables the row when frozen', () => {
+    const { getByRole } = render(RecordRow, {
+      props: { record: REC, onClick: () => {}, frozen: true }
+    });
+    expect(
+      (getByRole('button', { name: new RegExp(REC.title) }) as HTMLButtonElement).disabled
+    ).toBe(true);
+  });
+
+  it('does not fire onClick when frozen', async () => {
+    const onClick = vi.fn();
+    const { getByRole } = render(RecordRow, {
+      props: { record: REC, onClick, frozen: true }
+    });
+    await fireEvent.click(getByRole('button', { name: new RegExp(REC.title) }));
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('hides the row actions when frozen so an edit cannot be interrupted', () => {
+    const { queryByRole } = render(RecordRow, {
+      props: { record: REC, onClick: () => {}, onDelete: () => {}, frozen: true }
+    });
+    expect(queryByRole('button', { name: /delete record/i })).toBeNull();
+  });
+
+  it('shows the row actions when not frozen', () => {
+    const { getByRole } = render(RecordRow, {
+      props: { record: REC, onClick: () => {}, onDelete: () => {}, frozen: false }
+    });
+    expect(getByRole('button', { name: /delete record/i })).toBeTruthy();
   });
 });

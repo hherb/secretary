@@ -8,7 +8,7 @@
     type BlockSummaryDto,
     type RecordDto
   } from '../lib/ipc';
-  import { openRecord, openNewRecord, back } from '../lib/browse';
+  import { openRecord, openNewRecord } from '../lib/browse';
   import { userMessageFor, type AppError } from '../lib/errors';
   import RecordRow from './RecordRow.svelte';
   import BlockRecipients from './BlockRecipients.svelte';
@@ -18,8 +18,15 @@
   import { authorizeWrite, ReauthCancelled } from '../lib/writeGuard';
   import { hasMoveTargets } from '../lib/blockCrud';
 
-  type Props = { block: BlockSummaryDto; blockCount: number };
-  let { block, blockCount }: Props = $props();
+  type Props = {
+    block: BlockSummaryDto;
+    blockCount: number;
+    /** #526 — the row open in the detail pane, or null. */
+    selectedRecordUuidHex?: string | null;
+    /** #526 — an editor is open; rows go non-interactive. */
+    frozen?: boolean;
+  };
+  let { block, blockCount, selectedRecordUuidHex = null, frozen = false }: Props = $props();
 
   // Hide the per-record Move button when there is nowhere to move to: a vault
   // with only this block has no candidate target (MoveTargetPicker would only
@@ -157,9 +164,14 @@
 </script>
 
 <section class="record-list">
-  <button type="button" class="record-list__back" onclick={() => back()}>← {block.blockName}</button>
+  <h2 class="record-list__heading">{block.blockName}</h2>
   <BlockRecipients {block} />
-  <button type="button" class="record-list__add" onclick={() => openNewRecord(block)}>+ Add record</button>
+  <button
+    type="button"
+    class="record-list__add"
+    disabled={frozen}
+    onclick={() => openNewRecord(block)}
+  >+ Add record</button>
 
   <label class="record-list__show-deleted">
     <input type="checkbox" bind:checked={showDeleted} />
@@ -175,7 +187,15 @@
     <p class="record-list__empty">No records.</p>
   {:else}
     {#each records as record (record.recordUuidHex)}
-      <RecordRow {record} onClick={openRecord} {onDelete} {onRestore} onMove={canMove ? onMove : undefined} />
+      <RecordRow
+        {record}
+        onClick={openRecord}
+        {onDelete}
+        {onRestore}
+        onMove={canMove ? onMove : undefined}
+        selected={record.recordUuidHex === selectedRecordUuidHex}
+        {frozen}
+      />
     {/each}
   {/if}
 </section>
