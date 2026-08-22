@@ -447,9 +447,18 @@ body {
 
 /* RecordRow — single record within a RecordList; models .block-card. */
 .record-row {
+  /* Column, not a baseline row (#526 review, GUI pass). As a horizontal flex
+     row the title was the only shrinkable child, so the metadata's natural
+     width won and the title ellipsised away to "Lo…" in a ~400px pane. The
+     title is the row's whole purpose; it gets the full width, and the count +
+     modified date moved to the row's `title` tooltip. */
   display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-1);
+  /* Children need this to be allowed to shrink below their content width,
+     which is what makes text-overflow: ellipsis fire at all. */
+  min-width: 0;
   width: 100%;
   text-align: left;
   padding: var(--space-3) var(--space-4);
@@ -473,10 +482,15 @@ body {
   font-size: var(--font-size-xs);
   font-family: var(--font-stack-mono);
 }
-.record-row__meta {
-  margin-left: auto;
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
+/* Tags + the tombstone warning share one wrapping line under the labels.
+   `.record-row__meta` was deleted with the horizontal layout — the count and
+   modified date are the row button's `title` tooltip now (#526 review). */
+.record-row__badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
 }
 .record-row__no-content {
   color: var(--color-text-muted);
@@ -1153,13 +1167,16 @@ body {
 }
 
 /* BlockCard wrapper + trash action. */
+/* Positioning context for .block-card__actions, which is absolutely
+   positioned over the card's right edge. NOT a flex row any more: as flex
+   siblings the opacity-hidden actions still reserved their width, which
+   overflowed the narrow sidebar column and produced a horizontal scrollbar
+   (#526 review, GUI pass). */
 .block-card-wrap {
-  display: flex;
-  align-items: stretch;
-  gap: var(--space-2);
+  position: relative;
 }
 .block-card-wrap .block-card {
-  flex: 1 1 auto;
+  width: 100%;
 }
 .block-card__trash {
   flex: 0 0 auto;

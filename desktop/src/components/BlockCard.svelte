@@ -51,38 +51,50 @@
   </button>
 
   {#if !frozen}
-    {#if onRename}
-      <button
-        type="button"
-        class="block-card__rename"
-        aria-label="Rename block"
-        onclick={() => onRename(block)}
-      >
-        Rename
-      </button>
-    {/if}
+    <!-- #526 review (GUI pass) — actions live in their own container so they
+         can leave the flow. They are hidden with `opacity: 0` rather than
+         `display: none`, deliberately: an opacity-hidden control stays
+         focusable and stays in the accessibility tree, so a keyboard user can
+         still tab to it (`:focus-within` below reveals the group). But an
+         opacity-hidden element KEEPS ITS LAYOUT BOX — so as flex siblings of
+         the card these three permanently reserved their width, hover or not.
+         In a ~230px sidebar that overflowed the pane and produced a
+         horizontal scrollbar. Absolutely positioning the group is what makes
+         "hidden" actually cost nothing. -->
+    <div class="block-card__actions">
+      {#if onRename}
+        <button
+          type="button"
+          class="block-card__rename"
+          aria-label="Rename block"
+          onclick={() => onRename(block)}
+        >
+          Rename
+        </button>
+      {/if}
 
-    {#if onShare}
-      <button
-        type="button"
-        class="block-card__share"
-        aria-label="Share block"
-        onclick={() => onShare(block)}
-      >
-        <Link />
-      </button>
-    {/if}
+      {#if onShare}
+        <button
+          type="button"
+          class="block-card__share"
+          aria-label="Share block"
+          onclick={() => onShare(block)}
+        >
+          <Link />
+        </button>
+      {/if}
 
-    {#if onTrash}
-      <button
-        type="button"
-        class="block-card__trash"
-        aria-label="Trash block"
-        onclick={() => onTrash(block)}
-      >
-        <Trash />
-      </button>
-    {/if}
+      {#if onTrash}
+        <button
+          type="button"
+          class="block-card__trash"
+          aria-label="Trash block"
+          onclick={() => onTrash(block)}
+        >
+          <Trash />
+        </button>
+      {/if}
+    </div>
   {/if}
 </div>
 
@@ -91,29 +103,31 @@
      hover, on selection, or when anything inside the row has keyboard focus.
      Opacity only: the buttons stay in the DOM and in the accessibility tree,
      because a keyboard user never hovers. */
-  .block-card-wrap :global(.block-card__rename),
-  .block-card-wrap :global(.block-card__share),
-  .block-card-wrap :global(.block-card__trash) {
+  /* The card owns the full column width; the actions float over its right
+     edge instead of sitting beside it (see the markup comment above). Each
+     button already paints an opaque --color-bg-elevated background and a
+     border, so the group occludes any long block name it overlaps rather
+     than colliding with it. */
+  .block-card__actions {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-end: var(--space-2);
+    translate: 0 -50%;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
     opacity: 0;
     transition: opacity 120ms ease;
   }
 
-  .block-card-wrap:hover :global(.block-card__rename),
-  .block-card-wrap:hover :global(.block-card__share),
-  .block-card-wrap:hover :global(.block-card__trash),
-  .block-card-wrap:focus-within :global(.block-card__rename),
-  .block-card-wrap:focus-within :global(.block-card__share),
-  .block-card-wrap:focus-within :global(.block-card__trash),
-  .block-card-wrap--selected :global(.block-card__rename),
-  .block-card-wrap--selected :global(.block-card__share),
-  .block-card-wrap--selected :global(.block-card__trash) {
+  .block-card-wrap:hover .block-card__actions,
+  .block-card-wrap:focus-within .block-card__actions,
+  .block-card-wrap--selected .block-card__actions {
     opacity: 1;
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .block-card-wrap :global(.block-card__rename),
-    .block-card-wrap :global(.block-card__share),
-    .block-card-wrap :global(.block-card__trash) {
+    .block-card__actions {
       transition: none;
     }
   }

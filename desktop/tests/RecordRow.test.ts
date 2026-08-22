@@ -13,10 +13,30 @@ describe('RecordRow', () => {
   it('shows record type, field count, and tags', () => {
     // #526: the row's primary visible text is now the derived title, not the
     // record type — record type moved into the accessible name instead.
+    //
+    // #526 review (GUI pass): the field count is no longer VISIBLE text. It
+    // was a flex sibling that took its natural width and squeezed the title
+    // down to its ellipsis in a narrow pane, so it moved to the row's `title`
+    // tooltip. Still reachable — it stays in the accessible name, and the
+    // tooltip becomes the accessible description.
     const { getByText, getByRole } = render(RecordRow, { props: { record: REC, onClick: () => {} } });
     expect(getByRole('button', { name: /login record/ })).toBeTruthy();
-    expect(getByText(/4 fields/)).toBeTruthy();
+    expect(getByRole('button', { name: /4 fields/ })).toBeTruthy();
     expect(getByText('work')).toBeTruthy();
+  });
+
+  it('keeps the title as the row’s only unbounded text, with meta in a tooltip', () => {
+    // The regression this pins: "Localmail" rendering as "Lo…" because the
+    // metadata sat beside it in a horizontal flex row and would not shrink.
+    const { getByRole, queryByText } = render(RecordRow, {
+      props: { record: REC, onClick: () => {} }
+    });
+    const row = getByRole('button');
+    expect(row.getAttribute('title')).toMatch(/4 fields · modified /);
+    // The count must NOT be its own visible text node any more; if it comes
+    // back as one, it is competing with the title for width again.
+    expect(queryByText(/^4 fields/)).toBeNull();
+    expect(queryByText('alice@example.test')).toBeTruthy();
   });
 
   it('calls onClick with the record', async () => {

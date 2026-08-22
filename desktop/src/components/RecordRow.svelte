@@ -38,6 +38,24 @@
       contentless ? ', no recoverable contents' : ''
     }`
   );
+
+  // #526 review (GUI pass) — field count and modified date move OUT of the
+  // row's layout and into a tooltip.
+  //
+  // They used to be a sibling flex item with `margin-left: auto`, on a row
+  // whose only flexible child was the title. In the old full-width single-pane
+  // list that was fine; in a ~400px middle pane the metadata kept its natural
+  // width and the title collapsed to its ellipsis — "Localmail" rendered as
+  // "Lo…", which defeats the whole point of deriving a row label.
+  //
+  // The title is what distinguishes one row from another, so it gets the
+  // width. This is not a loss for assistive tech: with `aria-label` already
+  // set, `title` is exposed as the accessible DESCRIPTION, so a screen reader
+  // now reads the modified date it never announced while the text was visual-
+  // only.
+  let metaTooltip = $derived(
+    `${countLabel} · modified ${formatShortDate(record.lastModMs)}`
+  );
 </script>
 
 <div
@@ -51,6 +69,7 @@
     class="record-row"
     aria-label={ariaLabel}
     aria-current={selected ? 'true' : undefined}
+    title={metaTooltip}
     disabled={deleted || frozen}
     onclick={() => {
       if (!frozen) onClick(record);
@@ -60,12 +79,20 @@
     {#if record.subtitle}
       <span class="record-row__subtitle">{record.subtitle}</span>
     {/if}
-    {#each record.tags as tag (tag)}
-      <span class="record-row__tag">{tag}</span>
-    {/each}
-    <span class="record-row__meta">{countLabel} · modified {formatShortDate(record.lastModMs)}</span>
-    {#if contentless}
-      <span class="record-row__no-content">· no recoverable contents</span>
+    <!-- Tags and the tombstone warning STAY visible. Neither is metadata:
+         a tag is user-authored filing information, and "no recoverable
+         contents" is a warning about what a Restore would actually bring
+         back (#195) — burying that in a tooltip would hide it exactly when
+         it matters. -->
+    {#if record.tags.length > 0 || contentless}
+      <span class="record-row__badges">
+        {#each record.tags as tag (tag)}
+          <span class="record-row__tag">{tag}</span>
+        {/each}
+        {#if contentless}
+          <span class="record-row__no-content">no recoverable contents</span>
+        {/if}
+      </span>
     {/if}
   </button>
 
@@ -115,7 +142,6 @@
 
   .record-row-wrap.record-row--selected .record-row__title,
   .record-row-wrap.record-row--selected .record-row__subtitle,
-  .record-row-wrap.record-row--selected .record-row__meta,
   .record-row-wrap.record-row--selected .record-row__no-content {
     color: var(--color-on-primary);
   }

@@ -147,4 +147,39 @@ describe('BlockCard.svelte — frozen (#526 review)', () => {
     await fireEvent.click(getByRole('button', { name: /banking/i }));
     expect(onClick).toHaveBeenCalledWith(BLOCK);
   });
+
+  // #526 review (GUI pass) — the three actions must live inside ONE container
+  // that CSS can lift out of the flow. They are hidden with `opacity: 0` (so
+  // they stay focusable and in the accessibility tree), and an opacity-hidden
+  // element still occupies its layout box — so while they were flex SIBLINGS
+  // of the card they permanently reserved their width, overflowed the ~230px
+  // sidebar column and produced a horizontal scrollbar.
+  //
+  // jsdom has no layout engine and does not load theme.css, so the positioning
+  // itself is not observable here. What IS observable, and what the CSS fix
+  // depends on, is the containment: if a future edit hoists an action back out
+  // to be a direct child of the wrap, the absolute-positioning rule stops
+  // applying to it and the overflow returns.
+  it('groups every action inside one out-of-flow container', () => {
+    const { container, getByRole } = render(BlockCard, {
+      props: {
+        block: BLOCK,
+        onClick: () => {},
+        onRename: () => {},
+        onShare: () => {},
+        onTrash: () => {}
+      }
+    });
+
+    const actions = container.querySelector('.block-card__actions');
+    expect(actions).not.toBeNull();
+
+    for (const name of [/rename block/i, /share block/i, /trash block/i]) {
+      expect(actions!.contains(getByRole('button', { name }))).toBe(true);
+    }
+
+    // The navigable card itself must NOT be inside the overlay — it is the
+    // element the overlay floats above.
+    expect(actions!.contains(getByRole('button', { name: /banking/i }))).toBe(false);
+  });
 });
