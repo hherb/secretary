@@ -5,6 +5,8 @@ import type { RecordDto } from '../src/lib/ipc';
 const base: RecordDto = {
   recordUuidHex: 'cd',
   recordType: 'login',
+  title: 'alice@example.test',
+  subtitle: null,
   tags: [],
   createdAtMs: 1,
   lastModMs: 2,

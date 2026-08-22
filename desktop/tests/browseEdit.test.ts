@@ -4,7 +4,7 @@ import { browseNav, openBlock, openNewBlock, openNewRecord, openEditRecord, back
 import type { BlockSummaryDto, RecordDto } from '../src/lib/ipc';
 
 const BLOCK: BlockSummaryDto = { blockUuidHex: 'ab', blockName: 'B', createdAtMs: 1, lastModifiedMs: 1 };
-const REC: RecordDto = { recordUuidHex: 'cd', recordType: 'login', tags: [], createdAtMs: 1, lastModMs: 1, fieldCount: 0, fields: [] };
+const REC: RecordDto = { recordUuidHex: 'cd', recordType: 'login', title: 'alice@example.test', subtitle: null, tags: [], createdAtMs: 1, lastModMs: 1, fieldCount: 0, fields: [] };
 
 describe('browse edit transitions', () => {
   beforeEach(() => resetBrowse());

@@ -762,14 +762,27 @@ fn read_block_projects_records_and_fields_without_secrets() {
     assert!(names.contains(&"password"));
     assert!(rec.fields.iter().all(|f| f.is_text && !f.is_bytes));
 
+    // #526: `username` is on the title allowlist, so its plaintext legitimately
+    // becomes the row title now — this is the feature, not a leak. `password`
+    // is not allowlisted and must never appear anywhere in the DTO.
+    assert_eq!(
+        rec.title, "owner@example.com",
+        "username is the only allowlisted field present; it becomes the title"
+    );
+    assert_eq!(rec.subtitle, None);
+
     let json = serde_json::to_string(&dto).expect("serialize");
     assert!(
         !json.contains("hunter2"),
         "plaintext password must not be in read_block DTO"
     );
-    assert!(
-        !json.contains("owner@example.com"),
-        "plaintext username must not be in DTO"
+    // The username is expected to appear once, as the title. Asserting the
+    // count (not just presence) rules out it legitimately being the title
+    // AND also leaking a second time elsewhere in the payload.
+    assert_eq!(
+        json.matches("owner@example.com").count(),
+        1,
+        "username must appear exactly once (as the title), not leak a second time"
     );
 }
 
@@ -2185,4 +2198,426 @@ fn presence_pref_dto_wire_format_uses_camel_case() {
     let v = to_json(&dto);
     assert!(v["biometricEnabled"].is_boolean());
     assert_eq!(v["availability"], "notEnrolled");
+}
+
+// ============================================================================
+// Record title derivation (#526)
+//
+// `labels_for_record` walks a real `Record` and calls `expose_text`, which no
+// unit test can reach: `Record::new` / `FieldHandle::new` are `pub(crate)` in
+// the bridge, so a `Record` fixture cannot be built outside it. These tests
+// drive the real read path over a real vault instead — which also buys a
+// stronger assertion than a unit test could make: that a non-allowlisted
+// field's plaintext appears nowhere in the serialized DTO.
+// ============================================================================
+mod title_path {
+    // `use super::*` already brings in `commands::{browse, create, edit}`,
+    // `dtos::{FieldInputDto, FieldValueDto, RecordInputDto}`, `Mutex`,
+    // `VaultSession`, `fresh_state`, `to_json`, `canonicalize_for_auth` and
+    // `PathPurpose` from the file's top-level imports. Re-importing any of
+    // them here would be an unused/duplicate import and fail `-D warnings`.
+    // Only the two crates the top level does NOT import are named.
+    use super::*;
+    use rand_core::{OsRng, RngCore};
+    use secretary_core::crypto::secret::SecretBytes;
+    use secretary_desktop::record_title::MAX_LABEL_CHARS;
+
+    const CREATE_DISPLAY_NAME: &str = "#526 title-path test identity";
+
+    /// Runtime-random hex password — avoids a hardcoded crypto literal.
+    /// Byte-for-byte the same helper `edit_path` uses; each module in this
+    /// file carries its own copy by established convention.
+    fn random_password() -> Vec<u8> {
+        let mut raw = [0u8; 16];
+        OsRng.fill_bytes(&mut raw);
+        raw.iter()
+            .flat_map(|b| format!("{b:02x}").into_bytes())
+            .collect()
+    }
+
+    fn unlocked_session_over_new_vault() -> (Mutex<VaultSession>, tempfile::TempDir, Vec<u8>) {
+        let vault_dir = tempfile::tempdir().expect("vault tempdir");
+        let path = vault_dir.path().to_str().expect("utf8 path");
+        let pw = random_password();
+
+        let (state, _device_dir) = fresh_state();
+        state.lock().unwrap().approve_path(
+            PathPurpose::CreateParent,
+            canonicalize_for_auth(vault_dir.path()).unwrap(),
+        );
+        create::create_vault_impl(
+            &state,
+            path,
+            CREATE_DISPLAY_NAME,
+            &SecretBytes::from(pw.as_slice()),
+            1_700_000_000_000,
+            &mut OsRng,
+        )
+        .expect("create_vault");
+
+        unlock::unlock_with_password_impl(&state, path, &pw).expect("unlock freshly-created vault");
+        (state, vault_dir, pw)
+    }
+
+    fn text_field(name: &str, text: &str) -> FieldInputDto {
+        FieldInputDto {
+            name: name.into(),
+            value: FieldValueDto::Text { text: text.into() },
+        }
+    }
+
+    /// Save one record into a fresh block and read the block back.
+    fn save_then_read(fields: Vec<FieldInputDto>, record_type: &str) -> BlockDetailDtoForTest {
+        let (state, _dir, _pw) = unlocked_session_over_new_vault();
+        let block = edit::create_block_impl(&state, "Logins").expect("create_block");
+        edit::save_record_impl(
+            &state,
+            &block.block_uuid_hex,
+            RecordInputDto {
+                record_type: record_type.into(),
+                tags: vec![],
+                fields,
+            },
+        )
+        .expect("save_record");
+        let detail = browse::read_block_impl(&state, &block.block_uuid_hex, false).expect("read");
+        let json = to_json(&detail);
+        BlockDetailDtoForTest {
+            title: detail.records[0].title.clone(),
+            subtitle: detail.records[0].subtitle.clone(),
+            json,
+        }
+    }
+
+    struct BlockDetailDtoForTest {
+        title: String,
+        subtitle: Option<String>,
+        json: serde_json::Value,
+    }
+
+    #[test]
+    fn allowlisted_field_becomes_the_title() {
+        let out = save_then_read(vec![text_field("username", "alice@example.test")], "login");
+        assert_eq!(out.title, "alice@example.test");
+    }
+
+    #[test]
+    fn priority_order_decides_the_title() {
+        let out = save_then_read(
+            vec![text_field("username", "alice"), text_field("title", "Bank")],
+            "login",
+        );
+        assert_eq!(out.title, "Bank");
+        assert_eq!(out.subtitle.as_deref(), Some("username: alice"));
+    }
+
+    #[test]
+    fn a_record_of_only_secret_fields_falls_back_to_its_type() {
+        let out = save_then_read(
+            vec![
+                text_field("password", "hunter2"),
+                text_field("totp_seed", "JBSWY3DP"),
+            ],
+            "login",
+        );
+        assert_eq!(out.title, "login", "must fall back, never show a secret");
+        assert_eq!(out.subtitle, None);
+    }
+
+    #[test]
+    fn non_allowlisted_plaintext_appears_nowhere_in_the_serialized_dto() {
+        // The load-bearing test. Not "the title isn't the password" — that the
+        // password's plaintext is absent from the ENTIRE wire payload.
+        let out = save_then_read(
+            vec![
+                text_field("username", "alice"),
+                text_field("password", "correct-horse-battery-staple"),
+                text_field("notes", "mother's maiden name is Rosenberg"),
+            ],
+            "login",
+        );
+        let wire = serde_json::to_string(&out.json).expect("serialize");
+        assert!(
+            !wire.contains("correct-horse-battery-staple"),
+            "password leaked into {wire}"
+        );
+        assert!(!wire.contains("Rosenberg"), "notes leaked into {wire}");
+        // Field NAMES are metadata and legitimately present; only values must not be.
+        assert!(
+            wire.contains("password"),
+            "field name metadata should still be present"
+        );
+        assert_eq!(out.title, "alice");
+    }
+
+    #[test]
+    fn a_long_secret_cannot_leak_as_a_truncated_prefix() {
+        // #526 review — the sibling test above asserts on FULL literals, and
+        // every label is truncated to MAX_LABEL_CHARS on the way out. So a
+        // secret longer than the cap would reach the wire as its first 120
+        // characters and `wire.contains(<whole value>)` would still be false:
+        // test green, secret on screen. Assert on a PREFIX instead, which is
+        // the property actually claimed ("no part of this value is present").
+        let long_secret: String = std::iter::repeat_n('s', MAX_LABEL_CHARS + 40)
+            .chain("-TAIL".chars())
+            .collect();
+        let out = save_then_read(
+            vec![
+                text_field("username", "alice"),
+                text_field("notes", &long_secret),
+            ],
+            "login",
+        );
+        let wire = serde_json::to_string(&out.json).expect("serialize");
+        let prefix: String = long_secret.chars().take(40).collect();
+        assert!(
+            !wire.contains(&prefix),
+            "a truncated prefix of a non-allowlisted value reached the wire"
+        );
+        assert!(!wire.contains(&long_secret), "full value reached the wire");
+        assert_eq!(out.title, "alice");
+    }
+
+    #[test]
+    fn an_allowlisted_value_is_truncated_end_to_end() {
+        // Pins MAX_LABEL_CHARS across the real read path, not just in
+        // select_labels' unit tests — the cap is what the prefix test above
+        // relies on existing.
+        let long_name: String = std::iter::repeat_n('n', MAX_LABEL_CHARS + 40).collect();
+        let out = save_then_read(vec![text_field("name", &long_name)], "login");
+        assert_eq!(out.title.chars().count(), MAX_LABEL_CHARS);
+    }
+
+    #[test]
+    fn a_record_with_no_fields_falls_back_to_its_type() {
+        let out = save_then_read(vec![], "secure_note");
+        assert_eq!(out.title, "secure_note");
+        assert_eq!(out.subtitle, None);
+    }
+
+    #[test]
+    fn bytes_fields_are_never_eligible_for_a_title() {
+        // `name` IS allowlisted, but a bstr field must not be stringified into
+        // a row. Base64 of b"hunter2".
+        let out = save_then_read(
+            vec![FieldInputDto {
+                name: "name".into(),
+                value: FieldValueDto::Bytes {
+                    base64: "aHVudGVyMg==".into(),
+                },
+            }],
+            "api_key",
+        );
+        assert_eq!(out.title, "api_key", "a bstr field must not become a title");
+    }
+}
+
+/// One field of a staged smoke record: `(field name, value)`.
+type SmokeField = (&'static str, &'static str);
+/// One staged smoke record: `(record type, fields)`.
+type SmokeRecord = (&'static str, Vec<SmokeField>);
+/// One staged smoke block: `(block name, records)`.
+type SmokeBlock = (&'static str, Vec<SmokeRecord>);
+
+/// Manual GUI-smoke staging for the three-pane layout (#526).
+///
+/// The desktop client has no automatable e2e on macOS (tauri-driver has no
+/// WKWebView support — #161), so the three-pane layout's acceptance is a
+/// human pass. This stages a vault rich enough to exercise it: several
+/// blocks so the sidebar has something to select between, and several
+/// records per block so the middle pane can be clicked THROUGH — which is
+/// what the review found broken (selecting a second record was a silent
+/// no-op).
+///
+/// Modelled on `secretary-cli`'s `stage_smoke_vault`, including its
+/// print-the-password convention: this vault is created here with a
+/// throwaway password, so printing it is intentional and smoke-only. It is
+/// never the committed fixture — the app writes settings INTO whatever vault
+/// it opens, so a smoke run must never touch `core/tests/data/`.
+///
+/// ```bash
+/// SMOKE_OUT=/tmp/pane_smoke cargo test --release -p secretary-desktop \
+///   --test ipc_integration -- --ignored stage_three_pane_smoke_vault --nocapture
+/// ```
+#[test]
+#[ignore = "manual smoke staging helper; set SMOKE_OUT and run with --ignored --nocapture"]
+fn stage_three_pane_smoke_vault() {
+    use rand_core::{OsRng, RngCore};
+    use secretary_core::crypto::secret::SecretBytes;
+
+    let dest = std::env::var("SMOKE_OUT").expect(
+        "set SMOKE_OUT to the destination vault folder, e.g. \
+         SMOKE_OUT=/tmp/pane_smoke cargo test ... -- --ignored \
+         stage_three_pane_smoke_vault --nocapture",
+    );
+    let dest = PathBuf::from(dest);
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest).expect("clear SMOKE_OUT");
+    }
+    std::fs::create_dir_all(&dest).expect("create SMOKE_OUT");
+
+    // A throwaway password, printed below. Random so this file carries no
+    // credential literal (CodeQL flags those, and the repo's test convention
+    // is runtime-random crypto values).
+    let mut raw = [0u8; 8];
+    OsRng.fill_bytes(&mut raw);
+    let password: Vec<u8> = raw
+        .iter()
+        .flat_map(|b| format!("{b:02x}").into_bytes())
+        .collect();
+
+    let (state, _device_dir) = fresh_state();
+    let path = dest.to_str().expect("utf8 path");
+    state.lock().unwrap().approve_path(
+        PathPurpose::CreateParent,
+        canonicalize_for_auth(&dest).unwrap(),
+    );
+    create::create_vault_impl(
+        &state,
+        path,
+        "Three-pane smoke identity",
+        &SecretBytes::from(password.as_slice()),
+        1_700_000_000_000,
+        &mut OsRng,
+    )
+    .expect("create_vault");
+    unlock::unlock_with_password_impl(&state, path, &password).expect("unlock");
+
+    // (block name, [(record type, [(field name, value)])])
+    // Deliberately mixed: allowlisted title fields of different ranks, a
+    // record with ONLY non-allowlisted fields (must fall back to its type),
+    // a typeless record with no allowlisted field (must read "Untitled
+    // record", never blank), and a whitespace-only title (must fall through).
+    let plan: Vec<SmokeBlock> = vec![
+        (
+            "Personal logins",
+            vec![
+                (
+                    "login",
+                    vec![
+                        ("title", "Bank of Example"),
+                        ("username", "ada@example.test"),
+                        ("password", "s3cret-alpha"),
+                    ],
+                ),
+                (
+                    "login",
+                    vec![
+                        ("username", "grace@example.test"),
+                        ("url", "https://mail.example.test"),
+                        ("password", "s3cret-bravo"),
+                    ],
+                ),
+                (
+                    "login",
+                    vec![
+                        ("service", "Example Cloud"),
+                        ("username", "linus@example.test"),
+                        ("password", "s3cret-charlie"),
+                    ],
+                ),
+                (
+                    "secure_note",
+                    vec![
+                        ("notes", "mother's maiden name is Rosenberg"),
+                        ("password", "s3cret-delta"),
+                    ],
+                ),
+                (
+                    "",
+                    vec![(
+                        "notes",
+                        "no type, no allowlisted field — must read Untitled record",
+                    )],
+                ),
+                (
+                    "login",
+                    vec![("title", "   "), ("username", "whitespace@example.test")],
+                ),
+            ],
+        ),
+        (
+            "Work",
+            vec![
+                (
+                    "login",
+                    vec![
+                        ("title", "Payroll portal"),
+                        ("username", "hherb@example.test"),
+                        ("password", "s3cret-echo"),
+                    ],
+                ),
+                (
+                    "api_key",
+                    vec![
+                        ("key_id", "AKIA-EXAMPLE-0001"),
+                        ("key_secret", "s3cret-foxtrot"),
+                    ],
+                ),
+                (
+                    "login",
+                    vec![
+                        ("url", "https://vpn.example.test"),
+                        ("password", "s3cret-golf"),
+                    ],
+                ),
+            ],
+        ),
+        (
+            "Servers",
+            vec![
+                (
+                    "login",
+                    vec![
+                        ("name", "db-primary"),
+                        ("username", "root"),
+                        ("password", "s3cret-hotel"),
+                    ],
+                ),
+                (
+                    "login",
+                    vec![
+                        ("name", "db-replica"),
+                        ("username", "root"),
+                        ("password", "s3cret-india"),
+                    ],
+                ),
+            ],
+        ),
+        // An empty block, so the middle pane's empty state is reachable.
+        ("Archive (empty)", vec![]),
+    ];
+
+    for (block_name, records) in &plan {
+        let block = edit::create_block_impl(&state, block_name).expect("create_block");
+        for (record_type, fields) in records {
+            edit::save_record_impl(
+                &state,
+                &block.block_uuid_hex,
+                RecordInputDto {
+                    record_type: (*record_type).into(),
+                    tags: vec![],
+                    fields: fields
+                        .iter()
+                        .map(|(n, v)| FieldInputDto {
+                            name: (*n).into(),
+                            value: FieldValueDto::Text { text: (*v).into() },
+                        })
+                        .collect(),
+                },
+            )
+            .expect("save_record");
+        }
+    }
+
+    let block_count: usize = plan.len();
+    let record_count: usize = plan.iter().map(|(_, r)| r.len()).sum();
+    println!("\n=== three-pane GUI smoke vault staged ===");
+    println!("  folder   : {}", dest.display());
+    println!(
+        "  password : {}",
+        std::str::from_utf8(&password).expect("hex is utf8")
+    );
+    println!("  blocks   : {block_count} ({record_count} records)");
+    println!("  NOTE: throwaway vault, throwaway password — never the committed fixture.\n");
 }

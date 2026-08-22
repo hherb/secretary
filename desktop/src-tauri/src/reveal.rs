@@ -10,14 +10,22 @@ use secretary_core::crypto::secret::SecretBytes;
 use secretary_ffi_bridge::{BlockReadOutput, FieldHandle, Record};
 
 use crate::dtos::{BlockDetailDto, FieldMetaDto, RecordDto};
+use crate::record_title::labels_for_record;
 
 /// Project a decrypted [`BlockReadOutput`] into a [`BlockDetailDto`].
 ///
 /// Projects every record the bridge returned — tombstone visibility is gated
 /// upstream in `secretary_ffi_bridge::read_block(include_deleted)`, so this
 /// layer no longer filters. Each projected record carries `tombstoned` so the
-/// restore UI can style soft-deleted rows. Carries only plaintext metadata —
-/// never calls `expose_text`/`expose_bytes`.
+/// restore UI can style soft-deleted rows.
+///
+/// **Amended by #526.** This layer previously never called
+/// `expose_text`/`expose_bytes`. It now calls `expose_text` — but *only*
+/// through [`crate::record_title::labels_for_record`], and only for field
+/// names on that module's allowlist. No other call site here may expose a
+/// value. The exposure delta versus `reveal_field` is duration, not class: a
+/// revealed field re-masks after `REVEAL_AUTO_HIDE_MS`, whereas a derived
+/// title stays on screen as long as the list does.
 pub fn project_block_detail(block_uuid_hex: String, output: &BlockReadOutput) -> BlockDetailDto {
     let mut records = Vec::with_capacity(output.record_count());
     for i in 0..output.record_count() {
@@ -41,9 +49,12 @@ fn project_record(record: &Record) -> RecordDto {
             fields.push(project_field_meta(&handle));
         }
     }
+    let labels = labels_for_record(record);
     RecordDto {
         record_uuid_hex: hex::encode(record.record_uuid()),
         record_type: record.record_type(),
+        title: labels.title,
+        subtitle: labels.subtitle,
         tags: record.tags(),
         created_at_ms: record.created_at_ms(),
         last_mod_ms: record.last_mod_ms(),

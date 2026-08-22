@@ -20,6 +20,7 @@ pub mod fs_atomic;
 pub mod path_auth;
 pub mod presence_pref;
 pub mod recent_vault;
+pub mod record_title;
 pub mod reveal;
 pub mod secret_arg;
 pub mod session;

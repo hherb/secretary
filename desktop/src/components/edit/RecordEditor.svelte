@@ -20,10 +20,15 @@
 
   let draft = $state<RecordDraft>(emptyDraft());
   let submitting = $state(false);
-  // `record` is captured ONCE at mount (the parent re-mounts RecordEditor per
-  // edit session), so seeding `loading` from it is intentional — it keeps
-  // loading=true from the very first render in edit mode and avoids a flash of
-  // the empty form before revealRecord resolves. The svelte-check
+  // `record` is captured ONCE at mount. Vault.svelte wraps this component in
+  // `{#key panes.detail.record?.recordUuidHex ?? 'new-record'}` (#526
+  // review), keyed on the record UUID for an edit session or a stable
+  // sentinel for a new-record session, so Svelte remounts a fresh instance
+  // whenever the edit target changes rather than reusing this one across
+  // sessions — the same guarantee FieldViewer's `{#key}` gives its reveal
+  // state. Seeding `loading` from `record` here is therefore safe: it keeps
+  // loading=true from the very first render in edit mode and avoids a flash
+  // of the empty form before revealRecord resolves. The svelte-check
   // state_referenced_locally note here is expected and intentional.
   // svelte-ignore state_referenced_locally
   let loading = $state(record !== null);

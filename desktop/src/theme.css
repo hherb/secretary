@@ -44,6 +44,21 @@
   --radius-md: 6px;
   --radius-lg: 10px;
 
+  /* Three-pane layout (#526): no --pane-* tokens live here on purpose.
+     PaneShell.svelte sets every one of them (widths, floors, splitter width)
+     as an inline style on .pane-shell, unconditionally, on every render —
+     loadFractions() always returns numbers, falling back to
+     SIDEBAR_DEFAULT_FRACTION / LIST_DEFAULT_FRACTION when storage is empty.
+     A :root default here would therefore never be read, and duplicating those
+     two fractions as hand-written percentages is exactly the drift the floors
+     avoid by being plumbed through --pane-*-min (#526 review). */
+
+  /* Text/foreground laid over a --color-primary fill (e.g. the selected
+     record row — see RecordRow.svelte / BlockCard.svelte). Kept separate from
+     --color-on-danger — same value today, but the two fills are unrelated and
+     reusing the danger token over a primary fill would be a token misuse. */
+  --color-on-primary: #fff;
+
   /* Typography */
   --font-stack: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-stack-mono: ui-monospace, "SF Mono", Menlo, monospace;
@@ -72,6 +87,7 @@
     --color-danger: #f87171;
     --color-danger-bg: #2a1414;
     --color-on-danger: #fff;
+    --color-on-primary: #fff;
     --color-warning: #fbbf24;
     --color-warning-bg: #2a2014;
     --color-success: #4ade80;
@@ -271,10 +287,14 @@ body {
 }
 
 /* Vault route */
+/* #526 — the vault route is now a full-height three-pane shell (PaneShell)
+   rather than a centered single-column list, so it fills the viewport
+   instead of being padded and width-capped. */
 .vault {
-  padding: var(--space-4);
-  max-width: 720px;
-  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
 }
 .vault__warning {
   padding: var(--space-3) var(--space-4);
@@ -291,17 +311,13 @@ body {
   font-size: var(--font-size-xs);
   opacity: 0.85;
 }
-.vault__block-count {
-  margin: var(--space-5) 0 var(--space-2);
-  font-size: var(--font-size-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+/* #526 — the empty-state prompt shown in the list/detail panes ("Select a
+   block" / "Select a record") before anything is selected. */
+.vault__pane-prompt {
+  padding: var(--space-6);
   color: var(--color-text-muted);
-}
-.vault__block-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  text-align: center;
 }
 
 /* TopBar */
@@ -403,20 +419,17 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  /* #526 review — the middle pane had no padding of its own, so rows
+     touched both splitter lines. var(--space-3) matches BlockSidebar's own
+     padding so all three panes read consistently, without eating into the
+     dense three-pane layout's already-tight width budget. */
+  padding: var(--space-3);
 }
-.record-list__back {
-  align-self: flex-start;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-elevated);
+.record-list__heading {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: 600;
   color: var(--color-text);
-  cursor: pointer;
-  font-size: var(--font-size-sm);
-  margin-bottom: var(--space-2);
-}
-.record-list__back:hover {
-  background: var(--color-border);
 }
 .record-list__error {
   padding: var(--space-3);
@@ -434,9 +447,18 @@ body {
 
 /* RecordRow — single record within a RecordList; models .block-card. */
 .record-row {
+  /* Column, not a baseline row (#526 review, GUI pass). As a horizontal flex
+     row the title was the only shrinkable child, so the metadata's natural
+     width won and the title ellipsised away to "Lo…" in a ~400px pane. The
+     title is the row's whole purpose; it gets the full width, and the count +
+     modified date moved to the row's `title` tooltip. */
   display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-1);
+  /* Children need this to be allowed to shrink below their content width,
+     which is what makes text-overflow: ellipsis fire at all. */
+  min-width: 0;
   width: 100%;
   text-align: left;
   padding: var(--space-3) var(--space-4);
@@ -452,9 +474,6 @@ body {
   border-color: var(--color-primary);
   box-shadow: var(--shadow-sm);
 }
-.record-row__type {
-  font-weight: 600;
-}
 .record-row__tag {
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
@@ -463,10 +482,15 @@ body {
   font-size: var(--font-size-xs);
   font-family: var(--font-stack-mono);
 }
-.record-row__meta {
-  margin-left: auto;
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
+/* Tags + the tombstone warning share one wrapping line under the labels.
+   `.record-row__meta` was deleted with the horizontal layout — the count and
+   modified date are the row button's `title` tooltip now (#526 review). */
+.record-row__badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
 }
 .record-row__no-content {
   color: var(--color-text-muted);
@@ -1025,24 +1049,6 @@ body {
   cursor: not-allowed;
 }
 
-/* Vault trash entry — sits below "+ New block" on the blocks pane. */
-.vault__trash-entry {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  align-self: flex-start;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-elevated);
-  color: var(--color-text);
-  cursor: pointer;
-  font-size: var(--font-size-sm);
-  margin-left: var(--space-2);
-}
-.vault__trash-entry:hover {
-  background: var(--color-border);
-}
 .vault__trash-error {
   margin-top: var(--space-2);
   padding: var(--space-3);
@@ -1161,13 +1167,16 @@ body {
 }
 
 /* BlockCard wrapper + trash action. */
+/* Positioning context for .block-card__actions, which is absolutely
+   positioned over the card's right edge. NOT a flex row any more: as flex
+   siblings the opacity-hidden actions still reserved their width, which
+   overflowed the narrow sidebar column and produced a horizontal scrollbar
+   (#526 review, GUI pass). */
 .block-card-wrap {
-  display: flex;
-  align-items: stretch;
-  gap: var(--space-2);
+  position: relative;
 }
 .block-card-wrap .block-card {
-  flex: 1 1 auto;
+  width: 100%;
 }
 .block-card__trash {
   flex: 0 0 auto;
@@ -1457,25 +1466,6 @@ body {
   color: var(--color-danger);
 }
 
-/* Vault contacts entry — sits next to the Trash button on the blocks pane. */
-.vault__contacts-entry {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  align-self: flex-start;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-elevated);
-  color: var(--color-text);
-  cursor: pointer;
-  font-size: var(--font-size-sm);
-  margin-left: var(--space-2);
-}
-.vault__contacts-entry:hover {
-  background: var(--color-border);
-}
-
 /* RecordList "Show deleted" toggle. */
 .record-list__show-deleted {
   display: flex;
@@ -1502,20 +1492,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  /* #526 review — matches .record-list's padding so the detail pane reads
+     consistently with the middle pane rather than sitting flush against
+     the splitter and the window edge. */
+  padding: var(--space-3);
 }
-.field-viewer__back {
-  align-self: flex-start;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-elevated);
+.field-viewer__title {
+  margin: 0;
+  font-size: var(--font-size-lg);
   color: var(--color-text);
-  cursor: pointer;
-  font-size: var(--font-size-sm);
-  margin-bottom: var(--space-2);
-}
-.field-viewer__back:hover {
-  background: var(--color-border);
 }
 .field-viewer__tag {
   display: inline-block;

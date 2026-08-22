@@ -76,3 +76,110 @@ describe('BlockCard.svelte — empty / edge-case block names', () => {
     expect(getByText(/2024/)).toBeTruthy();
   });
 });
+
+describe('BlockCard.svelte — selection (#526)', () => {
+  it('sets aria-current when selected', () => {
+    const { getByRole } = render(BlockCard, {
+      props: { block: BLOCK, onClick: () => {}, selected: true }
+    });
+    expect(getByRole('button', { name: /banking/i }).getAttribute('aria-current')).toBe('true');
+  });
+
+  it('omits aria-current when not selected', () => {
+    const { getByRole } = render(BlockCard, {
+      props: { block: BLOCK, onClick: () => {}, selected: false }
+    });
+    expect(getByRole('button', { name: /banking/i }).getAttribute('aria-current')).toBeNull();
+  });
+
+  it('still exposes its actions to assistive tech when they are visually hidden', () => {
+    // Actions reveal on hover/selection VISUALLY (CSS opacity), but must stay
+    // in the accessibility tree — a keyboard user never hovers.
+    const { getByRole } = render(BlockCard, {
+      props: { block: BLOCK, onClick: () => {}, onRename: () => {}, selected: false }
+    });
+    expect(getByRole('button', { name: /rename block/i })).toBeTruthy();
+  });
+});
+
+describe('BlockCard.svelte — frozen (#526 review)', () => {
+  // Mirrors RecordRow's frozen tests: an editor open in the detail pane
+  // must make the sidebar's block cards non-interactive too, so a stray
+  // click cannot silently discard an unsaved edit.
+  it('disables the card when frozen', () => {
+    const { getByRole } = render(BlockCard, {
+      props: { block: BLOCK, onClick: () => {}, frozen: true }
+    });
+    expect((getByRole('button', { name: /banking/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('does not fire onClick when frozen', async () => {
+    const onClick = vi.fn();
+    const { getByRole } = render(BlockCard, {
+      props: { block: BLOCK, onClick, frozen: true }
+    });
+    await fireEvent.click(getByRole('button', { name: /banking/i }));
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('hides Rename/Share/Trash actions when frozen', () => {
+    const { queryByRole } = render(BlockCard, {
+      props: {
+        block: BLOCK,
+        onClick: () => {},
+        onRename: () => {},
+        onShare: () => {},
+        onTrash: () => {},
+        frozen: true
+      }
+    });
+    expect(queryByRole('button', { name: /rename block/i })).toBeNull();
+    expect(queryByRole('button', { name: /share block/i })).toBeNull();
+    expect(queryByRole('button', { name: /trash block/i })).toBeNull();
+  });
+
+  it('stays interactive when not frozen', async () => {
+    const onClick = vi.fn();
+    const { getByRole } = render(BlockCard, {
+      props: { block: BLOCK, onClick, frozen: false }
+    });
+    expect((getByRole('button', { name: /banking/i }) as HTMLButtonElement).disabled).toBe(false);
+    await fireEvent.click(getByRole('button', { name: /banking/i }));
+    expect(onClick).toHaveBeenCalledWith(BLOCK);
+  });
+
+  // #526 review (GUI pass) — the three actions must live inside ONE container
+  // that CSS can lift out of the flow. They are hidden with `opacity: 0` (so
+  // they stay focusable and in the accessibility tree), and an opacity-hidden
+  // element still occupies its layout box — so while they were flex SIBLINGS
+  // of the card they permanently reserved their width, overflowed the ~230px
+  // sidebar column and produced a horizontal scrollbar.
+  //
+  // jsdom has no layout engine and does not load theme.css, so the positioning
+  // itself is not observable here. What IS observable, and what the CSS fix
+  // depends on, is the containment: if a future edit hoists an action back out
+  // to be a direct child of the wrap, the absolute-positioning rule stops
+  // applying to it and the overflow returns.
+  it('groups every action inside one out-of-flow container', () => {
+    const { container, getByRole } = render(BlockCard, {
+      props: {
+        block: BLOCK,
+        onClick: () => {},
+        onRename: () => {},
+        onShare: () => {},
+        onTrash: () => {}
+      }
+    });
+
+    const actions = container.querySelector('.block-card__actions');
+    expect(actions).not.toBeNull();
+
+    for (const name of [/rename block/i, /share block/i, /trash block/i]) {
+      expect(actions!.contains(getByRole('button', { name }))).toBe(true);
+    }
+
+    // The navigable card itself must NOT be inside the overlay — it is the
+    // element the overlay floats above.
+    expect(actions!.contains(getByRole('button', { name: /banking/i }))).toBe(false);
+  });
+});

@@ -47,6 +47,8 @@ export interface FieldMetaDto {
 export interface RecordDto {
   recordUuidHex: string;
   recordType: string;
+  title: string;
+  subtitle: string | null;
   tags: string[];
   createdAtMs: number;
   lastModMs: number;

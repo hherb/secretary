@@ -15,7 +15,7 @@ import {
   unlockSucceeded,
   _resetSessionStateForTest
 } from '../src/lib/stores';
-import { openBlock, resetBrowse, browseNav } from '../src/lib/browse';
+import { openBlock, openNewRecord, resetBrowse, browseNav } from '../src/lib/browse';
 import type { ManifestDto, SettingsDto, BlockSummaryDto } from '../src/lib/ipc';
 import type { AppWarning } from '../src/lib/errors';
 import {
@@ -282,12 +282,58 @@ describe('Vault.svelte — browse navigation', () => {
     unlockWith(manifestFixture({ blocks: [block] }));
     render(Vault);
 
-    // Transition to the records level; Vault re-renders RecordList.
+    // Transition to the records level; the list pane renders RecordList.
     openBlock(block);
 
     await waitFor(() => expect(document.querySelector('.record-list')).toBeTruthy());
-    // Block-list should no longer be visible.
-    expect(document.querySelector('.block-card')).toBeNull();
+    // #526 — the sidebar (with its BlockCards) is a permanently-visible
+    // pane now, not a screen that gets replaced by RecordList. The old
+    // "block list disappears once you're browsing records" assertion this
+    // test used to make no longer applies to the three-pane design; the
+    // BlockCard for the opened block is expected to still be present,
+    // now selected, in the sidebar alongside the RecordList in the middle
+    // pane.
+    expect(document.querySelector('.block-card')).toBeTruthy();
+  });
+});
+
+describe('Vault.svelte — sidebar freezes during an edit (#526 review)', () => {
+  // Before this branch, blocks were a different screen — a stray sidebar
+  // click while a record editor was open was structurally impossible. Three
+  // panes made the sidebar reachable alongside the editor, so it must share
+  // the middle pane's freeze (`ListPane.frozen` from panes.ts) or a click on
+  // another block / Trash / Contacts / "+ New block" would silently discard
+  // the unsaved draft.
+  it('disables the sidebar block card while the record editor is open', async () => {
+    const block = blockFixture('Banking', 'aa');
+    unlockWith(manifestFixture({ blocks: [block] }));
+    render(Vault);
+
+    openBlock(block);
+    await waitFor(() => expect(document.querySelector('.record-list')).toBeTruthy());
+
+    openNewRecord(block);
+    await waitFor(() => expect(document.querySelector('.editor')).toBeTruthy());
+
+    const card = document.querySelector('.block-card') as HTMLButtonElement;
+    expect(card.disabled).toBe(true);
+  });
+
+  it('re-enables the sidebar once the editor closes via Cancel', async () => {
+    const block = blockFixture('Banking', 'aa');
+    unlockWith(manifestFixture({ blocks: [block] }));
+    const { getByRole } = render(Vault);
+
+    openBlock(block);
+    await waitFor(() => expect(document.querySelector('.record-list')).toBeTruthy());
+    openNewRecord(block);
+    await waitFor(() => expect(document.querySelector('.editor')).toBeTruthy());
+
+    await fireEvent.click(getByRole('button', { name: /cancel/i }));
+    await waitFor(() => expect(document.querySelector('.record-list')).toBeTruthy());
+
+    const card = document.querySelector('.block-card') as HTMLButtonElement;
+    expect(card.disabled).toBe(false);
   });
 });
 

@@ -42,3 +42,19 @@ if (typeof HTMLDialogElement !== 'undefined') {
     };
   }
 }
+
+// globalThis.localStorage: Node 22+ defines its own `localStorage` global
+// (an accessor gated behind `--localstorage-file`, printing an
+// ExperimentalWarning and yielding `undefined` without it). Vitest's jsdom
+// environment only copies a jsdom `window` property onto the test global
+// when that key is NOT already present on Node's global — since Node's own
+// (broken, in this harness) accessor already answers `'localStorage' in
+// globalThis`, the real jsdom Storage object never gets copied over. Real
+// jsdom localStorage still works fine (`globalThis.jsdom.window
+// .localStorage`, exposed by vitest's jsdom environment setup) — swap
+// Node's stub out for it explicitly. PaneShell.svelte (#526) is the first
+// component to read the bare `localStorage` global.
+const jsdomGlobal = (globalThis as { jsdom?: { window?: { localStorage?: Storage } } }).jsdom;
+if (jsdomGlobal?.window?.localStorage) {
+  globalThis.localStorage = jsdomGlobal.window.localStorage;
+}

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import RecordRow from '../src/components/RecordRow.svelte';
 
-const live = { recordUuidHex: 'r1', recordType: 'login', tags: [], createdAtMs: 1, lastModMs: 1, fieldCount: 1, fields: [], tombstoned: false };
+const live = { recordUuidHex: 'r1', recordType: 'login', title: 'alice@example.test', subtitle: null, tags: [], createdAtMs: 1, lastModMs: 1, fieldCount: 1, fields: [], tombstoned: false };
 const dead = { ...live, recordUuidHex: 'r2', tombstoned: true };
 
 describe('RecordRow move action', () => {
