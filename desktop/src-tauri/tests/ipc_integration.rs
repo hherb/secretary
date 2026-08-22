@@ -2411,3 +2411,213 @@ mod title_path {
         assert_eq!(out.title, "api_key", "a bstr field must not become a title");
     }
 }
+
+/// One field of a staged smoke record: `(field name, value)`.
+type SmokeField = (&'static str, &'static str);
+/// One staged smoke record: `(record type, fields)`.
+type SmokeRecord = (&'static str, Vec<SmokeField>);
+/// One staged smoke block: `(block name, records)`.
+type SmokeBlock = (&'static str, Vec<SmokeRecord>);
+
+/// Manual GUI-smoke staging for the three-pane layout (#526).
+///
+/// The desktop client has no automatable e2e on macOS (tauri-driver has no
+/// WKWebView support — #161), so the three-pane layout's acceptance is a
+/// human pass. This stages a vault rich enough to exercise it: several
+/// blocks so the sidebar has something to select between, and several
+/// records per block so the middle pane can be clicked THROUGH — which is
+/// what the review found broken (selecting a second record was a silent
+/// no-op).
+///
+/// Modelled on `secretary-cli`'s `stage_smoke_vault`, including its
+/// print-the-password convention: this vault is created here with a
+/// throwaway password, so printing it is intentional and smoke-only. It is
+/// never the committed fixture — the app writes settings INTO whatever vault
+/// it opens, so a smoke run must never touch `core/tests/data/`.
+///
+/// ```bash
+/// SMOKE_OUT=/tmp/pane_smoke cargo test --release -p secretary-desktop \
+///   --test ipc_integration -- --ignored stage_three_pane_smoke_vault --nocapture
+/// ```
+#[test]
+#[ignore = "manual smoke staging helper; set SMOKE_OUT and run with --ignored --nocapture"]
+fn stage_three_pane_smoke_vault() {
+    use rand_core::{OsRng, RngCore};
+    use secretary_core::crypto::secret::SecretBytes;
+
+    let dest = std::env::var("SMOKE_OUT").expect(
+        "set SMOKE_OUT to the destination vault folder, e.g. \
+         SMOKE_OUT=/tmp/pane_smoke cargo test ... -- --ignored \
+         stage_three_pane_smoke_vault --nocapture",
+    );
+    let dest = PathBuf::from(dest);
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest).expect("clear SMOKE_OUT");
+    }
+    std::fs::create_dir_all(&dest).expect("create SMOKE_OUT");
+
+    // A throwaway password, printed below. Random so this file carries no
+    // credential literal (CodeQL flags those, and the repo's test convention
+    // is runtime-random crypto values).
+    let mut raw = [0u8; 8];
+    OsRng.fill_bytes(&mut raw);
+    let password: Vec<u8> = raw
+        .iter()
+        .flat_map(|b| format!("{b:02x}").into_bytes())
+        .collect();
+
+    let (state, _device_dir) = fresh_state();
+    let path = dest.to_str().expect("utf8 path");
+    state.lock().unwrap().approve_path(
+        PathPurpose::CreateParent,
+        canonicalize_for_auth(&dest).unwrap(),
+    );
+    create::create_vault_impl(
+        &state,
+        path,
+        "Three-pane smoke identity",
+        &SecretBytes::from(password.as_slice()),
+        1_700_000_000_000,
+        &mut OsRng,
+    )
+    .expect("create_vault");
+    unlock::unlock_with_password_impl(&state, path, &password).expect("unlock");
+
+    // (block name, [(record type, [(field name, value)])])
+    // Deliberately mixed: allowlisted title fields of different ranks, a
+    // record with ONLY non-allowlisted fields (must fall back to its type),
+    // a typeless record with no allowlisted field (must read "Untitled
+    // record", never blank), and a whitespace-only title (must fall through).
+    let plan: Vec<SmokeBlock> = vec![
+        (
+            "Personal logins",
+            vec![
+                (
+                    "login",
+                    vec![
+                        ("title", "Bank of Example"),
+                        ("username", "ada@example.test"),
+                        ("password", "s3cret-alpha"),
+                    ],
+                ),
+                (
+                    "login",
+                    vec![
+                        ("username", "grace@example.test"),
+                        ("url", "https://mail.example.test"),
+                        ("password", "s3cret-bravo"),
+                    ],
+                ),
+                (
+                    "login",
+                    vec![
+                        ("service", "Example Cloud"),
+                        ("username", "linus@example.test"),
+                        ("password", "s3cret-charlie"),
+                    ],
+                ),
+                (
+                    "secure_note",
+                    vec![
+                        ("notes", "mother's maiden name is Rosenberg"),
+                        ("password", "s3cret-delta"),
+                    ],
+                ),
+                (
+                    "",
+                    vec![(
+                        "notes",
+                        "no type, no allowlisted field — must read Untitled record",
+                    )],
+                ),
+                (
+                    "login",
+                    vec![("title", "   "), ("username", "whitespace@example.test")],
+                ),
+            ],
+        ),
+        (
+            "Work",
+            vec![
+                (
+                    "login",
+                    vec![
+                        ("title", "Payroll portal"),
+                        ("username", "hherb@example.test"),
+                        ("password", "s3cret-echo"),
+                    ],
+                ),
+                (
+                    "api_key",
+                    vec![
+                        ("key_id", "AKIA-EXAMPLE-0001"),
+                        ("key_secret", "s3cret-foxtrot"),
+                    ],
+                ),
+                (
+                    "login",
+                    vec![
+                        ("url", "https://vpn.example.test"),
+                        ("password", "s3cret-golf"),
+                    ],
+                ),
+            ],
+        ),
+        (
+            "Servers",
+            vec![
+                (
+                    "login",
+                    vec![
+                        ("name", "db-primary"),
+                        ("username", "root"),
+                        ("password", "s3cret-hotel"),
+                    ],
+                ),
+                (
+                    "login",
+                    vec![
+                        ("name", "db-replica"),
+                        ("username", "root"),
+                        ("password", "s3cret-india"),
+                    ],
+                ),
+            ],
+        ),
+        // An empty block, so the middle pane's empty state is reachable.
+        ("Archive (empty)", vec![]),
+    ];
+
+    for (block_name, records) in &plan {
+        let block = edit::create_block_impl(&state, block_name).expect("create_block");
+        for (record_type, fields) in records {
+            edit::save_record_impl(
+                &state,
+                &block.block_uuid_hex,
+                RecordInputDto {
+                    record_type: (*record_type).into(),
+                    tags: vec![],
+                    fields: fields
+                        .iter()
+                        .map(|(n, v)| FieldInputDto {
+                            name: (*n).into(),
+                            value: FieldValueDto::Text { text: (*v).into() },
+                        })
+                        .collect(),
+                },
+            )
+            .expect("save_record");
+        }
+    }
+
+    let block_count: usize = plan.len();
+    let record_count: usize = plan.iter().map(|(_, r)| r.len()).sum();
+    println!("\n=== three-pane GUI smoke vault staged ===");
+    println!("  folder   : {}", dest.display());
+    println!(
+        "  password : {}",
+        std::str::from_utf8(&password).expect("hex is utf8")
+    );
+    println!("  blocks   : {block_count} ({record_count} records)");
+    println!("  NOTE: throwaway vault, throwaway password — never the committed fixture.\n");
+}
