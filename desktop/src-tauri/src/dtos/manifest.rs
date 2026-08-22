@@ -1,5 +1,6 @@
 use secretary_ffi_bridge::vault::{BlockSummary, OpenVaultManifest};
 
+use crate::constants::{deterministic_uuid_16, SETTINGS_BLOCK_NAME};
 use crate::errors::AppWarning;
 use crate::settings::Settings;
 
@@ -31,6 +32,23 @@ impl From<&BlockSummary> for BlockSummaryDto {
     }
 }
 
+/// Project only blocks that belong in user-facing navigation. The settings
+/// block is an implementation detail stored in the vault so settings sync
+/// across devices; exposing it lets users rename, share, or trash application
+/// state as though it were a password block.
+///
+/// Match the frozen deterministic UUID rather than the display name. A legacy
+/// user block that happens to use the reserved-looking name remains visible,
+/// while the actual internal block stays hidden even if its name was damaged.
+pub(crate) fn user_block_summaries(summaries: &[BlockSummary]) -> Vec<BlockSummaryDto> {
+    let settings_uuid = deterministic_uuid_16(SETTINGS_BLOCK_NAME);
+    summaries
+        .iter()
+        .filter(|summary| summary.block_uuid != settings_uuid)
+        .map(BlockSummaryDto::from)
+        .collect()
+}
+
 /// Top-level read projection of an unlocked vault. Returned by
 /// `unlock_with_password` and `get_manifest`. The `warnings` vec carries
 /// any non-fatal settings-load issues surfaced during unlock — Task 3's
@@ -55,12 +73,12 @@ impl ManifestDto {
         manifest: &OpenVaultManifest,
         warnings: Vec<AppWarning>,
     ) -> Self {
-        let summaries = manifest.block_summaries();
+        let summaries = user_block_summaries(&manifest.block_summaries());
         Self {
             vault_uuid_hex: hex::encode(manifest.vault_uuid()),
             owner_user_uuid_hex: hex::encode(manifest.owner_user_uuid()),
-            block_count: manifest.block_count(),
-            block_summaries: summaries.iter().map(BlockSummaryDto::from).collect(),
+            block_count: summaries.len() as u64,
+            block_summaries: summaries,
             warnings,
         }
     }
@@ -174,6 +192,31 @@ mod tests {
         assert_eq!(dto.created_at_ms, 100);
         assert_eq!(dto.last_modified_ms, 200);
         // recipient_uuids is intentionally NOT projected for D.1.1.
+    }
+
+    #[test]
+    fn user_block_projection_hides_only_the_deterministic_settings_block() {
+        let settings_uuid = deterministic_uuid_16(SETTINGS_BLOCK_NAME);
+        let internal = BlockSummary {
+            block_uuid: settings_uuid,
+            block_name: SETTINGS_BLOCK_NAME.to_string(),
+            created_at_ms: 1,
+            last_modified_ms: 2,
+            recipient_uuids: vec![],
+        };
+        let same_name_user_block = BlockSummary {
+            block_uuid: SAMPLE_UUID_BYTES,
+            block_name: SETTINGS_BLOCK_NAME.to_string(),
+            created_at_ms: 3,
+            last_modified_ms: 4,
+            recipient_uuids: vec![],
+        };
+
+        let visible = user_block_summaries(&[internal, same_name_user_block]);
+
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].block_uuid_hex, SAMPLE_UUID_HEX);
+        assert_eq!(visible[0].block_name, SETTINGS_BLOCK_NAME);
     }
 
     #[test]

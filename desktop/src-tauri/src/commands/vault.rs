@@ -15,7 +15,7 @@ use tauri::State;
 use secretary_ffi_bridge::vault::OpenVaultManifest;
 
 use crate::commands::shared::lock_session;
-use crate::dtos::{BlockSummaryDto, ManifestDto};
+use crate::dtos::{user_block_summaries, BlockSummaryDto, ManifestDto};
 use crate::errors::AppError;
 use crate::session::VaultSession;
 
@@ -33,7 +33,13 @@ pub(crate) fn block_summary_for(
     manifest
         .block_summaries()
         .iter()
-        .find(|b| b.block_uuid == block_uuid)
+        .find(|b| {
+            b.block_uuid == block_uuid
+                && b.block_uuid
+                    != crate::constants::deterministic_uuid_16(
+                        crate::constants::SETTINGS_BLOCK_NAME,
+                    )
+        })
         .map(BlockSummaryDto::from)
 }
 
@@ -56,10 +62,7 @@ pub async fn get_manifest(state: State<'_, Mutex<VaultSession>>) -> Result<Manif
 /// [`BlockSummary`]: secretary_ffi_bridge::vault::BlockSummary
 pub fn list_blocks_impl(state: &Mutex<VaultSession>) -> Result<Vec<BlockSummaryDto>, AppError> {
     let session = lock_session(state)?;
-    session.with_unlocked(|u| {
-        let summaries = u.manifest.block_summaries();
-        Ok(summaries.iter().map(BlockSummaryDto::from).collect())
-    })
+    session.with_unlocked(|u| Ok(user_block_summaries(&u.manifest.block_summaries())))
 }
 
 /// Testable core for `get_manifest`. Returns a fresh [`ManifestDto`] with

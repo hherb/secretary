@@ -1,5 +1,6 @@
 <script lang="ts">
   import LockKeyhole from '../components/icons/LockKeyhole.svelte';
+  import BrandMark from '../components/BrandMark.svelte';
   import PathPicker from '../components/PathPicker.svelte';
   import RepairConsentDialog from '../components/RepairConsentDialog.svelte';
   import {
@@ -284,11 +285,12 @@
      visual rules are centralised. -->
 <main class="unlock">
   <div class="unlock__card">
-    <div class="unlock__icon" aria-hidden="true"><LockKeyhole size={48} /></div>
+    <div class="unlock__brand" aria-hidden="true"><BrandMark size={54} /></div>
+    <p class="unlock__eyebrow"><LockKeyhole size={14} /> Private by design</p>
     <h1 class="unlock__title">Secretary</h1>
-    <p class="unlock__subtitle">Open a vault</p>
+    <p class="unlock__subtitle">Open your private vault</p>
 
-    <form onsubmit={submit}>
+    <form class="unlock__form" onsubmit={submit}>
       {#if showCreatedBanner}
         <div class="unlock__banner" role="status">
           Vault created — enter your password to open it.

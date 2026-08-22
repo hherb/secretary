@@ -8,6 +8,7 @@
   import { createSeedPath, cancelCreateWizard, finishCreateWizard } from '../lib/route';
   import { get } from 'svelte/store';
   import type { AppError } from '../lib/errors';
+  import BrandMark from '../components/BrandMark.svelte';
 
   let wizardState = $state<WizardStep>(startWizard());
   let submitting = $state(false);
@@ -43,27 +44,64 @@
 
 <main class="wizard">
   <div class="wizard__card">
-    <h1 class="wizard__title">Create a vault</h1>
-
-    {#if errMsg}
-      <div class="wizard__error" role="alert">
-        <div class="wizard__error-title">{errMsg.title}</div>
-        {#if errMsg.detail}<div class="wizard__error-detail">{errMsg.detail}</div>{/if}
-        {#if errMsg.actionHint}<div class="wizard__error-hint">{errMsg.actionHint}</div>{/if}
+    <header class="wizard__header">
+      <div class="wizard__brand" aria-hidden="true"><BrandMark size={42} /></div>
+      <div>
+        <p class="wizard__eyebrow">Secretary</p>
+        <h1 class="wizard__title">Create a vault</h1>
       </div>
-    {/if}
+    </header>
 
-    {#if wizardState.step === 'folder'}
-      <FolderStep seedPath={seed} onNext={gotoCredentials} onCancel={cancelCreateWizard} />
-    {:else if wizardState.step === 'credentials'}
-      <CredentialsStep
-        folder={wizardState.folder}
-        {submitting}
-        onCreate={create}
-        onBack={() => (wizardState = startWizard())}
-      />
-    {:else}
-      <MnemonicStep mnemonic={wizardState.mnemonic} onDone={done} />
-    {/if}
+    <ol class="wizard__progress" aria-label="Vault creation progress">
+      <li
+        class="wizard__progress-step"
+        class:wizard__progress-step--active={wizardState.step === 'folder'}
+        class:wizard__progress-step--complete={wizardState.step !== 'folder'}
+        aria-current={wizardState.step === 'folder' ? 'step' : undefined}
+      >
+        <span class="wizard__progress-index">1</span>
+        <span>Folder</span>
+      </li>
+      <li
+        class="wizard__progress-step"
+        class:wizard__progress-step--active={wizardState.step === 'credentials'}
+        class:wizard__progress-step--complete={wizardState.step === 'mnemonic'}
+        aria-current={wizardState.step === 'credentials' ? 'step' : undefined}
+      >
+        <span class="wizard__progress-index">2</span>
+        <span>Credentials</span>
+      </li>
+      <li
+        class="wizard__progress-step"
+        class:wizard__progress-step--active={wizardState.step === 'mnemonic'}
+        aria-current={wizardState.step === 'mnemonic' ? 'step' : undefined}
+      >
+        <span class="wizard__progress-index">3</span>
+        <span>Recovery</span>
+      </li>
+    </ol>
+
+    <div class="wizard__content">
+      {#if errMsg}
+        <div class="wizard__error" role="alert">
+          <div class="wizard__error-title">{errMsg.title}</div>
+          {#if errMsg.detail}<div class="wizard__error-detail">{errMsg.detail}</div>{/if}
+          {#if errMsg.actionHint}<div class="wizard__error-hint">{errMsg.actionHint}</div>{/if}
+        </div>
+      {/if}
+
+      {#if wizardState.step === 'folder'}
+        <FolderStep seedPath={seed} onNext={gotoCredentials} onCancel={cancelCreateWizard} />
+      {:else if wizardState.step === 'credentials'}
+        <CredentialsStep
+          folder={wizardState.folder}
+          {submitting}
+          onCreate={create}
+          onBack={() => (wizardState = startWizard())}
+        />
+      {:else}
+        <MnemonicStep mnemonic={wizardState.mnemonic} onDone={done} />
+      {/if}
+    </div>
   </div>
 </main>

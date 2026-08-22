@@ -2,6 +2,7 @@
   import type { BlockSummaryDto } from '../lib/ipc';
   import { formatShortDate } from '../lib/format';
   import Link from './icons/Link.svelte';
+  import Pencil from './icons/Pencil.svelte';
   import Trash from './icons/Trash.svelte';
 
   // onTrash / onShare / onRename are optional so browse-only call sites stay unchanged.
@@ -12,8 +13,7 @@
     onTrash?: (block: BlockSummaryDto) => void;
     onShare?: (block: BlockSummaryDto) => void;
     onRename?: (block: BlockSummaryDto) => void;
-    /** #526 — sidebar selection. Drives aria-current and keeps the row's
-        actions visible without a hover. */
+    /** #526 — sidebar selection. Drives aria-current and the visual highlight. */
     selected?: boolean;
     /** #526 review — an editor is open in the detail pane; this card goes
         non-interactive, mirroring RecordRow's frozen treatment, so a stray
@@ -67,9 +67,10 @@
           type="button"
           class="block-card__rename"
           aria-label="Rename block"
+          title="Rename block"
           onclick={() => onRename(block)}
         >
-          Rename
+          <Pencil size={17} />
         </button>
       {/if}
 
@@ -78,6 +79,7 @@
           type="button"
           class="block-card__share"
           aria-label="Share block"
+          title="Share block"
           onclick={() => onShare(block)}
         >
           <Link />
@@ -89,6 +91,7 @@
           type="button"
           class="block-card__trash"
           aria-label="Trash block"
+          title="Move block to Trash"
           onclick={() => onTrash(block)}
         >
           <Trash />
@@ -100,7 +103,7 @@
 
 <style>
   /* #526 — three action buttons do not fit a sidebar column. Reveal them on
-     hover, on selection, or when anything inside the row has keyboard focus.
+     hover or when anything inside the row has keyboard focus.
      Opacity only: the buttons stay in the DOM and in the accessibility tree,
      because a keyboard user never hovers. */
   /* The card owns the full column width; the actions float over its right
@@ -121,8 +124,7 @@
   }
 
   .block-card-wrap:hover .block-card__actions,
-  .block-card-wrap:focus-within .block-card__actions,
-  .block-card-wrap--selected .block-card__actions {
+  .block-card-wrap:focus-within .block-card__actions {
     opacity: 1;
   }
 
