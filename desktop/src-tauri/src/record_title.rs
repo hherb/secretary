@@ -34,6 +34,19 @@ use secretary_ffi_bridge::Record;
 /// exact array. Without that pin, appending a seventh entry passed every test
 /// in the tree, and this doc comment was the only thing standing between a new
 /// name and a persistent, unmasked render of its plaintext (#526 review).
+///
+/// # `url` was considered and deliberately kept (#526 review, #532)
+///
+/// A URL can embed credentials in its authority — `https://admin:pw@host` —
+/// so an allowlisted `url` field can put a password on screen persistently,
+/// where the same bytes read through `reveal_field` would re-mask after
+/// `REVEAL_AUTO_HIDE_MS`. Stripping the userinfo component was weighed and
+/// **rejected**: a secrets manager cannot protect a user who stores a secret
+/// in a field not meant to hold one, and a URL is the single most useful
+/// row label for the login records that dominate a vault. Silently rewriting
+/// what the user typed would also make the row disagree with the record.
+/// Decision recorded here rather than in the issue so the next person to read
+/// this array does not have to re-derive it.
 const TITLE_NAMES: [&str; 6] = ["title", "name", "service", "username", "url", "key_id"];
 
 /// Maximum characters of a field value that may reach the frontend as a label.
