@@ -24,5 +24,5 @@
 </script>
 
 <button type="button" class="lock-button" onclick={handleClick}>
-  <Lock />Lock
+  <Lock /><span class="top-bar__control-label">Lock</span>
 </button>

@@ -142,7 +142,7 @@
 
       {#snippet list()}
         {#if panes.list.kind === 'prompt'}
-          <p class="vault__pane-prompt">{panes.list.message}</p>
+          <p class="vault__pane-prompt"><span>{panes.list.message}</span></p>
         {:else if panes.list.kind === 'records'}
           <RecordList
             block={panes.list.block}
@@ -159,7 +159,7 @@
 
       {#snippet detail()}
         {#if panes.detail.kind === 'prompt'}
-          <p class="vault__pane-prompt">{panes.detail.message}</p>
+          <p class="vault__pane-prompt"><span>{panes.detail.message}</span></p>
         {:else if panes.detail.kind === 'viewer'}
           <!-- SECURITY BOUNDARY — do not remove this {#key}.
                It forces Svelte to tear down and re-allocate FieldViewer when

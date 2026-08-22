@@ -11,6 +11,7 @@
   import CreateVault from './routes/CreateVault.svelte';
   import Toast from './components/Toast.svelte';
   import './theme.css';
+  import './visual-refresh.css';
 
   // The backend `vault-locked` event fires from two call sites:
   //   - explicit user-lock (`commands::lock`) → reason: 'explicit'

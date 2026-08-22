@@ -37,6 +37,7 @@ pub use edit::{
     FieldInputDto, FieldValueDto, RecordInputDto, RecordRefDto, RecordRevealDto,
     RevealedFieldWithNameDto,
 };
+pub(crate) use manifest::user_block_summaries;
 pub use manifest::{BlockSummaryDto, ManifestDto, SettingsDto, SettingsInput};
 pub use recipient::{RecipientDto, RecipientKindDto};
 pub use repair::{AddedRecipientDto, ApprovedWideningArg, RepairPreviewDto, WideningReportDto};

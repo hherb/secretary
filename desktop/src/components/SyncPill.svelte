@@ -98,7 +98,7 @@
     title="Sync now"
   >
     <Sync />
-    {label}
+    <span class="sync-pill__label">{label}</span>
   </button>
 
   {#if notice}

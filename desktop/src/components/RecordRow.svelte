@@ -2,6 +2,8 @@
   import type { RecordDto } from '../lib/ipc';
   import { formatShortDate } from '../lib/format';
   import { isContentlessTombstone } from '../lib/records';
+  import Move from './icons/Move.svelte';
+  import Trash from './icons/Trash.svelte';
 
   // onDelete / onRestore / onMove are optional so existing call sites that
   // only browse (no write actions wired) keep working unchanged. When supplied,
@@ -97,16 +99,30 @@
   </button>
 
   {#if !frozen}
-    {#if deleted && onRestore}
-      <button type="button" class="record-row__restore" aria-label="Restore record" onclick={() => onRestore(record)}>Restore</button>
-    {:else if !deleted}
-      {#if onMove}
-        <button type="button" class="record-row__move" aria-label="Move record" onclick={() => onMove(record)}>Move</button>
+    <div class="record-row__actions">
+      {#if deleted && onRestore}
+        <button type="button" class="record-row__restore" aria-label="Restore record" onclick={() => onRestore(record)}>Restore</button>
+      {:else if !deleted}
+        {#if onMove}
+          <button
+            type="button"
+            class="record-row__move"
+            aria-label="Move record"
+            title="Move record"
+            onclick={() => onMove(record)}
+          ><Move size={17} /></button>
+        {/if}
+        {#if onDelete}
+          <button
+            type="button"
+            class="record-row__delete"
+            aria-label="Delete record"
+            title="Delete record"
+            onclick={() => onDelete(record)}
+          ><Trash size={17} /></button>
+        {/if}
       {/if}
-      {#if onDelete}
-        <button type="button" class="record-row__delete" aria-label="Delete record" onclick={() => onDelete(record)}>Delete</button>
-      {/if}
-    {/if}
+    </div>
   {/if}
 </div>
 
