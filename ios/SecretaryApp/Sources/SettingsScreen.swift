@@ -155,6 +155,7 @@ struct SettingsScreen: View {
             }
         }
         .navigationTitle("Settings")
+        .secretaryScreenChrome()
         .confirmationDialog("Forget this device?",
                             isPresented: $confirmForget,
                             titleVisibility: .visible) {

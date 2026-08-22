@@ -48,6 +48,7 @@ struct TrashScreen: View {
             }
         }
         .navigationTitle("Trash")
+        .secretaryScreenChrome()
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { showRetention = true } label: {
@@ -122,6 +123,7 @@ private struct RetentionSheet: View {
             }
             .padding()
             .navigationTitle("Run retention")
+            .secretaryScreenChrome()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { isPresented = false }

@@ -1,11 +1,11 @@
 package org.secretary.app
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -44,59 +44,111 @@ fun CreateVaultWizardScreen(
     onAcknowledge: () -> Unit,
     onCancel: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text("Create a new vault")
-        when (step) {
-            is VaultProvisioningStep.Folder -> {
-                var name by remember { mutableStateOf("") }
-                OutlinedButton(onClick = onPickParent, modifier = Modifier.fillMaxWidth().testTag("wizard-pick-parent")) {
-                    Text(pickedFolderLabel?.let { "Folder: $it" } ?: "Choose a cloud folder")
+    val stepNumber = when (step) {
+        is VaultProvisioningStep.Folder -> 1
+        is VaultProvisioningStep.Credentials -> 2
+        is VaultProvisioningStep.Mnemonic -> 3
+        is VaultProvisioningStep.Done -> 3
+    }
+    SecretaryScreen {
+        SecretaryBrandHeader(
+            title = "Create a new vault",
+            subtitle = "Step $stepNumber of 3 · encrypted from the very first save.",
+        )
+        LinearProgressIndicator(
+            progress = { stepNumber / 3f },
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.secondary,
+            trackColor = MaterialTheme.colorScheme.secondaryContainer,
+        )
+        SecretaryPanel {
+            when (step) {
+                is VaultProvisioningStep.Folder -> {
+                    var name by remember { mutableStateOf("") }
+                    Text("Choose a location", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "Secretary creates an encrypted vault inside the cloud folder you choose.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedButton(onClick = onPickParent, modifier = Modifier.fillMaxWidth().testTag("wizard-pick-parent")) {
+                        Text(pickedFolderLabel?.let { "Folder: $it" } ?: "Choose a cloud folder")
+                    }
+                    OutlinedTextField(
+                        value = name, onValueChange = { name = it },
+                        label = { Text("Vault name") },
+                        modifier = Modifier.fillMaxWidth().testTag("wizard-name"),
+                    )
+                    nameError?.let {
+                        Text(
+                            it.message ?: "Invalid name",
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.testTag("wizard-name-error"),
+                        )
+                    }
+                    Button(onClick = { onChooseFolder(name) }, modifier = Modifier.fillMaxWidth().testTag("wizard-next")) {
+                        Text("Continue")
+                    }
                 }
-                OutlinedTextField(
-                    value = name, onValueChange = { name = it },
-                    label = { Text("Vault name") },
-                    modifier = Modifier.fillMaxWidth().testTag("wizard-name"),
-                )
-                nameError?.let { Text(it.message ?: "Invalid name", modifier = Modifier.testTag("wizard-name-error")) }
-                Button(onClick = { onChooseFolder(name) }, modifier = Modifier.fillMaxWidth().testTag("wizard-next")) {
-                    Text("Next")
+                is VaultProvisioningStep.Credentials -> {
+                    var password by remember { mutableStateOf("") }
+                    var confirm by remember { mutableStateOf("") }
+                    Text("Protect your vault", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "Use a strong password you can remember. Secretary cannot recover it for you.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = password, onValueChange = { password = it },
+                        label = { Text("Master password") }, visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth().testTag("wizard-password"),
+                    )
+                    OutlinedTextField(
+                        value = confirm, onValueChange = { confirm = it },
+                        label = { Text("Confirm password") }, visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth().testTag("wizard-confirm"),
+                    )
+                    error?.let {
+                        Text(
+                            it.message ?: "Create failed",
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.testTag("wizard-error"),
+                        )
+                    }
+                    Button(
+                        onClick = { onCreate(password, confirm) },
+                        enabled = !isCreating,
+                        modifier = Modifier.fillMaxWidth().testTag("wizard-create"),
+                    ) { Text(if (isCreating) "Creating…" else "Create vault") }
                 }
-            }
-            is VaultProvisioningStep.Credentials -> {
-                var password by remember { mutableStateOf("") }
-                var confirm by remember { mutableStateOf("") }
-                OutlinedTextField(
-                    value = password, onValueChange = { password = it },
-                    label = { Text("Password") }, visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth().testTag("wizard-password"),
-                )
-                OutlinedTextField(
-                    value = confirm, onValueChange = { confirm = it },
-                    label = { Text("Confirm password") }, visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth().testTag("wizard-confirm"),
-                )
-                error?.let { Text(it.message ?: "Create failed", modifier = Modifier.testTag("wizard-error")) }
-                Button(
-                    onClick = { onCreate(password, confirm) },
-                    enabled = !isCreating,
-                    modifier = Modifier.fillMaxWidth().testTag("wizard-create"),
-                ) { Text(if (isCreating) "Creating…" else "Create vault") }
-            }
-            is VaultProvisioningStep.Mnemonic -> {
-                Text("Write down these 24 words. They are the only way to recover this vault.")
-                Column(modifier = Modifier.testTag("mnemonic-grid"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    mnemonicRows.orEmpty().forEach { Text("${it.index}. ${it.word}") }
+                is VaultProvisioningStep.Mnemonic -> {
+                    Text("Save your recovery phrase", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "Write down these 24 words. They are the only way to recover this vault.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Column(modifier = Modifier.testTag("mnemonic-grid")) {
+                        mnemonicRows.orEmpty().forEach {
+                            Text(
+                                "${it.index}. ${it.word}",
+                                modifier = Modifier.padding(vertical = 3.dp),
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                        }
+                    }
+                    error?.let {
+                        Text(
+                            it.message ?: "Error",
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.testTag("wizard-error"),
+                        )
+                    }
+                    Button(onClick = onAcknowledge, modifier = Modifier.fillMaxWidth().testTag("wizard-ack")) {
+                        Text("I've written it down")
+                    }
                 }
-                error?.let { Text(it.message ?: "Error", modifier = Modifier.testTag("wizard-error")) }
-                Button(onClick = onAcknowledge, modifier = Modifier.fillMaxWidth().testTag("wizard-ack")) {
-                    Text("I've written it down")
+                is VaultProvisioningStep.Done -> {
+                    Text("Vault ready", style = MaterialTheme.typography.titleLarge)
                 }
-            }
-            is VaultProvisioningStep.Done -> {
-                Text("Vault ready.")
             }
         }
         OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth().testTag("wizard-cancel")) {

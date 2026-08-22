@@ -59,6 +59,7 @@ struct RecordEditScreen: View {
                 }
                 Section {
                     Button("Save") { Task { await viewModel.commit() } }
+                        .buttonStyle(.borderedProminent)
                         .disabled(viewModel.loadFailed || viewModel.committed || viewModel.isWriting)
                 }
                 if let err = viewModel.error {
@@ -70,6 +71,7 @@ struct RecordEditScreen: View {
                 }
             }
             .navigationTitle(title)
+            .secretaryScreenChrome()
             .onChange(of: viewModel.committed) { _, done in
                 if done { onDone() }
             }

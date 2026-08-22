@@ -15,8 +15,7 @@ struct SyncPasswordSheet: View {
             Form {
                 Section("Master password") {
                     SecureField("password", text: $password)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .secretaryVaultPasswordInput()
                 }
                 if let err = model.lastError {
                     Section("Error") {
@@ -26,6 +25,7 @@ struct SyncPasswordSheet: View {
                 }
             }
             .navigationTitle("Sync now")
+            .secretaryScreenChrome()
             .overlay { if model.isSyncing { ProgressView() } }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

@@ -29,13 +29,21 @@ public struct DeviceUuidStore: DeviceUuidProviding {
     private let directory: URL
     public init(directory: URL) { self.directory = directory }
 
-    /// Production store under `Application Support/Secretary/devices/`.
+    /// Production store under `Application Support/secretary/devices/`.
+    ///
+    /// Keep the app-folder spelling identical to `defaultSyncStateDir`. On iOS
+    /// 26, asking Foundation to create `Secretary/devices` after sync has already
+    /// created `secretary/sync` can fail with `NSFileWriteUnknownError` on the
+    /// simulator's case-normalizing Application Support volume. That made the
+    /// first vault mutation fail before it ever reached the vault.
     public static func applicationSupportDefault() throws -> DeviceUuidStore {
         let base = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true)
         return DeviceUuidStore(
-            directory: base.appendingPathComponent("Secretary/devices", isDirectory: true))
+            directory: base
+                .appendingPathComponent("secretary", isDirectory: true)
+                .appendingPathComponent("devices", isDirectory: true))
     }
 
     public func deviceUuid(forVaultHex vaultHex: String) throws -> [UInt8] {

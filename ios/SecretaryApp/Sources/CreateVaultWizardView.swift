@@ -22,6 +22,13 @@ struct CreateVaultWizardView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    SecretaryBrandHeader(
+                        title: "Create a new vault",
+                        subtitle: stepSubtitle)
+                }
+                .listRowBackground(Color.clear)
+
                 switch viewModel.step {
                 case .folder:        folderStep
                 case .credentials:   credentialsStep
@@ -30,6 +37,7 @@ struct CreateVaultWizardView: View {
                 }
             }
             .navigationTitle("Create vault")
+            .secretaryScreenChrome()
             .toolbar { ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { viewModel.cancel(); onCancel() }
             } }
@@ -49,6 +57,7 @@ struct CreateVaultWizardView: View {
             Button("Continue") {
                 if let parentURL { viewModel.chooseParent(parentURL, vaultName: vaultName) }
             }
+            .buttonStyle(.borderedProminent)
             .disabled(parentURL == nil || vaultName.isEmpty)
         }
     }
@@ -57,7 +66,9 @@ struct CreateVaultWizardView: View {
         Section("Credentials") {
             TextField("Display name", text: $displayName)
             SecureField("Master password", text: $password)
+                .secretaryVaultPasswordInput()
             SecureField("Confirm password", text: $confirm)
+                .secretaryVaultPasswordInput()
             if viewModel.error == .passwordMismatch {
                 Text("Passwords do not match").foregroundStyle(.red).font(.footnote)
             } else if let e = viewModel.error {
@@ -71,6 +82,7 @@ struct CreateVaultWizardView: View {
                     password = ""; confirm = ""
                 }
             }
+            .buttonStyle(.borderedProminent)
             .disabled(displayName.isEmpty || password.isEmpty || confirm.isEmpty
                       || viewModel.isCreating)
             if viewModel.isCreating { ProgressView("Creating vault…") }
@@ -87,6 +99,16 @@ struct CreateVaultWizardView: View {
             Button("I have written down my recovery phrase") {
                 viewModel.acknowledgeMnemonic()
             }
+            .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private var stepSubtitle: String {
+        switch viewModel.step {
+        case .folder: return "Step 1 of 3 · Choose where your encrypted vault lives."
+        case .credentials: return "Step 2 of 3 · Protect it with a strong master password."
+        case .mnemonic: return "Step 3 of 3 · Save your recovery phrase offline."
+        case .done: return "Your encrypted vault is ready."
         }
     }
 

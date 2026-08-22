@@ -45,6 +45,13 @@ struct UnlockScreen: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    SecretaryBrandHeader(
+                        title: "Welcome back",
+                        subtitle: "Unlock locally. Your vault remains encrypted at rest.")
+                }
+                .listRowBackground(Color.clear)
+
                 Picker("Unlock with", selection: $mode) {
                     Text("Password").tag(UnlockViewModel.Mode.password)
                     Text("Recovery phrase").tag(UnlockViewModel.Mode.recovery)
@@ -61,8 +68,7 @@ struct UnlockScreen: View {
                 case .password:
                     Section("Master password") {
                         SecureField("password", text: $password)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
+                            .secretaryVaultPasswordInput()
                     }
                     if !biometricEnrolled {
                         Toggle("Remember this device with Face ID", isOn: $rememberDevice)
@@ -102,6 +108,7 @@ struct UnlockScreen: View {
                             }
                         }
                     }
+                    .buttonStyle(.borderedProminent)
                 }
                 .disabled(isBusy)
 
@@ -118,6 +125,7 @@ struct UnlockScreen: View {
                 }
             }
             .navigationTitle("Unlock vault")
+            .secretaryScreenChrome()
             .overlay { if isBusy { ProgressView() } }
             .onChange(of: stateIsUnlocked) { _, unlocked in
                 if unlocked, case .unlocked(let session) = viewModel.state {

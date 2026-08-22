@@ -27,6 +27,7 @@ struct MoveTargetPickerSheet: View {
                 }
             }
             .navigationTitle("Move \(record.type.isEmpty ? "record" : record.type)")
+            .secretaryScreenChrome()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { viewModel.cancelMove() }
@@ -74,6 +75,7 @@ struct BlockNameSheet: View {
                 }
             }
             .navigationTitle(title)
+            .secretaryScreenChrome()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { viewModel.cancelBlockNameDialog() }

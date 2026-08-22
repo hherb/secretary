@@ -331,10 +331,13 @@ private struct RootView: View {
 private struct PrivacyCover: View {
     var body: some View {
         ZStack {
-            Color(.systemBackground).ignoresSafeArea()
-            Image(systemName: "lock.fill")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
+            SecretaryPalette.background.ignoresSafeArea()
+            VStack(spacing: 14) {
+                SecretaryBrandMark(size: 68)
+                Text("Secretary")
+                    .font(.headline)
+                    .foregroundStyle(SecretaryPalette.primary)
+            }
         }
     }
 }
