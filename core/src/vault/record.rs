@@ -47,11 +47,13 @@
 //! the produced bytes are bit-identical to the input, because:
 //!
 //! - We collect every unrecognised key into the `unknown` map.
-//! - On re-encode we splice unknown entries back alongside the known
-//!   entries and let `encode_canonical_map` re-sort them by canonical
-//!   CBOR-encoded key. Since canonical sort is total and stable, the
-//!   resulting byte layout matches the input exactly when the input was
-//!   itself canonical.
+//! - On re-encode, `record_to_canonical` splices unknown entries (borrowed
+//!   via `UnknownValue::as_value`, never cloned) into the same
+//!   [`CanonicalMap`] as the known entries; its `Serialize` impl sorts every
+//!   key — known and unknown alike — into canonical order at serialise
+//!   time. Since that sort is total, deterministic, and depends only on the
+//!   key bytes, the resulting byte layout matches the input exactly when
+//!   the input was itself canonical.
 //!
 //! The decoder's strict canonical-input check (re-encode the parsed
 //! representation and compare to the input bytes) makes the round-trip
@@ -215,12 +217,14 @@ pub enum RecordError {
     #[error("non-canonical CBOR encoding (e.g. indefinite-length item, key disorder, or non-shortest length)")]
     NonCanonicalEncoding,
 
-    /// `crate::vault::canonical::encode_canonical_map`'s pre-reserved
-    /// output buffer needed more bytes than expected (lifted from
-    /// `CanonicalError::CapacityBoundExceeded`, an internal `pub(crate)`
-    /// type not reachable from public docs). This is a post-hoc tripwire
-    /// for a future `ciborium::Value` variant the size bound cannot name,
-    /// not a routine error path.
+    /// `crate::vault::canonical::to_canonical_vec`'s pre-reserved output
+    /// buffer (sized from `CanonicalMap::size_bound`, not
+    /// `encode_canonical_map`'s `cbor_size_bound` — the two are different
+    /// formulas over different input shapes) needed more bytes than
+    /// expected (lifted from `CanonicalError::CapacityBoundExceeded`, an
+    /// internal `pub(crate)` type not reachable from public docs). This is
+    /// a post-hoc tripwire for a future `ciborium::Value` variant the size
+    /// bound cannot name, not a routine error path.
     #[error("canonical CBOR encode exceeded its reserved size bound ({actual} > {bound})")]
     CanonicalSizeBoundExceeded { actual: usize, bound: usize },
 }
@@ -392,13 +396,20 @@ pub struct Record {
     /// generic key/value lists).
     pub record_type: String,
     /// Field name → field. [`BTreeMap`] for in-memory iteration
-    /// determinism only; the wire ordering is decided by
-    /// `canonical_sort_entries` against materialised CBOR-encoded key
-    /// bytes (length-then-bytewise), which differs from `BTreeMap`'s
-    /// `String` ordering for keys of differing UTF-8 lengths (e.g. `"z"`
-    /// sorts before `"ab"` in canonical CBOR but after it in
-    /// `BTreeMap<String, _>`). The two orders coincide only for keys of
-    /// equal byte-length. (`IndexMap` would preserve insertion order,
+    /// determinism only; the wire ordering is decided by [`CanonicalMap`]'s
+    /// `Serialize` impl, which compares keys directly as `(byte length,
+    /// bytes)` — an ALLOCATION-FREE comparison, deliberately: a field name
+    /// here is user-authored, decrypted plaintext (the same class of data
+    /// `RecordError::DuplicateKey` used to leak by formatting one, #474), so
+    /// the encoder must never materialise a key into an owned,
+    /// CBOR-encoded sort buffer. Do not "restore" a materialise-then-sort
+    /// step to make this doc's old wording true again — that would reopen
+    /// the leak this ordering exists to close (see `canonical/value.rs`'s
+    /// module doc for the full rationale). This ordering differs from
+    /// `BTreeMap`'s `String` ordering for keys of differing UTF-8 byte
+    /// lengths (e.g. `"z"` sorts before `"ab"` in canonical CBOR but after
+    /// it in `BTreeMap<String, _>`); the two orders coincide only for keys
+    /// of equal byte length. (`IndexMap` would preserve insertion order,
     /// which is the wrong invariant for a canonical encoder.)
     pub fields: BTreeMap<String, RecordField>,
     /// Cross-cutting tags. Empty `Vec` = absent on the wire.
@@ -978,10 +989,30 @@ mod tests {
     /// pre-canonical-sort). Used by tests that want to mutate one entry
     /// (e.g. swap a u64 for a float) and re-emit canonically.
     ///
-    /// Built via [`owned_record_entries_for_test`] (not the production
-    /// `record_to_canonical`, which returns a borrowing [`CanonicalMap`]
-    /// these `Vec<(Value, Value)>`-mutating negative-path tests cannot
-    /// splice a hand-built float/tag/duplicate-key fragment into).
+    /// Built via [`owned_record_entries_for_test`], not the production
+    /// `record_to_canonical` — for two reasons, not one:
+    ///
+    /// 1. **Type mismatch.** `record_to_canonical` returns a borrowing
+    ///    [`CanonicalMap`], and these `Vec<(Value, Value)>`-mutating
+    ///    negative-path tests need an OWNED, `ciborium::Value`-based entry
+    ///    list to splice a hand-built float / tag / duplicate-key fragment
+    ///    into — `CanonicalValue` has no arm for either forbidden node
+    ///    type, by design (that is what makes it a canonical-CBOR-only
+    ///    mirror). There is no `CanonicalMap`-based way to build these
+    ///    fixtures at all, not merely an inconvenient one.
+    /// 2. **It is still the right baseline, not a fallback.** These callers
+    ///    are DECODE-path tests: they assert that `decode` rejects a
+    ///    specific malformed byte sequence, and the sequence's malformed
+    ///    part is what the test cares about — the surrounding well-formed
+    ///    entries only need to be SOME valid canonical encoding of
+    ///    `record`, not specifically today's production encoding.
+    ///    `record_to_canonical_matches_the_owned_encoder_byte_for_byte`
+    ///    (below) is the test that carries the burden of proving
+    ///    `owned_record_entries_for_test` and `record_to_canonical` agree
+    ///    byte-for-byte on every well-formed record; once that holds, using
+    ///    the oracle here is not a weaker substitute for production, it is
+    ///    an equally valid witness of "a canonical encoding of `record`" —
+    ///    the only property these tests need from it.
     fn record_entries_canonical(record: &Record) -> Vec<(Value, Value)> {
         let entries = owned_record_entries_for_test(record);
         canonical_sort_entries(&entries).expect("canonical_sort_entries")
@@ -1107,16 +1138,47 @@ mod tests {
         entries
     }
 
+    /// The three well-formed states of `(tombstone, tombstoned_at_ms)` —
+    /// see `Record::tombstoned_at_ms`'s doc for the invariants that make
+    /// this an enum rather than two independent bools. `tombstone == true`
+    /// FORCES `tombstoned_at_ms == last_mod_ms`, so only three of the four
+    /// `(bool, bool)` combinations are ever well-formed; naming them
+    /// instead of exposing two raw bools makes the fourth, invalid one
+    /// unconstructible by a caller of `random_record` rather than merely
+    /// undocumented.
+    #[derive(Clone, Copy, Debug)]
+    enum TombstoneState {
+        /// Never tombstoned: `tombstone == false`, `tombstoned_at_ms == 0`
+        /// (both omitted from the wire — §6.3 / §11.3 defaults).
+        Live,
+        /// Tombstoned, then resurrected by a later live edit:
+        /// `tombstone == false` (omitted) but `tombstoned_at_ms != 0`
+        /// (present — the death clock survives resurrection, §11.3). A
+        /// REAL CRDT state, and the one a fixture that only ever couples
+        /// `tombstone` and `tombstoned_at_ms` to the same flag can never
+        /// reach: it needs `tombstone == false` and
+        /// `tombstoned_at_ms != 0` simultaneously.
+        Resurrected,
+        /// Currently tombstoned: `tombstone == true` and
+        /// `tombstoned_at_ms == last_mod_ms` (both present on the wire).
+        Tombstoned,
+    }
+
     /// A record with randomly-generated content in every field, including a
     /// forward-compat unknown at both record and field level.
     ///
-    /// `wire_conditionals_present` drives every §6.3 "absent on the wire"
-    /// conditional (`tags`, `tombstone`, `tombstoned_at_ms`) to its
-    /// non-default, ON-WIRE state when `true` and to its default, OMITTED
-    /// state when `false`. The caller (the differential test below) calls
-    /// this with both, because an omission bug is invisible from only one
-    /// side: a record that never sets these three would encode identically
-    /// whether or not the omit-when-default branch actually fires.
+    /// `tags_present` and `tombstone_state` are independent parameters —
+    /// deliberately not a single coupled flag. Each of `tags`, `tombstone`
+    /// and `tombstoned_at_ms` has its own §6.3 "absent on the wire when
+    /// default" conditional in `record_to_canonical`, and a fixture that
+    /// only ever drives them together cannot catch a bug where one guard
+    /// is cross-wired to another's field (e.g. gating `tombstone` on
+    /// `tombstoned_at_ms != 0` instead of on `record.tombstone` itself) —
+    /// under a coupled fixture the two conditions are always equal, so the
+    /// swap is byte-invisible. The differential test below loops over
+    /// every `(tags_present, tombstone_state)` combination for exactly
+    /// this reason; see its own doc and the mutation check recorded in
+    /// `task-4-report.md`'s fix-round-1 section.
     ///
     /// Random rather than literal per the repo's test convention: hardcoded
     /// crypto-shaped byte arrays trip CodeQL. Uses `rand_core::OsRng` (a
@@ -1125,7 +1187,11 @@ mod tests {
     /// `rand_core` 0.9 implements only `TryRngCore`, not `RngCore` — see
     /// `secret_panic_safety.rs`'s `getrandom_fill` for the same
     /// already-documented substitution.
-    fn random_record(rng: &mut impl rand_core::RngCore, wire_conditionals_present: bool) -> Record {
+    fn random_record(
+        rng: &mut impl rand_core::RngCore,
+        tags_present: bool,
+        tombstone_state: TombstoneState,
+    ) -> Record {
         let mut record_uuid = [0u8; RECORD_UUID_LEN];
         rng.fill_bytes(&mut record_uuid);
         let mut device_uuid = [0u8; RECORD_UUID_LEN];
@@ -1174,11 +1240,37 @@ mod tests {
                 unknown: BTreeMap::new(),
             },
         );
-        // A multi-byte UTF-8 field name ("日" — 1 char, 3 bytes), crossing
-        // no head-length boundary by itself but proving the sort compares
-        // BYTES, not chars (see `canonical_value_equivalence.rs`'s sibling
-        // check on `CanonicalMap` directly; this is the same property
-        // exercised through the record encoder).
+        // A 2-byte ASCII field name. On its own this would prove nothing
+        // about byte-vs-char sorting — it is the PAIRING with "日" just
+        // below that matters; see that field's comment.
+        fields.insert(
+            "ab".to_string(),
+            RecordField {
+                value: RecordFieldValue::Text(SecretString::new(format!(
+                    "ab-{:x}",
+                    rng.next_u64()
+                ))),
+                last_mod: rng.next_u64() >> 16,
+                device_uuid,
+                unknown: BTreeMap::new(),
+            },
+        );
+        // A multi-byte UTF-8 field name ("日" — 1 char, 3 bytes). Paired
+        // with "ab" above (2 bytes, 2 chars), this is what actually proves
+        // the sort compares BYTE length, not char count: under byte length,
+        // "ab"(2) < "日"(3); under char COUNT, "日"(1 char) < "ab"(2 chars)
+        // — a genuine order flip, which the differential test's
+        // independently-implemented oracle sort would then disagree with
+        // byte-for-byte. Without "ab", this field alone does NOT pin the
+        // property: "k" above (1 byte, 1 char) and "日" (3 bytes, 1 char)
+        // TIE under char-count and fall through to the same bytewise
+        // tie-break either comparator reaches, so a char-count regression
+        // would have been invisible to a fixture containing only "k" and
+        // "日" (a defect an earlier version of this comment did not
+        // notice — the property IS separately pinned at
+        // `canonical_value_equivalence.rs`'s
+        // `map_key_sort_crosses_head_length_boundary_and_uses_byte_not_char_length`,
+        // which is where the earlier version's claim actually held).
         fields.insert(
             "\u{65e5}".to_string(),
             RecordField {
@@ -1230,23 +1322,33 @@ mod tests {
         );
 
         let last_mod_ms = rng.next_u64() >> 16;
+        // Invariants from `Record::tombstoned_at_ms`'s doc: `tombstone ==
+        // true` forces `tombstoned_at_ms == last_mod_ms`; the `Resurrected`
+        // arm picks a nonzero value strictly before `last_mod_ms`, matching
+        // "preserved unchanged" across a resurrecting edit (§11.3).
+        let (tombstone, tombstoned_at_ms) = match tombstone_state {
+            TombstoneState::Live => (false, 0),
+            TombstoneState::Resurrected => {
+                let earlier = last_mod_ms
+                    .saturating_sub(1 + (rng.next_u64() % 1_000_000))
+                    .max(1);
+                (false, earlier)
+            }
+            TombstoneState::Tombstoned => (true, last_mod_ms),
+        };
         Record {
             record_uuid,
             record_type: "login".to_string(),
             fields,
-            tags: if wire_conditionals_present {
+            tags: if tags_present {
                 vec!["work".to_string(), "a".to_string()]
             } else {
                 Vec::new()
             },
             created_at_ms: rng.next_u64() >> 16,
             last_mod_ms,
-            tombstone: wire_conditionals_present,
-            tombstoned_at_ms: if wire_conditionals_present {
-                last_mod_ms
-            } else {
-                0
-            },
+            tombstone,
+            tombstoned_at_ms,
             unknown: record_unknown,
         }
     }
@@ -1256,11 +1358,24 @@ mod tests {
     /// test pins the OBSERVABLE consequence of the borrowing encoder: the
     /// bytes are unchanged from what the owned encoder produced.
     ///
-    /// Runs against BOTH `wire_conditionals_present` states — `tags`,
-    /// `tombstone` and `tombstoned_at_ms` each have a §6.3 "absent on the
-    /// wire when default" rule, and an omission bug in the borrowing
-    /// encoder's `if` guards is invisible to a fixture that only ever
-    /// exercises one side of each conditional.
+    /// Runs against every `(tags_present, tombstone_state)` combination —
+    /// six in total, `tags_present ∈ {false, true}` crossed with all three
+    /// `TombstoneState` arms. `tags`, `tombstone` and `tombstoned_at_ms`
+    /// each have their OWN independent §6.3 "absent on the wire when
+    /// default" rule in `record_to_canonical`, and driving them from a
+    /// single coupled flag (an earlier version of this fixture did exactly
+    /// that) leaves two classes of bug invisible: a plain omission bug
+    /// (never observing the "present" or the "absent" side of one
+    /// conditional) AND a CROSS-WIRING bug, where one guard is
+    /// accidentally gated on a DIFFERENT field's default-ness — under a
+    /// coupled fixture `record.tombstone` and `record.tombstoned_at_ms !=
+    /// 0` are always equal, so swapping which one gates the `tombstone`
+    /// wire-emission is byte-invisible. `TombstoneState::Resurrected`
+    /// (`tombstone == false`, `tombstoned_at_ms != 0`) is what makes that
+    /// swap visible; see the mutation check recorded in
+    /// `task-4-report.md`'s fix-round-1 section, which planted exactly
+    /// this cross-wiring bug and confirmed this loop catches it where the
+    /// single-flag version could not have.
     ///
     /// Uses a runtime-random record (see `random_record`) rather than a
     /// pasted literal expectation, so this test does not itself become
@@ -1269,22 +1384,30 @@ mod tests {
     fn record_to_canonical_matches_the_owned_encoder_byte_for_byte() {
         let mut rng = rand_core::OsRng;
 
-        for wire_conditionals_present in [false, true] {
-            let record = random_record(&mut rng, wire_conditionals_present);
+        for tags_present in [false, true] {
+            for tombstone_state in [
+                TombstoneState::Live,
+                TombstoneState::Resurrected,
+                TombstoneState::Tombstoned,
+            ] {
+                let record = random_record(&mut rng, tags_present, tombstone_state);
 
-            let via_canonical = encode(&record).expect("encode");
+                let via_canonical = encode(&record).expect("encode");
 
-            // Rebuild the same map the OWNED path built, and encode it the
-            // old way. Both must agree, which is what makes the borrowing
-            // encoder a safe substitution rather than a format change.
-            let owned_entries = owned_record_entries_for_test(&record);
-            let via_owned = encode_canonical_map(&owned_entries).expect("owned encode");
+                // Rebuild the same map the OWNED path built, and encode it
+                // the old way. Both must agree, which is what makes the
+                // borrowing encoder a safe substitution rather than a
+                // format change.
+                let owned_entries = owned_record_entries_for_test(&record);
+                let via_owned = encode_canonical_map(&owned_entries).expect("owned encode");
 
-            assert_eq!(
-                via_canonical, via_owned,
-                "the borrowing encoder changed the bytes — the on-disk format \
-                 moved (wire_conditionals_present={wire_conditionals_present})"
-            );
+                assert_eq!(
+                    via_canonical, via_owned,
+                    "the borrowing encoder changed the bytes — the on-disk \
+                     format moved (tags_present={tags_present}, \
+                     tombstone_state={tombstone_state:?})"
+                );
+            }
         }
     }
 

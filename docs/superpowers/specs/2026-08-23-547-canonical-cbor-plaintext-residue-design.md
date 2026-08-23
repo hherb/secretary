@@ -230,11 +230,39 @@ covered by at least one of:
    than attested here.
 2. **The golden vault** (`core/tests/data/golden_vault_001/`). `from_canonical_cbor`
    re-encodes and compares against bytes written before this branch existed.
-3. **`conformance.py`**, the clean-room verifier — which as of #546 actually
-   runs in CI (`clean-room conformance`) and is now a **required** check.
-   It decrypts the golden vault from `docs/` alone, so a byte change that the
-   Rust tests happen to agree with still reds it.
-4. **The existing record / block / manifest KATs and round-trip tests.**
+3. **`record::decode`'s own re-encode-and-byte-compare invariant**
+   (`decode` re-encodes the parsed `Record` via `encode` and requires an
+   exact match against the input bytes, or returns a typed
+   `NonCanonicalEncoding` error) **driven over the frozen golden-vault
+   fixture by `core/tests/golden_vault_001.rs`** — specifically
+   `golden_vault_001_pinned`, which rebuilds the vault from
+   `golden_vault_001_inputs.json` using the CURRENT Rust encoder and
+   asserts the freshly-built bytes are byte-equal to the on-disk fixture,
+   and `golden_vault_001_opens_with_password`, which decrypts and decodes
+   the fixture's real block records. This is the check that would actually
+   fail if today's record encoder stopped reproducing those bytes.
+   `core/tests/data/fuzz_regressions/record/` replays the same `decode`
+   path over a corpus of previously crash-inducing byte sequences as
+   defense in depth; its formal contract is panic-freedom (`Result` is
+   discarded), not byte-identity, so it does not substitute for the
+   `golden_vault_001.rs` check above — a regression that turned a
+   previously-canonical input into a clean `Err(NonCanonicalEncoding)`
+   would not panic and would pass it silently.
+4. ~~`conformance.py`, the clean-room verifier~~ — **this item was wrong and
+   is corrected, not merely reworded.** A prior version of this list named
+   `conformance.py` as byte-identity proof for the *Rust* encoder ("a byte
+   change that the Rust tests happen to agree with still reds it"). That is
+   false for this change class: `conformance.py` contains no reference to
+   `secretary_core`, `cargo`, or `subprocess` — it invokes no Rust at all.
+   It is a pure-Python implementation that reads the static
+   `golden_vault_001/` fixture directly and proves the fixture agrees with
+   `docs/` (the clean-room-implementability property, #546's actual scope).
+   It would pass identically whether or not the Rust encoder in this crate
+   still produces those bytes; it says nothing about that question. It
+   remains valuable evidence that the *docs* stayed correct, and running it
+   is still part of this slice's verification — but item 3 above, not this
+   one, is what actually gates Rust byte-identity.
+5. **The existing record / block / manifest KATs and round-trip tests.**
 
 A diff of `core/tests/data/` must be **empty** at the end of this slice. If a
 KAT needs regenerating, the change is a format change and the slice is wrong.
@@ -284,7 +312,11 @@ production change.
 - **Equivalence**: the promoted probe (§5.1), extended to the exact shapes
   `record` and `block` emit.
 - **Byte-identity**: existing record/block/manifest round-trip and KAT tests
-  must pass **unchanged**; golden vault; `conformance.py`.
+  must pass **unchanged**; golden vault (`golden_vault_001.rs`'s
+  rebuild-and-compare plus `record::decode`'s own re-encode-and-compare —
+  see §5 item 3, the check that actually gates the Rust encoder);
+  `conformance.py` (proves `docs/`/fixture agreement, not Rust-encoder
+  behaviour — see §5 item 4).
 - **Wipe-on-drop**: a `#[cfg(test)]` counter proving `Drop` calls the walker
   (the #546 precedent — without it, deleting `impl Drop` left every test
   green). Assertions must distinguish a wipe from a `clear()`: the #546 review

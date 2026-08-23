@@ -120,7 +120,17 @@ impl<'a> CanonicalMap<'a> {
     /// Upper bound on this map's CBOR encoding length, for pre-reserving.
     /// Same contract as [`super::cbor_size_bound`]: over is harmless, under
     /// reopens the realloc hazard.
-    pub(crate) fn size_bound(&self) -> usize {
+    ///
+    /// Module-private (not `pub(crate)`): every caller — this impl's own
+    /// recursive `CanonicalValue::size_bound` arm and [`to_canonical_vec`]
+    /// — lives in this same file, so there is no cross-module need. An
+    /// earlier round of this task over-widened both `size_bound` fns to
+    /// `pub(crate)` without checking for one — unlike [`to_canonical_vec`]
+    /// itself (a real `record.rs` caller) or [`CanonicalMap`] /
+    /// [`CanonicalValue`] (`pub`, needed for `canonical_test_api`'s
+    /// cross-crate integration-test reach), neither `size_bound` has ever
+    /// had a caller outside this file. Narrowed back per review.
+    fn size_bound(&self) -> usize {
         super::HEAD_MAX
             + self
                 .0
@@ -132,8 +142,9 @@ impl<'a> CanonicalMap<'a> {
 
 impl CanonicalValue<'_> {
     /// Upper bound on this value's CBOR encoding length. See
-    /// [`CanonicalMap::size_bound`] for the contract.
-    pub(crate) fn size_bound(&self) -> usize {
+    /// [`CanonicalMap::size_bound`] for the contract and for why this is
+    /// module-private, not `pub(crate)`.
+    fn size_bound(&self) -> usize {
         match self {
             Self::Text(t) => super::HEAD_MAX + t.len(),
             Self::Bytes(b) => super::HEAD_MAX + b.len(),
