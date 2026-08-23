@@ -732,7 +732,7 @@ claiming more coverage than the code delivers:
       same overclaim class, in the one bullet this branch rewrote *because
       both its halves were previously false*. Of the **six E3 sees**, FIVE
       pre-date this work; the sixth, `array32_from_vec_into`, was created
-      by this branch (Task 7, `9cad5b3c`) and inherits the forwarding shape
+      by that work (PR #520, merged as `2e6dd764`) and inherits the forwarding shape
       verbatim from the by-value `array32_from_vec` it replaced and
       deleted. A prior version said all six pre-date it and cited `git show
       3775ef5:` as confirmation — that command DISPROVES it (`grep -c 'fn
