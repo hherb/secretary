@@ -62,7 +62,14 @@ cargo test --release --workspace --features differential-replay
 cargo clippy --release --workspace --tests -- -D warnings
 
 # Doc links — must stay warning-clean (#92 CI gate; rustdoc only documents the
-# cfg-active code, so run on both Linux and macOS to catch platform-gated links)
+# cfg-active code, so run on both Linux and macOS to catch platform-gated links).
+# Gotcha: widening a `use` can red this gate without touching a single doc
+# comment — a bare `[Foo]` shorthand only resolves once `Foo` is imported, and
+# once it does, a pre-existing explicit `[Foo](crate::path::Foo)` link becomes
+# REDUNDANT and trips `redundant_explicit_links` (#542 hit this: widening
+# `use crate::crypto::secret::Sensitive;` to `{SecretBytes, Sensitive}` made a
+# neighbouring explicit `[SecretBytes](crate::crypto::secret::SecretBytes)`
+# link redundant in the same stroke).
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
 
 # Format
@@ -128,6 +135,18 @@ uv run scripts/check-test-support-placement.py
 # not confined to one), and test code IS scanned: #496 proved a `#[cfg(test)]`
 # carve-out is fail-OPEN. Ships with an EMPTY allowlist. Same --self-test-first
 # discipline; probes go to `mktemp -d`, never the source tree (cf. #516).
+# LIMITS (see the script's own header for the full text): both rules match by
+# SPELLING, not resolved identity. Module/item aliasing is NOT symmetric — a
+# `use std::mem as m;` then `m::swap(..)` evades rule S1 entirely (neither the
+# import nor the call site contains a `mem::<verb>` substring), while aliasing
+# `ManuallyDrop` still requires writing that identifier once on its `use` line,
+# which S2 matches — do not flatten the two into one claim. Every rule reads
+# TEXT, not expanded macros, so a macro-generated move-out is invisible.
+# Scope is six named roots only; `core/tests/**` and `test-utils/` are outside
+# them. Zero live producers of the aliasing evasion today; tracked as #545,
+# same root cause as #512/#517. Do not widen the regexes to close it — #545
+# owns that, deliberately deferred so this LIMITS text and the guard's actual
+# behaviour don't drift apart.
 bash scripts/check-secret-slot-hygiene.sh --self-test
 bash scripts/check-secret-slot-hygiene.sh
 ```
@@ -869,6 +888,7 @@ Every secret-bearing byte string is wrapped in `Sensitive<T>` or `SecretBytes` (
 
 - **If a fallible or panicking call sits between the fill and the wrap** — an Argon2/HKDF derivation, a bridge call, a foreign-runtime accessor call (`PyBytes::new` et al. can panic), decoding into a fixed-size array behind a length check that can fail — **wrap first, fill through the wrapper**: `Sensitive::try_build(init, |slot| { /* fallible fill; last expr is Result<(), E> */ })`, or `Sensitive::build(init, |slot| { /* infallible fill */ })` if it truly cannot fail (e.g. `rng.fill_bytes`). `Drop` then wipes on every exit — return, `?`, or unwind — with no statement for control flow to skip. **This is the lead choice for any new secret-bearing local live across a fallible call.**
 - **Only when the fill is provably adjacent** — nothing panicking or fallible intervenes before the wrap — does the older `let mut stack_var = ...; let s = Sensitive::new(stack_var); stack_var.zeroize();` trailing-wipe form remain correct, and it stays the pattern at sites like `crypto::kem::decap`'s intermediate copies and most `vault::block`/`sync` key-extraction sites. Don't convert a provably-adjacent site to `build`/`try_build` "for consistency" — that's unjustified churn on frozen-adjacent crypto code (design spec for #513, §6). (One adjacent site — `unlock::create_vault_unchecked`'s `ibk` — was converted anyway during #513, but that was a pre-authorised opportunistic call recorded in the design spec at the time, not a "for consistency" cleanup made after the fact; see the memo's "A 50th conversion" note. That distinction is the rule, not an exception to it.)
+- **If the secret is incrementally built from several byte slices** (e.g. an HKDF `ikm` concatenating multiple shared secrets) — use `SecretBytes::concat(&[a, b, c, ...])` (#524), not `build`/`try_build`. Wrapping first covers a panic during the fill but **not a reallocation**: if a hand-written capacity is ever wrong, a growing push reallocates, and the allocator frees the *old* buffer unwiped while `Drop` only ever wipes whatever buffer the `Vec` points at when it drops — the new one. `concat` derives capacity and performs every push from the same slice list in one function, so the two cannot drift and no reallocation can occur. Don't "simplify" a `concat` call back to `try_build` — that reintroduces exactly this hazard.
 
 **#513/#518/#503 are code-complete (2026-08-11); the tracker issues stay open per the `(#N)`-not-`Closes #N` convention noted elsewhere in this file.** A 101-site census across `core/src` and all three FFI crates found 49 real windows (9 core, 3 ffi-uniffi — the `device_secret` sites #513 originally named — 37 ffi-py) plus a thirteenth stack-residue gap the 2026-05-02 audit had itself missed, and closed all of them — **50 sites in total**, not 49: one further `core/src` site (`create_vault_unchecked`'s `ibk`) was classified ADJACENT, not WINDOW, but converted anyway, pre-authorised opportunistically by the design spec (see the bullet above and the memo's "A 50th conversion" note).
 

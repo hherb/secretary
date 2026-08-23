@@ -48,6 +48,39 @@
 #
 # Exit 0 when no unallowlisted hit remains; exit non-zero (printing each
 # offending line) otherwise.
+#
+# LIMITS
+# ------
+# Both rules match by SPELLING; neither resolves a Rust name. Three blind
+# spots, named rather than left implicit — the standard every sibling guard
+# in this repo (see CLAUDE.md's "Rust error payloads" section, and its own
+# LIMITS block in scripts/check-error-payload-hygiene.py) is held to:
+#
+#   1. MODULE/ITEM ALIASING — and the two rules are NOT equally exposed, so
+#      do not flatten this into one claim:
+#        - S1 is evaded ENTIRELY by `use std::mem as m;` followed by
+#          `m::swap(slot, &mut plain)`: neither the `use` line nor the call
+#          site contains a `mem::<verb>` substring, so nothing fires.
+#          Verified by execution against a planted probe.
+#        - S2 is exposed to the SAME attack shape, but only partially, by
+#          accident rather than design: `use std::mem::ManuallyDrop as MD;`
+#          still writes the literal identifier `ManuallyDrop` once, on the
+#          `use` line, and S2 matches that line (though not the later
+#          `MD::new(...)` call site). An S2 evasion needs the name to never
+#          appear at all, which is a narrower attack than S1's.
+#      Zero live producers of either shape exist in the tree today. Tracked
+#      as #545 — same root cause as #512 (a renaming import defeats the
+#      `Detail` newtype's E2 credit) and #517 (E6 / `SHADOWABLE_PARAM_IDENTS`
+#      carry E4's alias/macro blind spots): text-based identifier matching,
+#      matched by spelling, resolving nothing. Do NOT close this by widening
+#      S1_RE/S2_RE here — #545 owns that fix deliberately, so this comment
+#      and the guard's actual behaviour stay in sync.
+#   2. MACRO-GENERATED CODE — every rule here reads TEXT, not expanded
+#      macros: a `macro_rules!`-generated `mem::swap` or `ManuallyDrop::new`
+#      is invisible to either rule. Inherent to a text-based guard.
+#   3. SCOPE — only `*.rs` files under the six SCAN_ROOTS below are read.
+#      `core/tests/**` and `test-utils/` are outside all six and are
+#      unscanned regardless of what they contain.
 
 set -euo pipefail
 

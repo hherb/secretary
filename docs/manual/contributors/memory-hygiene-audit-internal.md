@@ -658,6 +658,248 @@ this pass.
 
 ---
 
+## Residual closeout (2026-08-23) — #542, #522, #524, #521
+
+A follow-up slice closing the six residuals PR #520's whole-branch review
+and the #526 desktop review left behind, plus the one live remnant of
+audit finding C-4. Cited below by issue number, not by any of this
+slice's own branch-local commit SHAs: `main` squash-merges, so those SHAs
+stop resolving the moment the enclosing PR lands — the same discipline
+"The 49 WINDOW sites" section above already applies, for the same reason.
+
+### `take_fixed_bytes` had three residues, not one
+
+This memo never mentioned `take_fixed_bytes` by name (`grep -n
+take_fixed_bytes docs/manual/contributors/memory-hygiene-audit-internal.md`
+returned nothing before this section). Decoding a fixed-size secret key out
+of the §5 CBOR map had **three** unwiped copies, not the one its issue
+named:
+
+1. The `[u8; N]` array in `take_fixed_bytes`'s own stack frame, produced
+   by `Vec::try_into`.
+2. A second copy in the caller's return-value temporary — `Vec::try_into`
+   returns by value, so the array is copied again on the way out.
+3. The CBOR byte string's **heap** buffer itself. `Vec::try_into` reaches
+   its array via `set_len(0)` + `ptr::read` — a copy, not a move-out — so
+   the original heap allocation is deallocated with the secret key still
+   in it, unwiped. This is the worst of the three: heap residue can
+   outlive the stack frame that touched it.
+
+Residue 3 is not a new finding — it is the 2026-07-02 audit's finding
+**C-4**, and it was C-4's **last live sub-item**: the canonical re-encode
+buffer was closed by #357, the bundle plaintext by #513 Task 6 (see
+"Panic- and error-safe secret slots" above), and the `Copy`-typed locals
+by #518. This section is where C-4 is finally recorded as fully closed.
+
+Fixed by replacing the by-value `take_fixed_bytes` with write-through
+`take_fixed_bytes_into<const N: usize>(v: Value, field: &'static str, out:
+&mut [u8; N]) -> Result<(), BundleError>`
+([`core/src/unlock/bundle.rs`](../../../core/src/unlock/bundle.rs)): the
+destination is a caller-owned slot already wrapper-covered by
+`Sensitive::try_build` at both secret-key call sites, so no unwrapped
+`[u8; N]` is ever materialised in this function's frame or returned by
+value (residues 1 and 2 gone by construction), and the source `Vec` is
+wrapped in `SecretBytes` before the length check runs, so `Drop` covers
+every exit — including the wrong-length `return` — with no trailing
+statement for control flow to skip (residue 3 closed). The by-value
+producer was **deleted**, not kept alongside the write-through version as
+a sibling, per #503's principle: removing the unsafe shape makes it
+awkward to write again rather than merely discouraged.
+
+`take_sized_bytes` (the sibling helper for the two `Vec`-typed ML-KEM /
+ML-DSA keys) had only the heap-residue half of the same defect: its
+success path already moved the `Vec` into `Sensitive::new` untouched, but
+its wrong-length **reject** path freed the same secret-key-shaped byte
+string unwiped. Closed the same way — wrap in `SecretBytes` before the
+length check, so the reject path's `return` is covered by `Drop` too.
+
+### C-4's write side (#542) — untracked until this slice, now closed
+
+C-4's *read*-side sub-items (above) were all that had issues filed against
+them. Its **write** side had none, and was still open: `to_canonical_cbor`
+clones every one of the bundle's four long-term secret keys into a
+`ciborium::Value::Bytes` before encoding, and `ciborium::Value` has no
+zeroizing `Drop` — so all four clones were freed unwiped on every vault
+create and every unlock (the canonicality check inside
+`from_canonical_cbor` re-encodes, so the read path pays this cost too).
+This slice filed and closed it as #542.
+
+The fix is `ZeroizingEntries`, a newtype around the entry list
+`to_canonical_cbor` builds
+([`core/src/unlock/bundle.rs`](../../../core/src/unlock/bundle.rs)):
+`Drop` walks the list and zeroizes every `Value::Bytes` payload, covering
+the unwinding-panic and early-return paths a trailing sweep after
+`encode_map` would have missed — the same `Drop`-over-trailing-statement
+reasoning as `Sensitive::build`/`try_build` above, applied to a type this
+crate does not own and therefore cannot give a zeroizing `Drop` of its
+own.
+
+**`ZeroizingEntries`' boundary, stated rather than glossed** (it is
+recorded in the type's own doc comment, and repeated here because a
+handoff memo is where a future auditor will look first): the `vec![…]`
+literal that builds the entry list constructs every clone **before**
+`ZeroizingEntries` takes ownership of the resulting `Vec`. If that
+literal itself unwinds partway through — after some elements are built,
+before the `vec!` expression completes — the already-built elements drop
+as bare temporaries, outside the wrapper, unwiped. The only unwind source
+inside a `vec![…]` literal of `Value` clones is allocation failure, and
+allocation failure **aborts** rather than unwinds in this workspace's
+configuration, so the gap is not a live path today — but it is real, and
+it is not the "covered on every exit" completeness the wrapper has once
+construction finishes. Do not read "`ZeroizingEntries` closes C-4's write
+side" as "every intermediate `Value::Bytes` clone is covered from the
+instant it exists" — it is covered from the instant the wrapper takes
+ownership of the completed `Vec`, one statement later.
+
+### `SecretBytes::concat` — and why it is not `build`/`try_build`
+
+#524 asked for `Sensitive`/`SecretBytes`'s existing `build`/`try_build`
+constructor pair, the shape "Memory hygiene: zeroize discipline" above
+recommends for any secret-bearing local live across a fallible call. For
+`derive_wrap_key`'s `ikm` — six slices concatenated into one HKDF input —
+that closes the **panic-during-fill** window but not the hazard #524's own
+issue text called out as the sharp edge: **`build`/`try_build` do not
+close a reallocation.**
+
+Concretely: wrapping the buffer first (`Sensitive::build(Vec::new(), |v|
+{ v.extend_from_slice(a); v.extend_from_slice(b); ... })`) makes the
+*wrapper* live for the whole fill, but if the buffer's capacity is ever
+under-sized, `extend_from_slice` reallocates — the allocator copies the
+current contents into a **new** heap block and frees the **old** one.
+`Drop` only ever wipes the buffer the `Vec` *currently* points at when it
+drops, which is the new block. The old block — which held a live copy of
+the secret for however long it existed — is freed unwiped, and wrapping
+the `Vec` earlier does nothing to prevent this, because the reallocation
+happens *inside* the wrapper, invisibly to it.
+
+This is the sentence most likely to get lost if a future reader
+"simplifies" the call site back to `Sensitive::build`/`try_build`
+"for consistency" with the rest of the memory-hygiene discipline: the two
+shapes look interchangeable and are not. `try_build` is the right choice
+when the fill is a single write (a KDF output, a decode) that cannot
+reallocate because it never grows a buffer. It is the *wrong* choice for
+an incrementally-**built** secret assembled from multiple pushed slices,
+because nothing about `try_build`'s contract prevents the closure from
+under-provisioning capacity and triggering exactly the realloc-leak this
+paragraph describes.
+
+`SecretBytes::concat(parts: &[&[u8]]) -> Self`
+([`core/src/crypto/secret.rs`](../../../core/src/crypto/secret.rs))
+closes the hazard structurally instead of by convention: it derives the
+total capacity by summing `parts.iter().map(|p| p.len())` and performs
+every push from that same `parts` slice, in the same function, so the
+reserved capacity and the total pushed length cannot drift and no
+reallocation can occur — not "is unlikely to occur," but is
+unrepresentable given the function's own logic. The wrapper is still
+constructed before the first push (so an unwinding panic mid-loop is also
+covered, the same property `build` gives), but that is now the *lesser*
+of the two properties `concat` provides. It is also strictly less API
+surface than `build`/`try_build`: it lends no `&mut` to caller code,
+which matters because #521 (below) exists specifically to police what a
+closure holding a live `&mut` into a secret wrapper is allowed to do.
+
+**This property is structural, not tested — and the doc comment says so
+rather than implying a test exists.** A reallocation that did not happen
+leaves no observable trace from safe Rust: there is no "assert no
+realloc occurred" test, the same limitation the "Spec §5.4's stated
+limit" note above records for wipe-of-freed-memory claims generally. The
+guarantee rests on reading `concat`'s own body, not on a test result.
+
+`derive_wrap_key`'s call site (`core/src/crypto/kem.rs:266`) now reads as
+its own normative spec line — `ss_x || ss_pq || ct_x || ct_pq ||
+sender_pk_bundle || recipient_pk_bundle`, matching crypto-design.md §7 —
+rather than a hand-computed capacity expression that was correct only
+because `ct_x` happened to be typed `&[u8; X25519_PK_LEN]` at the time it
+was written.
+
+### #521's guard enforces the `&mut` caveat this memo already named — and widens it
+
+"Wrapper discipline" above says flatly: **"All three wrappers are sound.
+No changes recommended."** That sentence needs a footnote as of this
+slice, not a retraction: the wrappers' *type-level* soundness is
+unchanged, but `Sensitive::build`/`try_build`'s own doc comment (added by
+#513, see "The fix: wrap before filling" above) has always named a
+residual hole honestly — a closure that moves the secret out via
+`std::mem::swap`/`std::mem::replace` defeats the wipe, because `Drop`
+then zeroizes whatever was swapped **in**, not the secret that was
+swapped **out**. Until this slice, "every closure written here is a
+review point" was the entire enforcement mechanism for that sentence —
+convention, not a check.
+
+`scripts/check-secret-slot-hygiene.sh` (#521) converts it into a CI gate,
+the same move #467/#472/#474/#486/#500/#504/#515 each made for their own
+sink. It denies two families tree-wide (not scoped to a `build` closure —
+see the script's own header for why closure-scoping would both need brace
+matching in bash and miss the second family below):
+
+- **S1** — `mem::swap` / `mem::replace` / `mem::take` / `mem::forget`.
+- **S2** — `ManuallyDrop`.
+
+The second family is not merely an extension of the first for coverage's
+sake: `mem::forget` and `ManuallyDrop` **defeat `ZeroizeOnDrop` on every
+wrapper in `secret.rs`** — `SecretBytes`, `SecretString`, and
+`Sensitive<T>` alike — not just the two `Sensitive` constructors this
+memo's "wrap before filling" section is about. A `ManuallyDrop<SecretBytes>`
+or a `mem::forget`-ed `SecretString` never runs its destructor at all, so
+the wipe that "All three wrappers are sound" was asserting is silently
+**skipped**, not merely made harder to reach. The corrected statement is:
+the three wrappers' `Drop` implementations are sound; that soundness is
+only as good as the guarantee that `Drop` actually runs, and `mem::forget`
+/ `ManuallyDrop` are exactly the two standard-library constructs that make
+`Drop` not run, on safe, `#![forbid(unsafe_code)]`-compliant Rust.
+
+The guard ships with an **empty** allowlist (a tree-wide census at filing
+time found exactly one hit, and it was `secret.rs`'s own doc comment
+naming the family in prose — not a real construct), and it scans test
+code with no `#[cfg(test)]` carve-out, deliberately: #496 found the
+error-payload guard's permissive test-code matcher was being used as a
+skip list, where an over-match is fail-open.
+
+**LIMITS.** Naming this only in passing would repeat the exact overclaim
+pattern the error-payload guard's own LIMITS register exists to stop
+(see CLAUDE.md's "Rust error payloads" section for that register's
+scale) — so, matched by an equivalent LIMITS block in the guard's own
+script header and in CLAUDE.md's Commands section:
+
+- **Module/item aliasing is not symmetric between the two rules, and
+  should not be flattened into one claim.** `use std::mem as m;` followed
+  by `m::swap(slot, &mut plain)` evades **S1 entirely** — grepping either
+  the `use` line or the call site for `mem::(swap|replace|take|forget)`
+  finds nothing, verified by execution against a planted probe (zero hits
+  from both the real guard's `scan_rule` and a bare regex check).
+  **S2 is different, and better, by accident rather than by design:**
+  aliasing `ManuallyDrop` still requires writing that literal identifier
+  once, on the `use` line — `use std::mem::ManuallyDrop as MD;` — and S2
+  matches *that* line even though it does not match the later `MD::new(...)`
+  call site, also verified by execution. An S2 evasion therefore needs the
+  name never to appear at all, which no current Rust import syntax
+  achieves for a symbol you intend to call by another name. Zero live
+  producers of either evasion exist in the tree today; this is a
+  disclosure of an open door, not a report of exploitation. Tracked as
+  **#545**, the same root cause as **#512** (a renaming import defeats the
+  `Detail` newtype's E2 credit) and **#517** (E6 and
+  `SHADOWABLE_PARAM_IDENTS` carry E4's alias/macro blind spots) —
+  text-based identifier matching, matched by spelling, resolving nothing.
+- **Macro-generated code.** Every rule here reads TEXT, not expanded
+  macros: a `macro_rules!`-generated `mem::swap` or `ManuallyDrop::new`
+  is invisible to either rule. Inherent to a text-based guard, the same
+  limitation the error-payload guard's own LIMITS section states for its
+  own rules.
+- **Scope.** The guard reads only `*.rs` files under six named roots
+  (`core/src`, the three `ffi/secretary-ffi-*/src` crates,
+  `desktop/src-tauri/src`, `cli/src`). `core/tests/**` and `test-utils/`
+  sit outside all six and are unscanned — a secret-bearing helper added
+  to either is invisible to this guard regardless of which construct it
+  uses.
+
+Per #545's own suggested-fix note: do not close the aliasing gap by
+widening S1's regex (an `S3` rule matching `use (std|core)::mem as ` is
+the natural next step, but it is deliberately **out of scope for this
+slice** and left for #545 to pick up) — recording the boundary honestly
+now is the point, not pre-empting the fix.
+
+---
+
 ## Resolved: record-content zeroize
 
 The original audit deferred record-content zeroize as a v2 design
