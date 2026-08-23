@@ -882,7 +882,9 @@ mod tests {
     use super::*;
     // `canonical_sort_entries` / `encode_canonical_map` have no production
     // caller left in THIS file after #547 Task 4 (they still back
-    // `manifest.rs` / `block.rs` / `sync/state.rs`, which is why they stay
+    // `manifest.rs` / `core/src/sync/state.rs` / `identity/card.rs` — NOT
+    // `block.rs` any more either, as of #547 Task 5, which gave that file
+    // the same treatment this one got in Task 4 — which is why they stay
     // `pub` on `crate::vault::canonical` rather than being deleted) — the
     // production `use super::canonical::{...}` above deliberately no longer
     // names them, so a plain `cargo build --release --workspace` (no
