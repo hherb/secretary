@@ -19,9 +19,13 @@
 //! *arm* (i.e. `HEAD_MAX + HEAD_MAX` = 18 for the function as a whole, since
 //! the outer `HEAD_MAX +` in that version is unconditional), which is sound
 //! only because that module's entry lists are flat — a fact its
-//! `ZeroizingEntries::new` `debug_assert` pins. The record path nests a
-//! per-field map inside an outer map inside an array, so a flat bound would
-//! under-reserve.
+//! `ZeroizingEntries::new` `debug_assert` checks at development time only:
+//! like the `debug_assert!` this module's own runtime check replaced (see
+//! above), it compiles out of every build this project actually runs, so it
+//! pins nothing at runtime — it is a shape check a contributor sees while
+//! testing in debug mode, not an enforced invariant. The record path nests
+//! a per-field map inside an outer map inside an array, so a flat bound
+//! would under-reserve.
 
 use ciborium::Value;
 
@@ -49,7 +53,12 @@ pub(crate) fn cbor_size_bound(value: &Value) -> usize {
             // Integer / Float / Bool / Null are single CBOR heads with no
             // payload beyond their argument, so HEAD_MAX alone (the
             // unconditional `HEAD_MAX +` above) already covers them and this
-            // arm need add nothing more.
+            // arm need add nothing more. This holds even for a "bignum"
+            // magnitude: `ciborium::value::Integer` cannot represent one
+            // through any public constructor (a large i128/u128 becomes
+            // `Value::Tag` instead, handled by the `Tag` arm above) — see
+            // `size_bound_covers_a_constructed_bignum_integer` for the
+            // execution-verified proof.
             //
             // `ciborium::Value` is `#[non_exhaustive]`: a future variant
             // this match cannot name also falls here. We cannot know whether
@@ -125,6 +134,49 @@ mod tests {
             cbor_size_bound(&tagged) >= actual.len(),
             "bound {} under-reserved for actual {} bytes",
             cbor_size_bound(&tagged),
+            actual.len()
+        );
+    }
+
+    /// A "large in-process integer" — the scenario #547 round 2's review
+    /// (N5) worried the scalar wildcard under-reserves — does NOT reach
+    /// `Value::Integer` in this pinned ciborium (0.2.2). Verified by
+    /// execution: `ciborium::value::Integer` has no infallible
+    /// `From<i128>`/`From<u128>`, only fallible `TryFrom` impls that reject
+    /// any magnitude outside the u64/i64 corridor
+    /// (`ciborium-0.2.2/src/value/integer.rs`). `From<i128> for Value` /
+    /// `From<u128> for Value` — the ONLY public constructors, including the
+    /// generic "serialize any `T` into a `Value`" path in `value/ser.rs`,
+    /// which just forwards to the same `From` impls — fall back to
+    /// `Value::Tag(BIGPOS/BIGNEG, Value::Bytes(..))` for exactly that
+    /// reason (`ciborium-0.2.2/src/value/mod.rs`). So the largest
+    /// `Value::Integer` reachable through any public API is `u64::MAX` /
+    /// `i64::MIN` (9 bytes, `size_bound_covers_every_scalar_arm` already
+    /// proves this is within `HEAD_MAX`), and a genuinely large integer
+    /// takes the `Tag`+`Bytes` shape this test pins — the `Tag` arm's
+    /// recursion (already proven generically by
+    /// `size_bound_recurses_into_tag_arm`) is what actually covers it, not
+    /// the scalar wildcard. This test exists so that claim is checked
+    /// against the REAL shape ciborium produces, not an assumed one.
+    #[test]
+    fn size_bound_covers_a_constructed_bignum_integer() {
+        let huge: i128 = i128::from(u64::MAX) + 1;
+        let value = Value::from(huge);
+        assert!(
+            matches!(value, Value::Tag(2, _)),
+            "expected ciborium to represent an out-of-u64-range i128 as \
+             Value::Tag(2, ..) (CBOR tag 2 = bignum positive), got {value:?} \
+             — if this changed, the reasoning in this test's doc comment \
+             needs re-checking against the new ciborium version"
+        );
+
+        let mut actual = Vec::new();
+        ciborium::ser::into_writer(&value, &mut actual).expect("encode");
+
+        assert!(
+            cbor_size_bound(&value) >= actual.len(),
+            "bound {} under-reserved for actual {} bytes",
+            cbor_size_bound(&value),
             actual.len()
         );
     }

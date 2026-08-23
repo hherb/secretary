@@ -48,7 +48,7 @@ pub fn canonical_sort_entries(
 /// would fail that comparison on the very next round trip. (Not
 /// `identity::card::from_canonical_cbor` — its own doc states it tolerates
 /// non-§6 key order on input and does not re-encode-and-compare.)
-pub(crate) struct BorrowedCanonicalMap<'a>(pub &'a [(&'a Value, &'a Value)]);
+pub(crate) struct BorrowedCanonicalMap<'a>(&'a [(&'a Value, &'a Value)]);
 
 impl serde::Serialize for BorrowedCanonicalMap<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

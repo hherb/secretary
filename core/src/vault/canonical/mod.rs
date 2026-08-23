@@ -29,11 +29,13 @@
 //! preserved bit-for-bit.
 //!
 //! Split into a directory module (#547): [`legacy`] holds the three
-//! functions above. Of those, only [`encode_canonical_map`] is clone-free on
-//! the value side (only keys are materialised, to sort on) —
-//! [`canonical_sort_entries`] still `pair.clone()`s every entry, unchanged
-//! from before the split, because it is a later build-sequence step (Task 4)
-//! that removes its last plaintext-bearing caller, not this one. [`size`]
+//! functions above. Of those, [`encode_canonical_map`] is clone-free on the
+//! value side (only keys are materialised, to sort on) and
+//! [`reject_floats_and_tags`] clones nothing (it only ever reads through
+//! `&Value`) — [`canonical_sort_entries`] is the one holdout: it still
+//! `pair.clone()`s every entry, unchanged from before the split, because it
+//! is a later build-sequence step (Task 4) that removes its last
+//! plaintext-bearing caller, not this one. [`size`]
 //! holds [`cbor_size_bound`], the pre-reservation helper
 //! `encode_canonical_map` uses so its output buffer is sized to avoid
 //! reallocating; a real runtime check (not a `debug_assert!`, which compiles
@@ -49,8 +51,6 @@ use crate::cbor::CborFault;
 mod legacy;
 mod size;
 
-#[allow(unused_imports)] // consumed by unlock::bundle in Task 7 (#547)
-pub(crate) use legacy::BorrowedCanonicalMap;
 pub use legacy::{canonical_sort_entries, encode_canonical_map, reject_floats_and_tags};
 pub(crate) use size::{cbor_size_bound, HEAD_MAX};
 

@@ -236,6 +236,17 @@ pub enum RecordError {
 /// `CanonicalError::TagRejected` is intentionally discarded here because
 /// the original `RecordError::TagRejected` did not carry one — the
 /// `From` is a behaviour-preserving bridge, not a surface enrichment.
+///
+/// That "bit-identical" claim is no longer exactly true, and deliberately
+/// so: the surface has since gained exactly one variant beyond the
+/// pre-refactor shape, [`RecordError::CanonicalSizeBoundExceeded`],
+/// because [`CanonicalError::CapacityBoundExceeded`] did not exist before
+/// this module did (see its doc). `RecordError` is not `#[non_exhaustive]`,
+/// so this is a real, compiler-checked surface change, not a documentation
+/// gap: `manifest.rs`'s `record_error_to_cbor_fault` — an exhaustive match
+/// over every `RecordError` variant with no wildcard, by design — needed
+/// (and got) a matching arm added in the same commit that added this
+/// variant.
 impl From<CanonicalError> for RecordError {
     fn from(e: CanonicalError) -> Self {
         match e {
@@ -1943,6 +1954,28 @@ mod tests {
                 !rendered_debug.contains(leak_marker),
                 "Debug leaked ciborium's Debug-form marker {leak_marker:?}: {rendered_debug}"
             );
+        }
+    }
+
+    /// `From<CanonicalError> for RecordError` must preserve both fields of
+    /// `CapacityBoundExceeded` unchanged (#547 round 2, N4). The error path
+    /// itself is unreachable by construction on today's `Value` variant set
+    /// (see `size.rs`'s tests), which is why this constructs the
+    /// `CanonicalError` directly rather than driving it through
+    /// `encode_canonical_map` — but the `From` mapping is ordinary code with
+    /// no such excuse, and had zero coverage before this test.
+    #[test]
+    fn canonical_error_capacity_bound_exceeded_maps_to_record_error() {
+        let err = CanonicalError::CapacityBoundExceeded {
+            actual: 42,
+            bound: 17,
+        };
+        match RecordError::from(err) {
+            RecordError::CanonicalSizeBoundExceeded { actual, bound } => {
+                assert_eq!(actual, 42);
+                assert_eq!(bound, 17);
+            }
+            other => panic!("expected CanonicalSizeBoundExceeded, got {other:?}"),
         }
     }
 }

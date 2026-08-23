@@ -429,6 +429,18 @@ pub enum BlockError {
 /// `CanonicalError::TagRejected` is intentionally discarded here because
 /// the original `BlockError::TagRejected` did not carry one — the
 /// `From` is a behaviour-preserving bridge, not a surface enrichment.
+///
+/// That "bit-identical" claim is no longer exactly true, and deliberately
+/// so: the surface has since gained exactly one variant beyond the
+/// pre-refactor shape, [`BlockError::CanonicalSizeBoundExceeded`], because
+/// [`CanonicalError::CapacityBoundExceeded`] did not exist before this
+/// module did (see its doc). `BlockError` is not `#[non_exhaustive]`, so
+/// this is a real, compiler-checked surface change, not a documentation
+/// gap — unlike [`RecordError`]'s sibling impl in `record.rs`, nothing
+/// elsewhere in the crate matches `BlockError`'s variants
+/// exhaustively (`VaultError::Block` wraps the whole enum via `#[from]`),
+/// so no other call site needed updating; a full `cargo build --release
+/// --workspace --tests` after adding the variant confirms it.
 impl From<CanonicalError> for BlockError {
     fn from(e: CanonicalError) -> Self {
         match e {
@@ -2372,5 +2384,27 @@ mod tests {
             !format!("{err}").contains(KEY_BLOCK_NAME),
             "the map key leaked into the message: {err}"
         );
+    }
+
+    /// `From<CanonicalError> for BlockError` must preserve both fields of
+    /// `CapacityBoundExceeded` unchanged (#547 round 2, N4). The error path
+    /// itself is unreachable by construction on today's `Value` variant set
+    /// (see `size.rs`'s tests), which is why this constructs the
+    /// `CanonicalError` directly rather than driving it through
+    /// `encode_canonical_map` — but the `From` mapping is ordinary code
+    /// with no such excuse, and had zero coverage before this test.
+    #[test]
+    fn canonical_error_capacity_bound_exceeded_maps_to_block_error() {
+        let err = CanonicalError::CapacityBoundExceeded {
+            actual: 42,
+            bound: 17,
+        };
+        match BlockError::from(err) {
+            BlockError::CanonicalSizeBoundExceeded { actual, bound } => {
+                assert_eq!(actual, 42);
+                assert_eq!(bound, 17);
+            }
+            other => panic!("expected CanonicalSizeBoundExceeded, got {other:?}"),
+        }
     }
 }
