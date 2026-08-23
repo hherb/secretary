@@ -64,6 +64,16 @@ const UNTITLED_LABEL: &str = "Untitled record";
 ///
 /// Secret-bearing → redacted `Debug`: both fields hold a decrypted field
 /// value. See `dtos::browse`'s module doc.
+///
+/// **Plain `String`, unlike `Candidate::value`, and the boundary is
+/// deliberate:** these two fields are the WIRE PAYLOAD. They are serialized
+/// into `RecordDto` and shipped to the webview, so their contents are
+/// already leaving the process by design. `Candidate` holds strictly more
+/// than that — priority-race losers that never ship at all, and, for a value
+/// longer than [`MAX_LABEL_CHARS`], the tail beyond the truncation point —
+/// which is residue with no destination, hence `SecretString` there (#527).
+/// The distinguishing property is "has a wire destination", not "is
+/// sensitive"; wrapping these would be theatre, not hygiene.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RecordLabels {
     /// Never empty. Falls back to the record type, then to a fixed

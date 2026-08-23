@@ -52,12 +52,25 @@ impl SecretBytes {
     ///    same `parts` slice in the same function, so they cannot drift and no
     ///    reallocation can occur (#524).
     ///
-    /// That second property is structural, not asserted: a reallocation that
+    /// That second property is structural rather than dynamically enforced —
+    /// but it IS observable, and `concat_reserves_exactly_the_total_length`
+    /// pins it. An earlier version of this comment said "a reallocation that
     /// did not happen is not observable from safe Rust, so there is no test
-    /// for it and this doc does not claim one.
+    /// for it": `Vec::capacity()` is safe and public, and a drifted capacity
+    /// shows up there immediately (measured: a deliberately short reservation
+    /// over the same pushes ends at capacity 2304 against a total of 1159).
+    ///
+    /// The `usize` sum is `checked_add`ed rather than left to wrap. In release
+    /// builds `overflow-checks` is off, so a plain `.sum()` would wrap
+    /// silently, under-reserve, and reallocate — reintroducing failure mode 2
+    /// above. It takes two live slices of ~2^63 bytes to get there, so this is
+    /// a belt-and-braces `expect` on an unconstructible input, not a live path.
     #[must_use]
     pub fn concat(parts: &[&[u8]]) -> Self {
-        let total: usize = parts.iter().map(|p| p.len()).sum();
+        let total: usize = parts
+            .iter()
+            .try_fold(0usize, |acc, p| acc.checked_add(p.len()))
+            .expect("SecretBytes::concat: total length overflowed usize");
         // Wrapper first: `s` is `ZeroizeOnDrop` before any secret byte lands
         // in it, so an unwinding panic below drops and wipes it.
         let mut s = Self {
@@ -435,6 +448,32 @@ mod tests {
         let expected: usize = parts.iter().map(|p| p.len()).sum();
         let s = SecretBytes::concat(&parts);
         assert_eq!(s.len(), expected);
+    }
+
+    #[test]
+    fn concat_reserves_exactly_the_total_length() {
+        // The no-reallocation property, asserted rather than argued.
+        //
+        // `Vec::with_capacity(n)` may over-allocate in principle, but the
+        // global allocator does not for these sizes, so `capacity == total`
+        // is the observable signature of "reserved once, never grew". If a
+        // future edit lets the reservation and the pushes drift, this reads
+        // the grown capacity — measured against a deliberately-short
+        // reservation over the same parts: capacity 2304, total 1159.
+        //
+        // Four parts, sized after `derive_wrap_key`'s `ikm` components — two
+        // 32-byte shared secrets and an ML-KEM-768-sized 1088-byte
+        // ciphertext, which is the part large enough to force a growth if the
+        // reservation were ever short. Not the full six-slice `ikm`: this
+        // asserts the constructor's arithmetic, not that call site's shape.
+        let parts: [&[u8]; 4] = [&[0u8; 32], &[1u8; 32], &[2u8; 1088], &[3u8; 7]];
+        let total: usize = parts.iter().map(|p| p.len()).sum();
+        let s = SecretBytes::concat(&parts);
+        assert_eq!(
+            s.inner.capacity(),
+            total,
+            "concat reallocated: a growing push frees the old buffer unwiped"
+        );
     }
 
     #[test]
