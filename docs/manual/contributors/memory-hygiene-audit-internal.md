@@ -686,10 +686,20 @@ named:
    outlive the stack frame that touched it.
 
 Residue 3 is not a new finding — it is the 2026-07-02 audit's finding
-**C-4**, and it was C-4's **last live sub-item**: the canonical re-encode
-buffer was closed by #357, the bundle plaintext by #513 Task 6 (see
-"Panic- and error-safe secret slots" above), and the `Copy`-typed locals
-by #518. This section is where C-4 is finally recorded as fully closed.
+**C-4**: the canonical re-encode buffer was closed by #357, the bundle
+plaintext by #513 Task 6 (see "Panic- and error-safe secret slots" above),
+and the `Copy`-typed locals by #518.
+
+**C-4 is NOT fully closed, and an earlier version of this paragraph said it
+was.** That claim called residue 3 "C-4's last live sub-item"; the #546
+review found the audit's own FIRST-named read-side sub-item still open —
+`from_canonical_cbor`'s ciborium `Value` tree (`let map = match value {
+Value::Map(m) => m, ... }`) is a bare `Vec<(Value, Value)>`, and the loop
+that consumes and wipes it does so on the happy path only. Any early `?`
+inside that loop — `Malformed`, `DuplicateField`, `WrongKeySize`,
+`UnknownField` — drops the iterator with up to three long-term secret keys
+still populated. Tracked as **#548**. Read this section as closing residues
+1-3 of the DECODE HELPERS, not C-4 entire.
 
 Fixed by replacing the by-value `take_fixed_bytes` with write-through
 `take_fixed_bytes_into<const N: usize>(v: Value, field: &'static str, out:
@@ -710,8 +720,27 @@ awkward to write again rather than merely discouraged.
 ML-DSA keys) had only the heap-residue half of the same defect: its
 success path already moved the `Vec` into `Sensitive::new` untouched, but
 its wrong-length **reject** path freed the same secret-key-shaped byte
-string unwiped. Closed the same way — wrap in `SecretBytes` before the
-length check, so the reject path's `return` is covered by `Drop` too.
+string unwiped.
+
+Its first fix wrapped in `SecretBytes` before the length check and returned
+`Ok(bytes.expose().to_vec())` — which closed the reject path but ADDED a
+full extra copy of the 2400-byte ML-KEM-768 decapsulation key on every
+successful unlock, under a comment asserting "ownership of the same heap
+buffer transfers and no copy is made". `expose()` yields `&[u8]`;
+`to_vec()` allocates. The #546 review caught it.
+
+It is now split by intent, and neither half copies:
+
+- `take_sized_secret` returns `Sensitive<Vec<u8>>`. `Sensitive::new` MOVES
+  the `Vec`, the length check runs through the wrapper, and the success
+  path returns that same wrapper — covered from before the check, zero
+  copies, and no claim needed about what the caller does next.
+- `take_sized_public` keeps the by-value `Vec<u8>` shape for the two public
+  keys, which need no wrapper.
+
+Naming them apart is the point: choosing the by-value shape for a secret is
+now a visible decision at the call site rather than the default, the same
+reason the by-value `take_fixed_bytes` was deleted rather than kept.
 
 ### C-4's write side (#542) — untracked until this slice, now closed
 
@@ -734,9 +763,30 @@ reasoning as `Sensitive::build`/`try_build` above, applied to a type this
 crate does not own and therefore cannot give a zeroizing `Drop` of its
 own.
 
-**`ZeroizingEntries`' boundary, stated rather than glossed** (it is
-recorded in the type's own doc comment, and repeated here because a
-handoff memo is where a future auditor will look first): the `vec![…]`
+**`ZeroizingEntries` covered LESS than this section originally claimed.**
+The #546 review found that `encode_map` — called on the very next line —
+did `pair.clone()` on every entry. `ciborium::Value` derives `Clone` with
+`Bytes(Vec<u8>)`, so that deep-copied all four secret keys into a second
+list, moved them into a `Value::Map`, and freed that **unwiped on every
+call** — every vault create and, via the canonicality re-encode, every
+unlock. The wrapper had moved the leak, not removed it, while this memo and
+the type's doc comment both described the write side as closed. That is the
+"documentation claiming more coverage than the code delivers" pattern
+CLAUDE.md flags as this line of work's most repeated review finding,
+committed in the section recording the fix.
+
+Fixed in #546: `encode_map` now takes `&ZeroizingEntries` (so the wrapper
+is not optional at its only call site — passing the inner slice made
+reverting to a bare `vec![…]` compile and pass the whole suite), sorts
+**indices** while the values ride along as borrows, and serialises through
+a `BorrowedCanonicalMap` `Serialize` impl instead of building an owning
+`Value::Map`. No clone is made at all. Its output buffer is also
+pre-reserved against an upper bound so `into_writer` cannot grow it — a
+realloc there would free an unwiped block holding the full cleartext CBOR.
+
+**The remaining boundary, stated rather than glossed** (it is recorded in
+the type's own doc comment, and repeated here because a handoff memo is
+where a future auditor will look first): the `vec![…]`
 literal that builds the entry list constructs every clone **before**
 `ZeroizingEntries` takes ownership of the resulting `Vec`. If that
 literal itself unwinds partway through — after some elements are built,
@@ -848,12 +898,42 @@ only as good as the guarantee that `Drop` actually runs, and `mem::forget`
 / `ManuallyDrop` are exactly the two standard-library constructs that make
 `Drop` not run, on safe, `#![forbid(unsafe_code)]`-compliant Rust.
 
-The guard ships with an **empty** allowlist (a tree-wide census at filing
-time found exactly one hit, and it was `secret.rs`'s own doc comment
-naming the family in prose — not a real construct), and it scans test
-code with no `#[cfg(test)]` carve-out, deliberately: #496 found the
-error-payload guard's permissive test-code matcher was being used as a
-skip list, where an over-match is fail-open.
+It scans test code with no `#[cfg(test)]` carve-out, deliberately: #496
+found the error-payload guard's permissive test-code matcher was being used
+as a skip list, where an over-match is fail-open.
+
+**The allowlist does not ship empty, and the claim that it did was an
+artefact of the root list rather than a fact about the tree.** The guard's
+first version hand-named six scan roots and omitted two workspace MEMBERS —
+`browser/secretary-browser-host` (which handles the device secret and the
+master password through `SecretBytes`) and
+`desktop/secretary-desktop-presence`. The browser host holds **two live S1
+producers**, its `scrub_string` helper, so the "exactly one hit tree-wide"
+census had measured six chosen directories, not the tree. Both members are
+scanned now and both sites are reviewed allowlist rows; the duplication and
+the hand-rolled zeroization they contain are tracked as **#549**.
+
+That omission is also why the guard now checks its own root list against
+the root manifest's `[workspace] members` — a member with a `src/` in
+neither `SCAN_ROOTS` nor `UNSCANNED_MEMBERS` is a hard failure, the
+treatment #505 gave the payload guard's `DEFAULT_ROOTS`. A self-test cannot
+substitute: any assertion written over `SCAN_ROOTS` disappears along with a
+deleted entry, which was verified by mutation while writing it.
+
+**The guard also used to fail OPEN on its own wiring**, in four ways the
+#546 review found by execution, each of which printed `OK` and exited 0:
+a declared scan root that was missing or renamed (`[[ -d ]] || continue` —
+a tree with none of the roots reported "OK (6 roots, …)" having read
+nothing, i.e. #496's `Path.rglob` fail-open restated in bash); a root whose
+`grep` failed with exit >= 2 (`2>/dev/null || true` erased the error
+channel — `chmod 000` on a root holding a real violation reported OK); an
+unrecognised CLI argument (a typo'd `--self-tets` silently ran the full
+guard, whose clean-tree output reads like a passing self-test); and the
+success line reporting the DECLARED root count rather than the scanned one.
+All four are now fatal, and the self-test drives `run_guard` itself and
+asserts its EXIT CODE in both directions — previously it asserted only on
+the text `scan_all` returned, so `return 1` could become `return 0` with
+both CI steps green (verified by mutation).
 
 **LIMITS.** Naming this only in passing would repeat the exact overclaim
 pattern the error-payload guard's own LIMITS register exists to stop
@@ -872,8 +952,12 @@ script header and in CLAUDE.md's Commands section:
   once, on the `use` line — `use std::mem::ManuallyDrop as MD;` — and S2
   matches *that* line even though it does not match the later `MD::new(...)`
   call site, also verified by execution. An S2 evasion therefore needs the
-  name never to appear at all, which no current Rust import syntax
-  achieves for a symbol you intend to call by another name. Zero live
+  name never to appear at all, which is a narrower attack than S1's — but
+  NOT one no import syntax achieves, as an earlier version of this bullet
+  claimed. That claim is falsified by the scope bullet two items below:
+  a `pub use std::mem::ManuallyDrop as MD;` in an unscanned tree, re-imported
+  under the alias from a scanned file, never writes the identifier in any
+  scanned file at all. Zero live
   producers of either evasion exist in the tree today; this is a
   disclosure of an open door, not a report of exploitation. Tracked as
   **#545**, the same root cause as **#512** (a renaming import defeats the
@@ -885,12 +969,22 @@ script header and in CLAUDE.md's Commands section:
   is invisible to either rule. Inherent to a text-based guard, the same
   limitation the error-payload guard's own LIMITS section states for its
   own rules.
-- **Scope.** The guard reads only `*.rs` files under six named roots
+- **Scope.** The guard reads only `*.rs` files under eight named roots
   (`core/src`, the three `ffi/secretary-ffi-*/src` crates,
-  `desktop/src-tauri/src`, `cli/src`). `core/tests/**` and `test-utils/`
-  sit outside all six and are unscanned — a secret-bearing helper added
-  to either is invisible to this guard regardless of which construct it
-  uses.
+  `desktop/src-tauri/src`, `desktop/secretary-desktop-presence/src`,
+  `browser/secretary-browser-host/src`, `cli/src`). An earlier version of
+  this bullet named six and listed `core/tests/**` and `test-utils/` as the
+  unscanned trees — omitting the last two roots above, both workspace
+  MEMBERS, one of them secret-bearing with two live S1 producers. That is
+  now a hard failure rather than an omission (`check_roots_cover_workspace`
+  against `[workspace] members`), but the manifest check bounds only
+  MEMBERS with a `src/`. Still unscanned, in full: `core/tests/**`,
+  `cli/tests/**`, `ffi/*/tests/**`, `desktop/src-tauri/tests/**`,
+  `browser/*/tests/**`, `core/examples/`, `test-utils/` (a member, excluded
+  by name because it is dev-only by construction), and `core/fuzz/` (not a
+  member at all — the root manifest `exclude`s it). A secret-bearing helper
+  added to any of those is invisible to this guard regardless of which
+  construct it uses.
 
 Per #545's own suggested-fix note: do not close the aliasing gap by
 widening S1's regex (an `S3` rule matching `use (std|core)::mem as ` is

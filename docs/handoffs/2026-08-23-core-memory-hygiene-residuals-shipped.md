@@ -135,7 +135,9 @@ first thing to check.
   branch created the warning two commits earlier and cleared it here.** The
   implementer's `git stash` check could not have seen it: it stashed only the
   uncommitted Task 4 work while the causative import was already committed.
-  Body amended (`72facfa5`→`8cadacb7`).
+  Body amended (the pre-amend object is unreachable from any ref and is
+  deliberately not cited by SHA — that is the #523 failure mode; the commit
+  now on the branch is `8cadacb7`).
   **Generalizable, and worth remembering: widening a `use` can red the rustdoc
   `-D warnings` gate without touching a single doc comment.**
 - **The gate set does not include a rustdoc run per task.** That is how the
@@ -220,21 +222,110 @@ branch. Do **not** sync to `main` during the pause window. If resuming this
 branch for fixups: `git fetch origin && git merge origin/main` FIRST (branch
 version wins on this doc) before editing.
 
+## (6) Post-review fixes (PR #546 review round)
+
+A five-agent review of the PR found four things that had to change before
+merge, plus corrections to prose in this branch's own docs. All are in the
+branch now; every gate was re-run green afterwards.
+
+**The guard failed OPEN on its own wiring — four ways, all proven by
+execution.** A missing or renamed scan root (`[[ -d ]] || continue`), an
+unreadable root (`grep 2>/dev/null || true` erasing exit >= 2), an
+unrecognised CLI argument, and a success line printing the DECLARED root
+count all produced `OK` and exit 0. A tree containing none of the roots
+reported `OK (6 roots, 2 rules, no findings)` having read nothing — #496's
+`Path.rglob` fail-open restated in bash, in the guard whose own header cites
+#496 as its justification. All four are now fatal; `--self-test` drives
+`run_guard` and asserts the exit code in both directions (previously it
+asserted only on `scan_all`'s text, so `return 1` → `return 0` kept both CI
+steps green).
+
+**The root list omitted two workspace members, one secret-bearing.**
+`browser/secretary-browser-host` handles the device secret and the master
+password and holds two live S1 producers; `desktop/secretary-desktop-presence`
+was also absent. So "the census is empty" and "ships with an EMPTY allowlist"
+were properties of the six chosen directories, not of the tree. Both are
+scanned now, the two `scrub_string` sites are reviewed allowlist rows (#549),
+and — the actual fix — the guard checks `SCAN_ROOTS` against the root
+manifest's `[workspace] members`, the treatment #505 gave the payload guard.
+A self-test cannot substitute here: any assertion written over `SCAN_ROOTS`
+disappears with a deleted entry, learned by mutation while writing it.
+
+**#542 was about half closed.** `encode_map` did `pair.clone()` on every
+entry one line after `ZeroizingEntries` took ownership — `ciborium::Value`
+derives `Clone`, so all four secret keys were deep-copied into a second list,
+moved into a `Value::Map`, and freed **unwiped on every call**, create and
+unlock alike. The wrapper had moved the leak, not removed it, while this memo
+and the type's doc comment both described the write side as closed. Now:
+`encode_map` takes `&ZeroizingEntries` (so the wrapper is not optional at its
+only call site), sorts indices with values riding along as borrows, and
+serialises through a `BorrowedCanonicalMap` impl instead of an owning
+`Value::Map`. Zero clones. Output buffer pre-reserved against an upper bound
+so `into_writer` cannot realloc. `conformance.py` passing is the proof the
+bytes are unchanged.
+
+**#523 repointed the dangling SHA at the wrong commit** — its whole purpose.
+`array32_from_vec_into` already exists in `2e6dd764`'s parent (`grep -c`
+returns 2); `git log --all -S` puts its introduction in `9c187946` (#515),
+whose parent `3775ef5` is the very merge-base the next sentence cites.
+
+**`take_sized_bytes`'s comment asserted the opposite of its code.** It said
+"ownership of the same heap buffer transfers and no copy is made" over
+`Ok(bytes.expose().to_vec())`, which allocates — the fix had ADDED a live
+copy of the 2400-byte ML-KEM-768 key on every unlock. Split into
+`take_sized_secret` (returns `Sensitive<Vec<u8>>`, zero copies) and
+`take_sized_public` (by-value, for the two public keys).
+
+**`conformance.py` ran in NO workflow** — CLAUDE.md's "enforced every CI run"
+was false; its only invocation is behind the off-by-default
+`differential-replay` feature. That is why #544's `pqcrypto` break survived on
+`main`. Added as the `clean-room conformance` job.
+
+Smaller: the `ZeroizingEntries` test asserted `all(|b| b == 0)` on a vec that
+`Zeroize` empties, so it passed vacuously and could not distinguish a wipe
+from a bare `clear()` — corrected, with the limit stated rather than papered
+over (neither form distinguishes those; safe Rust cannot read spare
+capacity). `Drop → wipe` is now pinned by a `#[cfg(test)]` counter (deleting
+`impl Drop` previously kept all 25 bundle tests green). `concat`'s
+no-realloc property is asserted via `capacity()` — the doc claimed it was not
+observable, which was wrong — and its length sum is `checked_add`ed, since
+release builds wrap. Wrong-size coverage now runs over all six rewritten
+extraction sites, which matters because `X25519_PK_LEN == ED25519_PK_LEN`
+makes a swapped key constant invisible to a round-trip test (mutation-verified).
+
 ## Closing inventory
 
-- **State on close:** PR-ready on `feature/core-memory-hygiene-residuals`, 12
-  commits, all 8 tasks done, every task independently reviewed clean, full gate
-  set green at `42c4c3e7`.
+- **State on close:** PR-ready on `feature/core-memory-hygiene-residuals`, all
+  8 tasks done plus the post-review round in §6, full gate set green.
+  1922 tests / 0 failed / 18 ignored across 97 binaries; `conformance.py`
+  PASS (the proof the `encode_map` rewrite is byte-identical); desktop
+  786 passed. Note the PR description's original gate line claimed "0
+  ignored" — the count is 18, the `--ignored` KAT generators.
 - **Docs:** `memory-hygiene-audit-internal.md` extended (the three-residue
-  correction, C-4's last live sub-item, `concat`'s realloc reasoning);
+  correction, `concat`'s realloc reasoning) and then CORRECTED in the review
+  round — it had recorded C-4 as "fully closed" and `ZeroizingEntries` as
+  covering the write side, neither of which was true (#548, and the
+  `encode_map` clone);
   `CLAUDE.md` gained the new guard's Commands entry **with its LIMITS**, and its
   zeroize section now names `concat`; `README.md` / `ROADMAP.md` deliberately
   unchanged — this slice adds no user-visible feature and no phase completion,
   and nothing in either file was falsified.
-- **Filed this session:** **#542** · **#543** · **#544** · **#545**.
+- **Filed this session:** **#542** · **#543** · **#544** · **#545**, and in the
+  review round **#547** (record-field plaintext cloned into bare
+  `ciborium::Value` on every save — same C-4 class as #542, much larger
+  surface) · **#548** (C-4's read side: `from_canonical_cbor`'s map frees
+  secret keys unwiped on every error path — the audit's own FIRST-named
+  sub-item, which this branch had recorded as closed) · **#549** ·
+  **#550** (`ed25519_verify`'s fail-OPEN twin + five unbounded deps) ·
+  **#551** (`Sensitive::<Vec<u8>>::try_build` still reaches the realloc
+  hazard `concat` exists to prevent) · **#552** · **#553** (`device_kek_kat`
+  independence is reviewer-attested, not replayed by `conformance.py`) ·
+  **#554**.
 - **Closed this session** (verified against code on `main` first): #513, #518,
   #503, #500, #504, #497, #526, #505, #507, #511.
-- **Next:** CI on the PR · add `rust secret-slot hygiene` to the ruleset ·
+- **Next:** CI on the PR · add **`rust secret-slot hygiene`** AND
+  **`clean-room conformance`** to the `protect_main` ruleset (id `15821032`) —
+  both run and neither blocks until then ·
   **#519 (now the oldest large exposure)** · #544's remaining five deps · #545 ·
   #543 · #501.
 - **NEXT_SESSION.md:** symlink → `docs/handoffs/2026-08-23-core-memory-hygiene-residuals-shipped.md`.

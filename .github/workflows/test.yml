@@ -323,6 +323,35 @@ jobs:
       - name: 'check-secret-slot-hygiene.sh'
         run: bash scripts/check-secret-slot-hygiene.sh
 
+  clean-room-conformance:
+    name: clean-room conformance
+    # `core/tests/python/conformance.py` is the gate behind CLAUDE.md's
+    # "a clean-room implementation must be possible by reading docs/ alone".
+    # It was described there as "enforced every CI run" and was in fact run by
+    # NO workflow: its only in-tree invocation is core/tests/differential_replay.rs,
+    # which is `#![cfg(feature = "differential-replay")]` and off by default.
+    #
+    # That gap is why #544 shipped. `pqcrypto` was pinned `>=0.3` unbounded,
+    # 1.0.0 changed `ml_dsa_65.verify` from returning a bool to RAISING, and
+    # every ML-DSA-65 check silently reported "rejected" — on `main`, for as
+    # long as it took someone to run the script by hand. Pinning the dep
+    # without adding this job would leave the next unbounded-dep major bump
+    # exactly as invisible; five of the six PEP 723 deps are still unbounded.
+    runs-on: ubuntu-latest
+    # Argon2id at m=256 MiB dominates; the rest is CBOR and signature checks.
+    # Generous vs the observed ~2 min so a cold `uv` wheel build cannot flake.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # Pinned by commit SHA, same as `rust-test` and the payload-guard job.
+      - name: 'install uv'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
+      # No `cargo` and no `secretary-core` on the path, deliberately: the whole
+      # value of this script is that it shares no code with the implementation
+      # it checks. PEP 723 declares its own deps.
+      - name: 'conformance.py (clean-room replay of docs/)'
+        run: uv run core/tests/python/conformance.py
+
   android-host:
     name: android host (:vault-access:test)
     # `:vault-access` is pure kotlin(jvm), but the root settings.gradle.kts

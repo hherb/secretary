@@ -131,22 +131,43 @@ uv run scripts/check-test-support-placement.py
 # Assert no move-out construct defeats a zeroize-on-drop wrapper (#521).
 # `mem::swap`/`replace`/`take`/`forget` and `ManuallyDrop` do not merely leak —
 # they make the wrapper's own wipe VACUOUS, so the code still looks protected.
-# Tree-wide over six roots, NOT scoped to a `build` closure (ManuallyDrop is
+# Tree-wide over EIGHT roots, NOT scoped to a `build` closure (ManuallyDrop is
 # not confined to one), and test code IS scanned: #496 proved a `#[cfg(test)]`
-# carve-out is fail-OPEN. Ships with an EMPTY allowlist. Same --self-test-first
-# discipline; probes go to `mktemp -d`, never the source tree (cf. #516).
+# carve-out is fail-OPEN. Same --self-test-first discipline; probes go to
+# `mktemp -d`, never the source tree (cf. #516).
+#
+# FAILS CLOSED ON ITS OWN WIRING, which the first version did not: a declared
+# root that is MISSING or holds no `*.rs`, a `grep` that exits >=2 (unreadable
+# file, bad ERE), an unparseable root manifest, and an unrecognised CLI
+# argument are each fatal. Every one of those used to print `OK` and exit 0 —
+# a tree containing none of the roots reported "OK (6 roots, …)" having read
+# nothing, which is #496's `Path.rglob` fail-open restated in bash. The
+# self-test now drives `run_guard` itself (not just the matchers) and asserts
+# the EXIT CODE in both directions.
+#
+# ROOT COVERAGE IS CHECKED AGAINST THE MANIFEST, the treatment #505 gave the
+# payload guard: a `[workspace] members` entry with a `src/` that is in
+# neither SCAN_ROOTS nor UNSCANNED_MEMBERS is a hard failure. That is what the
+# first version needed — it hand-listed six roots and omitted
+# `browser/secretary-browser-host`, a secret-bearing member (device secret,
+# master password) holding two live S1 producers, so its "the census is empty"
+# and "ships with an EMPTY allowlist" claims were properties of the root list
+# rather than of the tree. The allowlist now carries those two reviewed rows.
+#
 # LIMITS (see the script's own header for the full text): both rules match by
 # SPELLING, not resolved identity. Module/item aliasing is NOT symmetric — a
 # `use std::mem as m;` then `m::swap(..)` evades rule S1 entirely (neither the
 # import nor the call site contains a `mem::<verb>` substring), while aliasing
 # `ManuallyDrop` still requires writing that identifier once on its `use` line,
 # which S2 matches — do not flatten the two into one claim. Every rule reads
-# TEXT, not expanded macros, so a macro-generated move-out is invisible.
-# Scope is six named roots only; `core/tests/**` and `test-utils/` are outside
-# them. Zero live producers of the aliasing evasion today; tracked as #545,
-# same root cause as #512/#517. Do not widen the regexes to close it — #545
-# owns that, deliberately deferred so this LIMITS text and the guard's actual
-# behaviour don't drift apart.
+# TEXT, not expanded macros, so a macro-generated move-out is invisible. Trees
+# that are not workspace members are outside the manifest check entirely
+# (`core/fuzz` is `exclude`d), as is any non-`src/` directory inside a member —
+# so `core/tests/**`, `cli/tests/**`, `ffi/*/tests/**` and `core/examples/` are
+# unscanned. Zero live producers of the aliasing evasion today; tracked as
+# #545, same root cause as #512/#517. Do not widen the regexes to close it —
+# #545 owns that, deliberately deferred so this LIMITS text and the guard's
+# actual behaviour don't drift apart.
 bash scripts/check-secret-slot-hygiene.sh --self-test
 bash scripts/check-secret-slot-hygiene.sh
 ```
@@ -199,13 +220,15 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 
 ### Spec is normative; code implements the spec
 
-`docs/crypto-design.md` and `docs/vault-format.md` are not generated docs — they're the contract. A clean-room implementation in any other language must be possible by reading `docs/` alone, and that property is **enforced every CI run** by `core/tests/python/conformance.py`, which depends on no `secretary` code — only generic crypto primitives declared via its PEP 723 header (`cryptography`, `pynacl`, `pqcrypto`, `argon2-cffi`, `blake3`, `cbor2`; top-level imports stay stdlib-only, these are lazy-imported) — to:
+`docs/crypto-design.md` and `docs/vault-format.md` are not generated docs — they're the contract. A clean-room implementation in any other language must be possible by reading `docs/` alone, and that property is enforced by `core/tests/python/conformance.py`, which depends on no `secretary` code — only generic crypto primitives declared via its PEP 723 header (`cryptography`, `pynacl`, `pqcrypto`, `argon2-cffi`, `blake3`, `cbor2`; top-level imports stay stdlib-only, these are lazy-imported) — to:
 
 1. Decap + AEAD-decrypt + hybrid-verify the `core/tests/data/golden_vault_001/` reference vault.
 2. Replay 11 CRDT merge KATs from `core/tests/data/conflict_kat.json` cross-language.
 3. Run the `--diff-replay` mode used by the fuzz harness for decoder-agreement checks.
 
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
+
+**It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and never enabled in `test.yml`. The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. Two standing consequences: **(1)** the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking; **(2)** five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
 
 ### Crypto layering
 
@@ -761,9 +784,16 @@ claiming more coverage than the code delivers:
       same overclaim class, in the one bullet this branch rewrote *because
       both its halves were previously false*. Of the **six E3 sees**, FIVE
       pre-date this work; the sixth, `array32_from_vec_into`, was created
-      by that work (PR #520, merged as `2e6dd764`) and inherits the forwarding shape
+      by that work (PR #515, merged as `9c187946`) and inherits the forwarding shape
       verbatim from the by-value `array32_from_vec` it replaced and
-      deleted. A prior version said all six pre-date it and cited `git show
+      deleted. (#523's first attempt repointed the dangling `9cad5b3c` at
+      `2e6dd764`/#520, which is wrong and self-contradicting: `git show
+      2e6dd764^:…/namespace/mod.rs | grep -c 'fn array32_from_vec_into'`
+      returns 2, so the function already existed in #520's parent, and
+      `git log --all -S` puts its introduction in `9c187946`. The giveaway
+      is two sentences down — `3775ef5` is `9c187946`'s parent, i.e. the
+      merge-base of the branch that actually created it.) A prior version
+      said all six pre-date it and cited `git show
       3775ef5:` as confirmation — that command DISPROVES it (`grep -c 'fn
       array32_from_vec_into'` on the merge-base file returns 0), the same
       overclaim class this section keeps re-finding (#515 I3):
