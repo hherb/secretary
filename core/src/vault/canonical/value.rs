@@ -3,9 +3,11 @@
 //! `ciborium::Value` owns its payloads. That ownership is precisely the defect
 //! #547 records: encoding a record meant copying every decrypted field out of
 //! its [`SecretString`](crate::crypto::secret::SecretString) wrapper into a
-//! `Value::Text`, and then deep-cloning that copy three more times on the way
-//! to the wire. A borrowing type serialises straight out of the wrapper, so
-//! the copy never exists.
+//! `Value::Text`, and then deep-cloning that copy two more times on the way
+//! to the wire (`record.rs`'s two `canonical_sort_entries` calls, inner then
+//! outer — `encode_canonical_map`'s own clone was already removed in Task 1,
+//! so this is two, not three, as of `main`). A borrowing type serialises
+//! straight out of the wrapper, so the copy never exists.
 //!
 //! [`CanonicalMap`] sorts its own keys at SERIALISE time, per RFC 8949
 //! §4.2.1. That is what lets nested maps stay borrowed: the previous design
@@ -13,28 +15,52 @@
 //! upward, because `ciborium` emits a `Value::Map`'s entries in iteration
 //! order with no recursive sort.
 //!
-//! **Only KEYS are ever materialised**, to sort on. A key is a field name
-//! from the vault schema or a forward-compat unknown key — never a value —
-//! so the sort buffer is not secret-bearing.
+//! **No key buffer is ever materialised.** `CanonicalMap`'s keys are always
+//! `&'a str`, and for a CBOR text key the canonical order (RFC 8949 §4.2.1:
+//! sort by the deterministic encoding of the key) reduces exactly to
+//! ordering on `(byte length, bytes)` — a text head's length prefix is a
+//! monotonic function of the string's byte length, so that comparison and
+//! "compare the two keys' full CBOR encodings" always agree. The sort
+//! therefore reads straight through the borrowed `&str`s and never encodes
+//! one into a temporary buffer. This matters because a key here is not
+//! always safe to copy: `record.fields` is keyed by user-authored field
+//! names living inside an encrypted record — decrypted plaintext, the same
+//! class of data `RecordError::DuplicateKey` used to leak by formatting one
+//! (#474) — and `record.unknown` / `field.unknown` keys come straight off
+//! the wire. The earlier draft of this module claimed the (then-existing)
+//! sort buffer "was not secret-bearing"; that claim was false. The fix is
+//! not to wipe the buffer — it is to have none.
 //!
-//! No production consumer yet (#547 Task 2): [`CanonicalMap`],
-//! [`CanonicalValue`] and [`to_canonical_vec`] are declared `pub` so the
-//! `#[doc(hidden)]` `canonical_test_api` module `vault::mod` adds can
-//! re-export them, which is what lets
-//! `core/tests/canonical_value_equivalence.rs` pin the byte-identity
-//! property (`--cfg test` is not propagated to dependent crates, so a
-//! `#[cfg(test)]` item would be invisible to that integration test).
-//! Reachability through that `pub` path is also what keeps all three out of
-//! `dead_code` in the meantime — see the rationale at the `pub use` in
+//! No production consumer yet (#547 Task 2): [`CanonicalMap`] and
+//! [`CanonicalValue`] are declared `pub` so the `#[doc(hidden)]`
+//! `canonical_test_api` module `vault::mod` adds can re-export them, which
+//! is what lets `core/tests/canonical_value_equivalence.rs` pin the
+//! byte-identity property (`--cfg test` is not propagated to dependent
+//! crates, so a `#[cfg(test)]` item would be invisible to that integration
+//! test). Reachability through that `pub` path is also what keeps both out
+//! of `dead_code` in the meantime — see the rationale at the `pub use` in
 //! `canonical/mod.rs`. Tasks 4 and 5 migrate the record and block encode
-//! paths onto this type.
+//! paths onto this type, reintroducing an `encode_canonical_map` counterpart
+//! (`to_canonical_vec`, deleted from this file in review round 1 — see
+//! `task-2-report.md` — for having a `Result<_, CanonicalError>` return type
+//! that was unnameable through `canonical_test_api`, which did not
+//! re-export `CanonicalError`) alongside its first real caller.
+//!
+//! Neither [`CanonicalValue`] nor [`CanonicalMap`] derives `Debug`. That is
+//! deliberate, not an oversight — a type that borrows secret-bearing text
+//! and bytes should not gain a formatter that prints them; do not add one.
+//!
+//! [`CanonicalValue::Borrowed`] holds a `&'a ciborium::Value`, and both it
+//! and [`Value`] itself are reachable through the `pub`
+//! `canonical_test_api::CanonicalValue` path (see above) — this is the
+//! first place `ciborium::Value` enters `secretary-core`'s public API
+//! surface, `#[doc(hidden)]` or not. A future `ciborium` major-version bump
+//! is therefore a semver-relevant, potentially breaking change for this
+//! crate, not merely an internal dependency bump.
 
 use ciborium::Value;
 use serde::ser::{SerializeMap as _, SerializeSeq as _};
 use serde::{Serialize, Serializer};
-
-use super::CanonicalError;
-use crate::cbor::classify_ser;
 
 /// One value in a canonical map or array. Every arm either borrows or is a
 /// scalar; no arm owns a byte string.
@@ -55,6 +81,8 @@ pub enum CanonicalValue<'a> {
     ///
     /// This version cannot know a future version's shape, so the subtree is
     /// passed through as a borrow rather than mirrored. It costs no copy.
+    /// See the module doc for the public-API-surface consequence of this
+    /// arm holding a `&'a ciborium::Value`.
     Borrowed(&'a Value),
 }
 
@@ -74,56 +102,37 @@ impl<'a> CanonicalMap<'a> {
     pub fn push(&mut self, key: &'a str, value: CanonicalValue<'a>) {
         self.0.push((key, value));
     }
-
-    /// Upper bound on this map's CBOR encoding length, for pre-reserving.
-    /// Same contract as [`super::cbor_size_bound`]: over is harmless, under
-    /// reopens the realloc hazard.
-    fn size_bound(&self) -> usize {
-        super::HEAD_MAX
-            + self
-                .0
-                .iter()
-                .map(|(k, v)| super::HEAD_MAX + k.len() + v.size_bound())
-                .sum::<usize>()
-    }
-}
-
-impl CanonicalValue<'_> {
-    /// Upper bound on this value's CBOR encoding length. See
-    /// [`CanonicalMap::size_bound`] for the contract.
-    fn size_bound(&self) -> usize {
-        match self {
-            Self::Text(t) => super::HEAD_MAX + t.len(),
-            Self::Bytes(b) => super::HEAD_MAX + b.len(),
-            Self::Uint(_) | Self::Bool(_) => super::HEAD_MAX,
-            Self::Map(m) => m.size_bound(),
-            Self::Array(items) => {
-                super::HEAD_MAX + items.iter().map(Self::size_bound).sum::<usize>()
-            }
-            Self::Borrowed(v) => super::cbor_size_bound(v),
-        }
-    }
 }
 
 impl Serialize for CanonicalMap<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // RFC 8949 §4.2.1: sort by the deterministic CBOR encoding of each
-        // key, length-then-bytewise. Materialising the KEY is safe — a key is
-        // a schema field name or an unknown key, never a value.
+        // RFC 8949 §4.2.1 canonical key order, specialised to TEXT keys
+        // (the only key type this type supports): ordering on
+        // `(byte length, bytes)` is exactly equivalent to ordering on each
+        // key's full CBOR encoding, because a CBOR text head's length
+        // prefix is a monotonic function of the string's byte length. So
+        // this comparator never encodes a key — it reads straight through
+        // the borrowed `&str`s in `self.0` and materialises nothing. There
+        // is no key buffer here to worry about being secret-bearing (see
+        // the module doc): nothing is copied out of the key to begin with.
         //
-        // Sorting a `Vec<(Vec<u8>, usize)>` of (encoded key, index) keeps the
-        // values themselves untouched and unmoved.
-        let mut order: Vec<(Vec<u8>, usize)> = Vec::with_capacity(self.0.len());
-        for (i, (key, _)) in self.0.iter().enumerate() {
-            let mut key_bytes = Vec::new();
-            ciborium::ser::into_writer(key, &mut key_bytes).map_err(serde::ser::Error::custom)?;
-            order.push((key_bytes, i));
-        }
-        order.sort_by(|a, b| a.0.cmp(&b.0));
+        // `.len()` on `&str` is BYTE length, not char count — load-bearing:
+        // a multi-byte UTF-8 key (e.g. 3-byte "日") must sort by its 3 CBOR
+        // payload bytes, not by its 1 char, or the order would diverge from
+        // the real CBOR head. `core/tests/canonical_value_equivalence.rs`
+        // pins this with a key pair that would sort the other way under a
+        // char-count comparator.
+        let mut order: Vec<usize> = (0..self.0.len()).collect();
+        order.sort_by(|&a, &b| {
+            let (ka, kb) = (self.0[a].0, self.0[b].0);
+            ka.len()
+                .cmp(&kb.len())
+                .then_with(|| ka.as_bytes().cmp(kb.as_bytes()))
+        });
 
         let mut map = serializer.serialize_map(Some(self.0.len()))?;
-        for (_, i) in &order {
-            let (key, value) = &self.0[*i];
+        for i in order {
+            let (key, value) = &self.0[i];
             map.serialize_entry(key, value)?;
         }
         map.end()
@@ -147,83 +156,5 @@ impl Serialize for CanonicalValue<'_> {
             }
             Self::Borrowed(v) => v.serialize(serializer),
         }
-    }
-}
-
-/// Serialise a [`CanonicalMap`] to canonical CBOR bytes.
-///
-/// The output buffer is pre-reserved against the map's (private) size-bound
-/// estimate so `into_writer` cannot grow it: a realloc copies to a new block
-/// and frees the old one **unwiped**, and on the record path that buffer
-/// holds decrypted plaintext.
-pub fn to_canonical_vec(map: &CanonicalMap<'_>) -> Result<Vec<u8>, CanonicalError> {
-    let bound = map.size_bound();
-    let mut buf = Vec::with_capacity(bound);
-    ciborium::ser::into_writer(map, &mut buf)
-        .map_err(|e| CanonicalError::CborEncode(classify_ser(&e)))?;
-
-    // Real runtime check, not `debug_assert!`: this crate's only
-    // `debug-assertions = true` is `core/fuzz/Cargo.toml`, which is
-    // `exclude`d from the workspace, so a `debug_assert!` here would be a
-    // no-op in `cargo test --release`, in `cargo build --release`, and in
-    // every shipped artifact. Mirrors `legacy::encode_canonical_map`'s check
-    // exactly. This DETECTS an under-reserve after the fact — by the time it
-    // runs, `into_writer` has already grown the buffer if it needed to, and
-    // the old (possibly plaintext-bearing) allocation is already freed
-    // unwiped. It is a tripwire for a future `ciborium::Value` variant
-    // `size.rs` cannot name, not a preventive guarantee.
-    if buf.len() > bound {
-        return Err(CanonicalError::CapacityBoundExceeded {
-            actual: buf.len(),
-            bound,
-        });
-    }
-    Ok(buf)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `to_canonical_vec` must not grow its output buffer. A realloc copies
-    /// to a new block and frees the old one unwiped — the hazard this
-    /// function's pre-reservation exists to prevent (see
-    /// `legacy::encode_canonical_map_does_not_realloc`, which pins the same
-    /// property for the `Value`-based encoder this type mirrors).
-    #[test]
-    fn to_canonical_vec_does_not_realloc() {
-        let names: Vec<String> = (0..40).map(|i| format!("k{i:03}")).collect();
-        let values: Vec<Vec<u8>> = (0..40).map(|i| vec![0xCDu8; 100 + i]).collect();
-
-        let mut map = CanonicalMap::with_capacity(names.len());
-        for (name, bytes) in names.iter().zip(values.iter()) {
-            map.push(name, CanonicalValue::Bytes(bytes));
-        }
-
-        let out = to_canonical_vec(&map).expect("encode");
-        let bound = map.size_bound();
-        assert_eq!(
-            out.capacity(),
-            bound,
-            "capacity changed from the reserved bound — into_writer grew the \
-             buffer, freeing an unwiped block"
-        );
-    }
-
-    /// `to_canonical_vec`'s output matches directly serialising the same
-    /// `CanonicalMap` — i.e. the pre-reservation wrapper changes nothing
-    /// about the emitted bytes, only how the buffer is allocated.
-    #[test]
-    fn to_canonical_vec_matches_direct_serialize() {
-        let mut map = CanonicalMap::with_capacity(2);
-        map.push("b", CanonicalValue::Uint(2));
-        map.push("a", CanonicalValue::Uint(1));
-
-        let via_helper = to_canonical_vec(&map).expect("encode via helper");
-
-        let mut direct = Vec::new();
-        ciborium::ser::into_writer(&map, &mut direct).expect("encode directly");
-
-        assert_eq!(via_helper, direct);
     }
 }

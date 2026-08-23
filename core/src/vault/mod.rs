@@ -92,7 +92,7 @@ pub use record::{Record, RecordError, RecordField, RecordFieldValue, UnknownValu
 /// should use it.
 #[doc(hidden)]
 pub mod canonical_test_api {
-    pub use super::canonical::{to_canonical_vec, CanonicalMap, CanonicalValue};
+    pub use super::canonical::{CanonicalMap, CanonicalValue};
 }
 
 /// Umbrella error type for the vault format layer.

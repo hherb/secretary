@@ -50,10 +50,13 @@
 //! of copying into an owned `Value` tree first. It has no production
 //! consumer as of this module's own build-sequence step (Task 2 of #547) —
 //! [`legacy::canonical_sort_entries`] and the record/block encode paths it
-//! backs are migrated onto it in later steps. [`to_canonical_vec`] is its
-//! `encode_canonical_map` counterpart: same pre-reservation-plus-real-check
-//! discipline, only over a [`CanonicalMap`] instead of a `&[(Value, Value)]`
-//! entry list.
+//! backs are migrated onto it in later steps, which is also where an
+//! `encode_canonical_map` counterpart over a [`CanonicalMap`] gets
+//! (re)introduced alongside its first real caller (an earlier version,
+//! `to_canonical_vec`, was deleted in review round 1 of Task 2 — see
+//! `task-2-report.md` — for returning `Result<_, CanonicalError>` while
+//! `CanonicalError` itself was not test-API-reachable, making its error
+//! type unnameable by the one caller that could have used it).
 
 #![forbid(unsafe_code)]
 
@@ -65,25 +68,31 @@ mod value;
 
 pub use legacy::{canonical_sort_entries, encode_canonical_map, reject_floats_and_tags};
 pub(crate) use size::{cbor_size_bound, HEAD_MAX};
-// `to_canonical_vec`, `CanonicalMap` and `CanonicalValue` are re-exported
-// `pub` (not `pub(crate)`), even though this `canonical` module itself is
-// `pub(crate)` (see `vault/mod.rs`): `vault::canonical_test_api` needs a
-// `pub`-visibility chain all the way down to reach them from
-// `core/tests/*.rs` (E0365 — re-exporting an item as more public than its
-// own established visibility is rejected, and a `pub(crate)` hop here would
-// set that ceiling). All three have no in-crate caller as of this
-// build-sequence step (Task 2 of #547 — see the module doc above): verified
-// by execution, a plain `cargo build --release -p secretary-core` reds with
-// `dead_code` the moment any one of the three drops out of
-// `canonical_test_api`'s `pub` re-export chain, and passes clean with all
-// three in it — reachability from that `pub` path is what a library crate's
-// dead-code analysis treats as "used by a downstream crate we can't see",
-// the same rule that already exempts `legacy::canonical_sort_entries` /
-// `encode_canonical_map` / `reject_floats_and_tags` above from needing an
-// in-crate caller of their own (those three do have real callers today, in
-// `record.rs`/`block.rs`, predating this module — but the exemption itself
-// is about the `pub` path, not about who happens to call it).
-pub use value::{to_canonical_vec, CanonicalMap, CanonicalValue};
+// `CanonicalMap`/`CanonicalValue` are re-exported `pub` (not `pub(crate)`),
+// even though this `canonical` module itself is `pub(crate)` (see
+// `vault/mod.rs`): `vault::canonical_test_api` needs a `pub`-visibility
+// chain all the way down to reach them from `core/tests/*.rs` (E0365 —
+// re-exporting an item as more public than its own established visibility
+// is rejected, and a `pub(crate)` hop here would set that ceiling). Neither
+// has any in-crate caller as of this build-sequence step (Task 2 of #547 —
+// see the module doc above): verified by execution, a plain `cargo build
+// --release -p secretary-core` reds with `dead_code` the moment either type
+// drops out of `canonical_test_api`'s `pub` re-export chain, and passes
+// clean with both in it — reachability from that `pub` path is what a
+// library crate's dead-code analysis treats as "used by a downstream crate
+// we can't see."
+//
+// That is a DIFFERENT exemption from the one covering the three `legacy`
+// functions re-exported just above, and the two must not be conflated:
+// those three already have real in-crate callers predating this module —
+// `encode_canonical_map` and `reject_floats_and_tags` are called from
+// `record.rs`, `manifest.rs` and `block.rs`; `canonical_sort_entries` is
+// called from `record.rs`, `manifest.rs` and `sync/state.rs` (NOT
+// `block.rs` — `block.rs` mentions it only in a comment); `encode_canonical_map`
+// is additionally called from `identity/card.rs`. Their non-dead-code
+// status does not depend on their `pub` path at all — unlike
+// `CanonicalMap`/`CanonicalValue`, which genuinely have none of that yet.
+pub use value::{CanonicalMap, CanonicalValue};
 
 /// Errors emitted by the three canonical-CBOR helpers in this module.
 ///

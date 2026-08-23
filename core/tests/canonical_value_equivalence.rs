@@ -88,10 +88,18 @@ fn array_is_byte_identical_across_every_head_boundary() {
 }
 
 /// The map arm additionally proves the SORT: keys are pushed in an order that
-/// is not canonical, and the emitted bytes must match a `Value::Map` whose
-/// entries were pre-sorted by encoded key bytes (length-then-bytewise, RFC
-/// 8949 §4.2.1 — which differs from `String` ordering whenever key lengths
-/// differ).
+/// is not canonical, and the emitted bytes must match the literal CBOR
+/// encoding of the canonically-sorted map.
+///
+/// The oracle here is a hardcoded expected byte vector, not a second
+/// invocation of "encode each key then sort the encodings" — that
+/// would-be oracle used to be exactly the algorithm this test is supposed
+/// to be checking `CanonicalMap` *against*, so it proved only that two
+/// implementations of the same idea agree with each other, not that either
+/// agrees with real CBOR. That distinction became load-bearing once
+/// `CanonicalMap`'s own comparator stopped encoding keys at all (review
+/// round 1 of #547 Task 2) and switched to comparing `(byte length, bytes)`
+/// directly — a hand-derived byte vector is independent of both.
 #[test]
 fn map_is_byte_identical_and_sorts_its_own_keys() {
     // "z" (1 byte) sorts BEFORE "ab" (2 bytes) in canonical CBOR, and AFTER
@@ -103,18 +111,70 @@ fn map_is_byte_identical_and_sorts_its_own_keys() {
         borrowed.push(k, CanonicalValue::Uint(i as u64));
     }
 
-    let mut owned_entries: Vec<(Value, Value)> = keys
-        .iter()
-        .enumerate()
-        .map(|(i, k)| (Value::Text((*k).into()), Value::Integer((i as u64).into())))
-        .collect();
-    owned_entries.sort_by_key(|(k, _)| {
-        let mut b = Vec::new();
-        ciborium::ser::into_writer(k, &mut b).expect("encode key");
-        b
-    });
+    // Canonical order (length-then-bytewise) is "b" < "z" < "ab" < "aaa",
+    // carrying values 3, 1, 0, 2 respectively (the index each key was
+    // pushed at above). Derived by hand from RFC 8949 §4.2.1, not computed
+    // by any sort call:
+    //   0xA4                   -- map(4)
+    //   0x61 'b'   0x03        -- "b": 3
+    //   0x61 'z'   0x01        -- "z": 1
+    //   0x62 'a''b' 0x00       -- "ab": 0
+    //   0x63 'a''a''a' 0x02    -- "aaa": 2
+    let expected: Vec<u8> = vec![
+        0xA4, 0x61, b'b', 3, 0x61, b'z', 1, 0x62, b'a', b'b', 0, 0x63, b'a', b'a', b'a', 2,
+    ];
 
-    assert_eq!(enc(&Value::Map(owned_entries)), enc(&borrowed));
+    assert_eq!(enc(&borrowed), expected);
+}
+
+/// The sort comparator's own head-length-class boundary, distinct from
+/// [`map_is_byte_identical_across_every_head_boundary`]'s MAP-length
+/// boundary below: that test's keys are all the same fixed width
+/// (`k00000`..`k00299`), so it never exercises a KEY crossing a CBOR
+/// text-head length class, and the four-key sort test above uses keys of
+/// 1-3 bytes, all within the single-byte-head class (0-23). This test
+/// pushes a 23-byte key (single-byte head `0x77`) and a 24-byte key
+/// (two-byte head `0x78 0x18`) — RFC 8949's exact head-length transition —
+/// plus a pair chosen so that sorting by CHAR count instead of BYTE length
+/// would put them in the wrong order: "ab" is 2 bytes/2 chars, "日" is 3
+/// bytes/1 char, so a char-count comparator would rank "日" before "ab"
+/// while the correct byte-length comparator ranks "ab" first. All four are
+/// pushed in scrambled order.
+#[test]
+fn map_key_sort_crosses_head_length_boundary_and_uses_byte_not_char_length() {
+    let short = "ab";
+    let multibyte = "\u{65e5}"; // "日": 1 char, 3 bytes (U+65E5)
+    let boundary_23 = "c".repeat(23);
+    let boundary_24 = "d".repeat(24);
+    assert_eq!(boundary_23.len(), 23);
+    assert_eq!(boundary_24.len(), 24);
+    assert_eq!(multibyte.chars().count(), 1);
+    assert_eq!(multibyte.len(), 3);
+
+    let mut borrowed = CanonicalMap::with_capacity(4);
+    borrowed.push(&boundary_24, CanonicalValue::Uint(3));
+    borrowed.push(short, CanonicalValue::Uint(0));
+    borrowed.push(&boundary_23, CanonicalValue::Uint(2));
+    borrowed.push(multibyte, CanonicalValue::Uint(1));
+
+    // Canonical order is ascending BYTE length: short(2) < multibyte(3) <
+    // boundary_23(23) < boundary_24(24). Listed here already in that
+    // order — this is a hand-asserted expectation, not a sort call, so it
+    // does not restate the algorithm under test.
+    let owned = Value::Map(vec![
+        (Value::Text(short.into()), Value::Integer(0u64.into())),
+        (Value::Text(multibyte.into()), Value::Integer(1u64.into())),
+        (
+            Value::Text(boundary_23.clone()),
+            Value::Integer(2u64.into()),
+        ),
+        (
+            Value::Text(boundary_24.clone()),
+            Value::Integer(3u64.into()),
+        ),
+    ]);
+
+    assert_eq!(enc(&owned), enc(&borrowed));
 }
 
 #[test]
@@ -170,9 +230,15 @@ fn nested_record_in_block_shape_is_byte_identical() {
         ),
     ]);
 
+    // Pushed OUT of canonical order (8-byte key before the 5-byte key) so
+    // the nested `Map` arm's own sort is load-bearing for this test: with
+    // the earlier in-order push, this test would pass even if `Serialize`
+    // for a nested `CanonicalMap` silently emitted push order instead of
+    // sorting — "nested maps sort themselves" is the type's headline claim
+    // and this is what actually pins it.
     let mut field = CanonicalMap::with_capacity(3);
-    field.push("value", CanonicalValue::Text(secret));
     field.push("last_mod", CanonicalValue::Uint(1_234_567_890));
+    field.push("value", CanonicalValue::Text(secret));
     field.push("device_uuid", CanonicalValue::Bytes(&device_uuid));
     let mut outer = CanonicalMap::with_capacity(2);
     outer.push(
