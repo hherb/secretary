@@ -589,6 +589,16 @@ fn canonical_error_to_card_error(e: CanonicalError) -> CardError {
         CanonicalError::TagRejected { .. } => {
             CardError::Malformed("CBOR tags are not permitted in canonical CBOR")
         }
+        // Post-hoc tripwire for a future `ciborium::Value` variant the size
+        // bound in `crate::vault::canonical` cannot name — see
+        // `CanonicalError::CapacityBoundExceeded`. `actual`/`bound` are
+        // discarded rather than threaded through: `CardError::Malformed`
+        // only carries `&'static str` by design (a closed set of literals,
+        // never runtime content), and this arm is not expected to fire on
+        // any input this crate constructs today.
+        CanonicalError::CapacityBoundExceeded { .. } => {
+            CardError::Malformed("canonical CBOR encode exceeded its reserved size bound")
+        }
     }
 }
 

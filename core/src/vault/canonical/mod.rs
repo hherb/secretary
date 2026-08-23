@@ -29,10 +29,18 @@
 //! preserved bit-for-bit.
 //!
 //! Split into a directory module (#547): [`legacy`] holds the three
-//! functions above, now clone-free on the value side (only keys are
-//! materialised to sort); [`size`] holds [`cbor_size_bound`], the
-//! pre-reservation helper that keeps `encode_canonical_map`'s output
-//! buffer from ever reallocating.
+//! functions above. Of those, only [`encode_canonical_map`] is clone-free on
+//! the value side (only keys are materialised, to sort on) —
+//! [`canonical_sort_entries`] still `pair.clone()`s every entry, unchanged
+//! from before the split, because it is a later build-sequence step (Task 4)
+//! that removes its last plaintext-bearing caller, not this one. [`size`]
+//! holds [`cbor_size_bound`], the pre-reservation helper
+//! `encode_canonical_map` uses so its output buffer is sized to avoid
+//! reallocating; a real runtime check (not a `debug_assert!`, which compiles
+//! out of every release build) then DETECTS the rare case where that bound
+//! turned out to be wrong — see [`CanonicalError::CapacityBoundExceeded`].
+//! Detecting is not preventing: by the time that check runs, the encode
+//! (and any realloc it triggered) has already happened.
 
 #![forbid(unsafe_code)]
 
@@ -41,14 +49,19 @@ use crate::cbor::CborFault;
 mod legacy;
 mod size;
 
+#[allow(unused_imports)] // consumed by unlock::bundle in Task 7 (#547)
+pub(crate) use legacy::BorrowedCanonicalMap;
 pub use legacy::{canonical_sort_entries, encode_canonical_map, reject_floats_and_tags};
-pub(crate) use size::cbor_size_bound;
+pub(crate) use size::{cbor_size_bound, HEAD_MAX};
 
 /// Errors emitted by the three canonical-CBOR helpers in this module.
 ///
-/// The variant set is the union of what the existing `block.rs` and
-/// `record.rs` private copies actually produced — no speculative
-/// variants. Specifically:
+/// [`Self::CborEncode`], [`Self::FloatRejected`] and [`Self::TagRejected`]
+/// are the union of what the pre-split `block.rs` and `record.rs` private
+/// copies actually produced — no speculative variants there.
+/// [`Self::CapacityBoundExceeded`] is new: it did not exist before this
+/// module did, because the value-cloning `encode_canonical_map` used to do
+/// never needed a pre-reserved buffer to defend. Specifically:
 ///
 /// - [`Self::CborEncode`] — emitted by [`canonical_sort_entries`] (per-key
 ///   `ciborium::ser::into_writer` failure) and [`encode_canonical_map`]
@@ -70,6 +83,19 @@ pub(crate) use size::cbor_size_bound;
 ///   `TagRejected` variants did not carry the hint; this one does, which
 ///   is a strict information improvement — the per-layer `From` impls
 ///   discard the hint when mapping to the legacy variant if needed.
+///
+/// - [`Self::CapacityBoundExceeded`] — emitted by [`encode_canonical_map`]
+///   when its pre-reserved output buffer needed more bytes than
+///   [`cbor_size_bound`] computed for it. `cbor_size_bound` is a bound over
+///   today's known `ciborium::Value` variant set; `Value` is
+///   `#[non_exhaustive]`, so this variant exists as a tripwire for a future
+///   variant that bound cannot name (or a serializer change), not as a
+///   routine error path — on today's variant set the bound is provably
+///   sufficient (see `size.rs`'s tests). It fires only AFTER
+///   `ciborium::ser::into_writer` has already returned: if the buffer really
+///   did grow past its reservation, the old (possibly plaintext-bearing)
+///   allocation is already freed unwiped by the time this check runs. It
+///   DETECTS the hazard; it cannot PREVENT it.
 #[derive(Debug, thiserror::Error)]
 pub enum CanonicalError {
     /// `ciborium::ser::into_writer` returned an I/O or serialisation error.
@@ -98,5 +124,17 @@ pub enum CanonicalError {
         /// Entry-point hint identifying which subtree contained the tag.
         /// See [`Self::FloatRejected::field`] for the granularity contract.
         field: &'static str,
+    },
+
+    /// `encode_canonical_map`'s output exceeded its pre-reserved capacity.
+    /// See the variant doc above — this is a post-hoc tripwire, not a
+    /// preventive guarantee: the realloc it reports has already happened by
+    /// the time it fires.
+    #[error("canonical CBOR encode exceeded its reserved size bound ({actual} > {bound})")]
+    CapacityBoundExceeded {
+        /// Actual encoded length in bytes.
+        actual: usize,
+        /// The `cbor_size_bound`-derived capacity that was reserved.
+        bound: usize,
     },
 }

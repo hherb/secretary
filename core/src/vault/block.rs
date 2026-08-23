@@ -407,6 +407,15 @@ pub enum BlockError {
     /// reject — the v1 spec defines no forward-compat trailing fields.
     #[error("trailing bytes after signature suffix: {count}")]
     TrailingBytes { count: usize },
+
+    /// `crate::vault::canonical::encode_canonical_map`'s pre-reserved
+    /// output buffer needed more bytes than expected (lifted from
+    /// `CanonicalError::CapacityBoundExceeded`, an internal `pub(crate)`
+    /// type not reachable from public docs). This is a post-hoc tripwire
+    /// for a future `ciborium::Value` variant the size bound cannot name,
+    /// not a routine error path.
+    #[error("canonical CBOR encode exceeded its reserved size bound ({actual} > {bound})")]
+    CanonicalSizeBoundExceeded { actual: usize, bound: usize },
 }
 
 /// Lift a [`CanonicalError`] from the shared
@@ -426,6 +435,9 @@ impl From<CanonicalError> for BlockError {
             CanonicalError::CborEncode(fault) => BlockError::CborEncode(fault),
             CanonicalError::FloatRejected { field } => BlockError::FloatRejected { field },
             CanonicalError::TagRejected { .. } => BlockError::TagRejected,
+            CanonicalError::CapacityBoundExceeded { actual, bound } => {
+                BlockError::CanonicalSizeBoundExceeded { actual, bound }
+            }
         }
     }
 }

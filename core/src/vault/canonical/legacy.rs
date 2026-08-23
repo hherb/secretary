@@ -42,8 +42,12 @@ pub fn canonical_sort_entries(
 /// owns its pairs and therefore costs a deep clone of every byte string it
 /// holds. `serialize_map` with an explicit length emits the same major-type-5
 /// definite-length header `Value::Map` does, so the bytes are unchanged — a
-/// property the golden vault pins hard, since `from_canonical_cbor`
-/// re-encodes and compares against bytes written years ago.
+/// property the golden vault pins hard: `vault::record::decode` re-encodes
+/// its parsed representation and requires a byte-identical match against the
+/// input (`record.rs`'s strict canonical-input check), so any drift here
+/// would fail that comparison on the very next round trip. (Not
+/// `identity::card::from_canonical_cbor` — its own doc states it tolerates
+/// non-§6 key order on input and does not re-encode-and-compare.)
 pub(crate) struct BorrowedCanonicalMap<'a>(pub &'a [(&'a Value, &'a Value)]);
 
 impl serde::Serialize for BorrowedCanonicalMap<'_> {
@@ -81,22 +85,37 @@ pub fn encode_canonical_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, Canon
     let borrowed: Vec<(&Value, &Value)> = sorted.into_iter().map(|(_, pair)| pair).collect();
 
     // Pre-reserve so `into_writer` cannot grow (and thus realloc-and-free) a
-    // buffer that may hold plaintext. See `size::cbor_size_bound`.
+    // buffer that may hold plaintext. See `size::cbor_size_bound`. The outer
+    // `+ super::HEAD_MAX` accounts for the enclosing map's own CBOR head;
+    // it is the same constant `cbor_size_bound` uses internally for every
+    // value's head, re-exported so this call site cannot silently drift
+    // from that one by hardcoding a duplicate literal.
     let capacity_bound = entries
         .iter()
         .map(|(k, v)| super::cbor_size_bound(k) + super::cbor_size_bound(v))
         .sum::<usize>()
-        + 9;
+        + super::HEAD_MAX;
     let mut buf = Vec::with_capacity(capacity_bound);
 
     ciborium::ser::into_writer(&BorrowedCanonicalMap(&borrowed), &mut buf)
         .map_err(|e| CanonicalError::CborEncode(classify_ser(&e)))?;
-    debug_assert!(
-        buf.len() <= capacity_bound,
-        "encode_canonical_map under-reserved: {} > {capacity_bound}; a realloc \
-         freed an unwiped buffer that may hold plaintext",
-        buf.len()
-    );
+
+    // Real runtime check, not `debug_assert!`: this crate's only
+    // `debug-assertions = true` is `core/fuzz/Cargo.toml`, which is
+    // `exclude`d from the workspace (see root `Cargo.toml`), so a
+    // `debug_assert!` here would be a no-op in `cargo test --release`, in
+    // `cargo build --release`, and in every shipped artifact. This check
+    // DETECTS an under-reserve after the fact — by the time it runs,
+    // `into_writer` has already grown the buffer if it needed to, and the
+    // old (possibly plaintext-bearing) allocation is already freed unwiped.
+    // It is a tripwire for a future `ciborium::Value` variant `size.rs`
+    // cannot name, not a preventive guarantee.
+    if buf.len() > capacity_bound {
+        return Err(CanonicalError::CapacityBoundExceeded {
+            actual: buf.len(),
+            bound: capacity_bound,
+        });
+    }
     Ok(buf)
 }
 
@@ -233,7 +252,7 @@ mod tests {
     /// claim that it was not to be wrong.
     #[test]
     fn encode_canonical_map_does_not_realloc() {
-        let entries: Vec<(Value, Value)> = (0..40)
+        let mut entries: Vec<(Value, Value)> = (0..40)
             .map(|i| {
                 (
                     Value::Text(format!("k{i:03}")),
@@ -241,6 +260,19 @@ mod tests {
                 )
             })
             .collect();
+        // One nested entry (a Map-of-Bytes value) so this test actually
+        // drives the recursive Map arm of `cbor_size_bound` through
+        // `encode_canonical_map` itself — every other entry here is flat,
+        // which the bundle's original flat-only bound would also have
+        // covered, and flat entries alone wouldn't exercise the reason the
+        // bound was made recursive (#547).
+        entries.push((
+            Value::Text("nested".into()),
+            Value::Map(vec![(
+                Value::Text("inner".into()),
+                Value::Bytes(vec![0xEF; 64]),
+            )]),
+        ));
 
         let out = encode_canonical_map(&entries).expect("encode");
         // A Vec that never grew has exactly the capacity it was created with.
@@ -252,6 +284,18 @@ mod tests {
             out.capacity(),
             out.len()
         );
+        // NOTE on what this does and does not prove: this recomputes the
+        // SAME `Σ(bound(k)+bound(v)) + HEAD_MAX` formula
+        // `encode_canonical_map` uses internally, so a copy-paste edit that
+        // changed both sites identically (e.g. the same off-by-one applied
+        // to `HEAD_MAX` here and there) would stay green. It is not a
+        // from-first-principles check. That job belongs to
+        // `size_bound_is_not_under_reserved_for_a_nested_tree` in
+        // `size.rs`, which compares the bound against `ciborium`'s ACTUAL
+        // encoded length independently. This test's narrower job is proving
+        // `encode_canonical_map` really uses `with_capacity` (not `new`)
+        // with EXACTLY the bound it computes — see the #547 mutation check
+        // recorded in the task report.
         let bound: usize = entries
             .iter()
             .map(|(k, v)| {
@@ -259,7 +303,7 @@ mod tests {
                     + crate::vault::canonical::cbor_size_bound(v)
             })
             .sum::<usize>()
-            + 9;
+            + crate::vault::canonical::HEAD_MAX;
         assert_eq!(
             out.capacity(),
             bound,

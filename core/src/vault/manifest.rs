@@ -670,7 +670,8 @@ fn record_error_to_cbor_fault(e: RecordError) -> CborFault {
         | RecordError::DuplicateKey { .. }
         | RecordError::FloatRejected { .. }
         | RecordError::TagRejected
-        | RecordError::NonCanonicalEncoding => CborFault {
+        | RecordError::NonCanonicalEncoding
+        | RecordError::CanonicalSizeBoundExceeded { .. } => CborFault {
             kind: CborErrorKind::Semantic,
             offset: None,
         },

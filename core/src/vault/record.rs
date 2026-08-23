@@ -214,6 +214,15 @@ pub enum RecordError {
     /// covers the full set.
     #[error("non-canonical CBOR encoding (e.g. indefinite-length item, key disorder, or non-shortest length)")]
     NonCanonicalEncoding,
+
+    /// `crate::vault::canonical::encode_canonical_map`'s pre-reserved
+    /// output buffer needed more bytes than expected (lifted from
+    /// `CanonicalError::CapacityBoundExceeded`, an internal `pub(crate)`
+    /// type not reachable from public docs). This is a post-hoc tripwire
+    /// for a future `ciborium::Value` variant the size bound cannot name,
+    /// not a routine error path.
+    #[error("canonical CBOR encode exceeded its reserved size bound ({actual} > {bound})")]
+    CanonicalSizeBoundExceeded { actual: usize, bound: usize },
 }
 
 /// Lift a [`CanonicalError`] from the shared
@@ -233,6 +242,9 @@ impl From<CanonicalError> for RecordError {
             CanonicalError::CborEncode(fault) => RecordError::CborEncode(fault),
             CanonicalError::FloatRejected { field } => RecordError::FloatRejected { field },
             CanonicalError::TagRejected { .. } => RecordError::TagRejected,
+            CanonicalError::CapacityBoundExceeded { actual, bound } => {
+                RecordError::CanonicalSizeBoundExceeded { actual, bound }
+            }
         }
     }
 }
