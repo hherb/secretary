@@ -1,6 +1,21 @@
 use super::*;
 
-/// A tree with a secret at every depth and in every container arm.
+/// A tree with a secret at every depth and in every container arm —
+/// including `Tag` (fix round 1, controller finding I2): `nested_secret_tree`
+/// previously contained no `Tag` at all, and `harvest` had no `Tag` arm
+/// either, so a payload hidden inside one could survive a wipe with every
+/// existing assertion still green. Demonstrated by mutation: with the `Tag`
+/// arm deleted from `wipe_value` (falling through to the wildcard), a
+/// `Map -> Array -> Tag -> Map -> Text` secret survived intact and a
+/// Tag-blind `harvest` reported zero survivors either way.
+///
+/// A bare `Value::Tag` is never produced by this crate's OWN canonical
+/// encoder (`reject_floats_and_tags` refuses one in any tree that reaches
+/// it), but `SecretValueTree::new` accepts any hand-built `Value` — in
+/// particular the raw output of `ciborium::de::from_reader` on a corrupt or
+/// adversarial vault file, before that rejection runs. `wipe_value` must
+/// still reach a secret hidden inside a tag on that path, which is exactly
+/// why `wipe_value` already has a `Tag` arm; this fixture is what proves it.
 fn nested_secret_tree() -> Value {
     Value::Map(vec![
         (Value::Text("top_bytes".into()), Value::Bytes(vec![0xAA; 8])),
@@ -24,13 +39,22 @@ fn nested_secret_tree() -> Value {
                     Value::Text("deep".into()),
                     Value::Text("deep-secret".into()),
                 )]),
+                Value::Tag(
+                    6,
+                    Box::new(Value::Map(vec![(
+                        Value::Text("tag_inner".into()),
+                        Value::Text("tag-secret".into()),
+                    )])),
+                ),
             ]),
         ),
     ])
 }
 
 /// Collect every `Bytes`/`Text` payload in the tree, so a test can assert
-/// on what survived a wipe.
+/// on what survived a wipe. Recurses into `Tag` (fix round 1, I2) for the
+/// same reason `wipe_value` does — a payload hidden inside one must be
+/// observable to a test, or the `Tag` arm above is unpinned.
 fn harvest(v: &Value, out: &mut Vec<Vec<u8>>) {
     match v {
         Value::Bytes(b) => out.push(b.clone()),
@@ -40,6 +64,7 @@ fn harvest(v: &Value, out: &mut Vec<Vec<u8>>) {
             harvest(k, out);
             harvest(val, out);
         }),
+        Value::Tag(_, inner) => harvest(inner, out),
         _ => {}
     }
 }
@@ -53,6 +78,14 @@ fn wipe_reaches_every_depth_and_every_container_arm() {
     assert!(
         before.iter().any(|b| b == b"top-secret"),
         "fixture did not contain the payload the test is about"
+    );
+    assert!(
+        before.iter().any(|b| b == b"top_text"),
+        "fixture did not contain the KEY the test is about"
+    );
+    assert!(
+        before.iter().any(|b| b == b"tag-secret"),
+        "fixture did not contain the Tag-wrapped payload the test is about"
     );
 
     tree.wipe_for_test();
@@ -74,6 +107,24 @@ fn wipe_reaches_every_depth_and_every_container_arm() {
     assert!(
         !after.iter().any(|b| b.contains(&0xCC)),
         "Bytes nested inside Array survived the wipe"
+    );
+    // Controller finding I1: map KEYS are plaintext too (`record.fields`
+    // keys are user-authored field names inside an encrypted record, #474)
+    // and were entirely unpinned — deleting `wipe_value(k);` from the
+    // `Value::Map` arm left every existing assertion here green, because
+    // none of them ever looked for a key. `top_text` is the key of the
+    // `top-secret` entry above; it must be gone too.
+    assert!(
+        !after.iter().any(|b| b == b"top_text"),
+        "a Map KEY survived the wipe"
+    );
+    // Controller finding I2: the fixture previously had no `Tag` at all and
+    // `harvest` could not see into one either, so a secret hidden inside a
+    // `Tag` could survive with zero observable failure. Both are fixed
+    // above; this closes the loop.
+    assert!(
+        !after.iter().any(|b| b == b"tag-secret"),
+        "Text nested inside a Tag survived the wipe"
     );
 }
 
@@ -107,13 +158,13 @@ fn drop_invokes_the_wipe() {
 ///   variant directly, so the match stops compiling the moment one of
 ///   them no longer exists.
 /// - It does **not** detect an ADDED variant. The forced wildcard arm
-///   silently accepts anything not named above, and the `9` asserted
-///   below is a hand-maintained literal a human must bump after
-///   deciding whether `wipe_value` needs a new arm — nothing here
-///   derives it from the match. Do not read the `assert_eq!` as a
-///   working tripwire against additions; it isn't one, and no
-///   compile-time introspection over a foreign `#[non_exhaustive]` enum
-///   is available in stable Rust to build one.
+///   silently accepts anything not named above; a human deciding whether
+///   `wipe_value` needs a new arm has to notice the addition some other
+///   way (an upstream changelog, a `cargo update` diff) — nothing in this
+///   file derives it from the match, and no compile-time introspection over
+///   a foreign `#[non_exhaustive]` enum is available in stable Rust to
+///   build one. Do not read `assert_named_variants_still_exist` below as a
+///   working tripwire against additions; it isn't one.
 #[test]
 fn every_ciborium_value_variant_is_accounted_for() {
     let all = [
@@ -132,36 +183,37 @@ fn every_ciborium_value_variant_is_accounted_for() {
         let mut t = SecretValueTree::new(v);
         t.wipe_for_test();
     }
-    assert_eq!(
-        secretary_core_value_variant_count(),
-        9,
-        "a named ciborium::Value variant was removed or renamed — review \
-         wipe_value and, if it still handles every remaining named \
-         variant correctly, update this count by hand"
-    );
+    // Fix round 1, MINOR finding: this used to end with
+    // `assert_eq!(secretary_core_value_variant_count(), 9, "...")`, comparing
+    // a function's return value against a literal `9` when that function
+    // ALWAYS returned the literal `9` — an assertion that can never fire,
+    // whose failure message described a *compile* error (a removed/renamed
+    // variant) that would never let this line run in the first place.
+    // Deleted the dead runtime assertion; kept the thing that actually does
+    // the work below.
+    assert_named_variants_still_exist();
 }
 
-/// Exhaustively NAMES every variant this version of `ciborium::Value`
-/// has, forcing a compile error if one is removed or renamed. Does not
-/// count anything dynamically: the returned `9` is a literal, and the
-/// match's own result is discarded (`_named`, prefixed to silence the
-/// unused-value lint) — see the doc comment on the test above for what
-/// this can and cannot prove.
-fn secretary_core_value_variant_count() -> usize {
+/// Exhaustively NAMES every variant this version of `ciborium::Value` has.
+/// This is the entire tripwire for a REMOVED or RENAMED variant: each arm
+/// names a variant directly, so the match fails to COMPILE — not to run —
+/// the moment one no longer exists. There is deliberately no runtime
+/// assertion here; see the test above for what this can and cannot prove
+/// (in particular, it proves nothing about an ADDED variant).
+fn assert_named_variants_still_exist() {
     let probe = Value::Null;
-    let _named = match &probe {
-        Value::Integer(_) => 1,
-        Value::Bytes(_) => 2,
-        Value::Float(_) => 3,
-        Value::Text(_) => 4,
-        Value::Bool(_) => 5,
-        Value::Null => 6,
-        Value::Tag(_, _) => 7,
-        Value::Array(_) => 8,
-        Value::Map(_) => 9,
-        _ => 0,
-    };
-    9
+    match &probe {
+        Value::Integer(_) => {}
+        Value::Bytes(_) => {}
+        Value::Float(_) => {}
+        Value::Text(_) => {}
+        Value::Bool(_) => {}
+        Value::Null => {}
+        Value::Tag(_, _) => {}
+        Value::Array(_) => {}
+        Value::Map(_) => {}
+        _ => {}
+    }
 }
 
 /// A wipe must be distinguishable from a `clear()`. The #546 review found
@@ -194,12 +246,14 @@ fn wipe_is_not_vacuous() {
 // --- SecretEntries (#547 / #548, audit C-4) ----------------------------
 //
 // Unlike `SecretValueTree`, Task 3 does not give `SecretEntries` a
-// production caller (Task 7 does). Without a genuine test caller for
-// each of `new` / `len` / `is_empty` / `as_slice` / `take_next`, every one of them
-// would be flagged `dead_code` under a plain, non-test build, and per
-// this branch's R4 ruling an uncalled item gets deleted rather than
-// `#[allow]`-ed — so the tests below exist to exercise the real
-// contract, not merely to silence a lint.
+// production caller (Task 7 does). The whole `secret_tree` module is
+// `#[cfg(test)]`-gated (see this file's parent module doc, controller
+// ruling R12), so it exists ONLY in a `--tests` build — but within that
+// build, `new` / `len` / `is_empty` / `as_slice` / `take_next` still need a
+// genuine caller or they are `dead_code` in THIS compilation, and per this
+// branch's R4 ruling an uncalled item gets deleted rather than
+// `#[allow]`-ed. The tests below exist to exercise the real contract, not
+// merely to silence a lint.
 
 /// Three distinguishable entries, used to check `take_next`'s ordering
 /// and `SecretEntries`'s wipe-on-drop.
@@ -263,4 +317,64 @@ fn secret_entries_drop_invokes_the_wipe() {
         before + 1,
         "scope exit did not wipe — is `impl Drop for SecretEntries` still there?"
     );
+}
+
+/// Controller finding I3 (fix round 1): the test above proves `Drop` runs
+/// SOME wipe pass, via a counter incremented once above the wipe loop, but
+/// nothing previously checked that the loop actually wiped anything — the
+/// counter increment and the wipe body were two separate statements in
+/// `Drop::drop`, so deleting the loop body left every existing
+/// `SecretEntries` test green (the counter still ticked once). Demonstrated
+/// by mutation: with the loop body removed, all seven `SecretEntries` /
+/// `SecretValueTree` tests as they stood passed.
+///
+/// Fixed structurally, not just by adding this test: `SecretEntries` now
+/// has the same shape as `SecretValueTree` — a private `fn wipe(&mut self)`
+/// that both `Drop::drop` and `#[cfg(test)] wipe_for_test` call, so no
+/// mutation can satisfy a counter-only test without also satisfying an
+/// effect-based one. This test is the effect-based one: it harvests
+/// `as_slice()` before and after an explicit `wipe_for_test()` (no `Drop`
+/// involved, so it isolates the wipe's EFFECT from the fact that `Drop`
+/// called it — `secret_entries_drop_invokes_the_wipe` above covers the
+/// latter) and checks both a value and a KEY (the same I1 finding applies
+/// here: `SecretEntries`' keys are exactly as plaintext-bearing as
+/// `SecretValueTree`'s).
+#[test]
+fn secret_entries_wipe_reaches_every_entry_including_keys() {
+    let mut entries = SecretEntries::new(three_entries());
+
+    let mut before = Vec::new();
+    for (k, v) in entries.as_slice() {
+        harvest(k, &mut before);
+        harvest(v, &mut before);
+    }
+    assert!(
+        before.iter().any(|b| b == b"secret-zero"),
+        "fixture did not contain the payload the test is about"
+    );
+    assert!(
+        before.iter().any(|b| b == b"k0"),
+        "fixture did not contain the KEY the test is about"
+    );
+
+    entries.wipe_for_test();
+
+    let mut after = Vec::new();
+    for (k, v) in entries.as_slice() {
+        harvest(k, &mut after);
+        harvest(v, &mut after);
+    }
+    assert!(
+        !after.iter().any(|b| b == b"secret-zero"),
+        "a value survived the wipe"
+    );
+    assert!(
+        !after.iter().any(|b| b == b"secret-two"),
+        "a value survived the wipe"
+    );
+    assert!(
+        !after.iter().any(|b| b.contains(&0xD0)),
+        "Bytes survived the wipe"
+    );
+    assert!(!after.iter().any(|b| b == b"k0"), "a KEY survived the wipe");
 }

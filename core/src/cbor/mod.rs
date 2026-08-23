@@ -30,37 +30,27 @@
 
 use std::fmt;
 
+// `#[cfg(test)]`, not a bare `mod secret_tree;` (controller ruling R12,
+// fix round 1 of Task 3 / #547): an earlier version of this line made
+// `SecretValueTree` / `SecretEntries` fully `pub` plus a `#[doc(hidden)]
+// pub cbor_test_api` re-export, to dodge `dead_code` on a mechanism with
+// no production caller yet (Task 6/7 wire it in). That put a third-party
+// `#[non_exhaustive]` enum (`ciborium::Value`) into three public function
+// signatures of a crate whose stated purpose is decades-long readability —
+// `#[doc(hidden)]` hides an item from rendered docs, not from the semver
+// surface, so a `ciborium` 0.3 would become a breaking change to
+// `secretary-core`. Gating the whole submodule on `#[cfg(test)]` instead:
+// the module does not exist at all in `cargo build --release` or in
+// `cargo clippy --workspace` without `--tests` (verified by execution —
+// see task-3-report.md's fix-round section), so there is nothing for
+// `dead_code` to flag; under `--tests` it is compiled and fully exercised
+// by its own unit tests. `SecretValueTree` / `SecretEntries` are
+// `pub(crate)`, per the brief, throughout. Task 6 (or 7, whichever lands
+// first) deletes this `#[cfg(test)]` and adds a
+// `pub(crate) use secret_tree::{SecretEntries, SecretValueTree};` here,
+// at the point either type gains a real production call site.
+#[cfg(test)]
 mod secret_tree;
-
-// No `pub(crate) use secret_tree::{SecretEntries, SecretValueTree};` here
-// yet: Task 3 (#547) ships the mechanism with no in-crate consumer at all —
-// Task 6 wires up `SecretValueTree`, Task 7 wires up `SecretEntries` — and
-// an unused `use` item is `unused_imports`, same failure class as an unused
-// item is `dead_code`. Whichever of those two tasks adds the first
-// `crate::cbor::SecretValueTree` / `crate::cbor::SecretEntries` call site
-// should add this re-export alongside it, one line, at that point genuinely
-// used.
-
-/// Test-only re-export of [`secret_tree::SecretValueTree`] /
-/// [`secret_tree::SecretEntries`], so
-/// `core/tests/secret_value_tree_black_box.rs` can reach them from outside
-/// the crate — `--cfg test` is not propagated to dependent crates, so a
-/// `#[cfg(test)]` item would be invisible there; this is the same
-/// `#[doc(hidden)] pub` workaround `vault::canonical_test_api` and
-/// `crate::sync::__test_dispatch` already use in this crate.
-///
-/// This is also the reason [`secret_tree::SecretValueTree`] and
-/// [`secret_tree::SecretEntries`] are declared `pub` rather than
-/// `pub(crate)` at their definition in `secret_tree` — see that module's
-/// doc comment for the full account, including the `dead_code` failure this
-/// re-export chain exists to avoid.
-///
-/// Not part of the supported API surface. Nothing outside `core/tests/`
-/// should use it.
-#[doc(hidden)]
-pub mod cbor_test_api {
-    pub use super::secret_tree::{SecretEntries, SecretValueTree};
-}
 
 /// Which upstream codec failure occurred, with no payload of its own.
 ///
