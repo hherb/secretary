@@ -19,13 +19,21 @@ struct VaultSelectionScreen: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    SecretaryBrandHeader(
+                        title: "Your private vault",
+                        subtitle: "Encrypted records that stay under your control.")
+                }
+                .listRowBackground(Color.clear)
+
                 switch viewModel.state {
                 case .empty:
                     selectSection
                 case .located(let name):
                     Section("Remembered vault") {
                         Text(name).font(.body.monospaced())
-                        Button("Open") { open() }
+                        Button("Open vault") { open() }
+                            .buttonStyle(.borderedProminent)
                         Button("Choose a different vault") { viewModel.chooseDifferent() }
                     }
                 case .unavailable(let reason):
@@ -37,7 +45,7 @@ struct VaultSelectionScreen: View {
                 }
 
                 Section {
-                    Button("Try the demo vault") { openDemo() }
+                    Button("Explore the demo vault") { openDemo() }
                 }
 
                 if let errorText {
@@ -47,6 +55,7 @@ struct VaultSelectionScreen: View {
                 }
             }
             .navigationTitle("Choose vault")
+            .secretaryScreenChrome()
             .onAppear { viewModel.loadPersisted() }
             .fileImporter(isPresented: $importing,
                           allowedContentTypes: [.folder]) { result in
@@ -57,8 +66,9 @@ struct VaultSelectionScreen: View {
 
     private var selectSection: some View {
         Section("Open a vault") {
-            Button("Import existing vault…") { importing = true }
-            Button("Create new vault…") { onCreateNew() }
+            Button("Create new vault") { onCreateNew() }
+                .buttonStyle(.borderedProminent)
+            Button("Open existing vault…") { importing = true }
         }
     }
 

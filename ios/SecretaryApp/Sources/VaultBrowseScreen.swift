@@ -193,6 +193,7 @@ struct VaultBrowseScreen: View {
         NavigationStack {
             List { listContent }
             .navigationTitle("Browse")
+            .secretaryScreenChrome()
             .toolbar { browseToolbar }
             .onAppear { viewModel.loadBlocks() }
             .navigationDestination(item: $settingsRoute) { route in

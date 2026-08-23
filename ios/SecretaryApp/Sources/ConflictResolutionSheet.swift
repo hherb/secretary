@@ -48,8 +48,7 @@ struct ConflictResolutionSheet: View {
                 }
                 Section("Master password") {
                     SecureField("password", text: $password)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .secretaryVaultPasswordInput()
                 }
                 if let err = model.lastError {
                     Section("Error") {
@@ -59,6 +58,7 @@ struct ConflictResolutionSheet: View {
                 }
             }
             .navigationTitle("Resolve conflicts")
+            .secretaryScreenChrome()
             .overlay { if model.isSyncing { ProgressView() } }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

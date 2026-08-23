@@ -27,15 +27,36 @@ public struct DeviceUuidStore: DeviceUuidProviding {
     public static let uuidByteLen = 16
 
     private let directory: URL
-    public init(directory: URL) { self.directory = directory }
+    private let legacyDirectory: URL?
 
-    /// Production store under `Application Support/Secretary/devices/`.
+    public init(directory: URL) {
+        self.init(directory: directory, legacyDirectory: nil)
+    }
+
+    init(directory: URL, legacyDirectory: URL?) {
+        self.directory = directory
+        self.legacyDirectory = legacyDirectory
+    }
+
+    /// Production store under `Application Support/secretary/devices/`.
+    ///
+    /// Keep the app-folder spelling identical to `defaultSyncStateDir`. On iOS
+    /// 26, asking Foundation to create `Secretary/devices` after sync has already
+    /// created `secretary/sync` can fail with `NSFileWriteUnknownError` on the
+    /// simulator's case-normalizing Application Support volume. That made the
+    /// first vault mutation fail before it ever reached the vault. Existing UUIDs
+    /// in the uppercase directory are copied into this store on first access.
     public static func applicationSupportDefault() throws -> DeviceUuidStore {
         let base = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true)
         return DeviceUuidStore(
-            directory: base.appendingPathComponent("Secretary/devices", isDirectory: true))
+            directory: base
+                .appendingPathComponent("secretary", isDirectory: true)
+                .appendingPathComponent("devices", isDirectory: true),
+            legacyDirectory: base
+                .appendingPathComponent("Secretary", isDirectory: true)
+                .appendingPathComponent("devices", isDirectory: true))
     }
 
     public func deviceUuid(forVaultHex vaultHex: String) throws -> [UInt8] {
@@ -45,11 +66,22 @@ public struct DeviceUuidStore: DeviceUuidProviding {
         if FileManager.default.fileExists(atPath: file.path) {
             return try Self.readUuid(at: file)
         }
+        if let legacyDirectory {
+            let legacyFile = legacyDirectory
+                .appendingPathComponent("\(vaultHex).dev", isDirectory: false)
+            if FileManager.default.fileExists(atPath: legacyFile.path) {
+                return try persist(try Self.readUuid(at: legacyFile), to: file)
+            }
+        }
         var uuid = [UInt8](repeating: 0, count: Self.uuidByteLen)
         let status = SecRandomCopyBytes(kSecRandomDefault, Self.uuidByteLen, &uuid)
         guard status == errSecSuccess else {
             throw DeviceUuidStoreError.entropyUnavailable(status)
         }
+        return try persist(uuid, to: file)
+    }
+
+    private func persist(_ uuid: [UInt8], to file: URL) throws -> [UInt8] {
         do {
             // `.atomic` cannot be combined with `.withoutOverwriting` on Darwin
             // (Foundation raises a fatal error). A 16-byte write is effectively

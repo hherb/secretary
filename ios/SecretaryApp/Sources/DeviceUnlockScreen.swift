@@ -23,8 +23,7 @@ struct DeviceUnlockScreen: View {
 
                 Section("Demo vault password (enroll)") {
                     SecureField("password", text: $password)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .secretaryVaultPasswordInput()
                 }
 
                 Section {
@@ -41,6 +40,7 @@ struct DeviceUnlockScreen: View {
                 }
             }
             .navigationTitle("Secretary")
+            .secretaryScreenChrome()
             .overlay { if isBusy { ProgressView() } }
             .onAppear { viewModel.refreshStatus() }
         }

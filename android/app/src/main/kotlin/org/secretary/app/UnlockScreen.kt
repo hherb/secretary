@@ -1,9 +1,7 @@
 package org.secretary.app
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
@@ -14,6 +12,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -74,101 +73,109 @@ fun UnlockScreen(
     var password by remember { mutableStateOf("") }
     var phrase by remember { mutableStateOf("") }
 
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
+    SecretaryScreen {
+        SecretaryBrandHeader(
+            title = title,
+            subtitle = "Unlock locally. Your secrets stay encrypted at rest.",
+        )
         if (unsyncedCreateWarning) {
-            Text(
-                "Vault created but not yet synced — keep this device online and reopen to " +
-                    "finish the upload. The vault currently exists only on this device.",
-                color = MaterialTheme.colorScheme.error,
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = MaterialTheme.shapes.medium,
                 modifier = Modifier.fillMaxWidth().testTag("unsynced-create-warning"),
-            )
-        }
-
-        Text(title)
-
-        if (isEnrolled) {
-            Button(
-                onClick = onBiometricUnlock,
-                enabled = !isUnlocking,
-                modifier = Modifier.fillMaxWidth().testTag("biometric-unlock"),
-            ) { Text("Unlock with biometrics") }
-        }
-
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            SegmentedButton(
-                selected = mode == UnlockMode.Password,
-                onClick = { mode = UnlockMode.Password },
-                enabled = !isUnlocking,
-                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-                modifier = Modifier.testTag("mode-password"),
-            ) { Text("Password") }
-            SegmentedButton(
-                selected = mode == UnlockMode.Recovery,
-                onClick = { mode = UnlockMode.Recovery },
-                enabled = !isUnlocking,
-                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
-                modifier = Modifier.testTag("mode-recovery"),
-            ) { Text("Recovery phrase") }
-        }
-
-        when (mode) {
-            UnlockMode.Password -> Column {
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("Vault password") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true,
-                    enabled = !isUnlocking,
-                    modifier = Modifier.fillMaxWidth().testTag("password-field"),
+            ) {
+                Text(
+                    "Vault created but not yet synced — keep this device online and reopen to " +
+                        "finish the upload. The vault currently exists only on this device.",
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.padding(14.dp),
                 )
-                if (!isEnrolled) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(
-                            checked = rememberDevice,
-                            onCheckedChange = onEnrollChoice,
-                            enabled = !isUnlocking,
-                            modifier = Modifier.testTag("remember-device"),
-                        )
-                        Text("Remember this device with biometrics")
+            }
+        }
+        SecretaryPanel {
+            Text("Unlock method", style = MaterialTheme.typography.titleMedium)
+
+            if (isEnrolled) {
+                Button(
+                    onClick = onBiometricUnlock,
+                    enabled = !isUnlocking,
+                    modifier = Modifier.fillMaxWidth().testTag("biometric-unlock"),
+                ) { Text("Unlock with biometrics") }
+            }
+
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                SegmentedButton(
+                    selected = mode == UnlockMode.Password,
+                    onClick = { mode = UnlockMode.Password },
+                    enabled = !isUnlocking,
+                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                    modifier = Modifier.testTag("mode-password"),
+                ) { Text("Password") }
+                SegmentedButton(
+                    selected = mode == UnlockMode.Recovery,
+                    onClick = { mode = UnlockMode.Recovery },
+                    enabled = !isUnlocking,
+                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                    modifier = Modifier.testTag("mode-recovery"),
+                ) { Text("Recovery phrase") }
+            }
+
+            when (mode) {
+                UnlockMode.Password -> Column {
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = { Text("Vault password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        enabled = !isUnlocking,
+                        modifier = Modifier.fillMaxWidth().testTag("password-field"),
+                    )
+                    if (!isEnrolled) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = rememberDevice,
+                                onCheckedChange = onEnrollChoice,
+                                enabled = !isUnlocking,
+                                modifier = Modifier.testTag("remember-device"),
+                            )
+                            Text("Remember this device with biometrics")
+                        }
                     }
                 }
+                UnlockMode.Recovery -> OutlinedTextField(
+                    value = phrase,
+                    onValueChange = { phrase = it },
+                    label = { Text("24-word recovery phrase") },
+                    singleLine = false,
+                    minLines = 3,
+                    enabled = !isUnlocking,
+                    modifier = Modifier.fillMaxWidth().testTag("recovery-field"),
+                )
             }
-            UnlockMode.Recovery -> OutlinedTextField(
-                value = phrase,
-                onValueChange = { phrase = it },
-                label = { Text("24-word recovery phrase") },
-                singleLine = false,
-                minLines = 3,
-                enabled = !isUnlocking,
-                modifier = Modifier.fillMaxWidth().testTag("recovery-field"),
-            )
-        }
 
-        Button(
-            onClick = {
-                val credential = when (mode) {
-                    UnlockMode.Password ->
-                        UnlockCredential.Password(password.toByteArray(Charsets.UTF_8))
-                    UnlockMode.Recovery ->
-                        UnlockCredential.Recovery(
-                            RecoveryPhrase.normalize(phrase).toByteArray(Charsets.UTF_8))
+            Button(
+                onClick = {
+                    val credential = when (mode) {
+                        UnlockMode.Password ->
+                            UnlockCredential.Password(password.toByteArray(Charsets.UTF_8))
+                        UnlockMode.Recovery ->
+                            UnlockCredential.Recovery(
+                                RecoveryPhrase.normalize(phrase).toByteArray(Charsets.UTF_8))
+                    }
+                    onUnlock(credential)
+                },
+                enabled = !isUnlocking && when (mode) {
+                    UnlockMode.Password -> password.isNotEmpty()
+                    UnlockMode.Recovery -> phrase.isNotBlank()
+                },
+                modifier = Modifier.fillMaxWidth().testTag("unlock-button"),
+            ) {
+                if (isUnlocking) {
+                    CircularProgressIndicator(modifier = Modifier.testTag("unlock-progress"))
+                } else {
+                    Text(if (mode == UnlockMode.Password) "Unlock & Sync" else "Unlock")
                 }
-                onUnlock(credential)
-            },
-            enabled = !isUnlocking && when (mode) {
-                UnlockMode.Password -> password.isNotEmpty()
-                UnlockMode.Recovery -> phrase.isNotBlank()
-            },
-            modifier = Modifier.fillMaxWidth().testTag("unlock-button"),
-        ) {
-            if (isUnlocking) {
-                CircularProgressIndicator(modifier = Modifier.testTag("unlock-progress"))
-            } else {
-                Text(if (mode == UnlockMode.Password) "Unlock & Sync" else "Unlock")
             }
         }
     }

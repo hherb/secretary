@@ -9,8 +9,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -57,7 +58,12 @@ fun BrowseScreen(
 
     LaunchedEffect(Unit) { viewModel.loadBlocks() }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
         // Dialogs rendered first so they overlay whichever branch is active and are not
         // skipped by any early return@Column inside the block/record branches.
         blockNameDialog?.let { state ->
@@ -92,17 +98,31 @@ fun BrowseScreen(
         val block = selectedBlock
         if (block == null) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Blocks", style = MaterialTheme.typography.titleMedium)
-                TextButton(
+                Column {
+                    Text("Your vault", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "Choose a block to browse its records.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Button(
                     onClick = { viewModel.startCreateBlock() },
                     enabled = !writing,
                     modifier = Modifier.testTag("new-block"),
                 ) { Text("New block") }
             }
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (blocks.isEmpty()) {
+                    item {
+                        EmptyState("No blocks yet", "Create a block to organise your first private records.")
+                    }
+                }
                 items(blocks, key = { it.uuidHex }) { b ->
                     BlockRow(b, writing = writing, onClick = { viewModel.selectBlock(b) }, onRename = { viewModel.startRenameBlock(b) })
-                    HorizontalDivider()
                 }
             }
         } else {
@@ -110,7 +130,7 @@ fun BrowseScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(blockLabel(block), style = MaterialTheme.typography.titleMedium)
+                Text(blockLabel(block), style = MaterialTheme.typography.titleLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(
                         onClick = { viewModel.startAdd() },
@@ -134,7 +154,15 @@ fun BrowseScreen(
                     modifier = Modifier.testTag("toggle-show-deleted"),
                 )
             }
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (records.orEmpty().isEmpty()) {
+                    item {
+                        EmptyState("No records here", "Add a record to this block when you're ready.")
+                    }
+                }
                 items(records.orEmpty(), key = { it.uuidHex }) { r ->
                     RecordRow(
                         record = r,
@@ -149,7 +177,6 @@ fun BrowseScreen(
                         onMove = viewModel::startMoveRecord,
                         canMove = hasMoveTargets(blocks.size),
                     )
-                    HorizontalDivider()
                 }
             }
         }
@@ -158,14 +185,25 @@ fun BrowseScreen(
 
 @Composable
 private fun BlockRow(block: BlockSummaryView, writing: Boolean, onClick: () -> Unit, onRename: () -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(
-            text = blockLabel(block),
-            modifier = Modifier.weight(1f).clickable(onClick = onClick).padding(vertical = 12.dp),
-            style = MaterialTheme.typography.bodyLarge,
-        )
-        TextButton(onClick = onRename, enabled = !writing, modifier = Modifier.testTag("rename-${block.uuidHex}")) {
-            Text("Rename")
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 1.dp,
+        shadowElevation = 1.dp,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 16.dp, end = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = blockLabel(block),
+                modifier = Modifier.weight(1f).padding(vertical = 16.dp),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            TextButton(onClick = onRename, enabled = !writing, modifier = Modifier.testTag("rename-${block.uuidHex}")) {
+                Text("Rename")
+            }
         }
     }
 }
@@ -184,20 +222,36 @@ private fun RecordRow(
     onMove: (RecordSummaryView) -> Unit,
     canMove: Boolean,
 ) {
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(recordTitle(record), style = MaterialTheme.typography.bodyLarge)
-            if (record.tombstone) {
-                TextButton(
-                    onClick = { onRestore(record) },
-                    enabled = !writing,
-                    modifier = Modifier.testTag("restore-${record.uuidHex}"),
-                ) { Text("Restore") }
-            } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 1.dp,
+        shadowElevation = 1.dp,
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    recordTitle(record),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                if (record.tombstone) {
+                    TextButton(
+                        onClick = { onRestore(record) },
+                        enabled = !writing,
+                        modifier = Modifier.testTag("restore-${record.uuidHex}"),
+                    ) { Text("Restore") }
+                }
+            }
+            if (!record.tombstone) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
                     TextButton(
                         onClick = { onEdit(record) },
                         modifier = Modifier.testTag("edit-${record.uuidHex}"),
@@ -216,18 +270,18 @@ private fun RecordRow(
                     ) { Text("Delete") }
                 }
             }
-        }
-        record.fields.forEach { field ->
-            val key = "${record.uuidHex}/${field.name}"
-            val value = revealed[key]
-            FieldRow(
-                record = record,
-                field = field,
-                value = value,
-                autoHideMillis = autoHideMillis,
-                onReveal = onReveal,
-                onHide = onHide,
-            )
+            record.fields.forEach { field ->
+                val key = "${record.uuidHex}/${field.name}"
+                val value = revealed[key]
+                FieldRow(
+                    record = record,
+                    field = field,
+                    value = value,
+                    autoHideMillis = autoHideMillis,
+                    onReveal = onReveal,
+                    onHide = onHide,
+                )
+            }
         }
     }
 }
@@ -280,10 +334,34 @@ private fun ErrorBanner(error: VaultBrowseError) {
     } else {
         "Couldn't read the vault: ${error::class.simpleName}"
     }
-    Text(
-        text = text,
-        color = MaterialTheme.colorScheme.error,
-        style = MaterialTheme.typography.bodyMedium,
-        modifier = Modifier.padding(bottom = 8.dp),
-    )
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        shape = MaterialTheme.shapes.small,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = text,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(12.dp),
+        )
+    }
+}
+
+@Composable
+private fun EmptyState(title: String, detail: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                detail,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+    }
 }
