@@ -54,7 +54,7 @@ use crate::crypto::kem::{
     generate_ml_kem_768, generate_x25519, ML_KEM_768_PK_LEN, ML_KEM_768_SK_LEN, X25519_PK_LEN,
     X25519_SK_LEN,
 };
-use crate::crypto::secret::Sensitive;
+use crate::crypto::secret::{SecretBytes, Sensitive};
 use crate::crypto::sig::{
     generate_ed25519, generate_ml_dsa_65, ED25519_PK_LEN, ED25519_SK_LEN, ML_DSA_65_PK_LEN,
     ML_DSA_65_SEED_LEN,
@@ -403,12 +403,18 @@ impl IdentityBundle {
                 KEY_DISPLAY_NAME => set_once(&mut display_name, take_text(v)?, KEY_DISPLAY_NAME)?,
                 KEY_X25519_SK => set_once(
                     &mut x25519_sk_bytes,
-                    Sensitive::new(take_fixed_bytes::<X25519_SK_LEN>(v, KEY_X25519_SK)?),
+                    Sensitive::try_build([0u8; X25519_SK_LEN], |slot| {
+                        take_fixed_bytes_into(v, KEY_X25519_SK, slot)
+                    })?,
                     KEY_X25519_SK,
                 )?,
                 KEY_X25519_PK => set_once(
                     &mut x25519_pk,
-                    take_fixed_bytes::<X25519_PK_LEN>(v, KEY_X25519_PK)?,
+                    {
+                        let mut pk = [0u8; X25519_PK_LEN];
+                        take_fixed_bytes_into(v, KEY_X25519_PK, &mut pk)?;
+                        pk
+                    },
                     KEY_X25519_PK,
                 )?,
                 KEY_ML_KEM_768_SK => set_once(
@@ -423,12 +429,18 @@ impl IdentityBundle {
                 )?,
                 KEY_ED25519_SK => set_once(
                     &mut ed25519_sk_bytes,
-                    Sensitive::new(take_fixed_bytes::<ED25519_SK_LEN>(v, KEY_ED25519_SK)?),
+                    Sensitive::try_build([0u8; ED25519_SK_LEN], |slot| {
+                        take_fixed_bytes_into(v, KEY_ED25519_SK, slot)
+                    })?,
                     KEY_ED25519_SK,
                 )?,
                 KEY_ED25519_PK => set_once(
                     &mut ed25519_pk,
-                    take_fixed_bytes::<ED25519_PK_LEN>(v, KEY_ED25519_PK)?,
+                    {
+                        let mut pk = [0u8; ED25519_PK_LEN];
+                        take_fixed_bytes_into(v, KEY_ED25519_PK, &mut pk)?;
+                        pk
+                    },
                     KEY_ED25519_PK,
                 )?,
                 KEY_ML_DSA_65_SK => set_once(
@@ -594,19 +606,43 @@ fn take_uuid(v: Value) -> Result<[u8; USER_UUID_LEN], BundleError> {
         .map_err(|_: Vec<u8>| BundleError::InvalidUuid)
 }
 
-fn take_fixed_bytes<const N: usize>(v: Value, field: &'static str) -> Result<[u8; N], BundleError> {
-    let bytes = match v {
-        Value::Bytes(b) => b,
-        _ => return Err(BundleError::Malformed("expected byte string")),
+/// Write-through fixed-size byte extractor.
+///
+/// The destination is supplied by the caller — which for every secret-key
+/// site is a slot already wrapper-covered by `Sensitive::try_build` — so no
+/// unwrapped `[u8; N]` is materialised in this frame or returned by value.
+/// The by-value predecessor (`take_fixed_bytes`) left one copy here and
+/// another in the caller's return temporary (#522); it is deleted rather
+/// than kept alongside this, so the unsafe shape is awkward to write rather
+/// than merely discouraged — the same move #503 made on both binding crates.
+///
+/// The source `Vec` is WRAPPED rather than wiped after the fact.
+/// `Vec::try_into` reaches its array via `set_len(0)` + `ptr::read` — a COPY,
+/// not a move-out — so the CBOR byte string's heap buffer would otherwise be
+/// deallocated with the secret key still in it. That is the 2026-07-02
+/// audit's finding C-4, and it was its last live sub-item.
+/// `SecretBytes::new` MOVES the buffer, so `Drop` covers every exit below,
+/// including the wrong-length `return`, with no trailing statement for
+/// control flow to skip.
+fn take_fixed_bytes_into<const N: usize>(
+    v: Value,
+    field: &'static str,
+    out: &mut [u8; N],
+) -> Result<(), BundleError> {
+    let Value::Bytes(b) = v else {
+        return Err(BundleError::Malformed("expected byte string"));
     };
+    let bytes = SecretBytes::new(b);
     let got = bytes.len();
-    bytes
-        .try_into()
-        .map_err(|_: Vec<u8>| BundleError::WrongKeySize {
+    if got != N {
+        return Err(BundleError::WrongKeySize {
             field,
             expected: N,
             got,
-        })
+        });
+    }
+    out.copy_from_slice(bytes.expose());
+    Ok(())
 }
 
 fn take_sized_bytes(
@@ -614,10 +650,15 @@ fn take_sized_bytes(
     field: &'static str,
     expected: usize,
 ) -> Result<Vec<u8>, BundleError> {
-    let bytes = match v {
-        Value::Bytes(b) => b,
-        _ => return Err(BundleError::Malformed("expected byte string")),
+    let Value::Bytes(b) = v else {
+        return Err(BundleError::Malformed("expected byte string"));
     };
+    // Wrapper-covered before the length check so the REJECT path does not
+    // free a secret-key-shaped byte string unwiped (audit C-4). The success
+    // path unwraps back to a `Vec` that the caller moves straight into
+    // `Sensitive::new`, so ownership of the same heap buffer transfers and no
+    // copy is made.
+    let bytes = SecretBytes::new(b);
     if bytes.len() != expected {
         return Err(BundleError::WrongKeySize {
             field,
@@ -625,7 +666,7 @@ fn take_sized_bytes(
             got: bytes.len(),
         });
     }
-    Ok(bytes)
+    Ok(bytes.expose().to_vec())
 }
 
 // ---------------------------------------------------------------------------
@@ -636,6 +677,55 @@ fn take_sized_bytes(
 mod tests {
     use super::*;
     use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+    // --- take_fixed_bytes_into (#522, audit C-4) ----------------------------
+
+    #[test]
+    fn take_fixed_bytes_into_writes_through_on_the_happy_path() {
+        let mut out = [0u8; 4];
+        take_fixed_bytes_into(Value::Bytes(vec![1, 2, 3, 4]), "field", &mut out)
+            .expect("exact length must be accepted");
+        assert_eq!(out, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn take_fixed_bytes_into_rejects_a_wrong_length_and_reports_both_sizes() {
+        let mut out = [0u8; 4];
+        let err = take_fixed_bytes_into(Value::Bytes(vec![1, 2, 3]), "x25519_sk", &mut out)
+            .expect_err("short input must be rejected");
+        match err {
+            BundleError::WrongKeySize {
+                field,
+                expected,
+                got,
+            } => {
+                assert_eq!(field, "x25519_sk");
+                assert_eq!(expected, 4);
+                assert_eq!(got, 3);
+            }
+            other => panic!("expected WrongKeySize, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn take_fixed_bytes_into_leaves_the_destination_untouched_on_a_wrong_length() {
+        // The destination is caller-owned and, at every production call site,
+        // already wrapper-covered by `Sensitive::try_build`. A rejected decode
+        // must not half-fill it. Seeded non-zero so "untouched" is
+        // distinguishable from "zeroed", which a zero-seeded assertion could
+        // not tell apart (a #513 review finding).
+        let mut out = [0xAAu8; 4];
+        let _ = take_fixed_bytes_into(Value::Bytes(vec![1, 2, 3]), "field", &mut out);
+        assert_eq!(out, [0xAAu8; 4]);
+    }
+
+    #[test]
+    fn take_fixed_bytes_into_rejects_a_non_bytes_cbor_value() {
+        let mut out = [0u8; 4];
+        let err = take_fixed_bytes_into(Value::Text("nope".into()), "field", &mut out)
+            .expect_err("a text value is not a byte string");
+        assert!(matches!(err, BundleError::Malformed(_)));
+    }
 
     #[test]
     fn generate_produces_consistent_keypairs() {
