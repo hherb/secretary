@@ -174,7 +174,7 @@ pub enum BundleError {
 /// 16-byte user UUID, a display name, and a creation timestamp.
 ///
 /// Secret-key fields are wrapped in [`Sensitive`] (or
-/// [`SecretBytes`](crate::crypto::secret::SecretBytes) for
+/// [`SecretBytes`] for
 /// runtime-sized PQC keys) so they zeroize on drop. The bundle does not
 /// derive `Clone`, `Debug`, or `PartialEq`: cloning would silently
 /// duplicate secret material; a derived `Debug` would leak it; equality is
@@ -292,7 +292,7 @@ impl IdentityBundle {
         // Build the 11 entries; they will be sorted bytewise by canonical
         // key encoding before serialisation. The order in this `vec!` is
         // therefore not load-bearing — the sort step is.
-        let entries: Vec<(Value, Value)> = vec![
+        let entries = ZeroizingEntries(vec![
             (
                 Value::Text(KEY_USER_UUID.into()),
                 Value::Bytes(self.user_uuid.to_vec()),
@@ -337,8 +337,11 @@ impl IdentityBundle {
                 Value::Text(KEY_CREATED_AT.into()),
                 Value::Integer(self.created_at_ms.into()),
             ),
-        ];
-        encode_map(&entries)
+        ]);
+        // `entries` holds a cleartext clone of all four long-term secret keys.
+        // `ZeroizingEntries::drop` wipes them at the end of this expression,
+        // on the error path as well as the success path (#542).
+        encode_map(&entries.0)
     }
 
     /// Inverse of [`Self::to_canonical_cbor`]. Validates that every required field
@@ -531,6 +534,45 @@ impl IdentityBundle {
 // ---------------------------------------------------------------------------
 // Encoding helpers
 // ---------------------------------------------------------------------------
+
+/// Owns a CBOR entry list whose byte strings are wiped when it drops.
+///
+/// `to_canonical_cbor` clones every long-term secret key out of its wrapper
+/// into a `Value::Bytes`, and `ciborium::Value` is a foreign type with no
+/// zeroizing `Drop` — so without this, all four secret keys are freed
+/// unwiped on every vault create and every unlock (the canonicality check in
+/// `from_canonical_cbor` re-encodes, so the read path pays it too). That is
+/// the write-side half of the 2026-07-02 audit's C-4, tracked as #542.
+///
+/// Wiping in `Drop` rather than after `encode_map` is deliberate: it covers
+/// the unwinding-panic and early-return paths a trailing sweep would skip.
+///
+/// **Boundary, stated rather than glossed:** the `vec![…]` literal builds
+/// every clone BEFORE this wrapper takes ownership. If that literal itself
+/// unwinds part-way, the already-built elements drop as temporaries, unwiped.
+/// The only unwind source there is allocation failure, which aborts rather
+/// than unwinds, so it is not a live path — but it is not the "covered on
+/// every path" completeness the wrapper has once it exists.
+struct ZeroizingEntries(Vec<(Value, Value)>);
+
+impl ZeroizingEntries {
+    /// Zeroize every `Value::Bytes` in the list, leaving keys and non-byte
+    /// values alone. Separate from `Drop` so it is directly testable.
+    fn wipe(&mut self) {
+        use zeroize::Zeroize as _;
+        for (_, value) in &mut self.0 {
+            if let Value::Bytes(bytes) = value {
+                bytes.zeroize();
+            }
+        }
+    }
+}
+
+impl Drop for ZeroizingEntries {
+    fn drop(&mut self) {
+        self.wipe();
+    }
+}
 
 fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, BundleError> {
     // RFC 8949 §4.2.1: map keys must be sorted bytewise lexicographically by
@@ -744,6 +786,39 @@ mod tests {
         // §5-spec'd 4032-byte expanded encoding.
         assert_eq!(b.ml_dsa_65_sk.expose().len(), ML_DSA_65_SEED_LEN);
         assert_eq!(b.ml_dsa_65_pk.len(), ML_DSA_65_PK_LEN);
+    }
+
+    // --- ZeroizingEntries (#542, audit C-4 write side) ----------------------
+
+    #[test]
+    fn zeroizing_entries_wipe_clears_every_byte_string() {
+        // Asserts the wipe LOGIC directly. Whether a freed allocation retains
+        // bytes is not observable from safe Rust (spec §2.5), so what is
+        // tested here is that `wipe` reaches every `Value::Bytes` in the list
+        // and leaves keys and non-byte values alone.
+        let mut entries = ZeroizingEntries(vec![
+            (
+                Value::Text("x25519_sk".into()),
+                Value::Bytes(vec![0x42; 32]),
+            ),
+            (Value::Text("created_at".into()), Value::Integer(7.into())),
+            (
+                Value::Text("ed25519_sk".into()),
+                Value::Bytes(vec![0x99; 64]),
+            ),
+        ]);
+        entries.wipe();
+        match &entries.0[0].1 {
+            Value::Bytes(b) => assert!(b.iter().all(|&x| x == 0), "first key not wiped"),
+            other => panic!("expected Bytes, got {other:?}"),
+        }
+        match &entries.0[2].1 {
+            Value::Bytes(b) => assert!(b.iter().all(|&x| x == 0), "second key not wiped"),
+            other => panic!("expected Bytes, got {other:?}"),
+        }
+        // Non-byte entries are untouched, so the map still encodes correctly.
+        assert!(matches!(&entries.0[1].1, Value::Integer(_)));
+        assert!(matches!(&entries.0[0].0, Value::Text(t) if t == "x25519_sk"));
     }
 
     #[test]
