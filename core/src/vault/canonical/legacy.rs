@@ -1,95 +1,12 @@
-//! Shared canonical-CBOR helpers for the vault format
-//! (`docs/vault-format.md` §6.2 / §6.3 + RFC 8949 §4.2.1).
-//!
-//! [`block`](super::block) and [`record`](super::record) (and, in a
-//! subsequent build-sequence step, the manifest layer) all need three
-//! micro-operations on a `(key, value)` entry list:
-//!
-//! 1. [`canonical_sort_entries`] — re-order entries by the canonical CBOR
-//!    encoding of their keys (length-then-bytewise per RFC 8949 §4.2.1).
-//! 2. [`encode_canonical_map`] — sort, then serialise as a single
-//!    definite-length CBOR map.
-//! 3. [`reject_floats_and_tags`] — walk a `Value` tree and reject the two
-//!    forbidden node types (§6.2 #4) so callers don't have to re-check on
-//!    the per-field decode path.
-//!
-//! Before this module existed, each of `block.rs` and `record.rs` carried
-//! a private copy of all three helpers. The duplication was defensible
-//! when there were two callers; PR-B's manifest layer would have made it
-//! a third copy. Pulling them here keeps the canonical-encoding
-//! discipline centralised and makes any future tightening (e.g.
-//! threading a depth bound into the walker) a one-place change.
-//!
-//! The errors that arise from these helpers are typed as
-//! [`CanonicalError`]. Callers convert them to their layer-local error
-//! enum (`BlockError`, `RecordError`) via the per-layer
-//! `From<CanonicalError>` impls; those impls map each canonical-layer
-//! variant to the pre-existing layer-local variant of the same shape so
-//! the public error surface (and existing pattern-match call sites) is
-//! preserved bit-for-bit.
-
-#![forbid(unsafe_code)]
+// Entry-sort, map-encode and float/tag-rejection helpers. See the module
+// docs at `super` (`canonical/mod.rs`) for the shared contract these three
+// functions implement, and `size.rs` for the pre-reservation helper
+// `encode_canonical_map` depends on.
 
 use ciborium::Value;
 
-use crate::cbor::{classify_ser, CborFault};
-
-/// Errors emitted by the three canonical-CBOR helpers in this module.
-///
-/// The variant set is the union of what the existing `block.rs` and
-/// `record.rs` private copies actually produced — no speculative
-/// variants. Specifically:
-///
-/// - [`Self::CborEncode`] — emitted by [`canonical_sort_entries`] (per-key
-///   `ciborium::ser::into_writer` failure) and [`encode_canonical_map`]
-///   (top-level `ciborium::ser::into_writer` failure). Carries a
-///   classified [`CborFault`] rather than the upstream message: `ciborium`'s
-///   `Display` is its `Debug` form, so stringifying it copies
-///   `ser::Error::Value(String)` verbatim — a `serde` custom message that
-///   can embed the offending value (#474). [`crate::cbor::classify_ser`]
-///   projects the generic `ciborium::ser::Error<E>` (generic over the
-///   writer's I/O error, so `#[from]` does not apply) to a non-generic,
-///   data-free type instead.
-///
-/// - [`Self::FloatRejected`] / [`Self::TagRejected`] — emitted by
-///   [`reject_floats_and_tags`] when it walks into a `Value::Float(_)` or
-///   `Value::Tag(_, _)` node. `field` carries the entry-point hint the
-///   caller passed so the user sees which subtree contained the
-///   disallowed item (`"<root>"` for the top-level walk, `"<unknown>"`
-///   for an unknown-value walk, etc.). The original record/block
-///   `TagRejected` variants did not carry the hint; this one does, which
-///   is a strict information improvement — the per-layer `From` impls
-///   discard the hint when mapping to the legacy variant if needed.
-#[derive(Debug, thiserror::Error)]
-pub enum CanonicalError {
-    /// `ciborium::ser::into_writer` returned an I/O or serialisation error.
-    /// Carries a classified [`CborFault`] rather than the upstream message —
-    /// see the variant doc above for why, and why `#[from]` doesn't work
-    /// for `ciborium::ser::Error<E>`.
-    #[error("CBOR encode error: {0}")]
-    CborEncode(CborFault),
-
-    /// A CBOR float was found in a position the canonical CBOR profile
-    /// (`docs/crypto-design.md` §6.2 #4) forbids. `field` is the
-    /// entry-point hint passed by the caller.
-    #[error("float values are not permitted in canonical CBOR (in field {field})")]
-    FloatRejected {
-        /// Entry-point hint identifying which subtree contained the float.
-        /// Coarse-grained: usually `"<root>"` for the top-level walk and
-        /// `"<unknown>"` for unknown-value walks. The walker does not
-        /// thread per-key hints into nested subtrees.
-        field: &'static str,
-    },
-
-    /// A CBOR tag was found in a position the canonical CBOR profile
-    /// forbids. `field` is the entry-point hint passed by the caller.
-    #[error("CBOR tags are not permitted in canonical CBOR (in field {field})")]
-    TagRejected {
-        /// Entry-point hint identifying which subtree contained the tag.
-        /// See [`Self::FloatRejected::field`] for the granularity contract.
-        field: &'static str,
-    },
-}
+use super::CanonicalError;
+use crate::cbor::classify_ser;
 
 /// Sort `(key, value)` entries by the canonical CBOR encoding of their
 /// keys (RFC 8949 §4.2.1: length-then-bytewise).
@@ -119,16 +36,67 @@ pub fn canonical_sort_entries(
     Ok(materialised.into_iter().map(|(_, pair)| pair).collect())
 }
 
+/// Serialize a pre-sorted, BORROWED entry list as a definite-length CBOR map.
+///
+/// Exists so the encoder never has to build a `ciborium::Value::Map`, which
+/// owns its pairs and therefore costs a deep clone of every byte string it
+/// holds. `serialize_map` with an explicit length emits the same major-type-5
+/// definite-length header `Value::Map` does, so the bytes are unchanged — a
+/// property the golden vault pins hard, since `from_canonical_cbor`
+/// re-encodes and compares against bytes written years ago.
+pub(crate) struct BorrowedCanonicalMap<'a>(pub &'a [(&'a Value, &'a Value)]);
+
+impl serde::Serialize for BorrowedCanonicalMap<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (key, value) in self.0 {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
+
 /// Encode an entry list as a top-level canonical-CBOR map.
 ///
-/// Sorts via [`canonical_sort_entries`] (because `ciborium` emits a
+/// Sorts on the CBOR-encoded key bytes (because `ciborium` emits a
 /// `Value::Map`'s `Vec<(Value, Value)>` in iteration order, NOT in CBOR
 /// canonical order), then serialises as a single definite-length map.
 pub fn encode_canonical_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, CanonicalError> {
-    let sorted = canonical_sort_entries(entries)?;
-    let mut buf = Vec::new();
-    ciborium::ser::into_writer(&Value::Map(sorted), &mut buf)
+    // Only the KEYS are materialised, to sort on. The values ride along as
+    // BORROWS: the `pair.clone()` this replaced was a full deep clone of every
+    // value, and on the record path those values are decrypted user plaintext
+    // (#547). Same fix #546 made in `unlock::bundle::encode_map`; this is the
+    // shared helper it did not reach.
+    let mut sorted: Vec<(Vec<u8>, (&Value, &Value))> = entries
+        .iter()
+        .map(|(key, value)| {
+            let mut key_bytes = Vec::new();
+            ciborium::ser::into_writer(key, &mut key_bytes)
+                .map_err(|e| CanonicalError::CborEncode(classify_ser(&e)))?;
+            Ok((key_bytes, (key, value)))
+        })
+        .collect::<Result<_, CanonicalError>>()?;
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let borrowed: Vec<(&Value, &Value)> = sorted.into_iter().map(|(_, pair)| pair).collect();
+
+    // Pre-reserve so `into_writer` cannot grow (and thus realloc-and-free) a
+    // buffer that may hold plaintext. See `size::cbor_size_bound`.
+    let capacity_bound = entries
+        .iter()
+        .map(|(k, v)| super::cbor_size_bound(k) + super::cbor_size_bound(v))
+        .sum::<usize>()
+        + 9;
+    let mut buf = Vec::with_capacity(capacity_bound);
+
+    ciborium::ser::into_writer(&BorrowedCanonicalMap(&borrowed), &mut buf)
         .map_err(|e| CanonicalError::CborEncode(classify_ser(&e)))?;
+    debug_assert!(
+        buf.len() <= capacity_bound,
+        "encode_canonical_map under-reserved: {} > {capacity_bound}; a realloc \
+         freed an unwiped buffer that may hold plaintext",
+        buf.len()
+    );
     Ok(buf)
 }
 
@@ -255,6 +223,48 @@ mod tests {
         assert!(
             matches!(err, CanonicalError::TagRejected { field: "<root>" }),
             "expected TagRejected {{ field: \"<root>\" }}, got {err:?}"
+        );
+    }
+
+    /// `encode_canonical_map` must not grow its output buffer. A realloc
+    /// copies to a new block and frees the old one unwiped — the hazard
+    /// `SecretBytes::concat` (#524) exists to prevent. `capacity()` is the
+    /// only observable proxy, and it IS observable: the #546 review found the
+    /// claim that it was not to be wrong.
+    #[test]
+    fn encode_canonical_map_does_not_realloc() {
+        let entries: Vec<(Value, Value)> = (0..40)
+            .map(|i| {
+                (
+                    Value::Text(format!("k{i:03}")),
+                    Value::Bytes(vec![0xCD; 100 + i]),
+                )
+            })
+            .collect();
+
+        let out = encode_canonical_map(&entries).expect("encode");
+        // A Vec that never grew has exactly the capacity it was created with.
+        // Any growth would have gone through the doubling path and produced a
+        // capacity that is not the reserved bound.
+        assert!(
+            out.capacity() >= out.len(),
+            "sanity: capacity {} < len {}",
+            out.capacity(),
+            out.len()
+        );
+        let bound: usize = entries
+            .iter()
+            .map(|(k, v)| {
+                crate::vault::canonical::cbor_size_bound(k)
+                    + crate::vault::canonical::cbor_size_bound(v)
+            })
+            .sum::<usize>()
+            + 9;
+        assert_eq!(
+            out.capacity(),
+            bound,
+            "capacity changed from the reserved bound — into_writer grew the \
+             buffer, freeing an unwiped block"
         );
     }
 }
