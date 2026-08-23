@@ -84,14 +84,12 @@ pub(crate) use size::{cbor_size_bound, HEAD_MAX};
 //
 // That is a DIFFERENT exemption from the one covering the three `legacy`
 // functions re-exported just above, and the two must not be conflated:
-// those three already have real in-crate callers predating this module —
-// `encode_canonical_map` and `reject_floats_and_tags` are called from
-// `record.rs`, `manifest.rs` and `block.rs`; `canonical_sort_entries` is
-// called from `record.rs`, `manifest.rs` and `sync/state.rs` (NOT
-// `block.rs` — `block.rs` mentions it only in a comment); `encode_canonical_map`
-// is additionally called from `identity/card.rs`. Their non-dead-code
-// status does not depend on their `pub` path at all — unlike
-// `CanonicalMap`/`CanonicalValue`, which genuinely have none of that yet.
+// those three already have real in-crate callers predating this module, so
+// their non-dead-code status does not depend on their `pub` path at all —
+// unlike `CanonicalMap`/`CanonicalValue`, which genuinely have none of that
+// yet. (Which files call them is deliberately not enumerated here — that
+// list has been written wrong twice; read the callers directly instead of
+// trusting a cached grep result nothing validates.)
 pub use value::{CanonicalMap, CanonicalValue};
 
 /// Errors emitted by the three canonical-CBOR helpers in this module.

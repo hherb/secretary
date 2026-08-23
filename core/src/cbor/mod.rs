@@ -18,8 +18,49 @@
 //! upstream does.
 //!
 //! See `docs/superpowers/specs/2026-08-05-474-error-payload-hygiene-design.md`.
+//!
+//! Split into a directory module (#547 Task 3): this file keeps the codec
+//! error classification; `secret_tree` (a private submodule, not linkable
+//! from this public doc comment) holds `SecretValueTree` /
+//! `SecretEntries`, the zeroize-on-drop wrapper for what
+//! `ciborium::de::from_reader` itself allocates while parsing — a different
+//! concern from the error classification above, kept as one further file
+//! rather than split again since it stays comfortably under the project's
+//! 500-line-per-file threshold on its own.
 
 use std::fmt;
+
+mod secret_tree;
+
+// No `pub(crate) use secret_tree::{SecretEntries, SecretValueTree};` here
+// yet: Task 3 (#547) ships the mechanism with no in-crate consumer at all —
+// Task 6 wires up `SecretValueTree`, Task 7 wires up `SecretEntries` — and
+// an unused `use` item is `unused_imports`, same failure class as an unused
+// item is `dead_code`. Whichever of those two tasks adds the first
+// `crate::cbor::SecretValueTree` / `crate::cbor::SecretEntries` call site
+// should add this re-export alongside it, one line, at that point genuinely
+// used.
+
+/// Test-only re-export of [`secret_tree::SecretValueTree`] /
+/// [`secret_tree::SecretEntries`], so
+/// `core/tests/secret_value_tree_black_box.rs` can reach them from outside
+/// the crate — `--cfg test` is not propagated to dependent crates, so a
+/// `#[cfg(test)]` item would be invisible there; this is the same
+/// `#[doc(hidden)] pub` workaround `vault::canonical_test_api` and
+/// `crate::sync::__test_dispatch` already use in this crate.
+///
+/// This is also the reason [`secret_tree::SecretValueTree`] and
+/// [`secret_tree::SecretEntries`] are declared `pub` rather than
+/// `pub(crate)` at their definition in `secret_tree` — see that module's
+/// doc comment for the full account, including the `dead_code` failure this
+/// re-export chain exists to avoid.
+///
+/// Not part of the supported API surface. Nothing outside `core/tests/`
+/// should use it.
+#[doc(hidden)]
+pub mod cbor_test_api {
+    pub use super::secret_tree::{SecretEntries, SecretValueTree};
+}
 
 /// Which upstream codec failure occurred, with no payload of its own.
 ///
