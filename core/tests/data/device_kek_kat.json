@@ -1,0 +1,20 @@
+{
+  "comment": "crypto-design §5a: device_kek = HKDF-SHA-256(ikm=device_secret, salt=0x00*32, info=\"secretary-v1-device-kek\", L=32). Expected bytes generated from an INDEPENDENT implementation (Python `cryptography`), never from derive_device_kek itself. Regenerate with: uv run --with cryptography python -c 'from cryptography.hazmat.primitives import hashes; from cryptography.hazmat.primitives.kdf.hkdf import HKDF; print(HKDF(algorithm=hashes.SHA256(), length=32, salt=bytes(32), info=b\"secretary-v1-device-kek\").derive(bytes(32)).hex())'. Source test: core/tests/kdf.rs::device_kek_kats.",
+  "vectors": [
+    {
+      "name": "all_zero_secret",
+      "device_secret": "0000000000000000000000000000000000000000000000000000000000000000",
+      "device_kek": "dfdeaca5104911dc481f0c2ee18075583092a3468f82ef4c8e2f87c7f2612d3b"
+    },
+    {
+      "name": "all_ones_secret",
+      "device_secret": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "device_kek": "bcecfc61615d11fe4c4b9e40f62238e8a8a9784f9882ac52136a54282bc333cb"
+    },
+    {
+      "name": "ascending_counter_secret",
+      "device_secret": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "device_kek": "08c50948dff50e656479efb3502d5b71facd1a5cf3e3054df601c60bcc0701ff"
+    }
+  ]
+}

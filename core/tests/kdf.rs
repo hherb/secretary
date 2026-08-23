@@ -2,11 +2,11 @@
 //! and primitive). Each KAT cites its source.
 
 mod common;
-use common::{load_kat, Argon2idKat, HkdfSha256Kat};
+use common::{load_kat, Argon2idKat, DeviceKekKat, HkdfSha256Kat};
 
 use secretary_core::crypto::kdf::{
-    derive_master_kek, derive_recovery_kek, hkdf_sha256_extract_and_expand, Argon2idParams,
-    KdfError, TAG_RECOVERY_KEK,
+    derive_device_kek, derive_master_kek, derive_recovery_kek, hkdf_sha256_extract_and_expand,
+    Argon2idParams, KdfError, TAG_RECOVERY_KEK,
 };
 use secretary_core::crypto::secret::{SecretBytes, Sensitive};
 
@@ -183,6 +183,39 @@ fn recovery_kek_uses_recovery_kek_tag() {
     let manual = hkdf_sha256_extract_and_expand(&[0u8; 32], &[0u8; 32], TAG_RECOVERY_KEK, 32);
     let derived = derive_recovery_kek(&entropy);
     assert_eq!(derived.expose()[..], manual[..]);
+}
+
+// ---------------------------------------------------------------------------
+// Device KEK (§5a)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn device_kek_kats() {
+    // #525: the three unit tests in `crypto::kdf` never pin expected bytes —
+    // one compares two of `derive_device_kek`'s own outputs, and the other
+    // recomputes with the SAME `Hkdf::<Sha256>` primitive, so a defect in
+    // that crate, or a salt/info change mirrored into both, passes. These
+    // vectors come from an independent implementation (see the fixture's
+    // `comment` field for the generating command).
+    let kat: DeviceKekKat = load_kat("device_kek_kat.json");
+    assert!(!kat.vectors.is_empty(), "no device_kek vectors");
+    for v in &kat.vectors {
+        assert_eq!(
+            v.device_secret.len(),
+            32,
+            "{}: device_secret must be 32 bytes",
+            v.name
+        );
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(&v.device_secret);
+        let derived = derive_device_kek(&Sensitive::new(secret));
+        assert_eq!(
+            derived.expose()[..],
+            v.device_kek[..],
+            "device_kek mismatch for vector {}",
+            v.name
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
