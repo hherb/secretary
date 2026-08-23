@@ -196,6 +196,20 @@ pub struct HkdfSha256Vector {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct DeviceKekKat {
+    pub vectors: Vec<DeviceKekVector>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeviceKekVector {
+    pub name: String,
+    #[serde(deserialize_with = "de_hex")]
+    pub device_secret: Vec<u8>,
+    #[serde(deserialize_with = "de_hex")]
+    pub device_kek: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct CardFingerprintKat {
     pub card_fingerprint: CardFingerprintCardEntry,
     pub presentations: Vec<CardFingerprintPresentation>,

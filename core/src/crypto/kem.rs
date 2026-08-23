@@ -248,26 +248,29 @@ pub fn derive_wrap_key(
     recipient_pk_bundle: &[u8],
     transcript_hash: &[u8; 32],
 ) -> AeadKey {
-    let mut ikm_buf = Vec::with_capacity(
-        X25519_SS_LEN
-            + ML_KEM_768_SS_LEN
-            + X25519_PK_LEN
-            + ct_pq.len()
-            + sender_pk_bundle.len()
-            + recipient_pk_bundle.len(),
-    );
-    ikm_buf.extend_from_slice(ss_x.expose());
-    ikm_buf.extend_from_slice(ss_pq.expose());
-    ikm_buf.extend_from_slice(ct_x);
-    ikm_buf.extend_from_slice(ct_pq);
-    ikm_buf.extend_from_slice(sender_pk_bundle);
-    ikm_buf.extend_from_slice(recipient_pk_bundle);
-    // `ikm` holds both KEM shared secrets in cleartext, live across the HKDF
-    // call below; wrap it BEFORE that call so an unwinding panic inside
-    // `hkdf_sha256_extract_and_expand` (its own internal `.expect()`, see
-    // that function's doc comment) still wipes it via `Drop`, rather than
-    // relying on a trailing `ikm.zeroize()` a panic would skip (#513).
-    let ikm = SecretBytes::new(ikm_buf);
+    // §7 normative order: ikm = ss_x || ss_pq || ct_x || ct_pq
+    //                           || sender_pk_bundle || recipient_pk_bundle
+    //
+    // `concat` reserves exactly the total length of these six slices and
+    // pushes exactly these six slices, so no reallocation can free an
+    // unwiped intermediate holding both KEM shared secrets. The previous
+    // form hand-wrote the capacity, naming `X25519_PK_LEN` at `ct_x`'s
+    // position: correct today only because `ct_x` is typed
+    // `&[u8; X25519_PK_LEN]`, and silently wrong the day an X25519 KEM
+    // ciphertext gets its own length constant (#524).
+    //
+    // The buffer is also wrapper-covered from allocation rather than from a
+    // trailing `SecretBytes::new`, so an unwinding panic inside
+    // `hkdf_sha256_extract_and_expand` below (its own internal `.expect()`,
+    // see that function's doc comment) still wipes it via `Drop` (#513).
+    let ikm = SecretBytes::concat(&[
+        ss_x.expose(),
+        ss_pq.expose(),
+        ct_x,
+        ct_pq,
+        sender_pk_bundle,
+        recipient_pk_bundle,
+    ]);
 
     let mut info = Vec::with_capacity(TAG_BLOCK_CONTENT_KEY_WRAP.len() + 32);
     info.extend_from_slice(TAG_BLOCK_CONTENT_KEY_WRAP);

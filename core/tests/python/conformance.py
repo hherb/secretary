@@ -4,7 +4,23 @@
 # dependencies = [
 #   "cryptography>=42",
 #   "pynacl>=1.5",
-#   "pqcrypto>=0.3",
+#   # UPPER BOUND IS LOAD-BEARING (#544). pqcrypto 1.0.0 is a breaking major
+#   # bump: it renamed `generate_keypair` to `keygen`, and — the subtle half —
+#   # changed `ml_dsa_65.verify` from returning a bool to RAISING on failure,
+#   # so a VALID signature returns `None`. `ml_dsa_65_verify` below returns
+#   # that value directly, making every ML-DSA-65 check report "rejected" and
+#   # taking the whole §15 gate down. Failure direction was fail-closed (valid
+#   # rejected, never invalid accepted), but the gate was non-functional on
+#   # `main` until this bound was added. Do not relax to a bare `>=` without
+#   # migrating the helper AND giving it a tamper-rejection test that passes on
+#   # whichever resolution you allow — `ml_dsa_65_verify`'s own docstring
+#   # below records that an earlier version of this helper reported "no
+#   # exception" as success and silently accepted tampered ML-DSA signatures,
+#   # which is exactly the shape pqcrypto 1.x's contract invites back. (That
+#   # pointer read "conformance.py:705" and was already stale when written:
+#   # the +13-line comment you are reading pushed the docstring down. Cite the
+#   # symbol, not the line.)
+#   "pqcrypto>=0.3,<1",
 #   "argon2-cffi>=23",
 #   "blake3>=0.4",
 #   "cbor2>=5",

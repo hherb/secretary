@@ -54,7 +54,7 @@ use crate::crypto::kem::{
     generate_ml_kem_768, generate_x25519, ML_KEM_768_PK_LEN, ML_KEM_768_SK_LEN, X25519_PK_LEN,
     X25519_SK_LEN,
 };
-use crate::crypto::secret::Sensitive;
+use crate::crypto::secret::{SecretBytes, Sensitive};
 use crate::crypto::sig::{
     generate_ed25519, generate_ml_dsa_65, ED25519_PK_LEN, ED25519_SK_LEN, ML_DSA_65_PK_LEN,
     ML_DSA_65_SEED_LEN,
@@ -174,7 +174,7 @@ pub enum BundleError {
 /// 16-byte user UUID, a display name, and a creation timestamp.
 ///
 /// Secret-key fields are wrapped in [`Sensitive`] (or
-/// [`SecretBytes`](crate::crypto::secret::SecretBytes) for
+/// [`SecretBytes`] for
 /// runtime-sized PQC keys) so they zeroize on drop. The bundle does not
 /// derive `Clone`, `Debug`, or `PartialEq`: cloning would silently
 /// duplicate secret material; a derived `Debug` would leak it; equality is
@@ -292,7 +292,7 @@ impl IdentityBundle {
         // Build the 11 entries; they will be sorted bytewise by canonical
         // key encoding before serialisation. The order in this `vec!` is
         // therefore not load-bearing — the sort step is.
-        let entries: Vec<(Value, Value)> = vec![
+        let entries = ZeroizingEntries::new(vec![
             (
                 Value::Text(KEY_USER_UUID.into()),
                 Value::Bytes(self.user_uuid.to_vec()),
@@ -337,7 +337,15 @@ impl IdentityBundle {
                 Value::Text(KEY_CREATED_AT.into()),
                 Value::Integer(self.created_at_ms.into()),
             ),
-        ];
+        ]);
+        // `entries` holds a cleartext clone of all four long-term secret keys.
+        // `ZeroizingEntries::drop` wipes them at the end of this expression,
+        // on the error path as well as the success path (#542).
+        //
+        // `encode_map` takes the WRAPPER, not `&[(Value, Value)]`: passing the
+        // inner slice made the wrapper optional at its only call site, so
+        // reverting this line to a bare `vec![…]` compiled and passed the whole
+        // suite. The signature is what makes the invariant hold.
         encode_map(&entries)
     }
 
@@ -403,42 +411,64 @@ impl IdentityBundle {
                 KEY_DISPLAY_NAME => set_once(&mut display_name, take_text(v)?, KEY_DISPLAY_NAME)?,
                 KEY_X25519_SK => set_once(
                     &mut x25519_sk_bytes,
-                    Sensitive::new(take_fixed_bytes::<X25519_SK_LEN>(v, KEY_X25519_SK)?),
+                    Sensitive::try_build([0u8; X25519_SK_LEN], |slot| {
+                        take_fixed_bytes_into(v, KEY_X25519_SK, slot)
+                    })?,
                     KEY_X25519_SK,
                 )?,
                 KEY_X25519_PK => set_once(
                     &mut x25519_pk,
-                    take_fixed_bytes::<X25519_PK_LEN>(v, KEY_X25519_PK)?,
+                    {
+                        // Bare `[u8; N]`, deliberately: this is a PUBLIC key,
+                        // and `IdentityBundle` stores it unwrapped. The
+                        // by-value shape is correct here and a visible choice —
+                        // see `take_fixed_bytes_into`'s doc on why its absence
+                        // for secrets is a nudge rather than a gate.
+                        let mut pk = [0u8; X25519_PK_LEN];
+                        take_fixed_bytes_into(v, KEY_X25519_PK, &mut pk)?;
+                        pk
+                    },
                     KEY_X25519_PK,
                 )?,
                 KEY_ML_KEM_768_SK => set_once(
                     &mut ml_kem_768_sk_bytes,
-                    Sensitive::new(take_sized_bytes(v, KEY_ML_KEM_768_SK, ML_KEM_768_SK_LEN)?),
+                    take_sized_secret(v, KEY_ML_KEM_768_SK, ML_KEM_768_SK_LEN)?,
                     KEY_ML_KEM_768_SK,
                 )?,
                 KEY_ML_KEM_768_PK => set_once(
                     &mut ml_kem_768_pk,
-                    take_sized_bytes(v, KEY_ML_KEM_768_PK, ML_KEM_768_PK_LEN)?,
+                    take_sized_public(v, KEY_ML_KEM_768_PK, ML_KEM_768_PK_LEN)?,
                     KEY_ML_KEM_768_PK,
                 )?,
                 KEY_ED25519_SK => set_once(
                     &mut ed25519_sk_bytes,
-                    Sensitive::new(take_fixed_bytes::<ED25519_SK_LEN>(v, KEY_ED25519_SK)?),
+                    Sensitive::try_build([0u8; ED25519_SK_LEN], |slot| {
+                        take_fixed_bytes_into(v, KEY_ED25519_SK, slot)
+                    })?,
                     KEY_ED25519_SK,
                 )?,
                 KEY_ED25519_PK => set_once(
                     &mut ed25519_pk,
-                    take_fixed_bytes::<ED25519_PK_LEN>(v, KEY_ED25519_PK)?,
+                    {
+                        // Bare `[u8; N]`, deliberately: this is a PUBLIC key,
+                        // and `IdentityBundle` stores it unwrapped. The
+                        // by-value shape is correct here and a visible choice —
+                        // see `take_fixed_bytes_into`'s doc on why its absence
+                        // for secrets is a nudge rather than a gate.
+                        let mut pk = [0u8; ED25519_PK_LEN];
+                        take_fixed_bytes_into(v, KEY_ED25519_PK, &mut pk)?;
+                        pk
+                    },
                     KEY_ED25519_PK,
                 )?,
                 KEY_ML_DSA_65_SK => set_once(
                     &mut ml_dsa_65_sk_bytes,
-                    Sensitive::new(take_sized_bytes(v, KEY_ML_DSA_65_SK, ML_DSA_65_SEED_LEN)?),
+                    take_sized_secret(v, KEY_ML_DSA_65_SK, ML_DSA_65_SEED_LEN)?,
                     KEY_ML_DSA_65_SK,
                 )?,
                 KEY_ML_DSA_65_PK => set_once(
                     &mut ml_dsa_65_pk,
-                    take_sized_bytes(v, KEY_ML_DSA_65_PK, ML_DSA_65_PK_LEN)?,
+                    take_sized_public(v, KEY_ML_DSA_65_PK, ML_DSA_65_PK_LEN)?,
                     KEY_ML_DSA_65_PK,
                 )?,
                 KEY_CREATED_AT => set_once(&mut created_at_ms, take_u64(v)?, KEY_CREATED_AT)?,
@@ -520,27 +550,227 @@ impl IdentityBundle {
 // Encoding helpers
 // ---------------------------------------------------------------------------
 
-fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, BundleError> {
+// Owns a CBOR entry list whose byte strings are wiped when it drops.
+//
+// `to_canonical_cbor` clones every long-term secret key out of its wrapper
+// into a `Value::Bytes`, and `ciborium::Value` is a foreign type with no
+// zeroizing `Drop` — so without this, all four secret keys are freed
+// unwiped on every vault create and every unlock (the canonicality check in
+// `from_canonical_cbor` re-encodes, so the read path pays it too). That is
+// the write-side half of the 2026-07-02 audit's C-4, tracked as #542.
+//
+// Wiping in `Drop` rather than after `encode_map` is deliberate: it covers
+// the unwinding-panic and early-return paths a trailing sweep would skip.
+//
+// **Two boundaries, stated rather than glossed.**
+//
+// 1. The `vec![…]` literal builds every clone BEFORE this wrapper takes
+//    ownership. If that literal itself unwinds part-way, the already-built
+//    elements drop as temporaries, unwiped. The only unwind source there is
+//    allocation failure, which aborts rather than unwinds, so it is not a
+//    live path — but it is not the "covered on every path" completeness the
+//    wrapper has once it exists.
+// 2. This covers the entry list and NOTHING DOWNSTREAM OF IT. When #542
+//    first landed, `encode_map` immediately did `pair.clone()` on every
+//    entry — `ciborium::Value` derives `Clone`, so that deep-copied all four
+//    secret keys into a second list, moved them into a `Value::Map`, and
+//    freed that unwiped on every call. The wrapper had moved the leak, not
+//    removed it, while this doc comment described it as closed. `encode_map`
+//    no longer clones (it sorts INDICES and serializes through borrows), so
+//    the claim above now holds — but the general shape does not follow from
+//    the wrapper's existence, and a future helper that clones out of the
+//    list reopens it just as silently.
+//
+// The inner field is private to the `entries` module below rather than to
+// this file: Rust privacy is module-scoped, and `bundle.rs` is over a thousand
+// lines, so a bare tuple field left `ZeroizingEntries` open to
+// `.0.clear()` / `.0.drain(..)` / `.0.truncate(0)` / whole-field
+// reassignment — every one of which frees element buffers unwiped, and none
+// of which `scripts/check-secret-slot-hygiene.sh` matches (its rules cover
+// `mem::*` and `ManuallyDrop`). Same reasoning as the bridge's `Detail`
+// newtype (#500/#515).
+use entries::ZeroizingEntries;
+
+mod entries {
+    use super::Value;
+
+    #[cfg(test)]
+    thread_local! {
+        /// Counts `wipe` calls so a test can prove `Drop` invokes it.
+        ///
+        /// Without this, `impl Drop for ZeroizingEntries` can be DELETED with
+        /// every bundle test still passing (verified by mutation) — the only
+        /// thing that noticed was a `dead_code` lint on `wipe`, which is
+        /// incidental and evaporates the moment `wipe` gains a second caller.
+        /// The security claim is specifically about `Drop` covering the
+        /// unwinding and early-return paths, so `Drop` is what needs pinning.
+        static WIPE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    #[cfg(test)]
+    pub(in crate::unlock::bundle) fn wipe_calls() -> usize {
+        WIPE_CALLS.with(std::cell::Cell::get)
+    }
+
+    /// Rationale in the block comment above the `use` that imports this.
+    pub(in crate::unlock::bundle) struct ZeroizingEntries(Vec<(Value, Value)>);
+
+    impl ZeroizingEntries {
+        pub(in crate::unlock::bundle) fn new(list: Vec<(Value, Value)>) -> Self {
+            // Shape check lives HERE, not in `wipe`. `wipe` is reachable from
+            // `Drop`, and a panic in a `Drop` running during an unwind aborts
+            // the process — so an assertion there would turn "someone added a
+            // nested §5 field" from a clean test failure into an abort. At
+            // construction it is on an ordinary call path.
+            //
+            // What it pins: `wipe` walks only TOP-LEVEL `Value::Bytes`, and
+            // `ciborium::Value` is `#[non_exhaustive]`, so a nested or novel
+            // shape would be skipped silently with no match arm to warn.
+            debug_assert!(
+                list.iter().all(|(_, v)| matches!(
+                    v,
+                    Value::Bytes(_) | Value::Text(_) | Value::Integer(_)
+                )),
+                "ZeroizingEntries::wipe only reaches top-level Value::Bytes; \
+                 a nested or novel Value shape needs the recursion it lacks"
+            );
+            Self(list)
+        }
+
+        /// Read-only view for the encoder. Deliberately the ONLY way out: no
+        /// `&mut` accessor and no consuming one, so the list cannot be
+        /// emptied, drained or moved out from under `Drop`.
+        pub(in crate::unlock::bundle) fn as_slice(&self) -> &[(Value, Value)] {
+            &self.0
+        }
+
+        /// Zeroize every `Value::Bytes` in the list, leaving keys and
+        /// non-byte values alone. Separate from `Drop` so it is directly
+        /// testable.
+        ///
+        /// Scope, because the `if let` will not warn if it stops matching:
+        /// this walks only TOP-LEVEL `Value::Bytes`. A secret nested inside a
+        /// `Value::Array` / `Value::Map` / `Value::Tag` is silently skipped,
+        /// and `ciborium::Value` is `#[non_exhaustive]` so no match arm will
+        /// ever flag it. Every entry in `to_canonical_cbor`'s list is flat
+        /// today (`new`'s `debug_assert` pins that), so nothing is missed —
+        /// but a nested §5 field added later needs this to recurse.
+        ///
+        /// `Value::Text` is deliberately NOT wiped. The only text value
+        /// carrying user data is `display_name`, which `IdentityBundle`
+        /// itself holds as an unwrapped `String`; wiping the clone while the
+        /// original stays in the clear would be theatre.
+        pub(in crate::unlock::bundle) fn wipe(&mut self) {
+            use zeroize::Zeroize as _;
+            #[cfg(test)]
+            WIPE_CALLS.with(|c| c.set(c.get() + 1));
+            for (_, value) in &mut self.0 {
+                if let Value::Bytes(bytes) = value {
+                    bytes.zeroize();
+                }
+            }
+        }
+    }
+
+    impl Drop for ZeroizingEntries {
+        fn drop(&mut self) {
+            self.wipe();
+        }
+    }
+}
+
+/// Serialize a pre-sorted, BORROWED entry list as a definite-length CBOR map.
+///
+/// This exists so `encode_map` never has to build a `ciborium::Value::Map`,
+/// which owns its pairs and therefore costs a deep clone of every secret byte
+/// string. `serialize_map` with an explicit length emits the same major-type-5
+/// definite-length header `Value::Map` does, so the bytes are unchanged — a
+/// property the golden-vault fixture pins hard, since `from_canonical_cbor`
+/// re-encodes and compares against bytes written years ago.
+struct BorrowedCanonicalMap<'a>(&'a [(&'a Value, &'a Value)]);
+
+impl serde::Serialize for BorrowedCanonicalMap<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (key, value) in self.0 {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
+
+fn encode_map(entries: &ZeroizingEntries) -> Result<Vec<u8>, BundleError> {
+    let entries = entries.as_slice();
+
     // RFC 8949 §4.2.1: map keys must be sorted bytewise lexicographically by
     // their deterministic CBOR encoding. We materialize each key's encoded
     // bytes and sort by that — robust against any future key shape (text,
     // byte, integer) without a separate code path per type.
-    let mut sorted: Vec<(Vec<u8>, (Value, Value))> = entries
+    //
+    // Only the KEYS are materialized. `key_bytes` holds an encoded field name
+    // (`"x25519_sk"`), never a value, so this list is not secret-bearing and
+    // needs no wiping. The values ride along as BORROWS: the earlier
+    // `pair.clone()` here was a second full cleartext copy of all four secret
+    // keys, freed unwiped on every vault create and every unlock (#542's own
+    // review found it).
+    let mut sorted: Vec<(Vec<u8>, (&Value, &Value))> = entries
         .iter()
-        .map(|pair| {
+        .map(|(key, value)| {
             let mut key_bytes = Vec::new();
-            ciborium::ser::into_writer(&pair.0, &mut key_bytes)
+            ciborium::ser::into_writer(key, &mut key_bytes)
                 .map_err(|e| BundleError::CborFault(classify_ser(&e)))?;
-            Ok((key_bytes, pair.clone()))
+            Ok((key_bytes, (key, value)))
         })
         .collect::<Result<_, BundleError>>()?;
     sorted.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let value = Value::Map(sorted.into_iter().map(|(_, pair)| pair).collect());
-    let mut buf = Vec::new();
-    ciborium::ser::into_writer(&value, &mut buf)
+    let borrowed: Vec<(&Value, &Value)> = sorted.into_iter().map(|(_, pair)| pair).collect();
+
+    // `buf` receives the full cleartext CBOR — all four secret keys. Reserve
+    // an upper bound so `into_writer` never grows it: a realloc copies to a
+    // new block and frees the old one unwiped, exactly the hazard
+    // `SecretBytes::concat` documents. Over-reserving is harmless here (the
+    // only cost is slack), which is why a bound rather than an exact size is
+    // the right shape — unlike `concat`, where the pushes must match the
+    // reservation in both directions.
+    //
+    // Bound: every CBOR head is at most 9 bytes (initial byte + 8-byte
+    // argument), so each key and each value costs at most its payload length
+    // plus 9, and the enclosing map head costs at most 9 more.
+    let capacity_bound = entries
+        .iter()
+        .map(|(key, value)| cbor_size_bound(key) + cbor_size_bound(value))
+        .sum::<usize>()
+        + 9;
+    let mut buf = Vec::with_capacity(capacity_bound);
+
+    ciborium::ser::into_writer(&BorrowedCanonicalMap(&borrowed), &mut buf)
         .map_err(|e| BundleError::CborFault(classify_ser(&e)))?;
+    debug_assert!(
+        buf.len() <= capacity_bound,
+        "encode_map under-reserved: {} > {capacity_bound}; a realloc freed an \
+         unwiped buffer holding secret-key plaintext",
+        buf.len()
+    );
     Ok(buf)
+}
+
+/// Upper bound on the CBOR encoding length of one `Value`, used only to
+/// pre-reserve. Never an exact size — being over is safe, being under
+/// reintroduces the realloc hazard, so every arm rounds up.
+fn cbor_size_bound(value: &Value) -> usize {
+    const HEAD_MAX: usize = 9;
+    HEAD_MAX
+        + match value {
+            Value::Bytes(b) => b.len(),
+            Value::Text(t) => t.len(),
+            // Integers, bools, null and anything `#[non_exhaustive]` adds
+            // later are covered by HEAD_MAX alone for the scalar case; the
+            // container arms are not reachable from this module's flat entry
+            // lists, and `wipe`'s debug_assert is what keeps that true.
+            _ => HEAD_MAX,
+        }
 }
 
 /// Compute the canonical CBOR sort order for two map keys. Test-only: lets
@@ -594,38 +824,114 @@ fn take_uuid(v: Value) -> Result<[u8; USER_UUID_LEN], BundleError> {
         .map_err(|_: Vec<u8>| BundleError::InvalidUuid)
 }
 
-fn take_fixed_bytes<const N: usize>(v: Value, field: &'static str) -> Result<[u8; N], BundleError> {
-    let bytes = match v {
-        Value::Bytes(b) => b,
-        _ => return Err(BundleError::Malformed("expected byte string")),
+/// Write-through fixed-size byte extractor.
+///
+/// The destination is supplied by the caller — which for every secret-key
+/// site is a slot already wrapper-covered by `Sensitive::try_build` — so no
+/// unwrapped `[u8; N]` is materialised in THIS frame or returned by value.
+/// The by-value predecessor (`take_fixed_bytes`) left one copy here and
+/// another in the caller's return temporary (#522); it is deleted rather
+/// than kept alongside this, in the spirit of #503's move on both binding
+/// crates.
+///
+/// **That deletion makes the shape ABSENT, not unrepresentable**, and an
+/// earlier version of this comment claimed it made the shape "awkward to
+/// write". It does not: reconstructing it takes three lines, and the two
+/// PUBLIC-key call sites in `from_canonical_cbor` are exactly those three
+/// lines (`let mut pk = [0u8; N]; take_fixed_bytes_into(..)?; pk`). That is
+/// correct for a public key and clearly commented at both sites — but a
+/// contributor copying the nearest neighbour gets the by-value shape for
+/// free, so the deletion is a nudge, not a gate. Contrast #503/#500, which
+/// this cited: there the unsafe shape stopped TYPECHECKING.
+///
+/// The source `Vec` is WRAPPED rather than wiped after the fact.
+/// `Vec::try_into` reaches its array via `set_len(0)` + `ptr::read` — a COPY,
+/// not a move-out — so the CBOR byte string's heap buffer would otherwise be
+/// deallocated with the secret key still in it. That is the 2026-07-02
+/// audit's finding C-4, and it was its last live sub-item.
+/// `SecretBytes::new` MOVES the buffer, so `Drop` covers every exit below,
+/// including the wrong-length `return`, with no trailing statement for
+/// control flow to skip.
+fn take_fixed_bytes_into<const N: usize>(
+    v: Value,
+    field: &'static str,
+    out: &mut [u8; N],
+) -> Result<(), BundleError> {
+    let Value::Bytes(b) = v else {
+        return Err(BundleError::Malformed("expected byte string"));
     };
+    let bytes = SecretBytes::new(b);
     let got = bytes.len();
-    bytes
-        .try_into()
-        .map_err(|_: Vec<u8>| BundleError::WrongKeySize {
+    if got != N {
+        return Err(BundleError::WrongKeySize {
             field,
             expected: N,
             got,
-        })
+        });
+    }
+    out.copy_from_slice(bytes.expose());
+    Ok(())
 }
 
-fn take_sized_bytes(
+/// Runtime-sized SECRET byte-string extractor.
+///
+/// Returns the wrapper, not its contents. That is the whole point: the buffer
+/// is covered from before the length check — so the reject path cannot free a
+/// secret-key-shaped byte string unwiped (audit C-4) — and the success path
+/// hands back the SAME wrapper, so the heap buffer is never copied.
+///
+/// An intermediate version of this function returned `Result<Vec<u8>, _>` via
+/// `bytes.expose().to_vec()` while its comment claimed "ownership of the same
+/// heap buffer transfers and no copy is made". `expose()` yields `&[u8]` and
+/// `to_vec()` allocates, so that was the opposite of what the line did: it
+/// added a second live cleartext copy of the 2400-byte ML-KEM-768
+/// decapsulation key on every unlock. Returning the wrapper removes both the
+/// copy and the need for the claim.
+fn take_sized_secret(
+    v: Value,
+    field: &'static str,
+    expected: usize,
+) -> Result<Sensitive<Vec<u8>>, BundleError> {
+    let Value::Bytes(b) = v else {
+        return Err(BundleError::Malformed("expected byte string"));
+    };
+    // `Sensitive::new` MOVES the `Vec`, so this is a wrap, not a copy.
+    let bytes = Sensitive::new(b);
+    let got = bytes.expose().len();
+    if got != expected {
+        return Err(BundleError::WrongKeySize {
+            field,
+            expected,
+            got,
+        });
+    }
+    Ok(bytes)
+}
+
+/// Runtime-sized PUBLIC byte-string extractor.
+///
+/// Deliberately a separate function from [`take_sized_secret`] rather than a
+/// flag on it. Public keys need no wrapper, and naming the two apart means
+/// reaching for the by-value shape on a secret is a visible choice at the call
+/// site instead of the path of least resistance — the same reason the by-value
+/// `take_fixed_bytes` was deleted rather than kept beside
+/// [`take_fixed_bytes_into`].
+fn take_sized_public(
     v: Value,
     field: &'static str,
     expected: usize,
 ) -> Result<Vec<u8>, BundleError> {
-    let bytes = match v {
-        Value::Bytes(b) => b,
-        _ => return Err(BundleError::Malformed("expected byte string")),
+    let Value::Bytes(b) = v else {
+        return Err(BundleError::Malformed("expected byte string"));
     };
-    if bytes.len() != expected {
+    if b.len() != expected {
         return Err(BundleError::WrongKeySize {
             field,
             expected,
-            got: bytes.len(),
+            got: b.len(),
         });
     }
-    Ok(bytes)
+    Ok(b)
 }
 
 // ---------------------------------------------------------------------------
@@ -636,6 +942,138 @@ fn take_sized_bytes(
 mod tests {
     use super::*;
     use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+    // --- take_fixed_bytes_into (#522, audit C-4) ----------------------------
+
+    #[test]
+    fn take_fixed_bytes_into_writes_through_on_the_happy_path() {
+        let mut out = [0u8; 4];
+        take_fixed_bytes_into(Value::Bytes(vec![1, 2, 3, 4]), "field", &mut out)
+            .expect("exact length must be accepted");
+        assert_eq!(out, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn take_fixed_bytes_into_rejects_a_wrong_length_and_reports_both_sizes() {
+        let mut out = [0u8; 4];
+        let err = take_fixed_bytes_into(Value::Bytes(vec![1, 2, 3]), "x25519_sk", &mut out)
+            .expect_err("short input must be rejected");
+        match err {
+            BundleError::WrongKeySize {
+                field,
+                expected,
+                got,
+            } => {
+                assert_eq!(field, "x25519_sk");
+                assert_eq!(expected, 4);
+                assert_eq!(got, 3);
+            }
+            other => panic!("expected WrongKeySize, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn take_fixed_bytes_into_leaves_the_destination_untouched_on_a_wrong_length() {
+        // The destination is caller-owned and, at every production call site,
+        // already wrapper-covered by `Sensitive::try_build`. A rejected decode
+        // must not half-fill it. Seeded non-zero so "untouched" is
+        // distinguishable from "zeroed", which a zero-seeded assertion could
+        // not tell apart (a #513 review finding).
+        let mut out = [0xAAu8; 4];
+        let _ = take_fixed_bytes_into(Value::Bytes(vec![1, 2, 3]), "field", &mut out);
+        assert_eq!(out, [0xAAu8; 4]);
+    }
+
+    #[test]
+    fn take_fixed_bytes_into_rejects_a_too_long_input() {
+        // The short case alone leaves `got > N` untested, and the two are not
+        // symmetric in consequence: if `if got != N` ever regressed to
+        // `if got < N`, an over-long CBOR byte string would reach
+        // `copy_from_slice` and PANIC on the length mismatch. That input is
+        // attacker-controlled (a tampered `identity.bundle.enc`), so the
+        // regression would be a decode-path DoS, not a cosmetic slip.
+        let mut out = [0xAAu8; 4];
+        let err = take_fixed_bytes_into(Value::Bytes(vec![1, 2, 3, 4, 5]), "x25519_sk", &mut out)
+            .expect_err("over-long input must be rejected, not truncated");
+        assert!(matches!(
+            err,
+            BundleError::WrongKeySize {
+                field: "x25519_sk",
+                expected: 4,
+                got: 5,
+            }
+        ));
+        assert_eq!(out, [0xAAu8; 4], "rejected decode must not touch the slot");
+    }
+
+    #[test]
+    fn take_fixed_bytes_into_rejects_an_empty_input() {
+        let mut out = [0xAAu8; 4];
+        let err = take_fixed_bytes_into(Value::Bytes(Vec::new()), "field", &mut out)
+            .expect_err("empty input is not 4 bytes");
+        assert!(matches!(err, BundleError::WrongKeySize { got: 0, .. }));
+        assert_eq!(out, [0xAAu8; 4]);
+    }
+
+    // --- take_sized_secret / take_sized_public (#522) -----------------------
+
+    #[test]
+    fn take_sized_secret_accepts_the_exact_length_and_keeps_it_wrapped() {
+        let got = take_sized_secret(Value::Bytes(vec![7u8; 5]), "ml_kem_768_sk", 5)
+            .expect("exact length must be accepted");
+        assert_eq!(got.expose().as_slice(), &[7u8; 5]);
+    }
+
+    #[test]
+    fn take_sized_secret_rejects_a_wrong_length_and_reports_both_sizes() {
+        // This arm had no test at all: `take_sized_bytes` covered the two
+        // largest secrets in the bundle (the 2400-byte ML-KEM-768 key and the
+        // ML-DSA-65 seed) and only its `take_fixed_bytes_into` sibling was
+        // exercised.
+        let err = take_sized_secret(Value::Bytes(vec![0u8; 3]), "ml_dsa_65_sk", 32)
+            .expect_err("short input must be rejected");
+        assert!(matches!(
+            err,
+            BundleError::WrongKeySize {
+                field: "ml_dsa_65_sk",
+                expected: 32,
+                got: 3,
+            }
+        ));
+    }
+
+    #[test]
+    fn take_sized_secret_rejects_a_non_bytes_cbor_value() {
+        let err = take_sized_secret(Value::Text("nope".into()), "ml_kem_768_sk", 5)
+            .expect_err("a text value is not a byte string");
+        assert!(matches!(err, BundleError::Malformed(_)));
+    }
+
+    #[test]
+    fn take_sized_public_round_trips_and_rejects_a_wrong_length() {
+        let ok = take_sized_public(Value::Bytes(vec![1, 2, 3]), "ml_kem_768_pk", 3)
+            .expect("exact length must be accepted");
+        assert_eq!(ok, vec![1, 2, 3]);
+
+        let err = take_sized_public(Value::Bytes(vec![1, 2]), "ml_kem_768_pk", 3)
+            .expect_err("short input must be rejected");
+        assert!(matches!(
+            err,
+            BundleError::WrongKeySize {
+                field: "ml_kem_768_pk",
+                expected: 3,
+                got: 2,
+            }
+        ));
+    }
+
+    #[test]
+    fn take_fixed_bytes_into_rejects_a_non_bytes_cbor_value() {
+        let mut out = [0u8; 4];
+        let err = take_fixed_bytes_into(Value::Text("nope".into()), "field", &mut out)
+            .expect_err("a text value is not a byte string");
+        assert!(matches!(err, BundleError::Malformed(_)));
+    }
 
     #[test]
     fn generate_produces_consistent_keypairs() {
@@ -654,6 +1092,106 @@ mod tests {
         // §5-spec'd 4032-byte expanded encoding.
         assert_eq!(b.ml_dsa_65_sk.expose().len(), ML_DSA_65_SEED_LEN);
         assert_eq!(b.ml_dsa_65_pk.len(), ML_DSA_65_PK_LEN);
+    }
+
+    // --- ZeroizingEntries (#542, audit C-4 write side) ----------------------
+
+    fn wipe_fixture() -> ZeroizingEntries {
+        ZeroizingEntries::new(vec![
+            (
+                Value::Text("x25519_sk".into()),
+                Value::Bytes(vec![0x42; 32]),
+            ),
+            (Value::Text("created_at".into()), Value::Integer(7.into())),
+            (
+                Value::Text("ed25519_sk".into()),
+                Value::Bytes(vec![0x99; 64]),
+            ),
+        ])
+    }
+
+    #[test]
+    fn zeroizing_entries_wipe_clears_every_byte_string() {
+        // WHAT THIS PINS: that `wipe` REACHES every `Value::Bytes` in the list
+        // and leaves keys and non-byte values alone.
+        //
+        // WHAT IT CANNOT PIN, stated because the obvious reading is wrong:
+        // that the bytes were ZEROED rather than merely dropped. `Zeroize for
+        // Vec<T>` zeroes the elements, then calls `clear()`, then zeroes the
+        // spare capacity — so a real wipe leaves `len == 0`, and so does a
+        // bare `bytes.clear()` that leaves all 32/64 secret bytes in the heap
+        // buffer. Neither `is_empty()` nor the `iter().all(|b| b == 0)` this
+        // replaced can tell those apart (the latter is simply vacuous once the
+        // vec is empty), and safe Rust cannot read spare capacity to check.
+        // Zeroization itself is trusted at the `zeroize` crate boundary, the
+        // same way it is for `SecretBytes`; what is testable here is reach.
+        //
+        // The pre-assertion below is what keeps even that non-vacuous: without
+        // it, a fixture that started empty would satisfy the post-condition
+        // for free.
+        let mut entries = wipe_fixture();
+        assert_eq!(
+            match &entries.as_slice()[0].1 {
+                Value::Bytes(b) => b.len(),
+                other => panic!("expected Bytes, got {other:?}"),
+            },
+            32,
+            "fixture must start non-empty or the post-condition is vacuous"
+        );
+        entries.wipe();
+        let list = entries.as_slice();
+        match &list[0].1 {
+            Value::Bytes(b) => assert!(
+                b.is_empty(),
+                "wipe did not reach the first key (len {})",
+                b.len()
+            ),
+            other => panic!("expected Bytes, got {other:?}"),
+        }
+        match &list[2].1 {
+            Value::Bytes(b) => assert!(
+                b.is_empty(),
+                "wipe did not reach the second key (len {})",
+                b.len()
+            ),
+            other => panic!("expected Bytes, got {other:?}"),
+        }
+        // Non-byte entries are untouched, so the map still encodes correctly.
+        assert!(matches!(&list[1].1, Value::Integer(_)));
+        assert!(matches!(&list[0].0, Value::Text(t) if t == "x25519_sk"));
+    }
+
+    #[test]
+    fn zeroizing_entries_drop_runs_wipe() {
+        // The security claim (#542) is specifically that `Drop` covers the
+        // unwinding and early-return paths a trailing sweep would skip — but
+        // every other assertion in this module calls `wipe()` by hand, so
+        // deleting `impl Drop for ZeroizingEntries` left all 25 bundle tests
+        // green (verified by mutation). This pins the wiring itself.
+        let before = super::entries::wipe_calls();
+        {
+            let _entries = wipe_fixture();
+        }
+        assert_eq!(
+            super::entries::wipe_calls(),
+            before + 1,
+            "scope exit did not call wipe — is `impl Drop for ZeroizingEntries` still there?"
+        );
+    }
+
+    #[test]
+    fn to_canonical_cbor_wipes_its_entry_list() {
+        // The end-to-end version of the above: the production encode path must
+        // wipe, without any test calling `wipe` itself.
+        let mut rng = ChaCha20Rng::from_seed([11u8; 32]);
+        let b = generate("wipe-check", 1_714_060_800_000, &mut rng);
+        let before = super::entries::wipe_calls();
+        let _bytes = b.to_canonical_cbor().expect("encode");
+        assert_eq!(
+            super::entries::wipe_calls(),
+            before + 1,
+            "to_canonical_cbor left its entry list unwiped"
+        );
     }
 
     #[test]
@@ -732,7 +1270,12 @@ mod tests {
     // Same disclaimer as above — this pins that the path is reached and
     // keeps its error variant. It does NOT observe the wipe.
     #[test]
-    fn from_canonical_cbor_early_return_leaves_both_pq_secret_keys_wrapped() {
+    // Named for what it ASSERTS, not for the memory property it sits beside.
+    // The previous name — `..._leaves_both_pq_secret_keys_wrapped` — promised
+    // a wrappedness check the body does not make (and could not: wrappedness
+    // is not observable from safe Rust). The two PQ keys being `Sensitive` is
+    // enforced by their declared types, not here.
+    fn from_canonical_cbor_reports_the_missing_pk_before_reading_the_pq_keys() {
         let err = IdentityBundle::from_canonical_cbor(&bundle_bytes_without(KEY_X25519_PK))
             .expect_err("x25519_pk is a required field");
         assert!(
@@ -855,6 +1398,66 @@ mod tests {
             matches!(err, BundleError::DuplicateField(s) if s == "display_name"),
             "unexpected error: {err:?}"
         );
+    }
+
+    #[test]
+    fn parse_rejects_a_wrong_size_on_every_rewritten_extraction_site() {
+        // #522 hand-rewrote six extraction sites; end-to-end coverage existed
+        // for exactly one (`x25519_pk`, below). That matters more than usual
+        // here because the length constants collide:
+        //
+        //     X25519_PK_LEN == ED25519_PK_LEN == 32
+        //     X25519_SK_LEN == ED25519_SK_LEN == 32
+        //
+        // so a copy-paste slip between sibling sites — the new inline
+        // `{ let mut pk = ...; take_fixed_bytes_into(v, KEY_X25519_PK, ..) }`
+        // block retaining the wrong KEY_ constant, say — is invisible to a
+        // round-trip test AND to a length check. Asserting that the reported
+        // `field` is the key we actually corrupted is what pins it.
+        let sites: &[(&str, usize)] = &[
+            (KEY_X25519_SK, X25519_SK_LEN),
+            (KEY_X25519_PK, X25519_PK_LEN),
+            (KEY_ED25519_SK, ED25519_SK_LEN),
+            (KEY_ED25519_PK, ED25519_PK_LEN),
+            (KEY_ML_KEM_768_SK, ML_KEM_768_SK_LEN),
+            (KEY_ML_DSA_65_SK, BUNDLE_ML_DSA_65_SK_LEN),
+        ];
+
+        let mut rng = ChaCha20Rng::from_seed([21u8; 32]);
+        let b = generate("Y", 0, &mut rng);
+        let canonical = b.to_canonical_cbor().unwrap();
+
+        for (key, expected) in sites {
+            let value: Value = ciborium::de::from_reader(&canonical[..]).unwrap();
+            let Value::Map(mut entries) = value else {
+                panic!("bundle is a map")
+            };
+            let mut corrupted = false;
+            for (k, v) in entries.iter_mut() {
+                if matches!(k, Value::Text(s) if s == key) {
+                    *v = Value::Bytes(vec![0u8; expected + 1]);
+                    corrupted = true;
+                }
+            }
+            assert!(corrupted, "{key} not present in the encoded bundle");
+
+            let mut buf = Vec::new();
+            ciborium::ser::into_writer(&Value::Map(entries), &mut buf).unwrap();
+            let err = IdentityBundle::from_canonical_cbor(&buf)
+                .expect_err("an over-long {key} must be rejected");
+            match err {
+                BundleError::WrongKeySize {
+                    field,
+                    expected: e,
+                    got,
+                } => {
+                    assert_eq!(field, *key, "wrong field reported for {key}");
+                    assert_eq!(e, *expected, "wrong expected length for {key}");
+                    assert_eq!(got, expected + 1, "wrong got length for {key}");
+                }
+                other => panic!("expected WrongKeySize for {key}, got {other:?}"),
+            }
+        }
     }
 
     #[test]
