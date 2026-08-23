@@ -1,6 +1,6 @@
 // ios/SecretaryVaultAccess/Tests/SecretaryVaultAccessTests/DeviceUuidStoreTests.swift
 import XCTest
-import SecretaryVaultAccess
+@testable import SecretaryVaultAccess
 
 final class DeviceUuidStoreTests: XCTestCase {
     private var dir: URL!
@@ -33,5 +33,25 @@ final class DeviceUuidStoreTests: XCTestCase {
         let a = try store.deviceUuid(forVaultHex: "01")
         let b = try store.deviceUuid(forVaultHex: "02")
         XCTAssertNotEqual(a, b)
+    }
+
+    func testLegacyUuidIsPreservedAndMigratedToCurrentDirectory() throws {
+        let legacyDirectory = dir.appendingPathComponent("legacy", isDirectory: true)
+        let currentDirectory = dir.appendingPathComponent("current", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: legacyDirectory, withIntermediateDirectories: true)
+        let vaultHex = "cc"
+        let legacyUuid = [UInt8](repeating: 0xA5, count: DeviceUuidStore.uuidByteLen)
+        try Data(legacyUuid).write(
+            to: legacyDirectory.appendingPathComponent("\(vaultHex).dev"))
+
+        let store = DeviceUuidStore(
+            directory: currentDirectory, legacyDirectory: legacyDirectory)
+        let resolved = try store.deviceUuid(forVaultHex: vaultHex)
+
+        XCTAssertEqual(resolved, legacyUuid)
+        XCTAssertEqual(
+            try Data(contentsOf: currentDirectory.appendingPathComponent("\(vaultHex).dev")),
+            Data(legacyUuid))
     }
 }

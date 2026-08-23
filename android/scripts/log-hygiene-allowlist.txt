@@ -46,9 +46,9 @@
 # Each entry asserts that a value which CAN carry a secret is safe to render
 # here. Reviewed like any other security change.
 
-android/app/src/main/kotlin/org/secretary/app/CreateVaultWizardScreen.kt	B1	nameError?.let { Text(it.message ?: "Invalid name", modifier = Modifier.testTag("wizard-name-error")) }	Not a log and not a carried diagnostic: VaultNameError's arms are data objects whose message IS the user-facing copy ("Enter a name for the vault."). #454-compliant.
-android/app/src/main/kotlin/org/secretary/app/CreateVaultWizardScreen.kt	B1	error?.let { Text(it.message ?: "Create failed", modifier = Modifier.testTag("wizard-error")) }	On-screen copy, not a log. VaultProvisioningError.CreateFailed IS a carried diagnostic, so this is a #454 violation — Android sibling of #473, filed not fixed (changing the copy is a UX decision). Payload is gated at construction as of this change.
-android/app/src/main/kotlin/org/secretary/app/CreateVaultWizardScreen.kt	B1	error?.let { Text(it.message ?: "Error", modifier = Modifier.testTag("wizard-error")) }	Same as the line above — third wizard step, same VaultProvisioningError, same #473 sibling.
+android/app/src/main/kotlin/org/secretary/app/CreateVaultWizardScreen.kt	B1	it.message ?: "Invalid name",	Not a log and not a carried diagnostic: VaultNameError's arms are data objects whose message IS the user-facing copy ("Enter a name for the vault."). #454-compliant.
+android/app/src/main/kotlin/org/secretary/app/CreateVaultWizardScreen.kt	B1	it.message ?: "Create failed",	On-screen copy, not a log. VaultProvisioningError.CreateFailed IS a carried diagnostic, so this is a #454 violation — Android sibling of #473, filed not fixed (changing the copy is a UX decision). Payload is gated at construction as of this change.
+android/app/src/main/kotlin/org/secretary/app/CreateVaultWizardScreen.kt	B1	it.message ?: "Error",	Same as the line above — third wizard step, same VaultProvisioningError, same #473 sibling.
 android/browse-ui/src/main/kotlin/org/secretary/browse/ui/RecordEditForm.kt	B1	val detail = it.message?.takeIf(String::isNotBlank) ?: it::class.simpleName	On-screen copy in a PACKAGE module, not a log. Renders a carried VaultBrowseError diagnostic — the clearest #473 sibling. Note the redactions do NOT affect `message`, so the user still sees which field is bad.
 
 # ---- THE POLICY ITSELF (rule B3 only) ----
