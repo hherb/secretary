@@ -47,16 +47,24 @@
 //! [`value`] holds the second half of #547's fix: [`CanonicalValue`] /
 //! [`CanonicalMap`], a borrowing mirror of the same CBOR subset that
 //! serialises straight out of a `SecretString`/`SecretBytes` wrapper instead
-//! of copying into an owned `Value` tree first. It has no production
-//! consumer as of this module's own build-sequence step (Task 2 of #547) —
-//! [`legacy::canonical_sort_entries`] and the record/block encode paths it
-//! backs are migrated onto it in later steps, which is also where an
-//! `encode_canonical_map` counterpart over a [`CanonicalMap`] gets
-//! (re)introduced alongside its first real caller (an earlier version,
+//! of copying into an owned `Value` tree first. As of Task 4 of #547, it has
+//! a real production consumer: `record::record_to_canonical` builds one out
+//! of a `Record`'s fields, and `record::encode` serialises it via
+//! [`value::to_canonical_vec`] — the `encode_canonical_map` counterpart over
+//! a [`CanonicalMap`] this doc used to say a later step would introduce
+//! alongside its first real caller (an earlier version, also named
 //! `to_canonical_vec`, was deleted in review round 1 of Task 2 — see
 //! `task-2-report.md` — for returning `Result<_, CanonicalError>` while
 //! `CanonicalError` itself was not test-API-reachable, making its error
-//! type unnameable by the one caller that could have used it).
+//! type unnameable by the one caller that could have used it). It is
+//! declared `pub(crate)`, not `pub`: unlike [`CanonicalMap`] /
+//! [`CanonicalValue`] themselves, no integration test needs to reach it, so
+//! there is no `canonical_test_api` cross-crate visibility floor to satisfy.
+//! `block.rs`'s own plaintext encode is unmigrated as of this step — it
+//! still calls [`super::record::encode`] once per record and re-parses the
+//! resulting bytes into the `Value` tree it hands to
+//! [`legacy::encode_canonical_map`], rather than nesting a borrowed
+//! `CanonicalMap` — a later build-sequence step's concern, not this one's.
 
 #![forbid(unsafe_code)]
 
@@ -68,28 +76,29 @@ mod value;
 
 pub use legacy::{canonical_sort_entries, encode_canonical_map, reject_floats_and_tags};
 pub(crate) use size::{cbor_size_bound, HEAD_MAX};
+pub(crate) use value::to_canonical_vec;
 // `CanonicalMap`/`CanonicalValue` are re-exported `pub` (not `pub(crate)`),
 // even though this `canonical` module itself is `pub(crate)` (see
 // `vault/mod.rs`): `vault::canonical_test_api` needs a `pub`-visibility
 // chain all the way down to reach them from `core/tests/*.rs` (E0365 —
 // re-exporting an item as more public than its own established visibility
-// is rejected, and a `pub(crate)` hop here would set that ceiling). Neither
-// has any in-crate caller as of this build-sequence step (Task 2 of #547 —
-// see the module doc above): verified by execution, a plain `cargo build
-// --release -p secretary-core` reds with `dead_code` the moment either type
-// drops out of `canonical_test_api`'s `pub` re-export chain, and passes
-// clean with both in it — reachability from that `pub` path is what a
-// library crate's dead-code analysis treats as "used by a downstream crate
-// we can't see."
+// is rejected, and a `pub(crate)` hop here would set that ceiling).
 //
-// That is a DIFFERENT exemption from the one covering the three `legacy`
-// functions re-exported just above, and the two must not be conflated:
-// those three already have real in-crate callers predating this module, so
-// their non-dead-code status does not depend on their `pub` path at all —
-// unlike `CanonicalMap`/`CanonicalValue`, which genuinely have none of that
-// yet. (Which files call them is deliberately not enumerated here — that
-// list has been written wrong twice; read the callers directly instead of
-// trusting a cached grep result nothing validates.)
+// As of Task 4 (#547), both have a genuine in-crate production caller —
+// `record::record_to_canonical` — so, unlike at the point this comment was
+// first written (Task 2), their `pub` path is no longer what keeps them out
+// of `dead_code`; ordinary crate-internal usage does that now, the same as
+// for the three `legacy` functions re-exported just above. The `pub`
+// visibility stays for the ORIGINAL reason stated two paragraphs up:
+// `canonical_test_api` needs it so
+// `core/tests/canonical_value_equivalence.rs` can construct these types
+// directly, and dropping to `pub(crate)` would still fail at E0365 even
+// though `dead_code` would no longer object.
+//
+// (Which in-crate files call them beyond `record.rs` is deliberately not
+// enumerated here — that list has been written wrong twice; read the
+// callers directly instead of trusting a cached grep result nothing
+// validates.)
 pub use value::{CanonicalMap, CanonicalValue};
 
 /// Errors emitted by the three canonical-CBOR helpers in this module.

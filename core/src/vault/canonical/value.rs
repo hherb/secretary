@@ -5,9 +5,11 @@
 //! its [`SecretString`](crate::crypto::secret::SecretString) wrapper into a
 //! `Value::Text`, and then deep-cloning that copy two more times on the way
 //! to the wire (`record.rs`'s two `canonical_sort_entries` calls, inner then
-//! outer — `encode_canonical_map`'s own clone was already removed in Task 1,
-//! so this is two, not three, as of `main`). A borrowing type serialises
-//! straight out of the wrapper, so the copy never exists.
+//! outer — `encode_canonical_map`'s own clone was already removed in Task 1).
+//! A borrowing type serialises straight out of the wrapper, so the copy
+//! never exists — as of Task 4, `record::record_to_canonical` /
+//! `record::encode` do exactly that, and no call from production `record.rs`
+//! into `canonical_sort_entries` survives.
 //!
 //! [`CanonicalMap`] sorts its own keys at SERIALISE time, per RFC 8949
 //! §4.2.1. That is what lets nested maps stay borrowed: the previous design
@@ -31,20 +33,29 @@
 //! sort buffer "was not secret-bearing"; that claim was false. The fix is
 //! not to wipe the buffer — it is to have none.
 //!
-//! No production consumer yet (#547 Task 2): [`CanonicalMap`] and
-//! [`CanonicalValue`] are declared `pub` so the `#[doc(hidden)]`
-//! `canonical_test_api` module `vault::mod` adds can re-export them, which
-//! is what lets `core/tests/canonical_value_equivalence.rs` pin the
-//! byte-identity property (`--cfg test` is not propagated to dependent
-//! crates, so a `#[cfg(test)]` item would be invisible to that integration
-//! test). Reachability through that `pub` path is also what keeps both out
-//! of `dead_code` in the meantime — see the rationale at the `pub use` in
-//! `canonical/mod.rs`. Tasks 4 and 5 migrate the record and block encode
-//! paths onto this type, reintroducing an `encode_canonical_map` counterpart
-//! (`to_canonical_vec`, deleted from this file in review round 1 — see
-//! `task-2-report.md` — for having a `Result<_, CanonicalError>` return type
-//! that was unnameable through `canonical_test_api`, which did not
-//! re-export `CanonicalError`) alongside its first real caller.
+//! [`CanonicalMap`] and [`CanonicalValue`] have a real production consumer
+//! as of Task 4 (#547): `record::record_to_canonical` builds one directly
+//! out of a `Record`'s fields, and `record::encode` serialises it via
+//! [`to_canonical_vec`] — this file's `encode_canonical_map` counterpart,
+//! declared `pub(crate)` (not `pub`) because `record.rs` is an in-crate
+//! caller and needs nothing more. An earlier version, also named
+//! `to_canonical_vec`, was deleted from this file in review round 1 of
+//! Task 2 — see `task-2-report.md` — for returning a `Result<_,
+//! CanonicalError>` that was unnameable through `canonical_test_api`, which
+//! did not re-export `CanonicalError`. `block.rs`'s own plaintext encode is
+//! unmigrated as of this step — a later build-sequence step's concern, not
+//! this one's.
+//!
+//! [`CanonicalMap`] / [`CanonicalValue`] themselves stay `pub`, not
+//! `pub(crate)`: the `#[doc(hidden)]` `canonical_test_api` module
+//! `vault::mod` adds re-exports them so
+//! `core/tests/canonical_value_equivalence.rs` can construct them directly
+//! (`--cfg test` is not propagated to dependent crates, so a `#[cfg(test)]`
+//! item would be invisible to that integration test). Before Task 4, that
+//! `pub` path was ALSO what kept both types out of `dead_code`, for want of
+//! any in-crate caller — see the rationale at the `pub use` in
+//! `canonical/mod.rs` — but ordinary crate-internal usage does that now;
+//! the test-reachability need is what keeps the visibility `pub`.
 //!
 //! Neither [`CanonicalValue`] nor [`CanonicalMap`] derives `Debug`. That is
 //! deliberate, not an oversight — a type that borrows secret-bearing text
@@ -61,6 +72,9 @@
 use ciborium::Value;
 use serde::ser::{SerializeMap as _, SerializeSeq as _};
 use serde::{Serialize, Serializer};
+
+use super::CanonicalError;
+use crate::cbor::classify_ser;
 
 /// One value in a canonical map or array. Every arm either borrows or is a
 /// scalar; no arm owns a byte string.
@@ -101,6 +115,35 @@ impl<'a> CanonicalMap<'a> {
     /// Append an entry. Order is not significant — [`Serialize`] sorts.
     pub fn push(&mut self, key: &'a str, value: CanonicalValue<'a>) {
         self.0.push((key, value));
+    }
+
+    /// Upper bound on this map's CBOR encoding length, for pre-reserving.
+    /// Same contract as [`super::cbor_size_bound`]: over is harmless, under
+    /// reopens the realloc hazard.
+    pub(crate) fn size_bound(&self) -> usize {
+        super::HEAD_MAX
+            + self
+                .0
+                .iter()
+                .map(|(k, v)| super::HEAD_MAX + k.len() + v.size_bound())
+                .sum::<usize>()
+    }
+}
+
+impl CanonicalValue<'_> {
+    /// Upper bound on this value's CBOR encoding length. See
+    /// [`CanonicalMap::size_bound`] for the contract.
+    pub(crate) fn size_bound(&self) -> usize {
+        match self {
+            Self::Text(t) => super::HEAD_MAX + t.len(),
+            Self::Bytes(b) => super::HEAD_MAX + b.len(),
+            Self::Uint(_) | Self::Bool(_) => super::HEAD_MAX,
+            Self::Map(m) => m.size_bound(),
+            Self::Array(items) => {
+                super::HEAD_MAX + items.iter().map(Self::size_bound).sum::<usize>()
+            }
+            Self::Borrowed(v) => super::cbor_size_bound(v),
+        }
     }
 }
 
@@ -156,5 +199,89 @@ impl Serialize for CanonicalValue<'_> {
             }
             Self::Borrowed(v) => v.serialize(serializer),
         }
+    }
+}
+
+/// Serialise a [`CanonicalMap`] to canonical CBOR bytes.
+///
+/// `pub(crate)`: this is reintroduced alongside its first real production
+/// caller (`record::record_to_canonical`'s `encode`, #547 Task 4), so
+/// nothing needs the `pub` + `canonical_test_api` re-export workaround an
+/// earlier build-sequence step used to keep `CanonicalMap`/`CanonicalValue`
+/// out of `dead_code` before either had a production consumer.
+///
+/// The output buffer is pre-reserved against the map's size-bound estimate
+/// so `into_writer` cannot grow it: a realloc copies to a new block and
+/// frees the old one **unwiped**, and on the record path that buffer holds
+/// decrypted plaintext.
+pub(crate) fn to_canonical_vec(map: &CanonicalMap<'_>) -> Result<Vec<u8>, CanonicalError> {
+    let bound = map.size_bound();
+    let mut buf = Vec::with_capacity(bound);
+    ciborium::ser::into_writer(map, &mut buf)
+        .map_err(|e| CanonicalError::CborEncode(classify_ser(&e)))?;
+
+    // Real runtime check, not `debug_assert!`: this crate's only
+    // `debug-assertions = true` is `core/fuzz/Cargo.toml`, which is
+    // `exclude`d from the workspace, so a `debug_assert!` here would be a
+    // no-op in `cargo test --release`, in `cargo build --release`, and in
+    // every shipped artifact. Mirrors `legacy::encode_canonical_map`'s check
+    // exactly. This DETECTS an under-reserve after the fact — by the time it
+    // runs, `into_writer` has already grown the buffer if it needed to, and
+    // the old (possibly plaintext-bearing) allocation is already freed
+    // unwiped. It is a tripwire for a future `ciborium::Value` variant
+    // `size.rs` cannot name, not a preventive guarantee.
+    if buf.len() > bound {
+        return Err(CanonicalError::CapacityBoundExceeded {
+            actual: buf.len(),
+            bound,
+        });
+    }
+    Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `to_canonical_vec` must not grow its output buffer. A realloc copies
+    /// to a new block and frees the old one unwiped — the hazard this
+    /// function's pre-reservation exists to prevent (see
+    /// `legacy::encode_canonical_map_does_not_realloc`, which pins the same
+    /// property for the `Value`-based encoder this type mirrors).
+    #[test]
+    fn to_canonical_vec_does_not_realloc() {
+        let names: Vec<String> = (0..40).map(|i| format!("k{i:03}")).collect();
+        let values: Vec<Vec<u8>> = (0..40).map(|i| vec![0xCDu8; 100 + i]).collect();
+
+        let mut map = CanonicalMap::with_capacity(names.len());
+        for (name, bytes) in names.iter().zip(values.iter()) {
+            map.push(name, CanonicalValue::Bytes(bytes));
+        }
+
+        let out = to_canonical_vec(&map).expect("encode");
+        let bound = map.size_bound();
+        assert_eq!(
+            out.capacity(),
+            bound,
+            "capacity changed from the reserved bound — into_writer grew the \
+             buffer, freeing an unwiped block"
+        );
+    }
+
+    /// `to_canonical_vec`'s output matches directly serialising the same
+    /// `CanonicalMap` — i.e. the pre-reservation wrapper changes nothing
+    /// about the emitted bytes, only how the buffer is allocated.
+    #[test]
+    fn to_canonical_vec_matches_direct_serialize() {
+        let mut map = CanonicalMap::with_capacity(2);
+        map.push("b", CanonicalValue::Uint(2));
+        map.push("a", CanonicalValue::Uint(1));
+
+        let via_helper = to_canonical_vec(&map).expect("encode via helper");
+
+        let mut direct = Vec::new();
+        ciborium::ser::into_writer(&map, &mut direct).expect("encode directly");
+
+        assert_eq!(via_helper, direct);
     }
 }
