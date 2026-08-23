@@ -34,6 +34,41 @@ impl SecretBytes {
         Self { inner: bytes }
     }
 
+    /// Build a secret by concatenating `parts`, reserving capacity for
+    /// exactly their total length.
+    ///
+    /// Prefer this over `let mut v = Vec::with_capacity(n); v.extend_from_slice(..);
+    /// let s = SecretBytes::new(v);` for any incrementally-built secret. That
+    /// shape has two failure modes this constructor removes:
+    ///
+    /// 1. The buffer is not wrapper-covered until the final statement, so an
+    ///    unwinding panic part-way through the fill frees it unwiped. Here the
+    ///    wrapper exists before the first push (#513's wrap-before-use rule).
+    /// 2. More subtly, if the hand-written capacity is ever wrong, an
+    ///    `extend_from_slice` REALLOCATES: the allocator copies to a new block
+    ///    and frees the old one, unwiped. Wrapping first does not help —
+    ///    `Drop` wipes whatever buffer the `Vec` points at when it drops, which
+    ///    is the new one. Here the capacity and the pushes are derived from the
+    ///    same `parts` slice in the same function, so they cannot drift and no
+    ///    reallocation can occur (#524).
+    ///
+    /// That second property is structural, not asserted: a reallocation that
+    /// did not happen is not observable from safe Rust, so there is no test
+    /// for it and this doc does not claim one.
+    #[must_use]
+    pub fn concat(parts: &[&[u8]]) -> Self {
+        let total: usize = parts.iter().map(|p| p.len()).sum();
+        // Wrapper first: `s` is `ZeroizeOnDrop` before any secret byte lands
+        // in it, so an unwinding panic below drops and wipes it.
+        let mut s = Self {
+            inner: Vec::with_capacity(total),
+        };
+        for part in parts {
+            s.inner.extend_from_slice(part);
+        }
+        s
+    }
+
     /// Borrow the secret bytes. Use sites should be visible in code review:
     /// any line containing `.expose()` is reading secret material.
     #[must_use]
@@ -380,5 +415,44 @@ mod tests {
         ));
         drop(original);
         assert_eq!(cloned.expose(), &[1, 2, 3, 4]);
+    }
+
+    // --- SecretBytes::concat (#524) ------------------------------------------
+
+    #[test]
+    fn concat_joins_parts_in_order() {
+        let s = SecretBytes::concat(&[b"abc", b"de", b"f"]);
+        assert_eq!(s.expose(), b"abcdef");
+    }
+
+    #[test]
+    fn concat_length_is_the_sum_of_part_lengths() {
+        // The property the realloc argument rests on: the buffer ends up
+        // holding exactly what was reserved for it. A shorter or longer
+        // result would mean capacity and pushes had drifted apart, which is
+        // the drift `concat` exists to make unrepresentable (#524).
+        let parts: [&[u8]; 4] = [&[0u8; 32], &[1u8; 32], &[2u8; 1088], &[3u8; 7]];
+        let expected: usize = parts.iter().map(|p| p.len()).sum();
+        let s = SecretBytes::concat(&parts);
+        assert_eq!(s.len(), expected);
+    }
+
+    #[test]
+    fn concat_skips_empty_parts_without_disturbing_order() {
+        let s = SecretBytes::concat(&[b"", b"xy", b"", b"z", b""]);
+        assert_eq!(s.expose(), b"xyz");
+    }
+
+    #[test]
+    fn concat_of_no_parts_is_empty() {
+        let s = SecretBytes::concat(&[]);
+        assert!(s.is_empty());
+        assert_eq!(s.len(), 0);
+    }
+
+    #[test]
+    fn concat_of_a_single_part_copies_it() {
+        let s = SecretBytes::concat(&[b"only"]);
+        assert_eq!(s.expose(), b"only");
     }
 }
