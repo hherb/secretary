@@ -120,6 +120,16 @@ uv run scripts/check-error-payload-hygiene.py
 # it — over a `tomllib` parse, not a line matcher.
 uv run scripts/check-test-support-placement.py --self-test
 uv run scripts/check-test-support-placement.py
+
+# Assert no move-out construct defeats a zeroize-on-drop wrapper (#521).
+# `mem::swap`/`replace`/`take`/`forget` and `ManuallyDrop` do not merely leak —
+# they make the wrapper's own wipe VACUOUS, so the code still looks protected.
+# Tree-wide over six roots, NOT scoped to a `build` closure (ManuallyDrop is
+# not confined to one), and test code IS scanned: #496 proved a `#[cfg(test)]`
+# carve-out is fail-OPEN. Ships with an EMPTY allowlist. Same --self-test-first
+# discipline; probes go to `mktemp -d`, never the source tree (cf. #516).
+bash scripts/check-secret-slot-hygiene.sh --self-test
+bash scripts/check-secret-slot-hygiene.sh
 ```
 
 ### Python paths
