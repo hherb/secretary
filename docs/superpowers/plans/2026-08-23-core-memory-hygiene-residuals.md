@@ -597,31 +597,8 @@ Read spec §3.2. `to_canonical_cbor` clones every long-term secret key into a pl
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `core/src/unlock/bundle.rs`'s `#[cfg(test)] mod tests`:
-
-```rust
-    // --- ZeroizingEntries (#542, audit C-4 write side) ----------------------
-
-    #[test]
-    fn zeroizing_entries_wipes_every_byte_string_on_drop() {
-        // Observe the wipe through a raw pointer to the Vec's heap buffer,
-        // captured while the value is alive. This asserts the Drop impl runs
-        // and does what it says; it is NOT a claim that freed heap is
-        // observable in general (it is not — see the spec §2.5).
-        let secret = vec![0x42u8; 32];
-        let ptr = secret.as_ptr();
-        let entries = ZeroizingEntries(vec![(
-            Value::Text("x25519_sk".into()),
-            Value::Bytes(secret),
-        )]);
-        // Alive: the bytes are still there.
-        assert_eq!(unsafe_read_first_byte(ptr), 0x42);
-        drop(entries);
-        assert_eq!(unsafe_read_first_byte(ptr), 0x00);
-    }
-```
-
-That test needs `unsafe`, which the workspace forbids. **Use this version instead** — it asserts on the same `Drop` behaviour without reading freed memory, by wiping in place and inspecting before the drop:
+Add to `core/src/unlock/bundle.rs`'s `#[cfg(test)] mod tests` (it opens with
+`use super::*;` and `use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};`):
 
 ```rust
     // --- ZeroizingEntries (#542, audit C-4 write side) ----------------------
@@ -631,7 +608,7 @@ That test needs `unsafe`, which the workspace forbids. **Use this version instea
         // Asserts the wipe LOGIC directly. Whether a freed allocation retains
         // bytes is not observable from safe Rust (spec §2.5), so what is
         // tested here is that `wipe` reaches every `Value::Bytes` in the list
-        // and leaves the text keys alone.
+        // and leaves keys and non-byte values alone.
         let mut entries = ZeroizingEntries(vec![
             (Value::Text("x25519_sk".into()), Value::Bytes(vec![0x42; 32])),
             (Value::Text("created_at".into()), Value::Integer(7.into())),
@@ -646,32 +623,23 @@ That test needs `unsafe`, which the workspace forbids. **Use this version instea
             Value::Bytes(b) => assert!(b.iter().all(|&x| x == 0), "second key not wiped"),
             other => panic!("expected Bytes, got {other:?}"),
         }
-        // Non-byte entries are untouched, so the map still round-trips.
+        // Non-byte entries are untouched, so the map still encodes correctly.
         assert!(matches!(&entries.0[1].1, Value::Integer(_)));
         assert!(matches!(&entries.0[0].0, Value::Text(t) if t == "x25519_sk"));
     }
-
-    #[test]
-    fn to_canonical_cbor_still_round_trips_through_from_canonical_cbor() {
-        // The wipe must not disturb the encoding: `encode_map` runs BEFORE
-        // the wipe, so the emitted bytes are unaffected.
-        let mut rng = rand_chacha::ChaCha20Rng::from_seed([9u8; 32]);
-        let bundle = IdentityBundle::generate(&mut rng, "alice".into(), 1_700_000_000_000);
-        let encoded = bundle.to_canonical_cbor().expect("encode");
-        let decoded = IdentityBundle::from_canonical_cbor(&encoded).expect("decode");
-        assert_eq!(decoded.user_uuid, bundle.user_uuid);
-        assert_eq!(decoded.x25519_sk.expose(), bundle.x25519_sk.expose());
-    }
 ```
 
-**Before writing the round-trip test, check how the existing tests in this file construct an `IdentityBundle`** — the exact `generate` signature and RNG import may differ from the sketch above:
+**That is the only new test in this task, and the omission is deliberate.** Do
+not add a `to_canonical_cbor` round-trip test: `canonical_cbor_roundtrip`
+(`core/src/unlock/bundle.rs:660`) already asserts encode-then-decode fidelity
+across all four secret keys, and `canonical_cbor_is_byte_stable` (line 682)
+already pins determinism. Both exercise `to_canonical_cbor` and would fail if
+the wipe ran before `encode_map` instead of after, so a third would be
+duplication rather than coverage. Step 5 runs them as the regression gate.
 
-```bash
-cd /Users/hherb/src/secretary/.worktrees/core-memory-hygiene-residuals
-sed -n '636,700p' core/src/unlock/bundle.rs
-```
-
-Match whatever helper those tests already use rather than inventing a new one. If an equivalent round-trip test already exists, skip the second test and keep only the `wipe` test.
+**Do not use `unsafe` to observe the wipe through a raw pointer.** The
+workspace sets `#![forbid(unsafe_code)]`, and reading freed memory would not
+prove anything anyway — see spec §2.5.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1700,6 +1668,6 @@ MSG
 
 **Spec coverage.** §2 → Task 2. §3.1 → Task 3. §3.2 → Task 4. §3.3 → no task (deferred as #543 by design; the plan does not split `bundle.rs`). §4 → Task 7. §5 → Task 5. §6 → Task 6. §7 → Task 1. §8 sequencing → task order matches. §9 gates → Task 8 Steps 4-6. §10 issues filed → done before the plan was written (#542, #543). §1.2's "not a defect" finding → Task 2 Step 5 explicitly leaves `okm` alone. No gaps.
 
-**Placeholder scan.** Task 4 Step 1 contains a deliberate false start (an `unsafe`-requiring test) immediately replaced by the version to use, and a `sed -n` command telling the implementer to match the file's existing bundle-construction helper rather than trusting the sketch — that is a real instruction with a real command, not a TODO. Task 8 Step 3 is conditional but carries the exact grep that decides it. Task 7 Step 2 carries a `grep` to confirm `trim` exists before the self-test relies on it, with the fallback stated. No other conditionals.
+**Placeholder scan.** Task 8 Step 3 is conditional but carries the exact grep that decides it. Task 7 Step 2 carries a `grep` to confirm `trim` exists before the self-test relies on it, with the fallback stated. No other conditionals. (Task 4 Step 1 originally carried a retracted `unsafe` test sketch and a round-trip test whose `generate` call did not match the real free-function signature at `bundle.rs:249`; both were removed by pre-flight ruling R1 before execution, because `canonical_cbor_roundtrip` at `bundle.rs:660` already covers the round trip.)
 
 **Type consistency.** `SecretBytes::concat(parts: &[&[u8]]) -> Self` — defined Task 2 Step 3, used Task 2 Step 5. `take_fixed_bytes_into<const N: usize>(v: Value, field: &'static str, out: &mut [u8; N]) -> Result<(), BundleError>` — defined Task 3 Step 4, used Task 3 Step 5, tested Task 3 Step 1 with the same argument order. `ZeroizingEntries(Vec<(Value, Value)>)` with `fn wipe(&mut self)` — defined Task 4 Step 3, used Task 4 Step 4, tested Task 4 Step 1 via `.0` and `.wipe()`. `Candidate.value: SecretString` — changed Task 6 Step 4, read via `.expose()` at Step 5, produced via `SecretString::new` at Step 6, and the test helper at Step 1 matches. Guard rule ids `S1`/`S2` are consistent across the script, the allowlist header, and the self-test's allowlist rows.
