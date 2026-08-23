@@ -1,1 +1,1 @@
-docs/handoffs/2026-08-11-513-panic-safe-secret-slots-shipped.md
+docs/handoffs/2026-08-23-core-memory-hygiene-residuals-shipped.md
