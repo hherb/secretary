@@ -22,6 +22,7 @@
 //! Values are truncated to [`MAX_LABEL_CHARS`] here, in Rust, so an oversized
 //! field never reaches the webview.
 
+use secretary_core::crypto::secret::SecretString;
 use secretary_ffi_bridge::Record;
 
 /// Field names eligible to become a row's title, in priority order.
@@ -103,7 +104,14 @@ impl std::fmt::Debug for RecordLabels {
 pub(crate) struct Candidate {
     pub(crate) rank: usize,
     pub(crate) name: String,
-    pub(crate) value: String,
+    /// The field's decrypted plaintext, zeroize-on-drop.
+    ///
+    /// Not a bare `String`: the candidate list holds more than what ships.
+    /// Priority-race losers never reach the frontend at all, and for a value
+    /// longer than [`MAX_LABEL_CHARS`] only the truncated head does — so the
+    /// tail is residue with no wire destination. `reveal.rs` beside this was
+    /// hardened under #513's memory-hygiene pass and this code was not (#527).
+    pub(crate) value: SecretString,
 }
 
 /// Priority rank of `name` within TITLE_NAMES, or `None` if it is not
@@ -146,7 +154,7 @@ fn fallback_title(record_type: &str) -> String {
 /// candidate"; the distinct-name check is defence-in-depth for direct callers
 /// of this function, which the unit tests are.
 pub(crate) fn select_labels(record_type: &str, mut candidates: Vec<Candidate>) -> RecordLabels {
-    candidates.retain(|c| !c.value.trim().is_empty());
+    candidates.retain(|c| !c.value.expose().trim().is_empty());
     candidates.sort_by_key(|c| c.rank);
 
     let Some(first) = candidates.first() else {
@@ -155,12 +163,12 @@ pub(crate) fn select_labels(record_type: &str, mut candidates: Vec<Candidate>) -
             subtitle: None,
         };
     };
-    let title = truncate(first.value.trim());
+    let title = truncate(first.value.expose().trim());
 
     let subtitle = candidates
         .iter()
         .find(|c| c.name != first.name)
-        .map(|c| format!("{}: {}", c.name, truncate(c.value.trim())));
+        .map(|c| format!("{}: {}", c.name, truncate(c.value.expose().trim())));
 
     RecordLabels { title, subtitle }
 }
@@ -203,7 +211,15 @@ pub fn labels_for_record(record: &Record) -> RecordLabels {
         let Some(value) = handle.expose_text() else {
             continue;
         };
-        candidates.push(Candidate { rank, name, value });
+        // Wrapped at the point of production, so the value is
+        // `ZeroizeOnDrop`-covered for its whole life in this vector — losers
+        // and truncated tails included (#527). `SecretString::new` MOVES the
+        // String, so this adds no copy.
+        candidates.push(Candidate {
+            rank,
+            name,
+            value: SecretString::new(value),
+        });
     }
     select_labels(&record.record_type(), candidates)
 }
@@ -216,7 +232,7 @@ mod tests {
         Candidate {
             rank,
             name: name.to_owned(),
-            value: value.to_owned(),
+            value: SecretString::new(value.to_owned()),
         }
     }
 
