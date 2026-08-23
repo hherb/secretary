@@ -101,8 +101,23 @@ mod tests {
 
     #[test]
     fn size_bound_covers_every_scalar_arm() {
+        // The most negative value `ciborium::value::Integer` can hold is
+        // -(2^64), not `i64::MIN` (-(2^63)) — see the corrected floor in
+        // `size_bound_covers_a_constructed_bignum_integer`'s doc comment.
+        // Verified here rather than assumed: assert the constructed value
+        // actually lands on `Value::Integer` (not `Value::Tag`) before
+        // folding it into the bound check below.
+        let most_negative = Value::from(-(2i128).pow(64));
+        assert!(
+            matches!(most_negative, Value::Integer(_)),
+            "expected -(2^64) to construct as Value::Integer, got \
+             {most_negative:?} — if this changed, the floor pinned here \
+             needs re-checking against the new ciborium version"
+        );
+
         for v in [
             Value::Integer(u64::MAX.into()),
+            most_negative,
             Value::Float(1.5),
             Value::Bool(true),
             Value::Null,
@@ -141,23 +156,30 @@ mod tests {
     /// A "large in-process integer" — the scenario #547 round 2's review
     /// (N5) worried the scalar wildcard under-reserves — does NOT reach
     /// `Value::Integer` in this pinned ciborium (0.2.2). Verified by
-    /// execution: `ciborium::value::Integer` has no infallible
-    /// `From<i128>`/`From<u128>`, only fallible `TryFrom` impls that reject
-    /// any magnitude outside the u64/i64 corridor
-    /// (`ciborium-0.2.2/src/value/integer.rs`). `From<i128> for Value` /
+    /// reading the source (`ciborium-0.2.2/src/value/integer.rs`):
+    /// `ciborium::value::Integer` has no infallible `From<i128>`/
+    /// `From<u128>`, only a fallible `TryFrom<i128>` whose negative branch
+    /// tests `u64::try_from(!value)` (i.e. whether `-value - 1` fits a
+    /// `u64`) — the accepted range is the CBOR-native
+    /// `-(2^64)..=(2^64 - 1)`, not the `i64`/`u64` ranges "corridor" a
+    /// prior version of this comment claimed: `i64::MIN` is only
+    /// `-(2^63)`, 2^63 short of the true floor. `From<i128> for Value` /
     /// `From<u128> for Value` — the ONLY public constructors, including the
     /// generic "serialize any `T` into a `Value`" path in `value/ser.rs`,
     /// which just forwards to the same `From` impls — fall back to
-    /// `Value::Tag(BIGPOS/BIGNEG, Value::Bytes(..))` for exactly that
-    /// reason (`ciborium-0.2.2/src/value/mod.rs`). So the largest
-    /// `Value::Integer` reachable through any public API is `u64::MAX` /
-    /// `i64::MIN` (9 bytes, `size_bound_covers_every_scalar_arm` already
-    /// proves this is within `HEAD_MAX`), and a genuinely large integer
-    /// takes the `Tag`+`Bytes` shape this test pins — the `Tag` arm's
-    /// recursion (already proven generically by
-    /// `size_bound_recurses_into_tag_arm`) is what actually covers it, not
-    /// the scalar wildcard. This test exists so that claim is checked
-    /// against the REAL shape ciborium produces, not an assumed one.
+    /// `Value::Tag(BIGPOS/BIGNEG, Value::Bytes(..))` outside that range
+    /// (`ciborium-0.2.2/src/value/mod.rs`). So the largest
+    /// `Value::Integer` reachable through any public API is `u64::MAX` on
+    /// the positive side and `-(2^64)` — not `i64::MIN` — on the negative
+    /// side; `size_bound_covers_every_scalar_arm` now constructs and pins
+    /// both extremes (9 bytes each, within `HEAD_MAX`), asserting the
+    /// negative one really lands on `Value::Integer` rather than assuming
+    /// it. A genuinely out-of-range integer takes the `Tag`+`Bytes` shape
+    /// this test pins — the `Tag` arm's recursion (already proven
+    /// generically by `size_bound_recurses_into_tag_arm`) is what actually
+    /// covers it, not the scalar wildcard. This test exists so that claim
+    /// is checked against the REAL shape ciborium produces, not an assumed
+    /// one.
     #[test]
     fn size_bound_covers_a_constructed_bignum_integer() {
         let huge: i128 = i128::from(u64::MAX) + 1;

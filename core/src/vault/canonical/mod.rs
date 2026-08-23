@@ -43,6 +43,17 @@
 //! turned out to be wrong — see [`CanonicalError::CapacityBoundExceeded`].
 //! Detecting is not preventing: by the time that check runs, the encode
 //! (and any realloc it triggered) has already happened.
+//!
+//! [`value`] holds the second half of #547's fix: [`CanonicalValue`] /
+//! [`CanonicalMap`], a borrowing mirror of the same CBOR subset that
+//! serialises straight out of a `SecretString`/`SecretBytes` wrapper instead
+//! of copying into an owned `Value` tree first. It has no production
+//! consumer as of this module's own build-sequence step (Task 2 of #547) —
+//! [`legacy::canonical_sort_entries`] and the record/block encode paths it
+//! backs are migrated onto it in later steps. [`to_canonical_vec`] is its
+//! `encode_canonical_map` counterpart: same pre-reservation-plus-real-check
+//! discipline, only over a [`CanonicalMap`] instead of a `&[(Value, Value)]`
+//! entry list.
 
 #![forbid(unsafe_code)]
 
@@ -50,9 +61,29 @@ use crate::cbor::CborFault;
 
 mod legacy;
 mod size;
+mod value;
 
 pub use legacy::{canonical_sort_entries, encode_canonical_map, reject_floats_and_tags};
 pub(crate) use size::{cbor_size_bound, HEAD_MAX};
+// `to_canonical_vec`, `CanonicalMap` and `CanonicalValue` are re-exported
+// `pub` (not `pub(crate)`), even though this `canonical` module itself is
+// `pub(crate)` (see `vault/mod.rs`): `vault::canonical_test_api` needs a
+// `pub`-visibility chain all the way down to reach them from
+// `core/tests/*.rs` (E0365 — re-exporting an item as more public than its
+// own established visibility is rejected, and a `pub(crate)` hop here would
+// set that ceiling). All three have no in-crate caller as of this
+// build-sequence step (Task 2 of #547 — see the module doc above): verified
+// by execution, a plain `cargo build --release -p secretary-core` reds with
+// `dead_code` the moment any one of the three drops out of
+// `canonical_test_api`'s `pub` re-export chain, and passes clean with all
+// three in it — reachability from that `pub` path is what a library crate's
+// dead-code analysis treats as "used by a downstream crate we can't see",
+// the same rule that already exempts `legacy::canonical_sort_entries` /
+// `encode_canonical_map` / `reject_floats_and_tags` above from needing an
+// in-crate caller of their own (those three do have real callers today, in
+// `record.rs`/`block.rs`, predating this module — but the exemption itself
+// is about the `pub` path, not about who happens to call it).
+pub use value::{to_canonical_vec, CanonicalMap, CanonicalValue};
 
 /// Errors emitted by the three canonical-CBOR helpers in this module.
 ///
