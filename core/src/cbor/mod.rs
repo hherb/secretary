@@ -20,37 +20,31 @@
 //! See `docs/superpowers/specs/2026-08-05-474-error-payload-hygiene-design.md`.
 //!
 //! Split into a directory module (#547 Task 3): this file keeps the codec
-//! error classification; `secret_tree` (a private submodule, not linkable
-//! from this public doc comment) holds `SecretValueTree` /
-//! `SecretEntries`, the zeroize-on-drop wrapper for what
-//! `ciborium::de::from_reader` itself allocates while parsing — a different
-//! concern from the error classification above, kept as one further file
-//! rather than split again since it stays comfortably under the project's
-//! 500-line-per-file threshold on its own.
+//! error classification; `secret_tree` (a private submodule) holds
+//! `SecretValueTree` / `SecretEntries`, the zeroize-on-drop wrapper for
+//! what `ciborium::de::from_reader` itself allocates while parsing — a
+//! different concern from the error classification above, kept as one
+//! further file rather than split again since it stays comfortably under
+//! the project's 500-line-per-file threshold on its own.
 
 use std::fmt;
 
-// `#[cfg(test)]`, not a bare `mod secret_tree;` (controller ruling R12,
-// fix round 1 of Task 3 / #547): an earlier version of this line made
-// `SecretValueTree` / `SecretEntries` fully `pub` plus a `#[doc(hidden)]
-// pub cbor_test_api` re-export, to dodge `dead_code` on a mechanism with
-// no production caller yet (Task 6/7 wire it in). That put a third-party
-// `#[non_exhaustive]` enum (`ciborium::Value`) into three public function
-// signatures of a crate whose stated purpose is decades-long readability —
-// `#[doc(hidden)]` hides an item from rendered docs, not from the semver
-// surface, so a `ciborium` 0.3 would become a breaking change to
-// `secretary-core`. Gating the whole submodule on `#[cfg(test)]` instead:
-// the module does not exist at all in `cargo build --release` or in
-// `cargo clippy --workspace` without `--tests` (verified by execution —
-// see task-3-report.md's fix-round section), so there is nothing for
-// `dead_code` to flag; under `--tests` it is compiled and fully exercised
-// by its own unit tests. `SecretValueTree` / `SecretEntries` are
-// `pub(crate)`, per the brief, throughout. Task 6 (or 7, whichever lands
-// first) deletes this `#[cfg(test)]` and adds a
-// `pub(crate) use secret_tree::{SecretEntries, SecretValueTree};` here,
-// at the point either type gains a real production call site.
-#[cfg(test)]
+// Task 3 (fix round 1, controller ruling R12) gated this whole submodule
+// behind `#[cfg(test)]` because `SecretValueTree` / `SecretEntries` had no
+// production caller yet: an earlier version instead made both types fully
+// `pub` plus a `#[doc(hidden)] pub cbor_test_api` re-export to dodge
+// `dead_code`, which put a third-party `#[non_exhaustive]` enum
+// (`ciborium::Value`) into three public function signatures of a crate
+// whose stated purpose is decades-long readability. Task 6 (#547) gives
+// `SecretValueTree` its first real caller (`record::decode` /
+// `block::decode_plaintext`), so the module itself is now unconditionally
+// compiled. `SecretEntries` still has none — Task 7 wires that in — so its
+// own struct/impl/Drop definitions in `secret_tree/mod.rs` stay
+// individually `#[cfg(test)]`-gated rather than the whole module; both
+// remain `pub(crate)`.
 mod secret_tree;
+
+pub(crate) use secret_tree::SecretValueTree;
 
 /// Which upstream codec failure occurred, with no payload of its own.
 ///

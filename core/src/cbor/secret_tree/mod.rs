@@ -11,28 +11,34 @@
 //! combined file passed the project's 500-line split threshold; see the
 //! parent module's doc comment for how the two files divide the concern.
 //!
-//! Both types are `pub(crate)`, per the brief, and this whole module is
-//! declared `#[cfg(test)]` at `super::secret_tree` (fix round 1, controller
-//! ruling R12): Task 3 ships this mechanism with no production consumer at
-//! all — Task 6 wires up `SecretValueTree`, Task 7 wires up
-//! `SecretEntries` — so nothing in `core/src/**` calls `new`, `as_value`,
-//! `len`, `is_empty`, `as_slice`, or `take_next` yet. Gating the module on
-//! `#[cfg(test)]` means it simply does not exist in `cargo build --release`
-//! or in `cargo clippy --workspace` without `--tests`, so there is nothing
-//! for `dead_code` to flag; under `--tests` it is compiled and fully
-//! exercised by the unit tests in `tests.rs`. An earlier version of this
-//! module made both types fully `pub` instead, with a `#[doc(hidden)] pub`
-//! re-export reachable from the crate root (the same `dead_code`-avoidance
-//! pattern `vault::canonical_test_api` uses for `CanonicalMap` /
-//! `CanonicalValue`) — reverted because it put a third-party
-//! `#[non_exhaustive]` enum (`ciborium::Value`) into three public function
-//! signatures of a crate whose stated purpose is decades-long readability;
-//! `#[doc(hidden)]` hides an item from rendered docs, not from the semver
-//! surface, so a `ciborium` 0.3 would have become a breaking change to
-//! `secretary-core`. `#[cfg(test)]` adds no such surface. Task 6 (or 7,
-//! whichever lands first) deletes the `#[cfg(test)]` on the `mod
-//! secret_tree;` line in `cbor/mod.rs` and adds a `pub(crate) use` there,
-//! at the point either type gains a real production call site.
+//! Both types are `pub(crate)`, per the brief. Through Task 3 (fix round 1,
+//! controller ruling R12) this whole module was declared `#[cfg(test)]` at
+//! `super::secret_tree`, because it shipped with no production consumer at
+//! all — `#[cfg(test)]` means an item simply does not exist in `cargo build
+//! --release` or in `cargo clippy --workspace` without `--tests`, so there
+//! is nothing for `dead_code` to flag; under `--tests` it is compiled and
+//! fully exercised by the unit tests in `tests.rs`. An earlier version of
+//! this module made both types fully `pub` instead, with a `#[doc(hidden)]
+//! pub` re-export reachable from the crate root (the same
+//! `dead_code`-avoidance pattern `vault::canonical_test_api` uses for
+//! `CanonicalMap` / `CanonicalValue`) — reverted because it put a
+//! third-party `#[non_exhaustive]` enum (`ciborium::Value`) into three
+//! public function signatures of a crate whose stated purpose is
+//! decades-long readability; `#[doc(hidden)]` hides an item from rendered
+//! docs, not from the semver surface, so a `ciborium` 0.3 would have become
+//! a breaking change to `secretary-core`. `#[cfg(test)]` adds no such
+//! surface.
+//!
+//! Task 6 (#547) gives `SecretValueTree` its first real production caller
+//! (`record::decode` / `block::decode_plaintext`), so the module-level gate
+//! moved up one level to `cbor/mod.rs`'s `mod secret_tree;` line, and this
+//! file's `SecretValueTree` definition is unconditionally compiled.
+//! `SecretEntries` still has no production caller — Task 7 wires it in —
+//! so its struct/impl/`Drop` definitions below stay individually
+//! `#[cfg(test)]`-gated instead: same reasoning as the module-level gate
+//! this paragraph describes, just scoped to the one type that still needs
+//! it. Task 7 deletes that narrower gate at the point `SecretEntries`
+//! gains a real call site.
 
 use ciborium::Value;
 
@@ -184,12 +190,20 @@ impl Drop for SecretValueTree {
 /// entry's key/value out to build its result. That is a real, deliberate
 /// gap in wipe coverage, not an oversight: **a yielded entry leaves this
 /// type's protection entirely** the moment `take_next` returns it, and nothing
-/// wipes it from that point on. Tasks 6/7, which consume this, must fold a
+/// wipes it from that point on. Task 7, which consumes this, must fold a
 /// yielded value straight into a `SecretBytes`/`SecretString` (or discard
 /// it) rather than clone it into some other unwiped local first — cloning
 /// would recreate exactly the residue this type exists to avoid.
+///
+/// `#[cfg(test)]`-gated (struct, impl, and `Drop` below — not the whole
+/// module; see the module doc): Task 6 (#547) gives `SecretValueTree` its
+/// first production caller but leaves this type's own with none, so an
+/// unconditional build would flag every method here `dead_code` under
+/// `-D warnings`. Task 7 deletes this gate at the point it gains one.
+#[cfg(test)]
 pub(crate) struct SecretEntries(Vec<(Value, Value)>);
 
+#[cfg(test)]
 impl SecretEntries {
     /// Take ownership of an entry list.
     pub(crate) fn new(entries: Vec<(Value, Value)>) -> Self {
@@ -269,6 +283,7 @@ impl SecretEntries {
     }
 }
 
+#[cfg(test)]
 impl Drop for SecretEntries {
     fn drop(&mut self) {
         self.wipe();

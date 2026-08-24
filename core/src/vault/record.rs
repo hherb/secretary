@@ -71,7 +71,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ciborium::Value;
 
-use crate::cbor::{classify_de, classify_ser, CborFault};
+use crate::cbor::{classify_de, classify_ser, CborFault, SecretValueTree};
 use crate::crypto::secret::{SecretBytes, SecretString};
 
 use super::canonical::{
@@ -593,18 +593,20 @@ fn field_to_canonical(field: &RecordField) -> CanonicalMap<'_> {
 pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
     let parsed: Value =
         ciborium::de::from_reader(bytes).map_err(|e| RecordError::CborDecode(classify_de(&e)))?;
+    // The parsed tree owns a copy of every decrypted field value in
+    // `bytes`. Wrapping it means `Drop` wipes that copy on every exit from
+    // this function — including the `?` early returns below and an
+    // unwinding panic (#547) — where the pre-#547 code left it unwiped on
+    // every one of those paths. The tree is BORROWED from here on;
+    // nothing moves out of it.
+    let parsed = SecretValueTree::new(parsed);
 
     // Walk the tree to enforce the no-float and no-tag rules everywhere
     // (including inside forward-compat unknown values). Doing this once
     // up front means the per-field decoders don't need to re-check.
-    reject_floats_and_tags(&parsed, "<root>")?;
+    reject_floats_and_tags(parsed.as_value(), "<root>")?;
 
-    let map = match parsed {
-        Value::Map(m) => m,
-        _ => return Err(RecordError::NotAMap),
-    };
-
-    let record = parse_record_map(map)?;
+    let record = decode_value(parsed.as_value())?;
 
     // Strict canonical-input check: re-encode the parsed representation
     // and require byte-identical match. Same pattern as
@@ -625,9 +627,39 @@ pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
 // `FloatRejected` / `TagRejected` errors map back to the record-layer
 // variants without changing the public surface.
 
+/// Decode a record from an already-parsed CBOR value.
+///
+/// `pub(crate)` for [`super::block`], which holds each record as a subtree
+/// of the block's own parsed plaintext. Going through this instead of
+/// re-serialising that subtree and calling [`decode`] removes a plaintext
+/// `Vec<u8>` per record per block open (#547).
+///
+/// Does NOT perform the byte-level canonicality re-check [`decode`] does —
+/// there are no bytes at this level to compare against. For the nested case
+/// that check is subsumed by the block's own re-encode-and-compare over the
+/// whole plaintext, which covers the nested record bytes; `block.rs`'s test
+/// `a_non_canonical_nested_record_is_still_rejected` is what discharges that
+/// claim.
+pub(crate) fn decode_value(value: &Value) -> Result<Record, RecordError> {
+    let Value::Map(entries) = value else {
+        return Err(RecordError::NotAMap);
+    };
+    parse_record_map(entries)
+}
+
 /// Parse a top-level CBOR map (already extracted from `Value::Map`) into
 /// a [`Record`]. Unknown record-level keys land in [`Record::unknown`].
-fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
+///
+/// Takes `&[(Value, Value)]` rather than owning the entry list: [`decode`]
+/// borrows from a [`SecretValueTree`] it holds, and [`decode_value`]
+/// borrows a record subtree that in the nested case belongs to a BLOCK's
+/// own `SecretValueTree` — neither caller can hand this function ownership
+/// without first cloning the whole entry list, which would reintroduce the
+/// unwiped copy this design removes (#547 Task 6). The unavoidable cost of
+/// borrowing instead is documented at the two conversion sites below where
+/// a scalar is actually copied out (the forward-compat `unknown` arm here,
+/// and the field-value arm in [`parse_field_map`]).
+fn parse_record_map(map: &[(Value, Value)]) -> Result<Record, RecordError> {
     let mut record_uuid: Option<[u8; RECORD_UUID_LEN]> = None;
     let mut record_type: Option<String> = None;
     let mut fields: Option<BTreeMap<String, RecordField>> = None;
@@ -642,9 +674,9 @@ fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
     // copies fall into the unknown bucket.
     let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
-    for (index, (k, v)) in map.into_iter().enumerate() {
+    for (index, (k, v)) in map.iter().enumerate() {
         let key = match k {
-            Value::Text(s) => s,
+            Value::Text(s) => s.clone(),
             _ => return Err(RecordError::NonTextKey),
         };
         if !seen_keys.insert(key.clone()) {
@@ -682,7 +714,23 @@ fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
                 // Forward-compat: any other key is preserved verbatim.
                 // The float/tag walker at the top of decode() has
                 // already vetted v's subtree.
-                unknown.insert(key, UnknownValue(v));
+                //
+                // `v.clone()` is a real added copy relative to the
+                // pre-#547 owning path, which moved `v` straight into the
+                // `UnknownValue` with zero copies. Borrowing forces this
+                // clone because `v` belongs to the caller's
+                // `SecretValueTree` and cannot be moved out (#547 Task 6).
+                // The SOURCE is now covered (the enclosing
+                // `SecretValueTree`'s `Drop` wipes it), where the pre-#547
+                // single buffer was uncovered on any `?` earlier in this
+                // loop. This CLONE is not additionally wiped —
+                // `UnknownValue` has no `Zeroize` impl, unchanged by this
+                // task — so it is exactly as covered as the pre-#547
+                // buffer was once it reached `Record::unknown`: no
+                // regression, but also not the "both sides covered"
+                // property the `KEY_VALUE` arm in `parse_field_map` gets
+                // from landing in a `SecretString`/`SecretBytes`.
+                unknown.insert(key, UnknownValue(v.clone()));
             }
         }
     }
@@ -708,7 +756,7 @@ fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
     })
 }
 
-fn take_fields_map(v: Value) -> Result<BTreeMap<String, RecordField>, RecordError> {
+fn take_fields_map(v: &Value) -> Result<BTreeMap<String, RecordField>, RecordError> {
     let entries = match v {
         Value::Map(m) => m,
         _ => {
@@ -719,9 +767,9 @@ fn take_fields_map(v: Value) -> Result<BTreeMap<String, RecordField>, RecordErro
         }
     };
     let mut out: BTreeMap<String, RecordField> = BTreeMap::new();
-    for (index, (k, val)) in entries.into_iter().enumerate() {
+    for (index, (k, val)) in entries.iter().enumerate() {
         let fname = match k {
-            Value::Text(s) => s,
+            Value::Text(s) => s.clone(),
             _ => return Err(RecordError::NonTextKey),
         };
         if out.contains_key(&fname) {
@@ -736,7 +784,7 @@ fn take_fields_map(v: Value) -> Result<BTreeMap<String, RecordField>, RecordErro
     Ok(out)
 }
 
-fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
+fn parse_field_map(v: &Value) -> Result<RecordField, RecordError> {
     let entries = match v {
         Value::Map(m) => m,
         _ => {
@@ -753,9 +801,9 @@ fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
     let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
-    for (index, (k, val)) in entries.into_iter().enumerate() {
+    for (index, (k, val)) in entries.iter().enumerate() {
         let key = match k {
-            Value::Text(s) => s,
+            Value::Text(s) => s.clone(),
             _ => return Err(RecordError::NonTextKey),
         };
         if !seen_keys.insert(key.clone()) {
@@ -766,9 +814,20 @@ fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
         }
         match key.as_str() {
             KEY_VALUE => {
+                // The whole point of #547 Task 6's accepted trade-off
+                // (controller ruling R1): `val` is borrowed from the
+                // caller's `SecretValueTree` and cannot be moved out, so
+                // `.clone()` is unavoidable here — but the clone lands
+                // straight in a `SecretString`/`SecretBytes`, a genuinely
+                // zeroizing destination, which is exactly the copy we
+                // WANT: both the source (wiped by the enclosing
+                // `SecretValueTree`) and this destination (wiped on its
+                // own `Drop`) end up covered, where the pre-#547 single
+                // owned buffer was uncovered on any `?` earlier in this
+                // loop.
                 value = Some(match val {
-                    Value::Text(s) => RecordFieldValue::Text(SecretString::new(s)),
-                    Value::Bytes(b) => RecordFieldValue::Bytes(SecretBytes::new(b)),
+                    Value::Text(s) => RecordFieldValue::Text(SecretString::new(s.clone())),
+                    Value::Bytes(b) => RecordFieldValue::Bytes(SecretBytes::new(b.clone())),
                     _ => {
                         return Err(RecordError::WrongType {
                             field: KEY_VALUE,
@@ -784,7 +843,12 @@ fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
                 device_uuid = Some(take_uuid(val, KEY_DEVICE_UUID)?);
             }
             _ => {
-                unknown.insert(key, UnknownValue(val));
+                // Same trade-off as `parse_record_map`'s forward-compat
+                // arm: the source is covered by `SecretValueTree`, this
+                // clone is exactly as (un)covered as the pre-#547 buffer
+                // was, since `UnknownValue` has no `Zeroize` impl either
+                // before or after this task.
+                unknown.insert(key, UnknownValue(val.clone()));
             }
         }
     }
@@ -801,7 +865,7 @@ fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
     })
 }
 
-fn take_tags(v: Value) -> Result<Vec<String>, RecordError> {
+fn take_tags(v: &Value) -> Result<Vec<String>, RecordError> {
     let items = match v {
         Value::Array(a) => a,
         _ => {
@@ -812,9 +876,9 @@ fn take_tags(v: Value) -> Result<Vec<String>, RecordError> {
         }
     };
     items
-        .into_iter()
+        .iter()
         .map(|item| match item {
-            Value::Text(s) => Ok(s),
+            Value::Text(s) => Ok(s.clone()),
             _ => Err(RecordError::WrongType {
                 field: KEY_TAGS,
                 expected: "array of text strings",
@@ -823,9 +887,9 @@ fn take_tags(v: Value) -> Result<Vec<String>, RecordError> {
         .collect()
 }
 
-fn take_text(v: Value, field: &'static str) -> Result<String, RecordError> {
+fn take_text(v: &Value, field: &'static str) -> Result<String, RecordError> {
     match v {
-        Value::Text(s) => Ok(s),
+        Value::Text(s) => Ok(s.clone()),
         _ => Err(RecordError::WrongType {
             field,
             expected: "text string",
@@ -833,9 +897,9 @@ fn take_text(v: Value, field: &'static str) -> Result<String, RecordError> {
     }
 }
 
-fn take_u64(v: Value, field: &'static str) -> Result<u64, RecordError> {
+fn take_u64(v: &Value, field: &'static str) -> Result<u64, RecordError> {
     let i = match v {
-        Value::Integer(i) => i,
+        Value::Integer(i) => *i,
         _ => {
             return Err(RecordError::WrongType {
                 field,
@@ -847,9 +911,9 @@ fn take_u64(v: Value, field: &'static str) -> Result<u64, RecordError> {
         .map_err(|_| RecordError::IntegerOverflow { field })
 }
 
-fn take_bool(v: Value, field: &'static str) -> Result<bool, RecordError> {
+fn take_bool(v: &Value, field: &'static str) -> Result<bool, RecordError> {
     match v {
-        Value::Bool(b) => Ok(b),
+        Value::Bool(b) => Ok(*b),
         _ => Err(RecordError::WrongType {
             field,
             expected: "boolean",
@@ -857,7 +921,7 @@ fn take_bool(v: Value, field: &'static str) -> Result<bool, RecordError> {
     }
 }
 
-fn take_uuid(v: Value, field: &'static str) -> Result<[u8; RECORD_UUID_LEN], RecordError> {
+fn take_uuid(v: &Value, field: &'static str) -> Result<[u8; RECORD_UUID_LEN], RecordError> {
     let bytes = match v {
         Value::Bytes(b) => b,
         _ => {
@@ -868,9 +932,8 @@ fn take_uuid(v: Value, field: &'static str) -> Result<[u8; RECORD_UUID_LEN], Rec
         }
     };
     let length = bytes.len();
-    bytes
-        .try_into()
-        .map_err(|_: Vec<u8>| RecordError::InvalidUuid { field, length })
+    <[u8; RECORD_UUID_LEN]>::try_from(bytes.as_slice())
+        .map_err(|_: std::array::TryFromSliceError| RecordError::InvalidUuid { field, length })
 }
 
 // ---------------------------------------------------------------------------
@@ -2208,7 +2271,7 @@ mod tests {
             ),
         ];
 
-        let err = take_fields_map(Value::Map(field_entries))
+        let err = take_fields_map(&Value::Map(field_entries))
             .expect_err("duplicate field name must be rejected");
 
         assert!(
@@ -2232,7 +2295,7 @@ mod tests {
             (Value::Text(KEY_VALUE.into()), Value::Text("b".into())),
         ];
 
-        let err = parse_field_map(Value::Map(entries))
+        let err = parse_field_map(&Value::Map(entries))
             .expect_err("duplicate field-level key must be rejected");
 
         assert!(
