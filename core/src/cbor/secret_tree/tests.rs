@@ -385,3 +385,70 @@ fn secret_entries_wipe_reaches_every_entry_including_keys() {
     );
     assert!(!after.iter().any(|b| b == b"k0"), "a KEY survived the wipe");
 }
+
+/// `wipe_leaked_value` must actually OVERWRITE, not merely tick the counter.
+///
+/// This is the effect half of that function's coverage, and before this test
+/// it did not exist: `grep -c wipe_leaked_value` over this file returned 0,
+/// and its only exercise was two counter assertions in `unlock::bundle`'s
+/// tests. Those cannot see a vacuous body, because the counter is
+/// incremented at the TOP of `wipe_leaked_value`, before it walks anything —
+/// so replacing `wipe_value(value)` with `let _ = value;` left the entire
+/// suite green (verified by mutation during the #560 review).
+///
+/// That is exactly the failure mode `SecretValueTree` and `SecretEntries`
+/// each already guard with a counter test AND an effect test (`drop_invokes_
+/// the_wipe` + `wipe_reaches_every_depth_and_every_container_arm`, and their
+/// `SecretEntries` twins). `wipe_leaked_value` is the third entry point into
+/// the same `wipe_value` walk and got only the counter half; this closes it.
+///
+/// Uses `nested_secret_tree` rather than a flat value on purpose — the
+/// function's contract is the full recursive walk, so a test that only
+/// proved a top-level `Bytes` was cleared would leave the container arms
+/// unpinned on this path.
+#[test]
+fn wipe_leaked_value_overwrites_every_payload_it_is_given() {
+    let mut leaked = nested_secret_tree();
+
+    let mut before = Vec::new();
+    harvest(&leaked, &mut before);
+    assert!(
+        before.iter().any(|b| b == b"top-secret"),
+        "fixture did not contain the payload the test is about"
+    );
+    assert!(
+        before.iter().any(|b| b == b"deep-secret"),
+        "fixture did not contain the nested payload the test is about"
+    );
+    assert!(
+        before.iter().any(|b| b.contains(&0xAA)),
+        "fixture did not contain the Bytes payload the test is about"
+    );
+
+    let calls_before = wipe_calls();
+    wipe_leaked_value(&mut leaked);
+    assert_eq!(
+        wipe_calls(),
+        calls_before + 1,
+        "wipe_leaked_value must tick the shared counter exactly once"
+    );
+
+    let mut after = Vec::new();
+    harvest(&leaked, &mut after);
+    assert!(
+        !after.iter().any(|b| b == b"top-secret"),
+        "a top-level Text payload survived wipe_leaked_value"
+    );
+    assert!(
+        !after.iter().any(|b| b == b"deep-secret"),
+        "a nested Text payload survived wipe_leaked_value"
+    );
+    assert!(
+        !after.iter().any(|b| b == b"top_text"),
+        "a map KEY survived wipe_leaked_value"
+    );
+    assert!(
+        !after.iter().any(|b| b.iter().any(|&x| x != 0)),
+        "a payload survived wipe_leaked_value with non-zero bytes"
+    );
+}
