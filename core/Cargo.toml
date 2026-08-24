@@ -50,7 +50,25 @@ x25519-dalek = { version = "=2.0.1", default-features = false, features = ["stat
 ml-kem = { version = "0.2", features = ["deterministic", "zeroize"] }
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "rand_core", "zeroize"] }
 ml-dsa = { version = "0.1.0-rc.8", default-features = false, features = ["alloc", "zeroize"] }
-ciborium = "0.2"
+# `ciborium` is on the security-critical path and is pinned EXACTLY, same
+# rule as `tempfile` below: `ciborium::Value` is `#[non_exhaustive]`, an
+# attribute whose entire purpose is to make ADDING a variant a non-breaking
+# change — so a `cargo update` inside the 0.2.x range can introduce one.
+# Three wildcard arms over that enum each fail OPEN if it does:
+#   - `cbor::secret_tree::wipe_value`'s `_ => {}` would never wipe a new
+#     heap-carrying variant (#547/#548's whole mechanism, silently skipped);
+#   - `vault::canonical::legacy::reject_floats_and_tags`'s `_ => Ok(())`
+#     would silently ACCEPT a new forbidden node type, degrading a
+#     vault-format §6.2 check to a pass — and the re-encode-and-compare does
+#     not catch it, because a round-trippable variant re-encodes identically;
+#   - `vault::canonical::size::cbor_size_bound`'s `_ => HEAD_MAX` would
+#     under-reserve, reopening the realloc-frees-plaintext-unwiped hazard.
+# `every_ciborium_value_variant_is_accounted_for` states in its own doc that
+# it CANNOT detect an added variant (only a removed or renamed one, which
+# fails to compile), so after this pin, review is the only remaining control
+# — which is exactly the argument the `tempfile` comment makes. Bumping this
+# means re-reading all three wildcards against the new variant set (#560).
+ciborium = "=0.2.2"
 rand_core = "0.6"
 # `tempfile` is on the security-critical path: `vault::io::write_atomic`
 # (docs/vault-format.md §9) uses `NamedTempFile::persist` to perform
