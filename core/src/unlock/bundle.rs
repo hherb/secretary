@@ -453,9 +453,24 @@ impl IdentityBundle {
             // is exactly such a path: `k` failing the shape check says
             // nothing about `v`, which may still be a secret-key-shaped
             // `Value::Bytes` (#548 fix-round-1 G1).
-            let Value::Text(key) = k else {
-                crate::cbor::wipe_leaked_value(&mut v);
-                return Err(BundleError::Malformed("non-string map key"));
+            let key = match k {
+                Value::Text(key) => key,
+                mut other_key => {
+                    // BOTH halves of the entry are wiped here, not just `v`.
+                    // `wipe_value`'s own doc argues at length that the key
+                    // side is not a lower-value recursion to skip, and that
+                    // applies with full force on precisely this path: the
+                    // check that just failed is "is the key a text string",
+                    // so the key reaching this arm is by construction some
+                    // OTHER `Value` — a `Value::Bytes` among them. Through
+                    // #548 fix-round-1 this arm wiped `v` alone and let `k`
+                    // fall to a bare `ciborium::Value` drop, which is the
+                    // same residue class the arm exists to close, one field
+                    // over.
+                    crate::cbor::wipe_leaked_value(&mut other_key);
+                    crate::cbor::wipe_leaked_value(&mut v);
+                    return Err(BundleError::Malformed("non-string map key"));
+                }
             };
             match key.as_str() {
                 KEY_USER_UUID => set_once(&mut user_uuid, take_uuid(v)?, KEY_USER_UUID)?,
@@ -675,7 +690,18 @@ fn set_once<T>(slot: &mut Option<T>, v: T, key: &'static str) -> Result<(), Bund
 fn take_text(v: Value) -> Result<String, BundleError> {
     match v {
         Value::Text(s) => Ok(s),
-        _ => Err(BundleError::Malformed("expected text string")),
+        // Bound as `mut other` rather than `_` so the rejected value can be
+        // wiped. `v` reached this frame through `SecretEntries::take_next`,
+        // i.e. it has already left that type's protection, and a bare
+        // `_ =>` arm dropped it as an ordinary `ciborium::Value`. What lands
+        // here is by construction NOT the expected type, so "this position
+        // holds a display name" says nothing about it — a forward-compat or
+        // malformed bundle can put a secret-key-shaped `Value::Bytes` under
+        // any recognised key. Same shape in all six `take_*` helpers below.
+        mut other => {
+            crate::cbor::wipe_leaked_value(&mut other);
+            Err(BundleError::Malformed("expected text string"))
+        }
     }
 }
 
@@ -686,19 +712,32 @@ fn take_u64(v: Value) -> Result<u64, BundleError> {
     // in the §5 record, so the variant name still describes the failure).
     let i = match v {
         Value::Integer(i) => i,
-        _ => return Err(BundleError::Malformed("expected unsigned integer")),
+        mut other => {
+            crate::cbor::wipe_leaked_value(&mut other);
+            return Err(BundleError::Malformed("expected unsigned integer"));
+        }
     };
     i.try_into().map_err(|_| BundleError::InvalidTimestamp)
 }
 
 fn take_uuid(v: Value) -> Result<[u8; USER_UUID_LEN], BundleError> {
-    let bytes = match v {
+    let b = match v {
         Value::Bytes(b) => b,
-        _ => return Err(BundleError::InvalidUuid),
+        mut other => {
+            crate::cbor::wipe_leaked_value(&mut other);
+            return Err(BundleError::InvalidUuid);
+        }
     };
+    // Wrapped BEFORE the length check, exactly as `take_fixed_bytes_into`
+    // does and for the same reason: the predecessor's
+    // `bytes.try_into().map_err(|_: Vec<u8>| ..)` took the `Vec` BY VALUE on
+    // the wrong-length path and dropped it unwiped. "UUID position" describes
+    // what a well-formed bundle puts here, not what these bytes are.
+    let bytes = SecretBytes::new(b);
     bytes
+        .expose()
         .try_into()
-        .map_err(|_: Vec<u8>| BundleError::InvalidUuid)
+        .map_err(|_| BundleError::InvalidUuid)
 }
 
 /// Write-through fixed-size byte extractor.
@@ -734,8 +773,12 @@ fn take_fixed_bytes_into<const N: usize>(
     field: &'static str,
     out: &mut [u8; N],
 ) -> Result<(), BundleError> {
-    let Value::Bytes(b) = v else {
-        return Err(BundleError::Malformed("expected byte string"));
+    let b = match v {
+        Value::Bytes(b) => b,
+        mut other => {
+            crate::cbor::wipe_leaked_value(&mut other);
+            return Err(BundleError::Malformed("expected byte string"));
+        }
     };
     let bytes = SecretBytes::new(b);
     let got = bytes.len();
@@ -769,8 +812,12 @@ fn take_sized_secret(
     field: &'static str,
     expected: usize,
 ) -> Result<Sensitive<Vec<u8>>, BundleError> {
-    let Value::Bytes(b) = v else {
-        return Err(BundleError::Malformed("expected byte string"));
+    let b = match v {
+        Value::Bytes(b) => b,
+        mut other => {
+            crate::cbor::wipe_leaked_value(&mut other);
+            return Err(BundleError::Malformed("expected byte string"));
+        }
     };
     // `Sensitive::new` MOVES the `Vec`, so this is a wrap, not a copy.
     let bytes = Sensitive::new(b);
@@ -798,14 +845,35 @@ fn take_sized_public(
     field: &'static str,
     expected: usize,
 ) -> Result<Vec<u8>, BundleError> {
-    let Value::Bytes(b) = v else {
-        return Err(BundleError::Malformed("expected byte string"));
+    let mut b = match v {
+        Value::Bytes(b) => b,
+        mut other => {
+            crate::cbor::wipe_leaked_value(&mut other);
+            return Err(BundleError::Malformed("expected byte string"));
+        }
     };
-    if b.len() != expected {
+    let got = b.len();
+    if got != expected {
+        // Wiped in place rather than wrapper-covered, deliberately. This is
+        // the "provably adjacent" case CLAUDE.md's zeroize-discipline section
+        // keeps the trailing-wipe form for: nothing fallible or panicking
+        // sits between the bind above and this statement, so there is no
+        // early-exit window for a `Drop` to have to cover. Wrapping instead
+        // would cost a full copy back out on the SUCCESS path, because
+        // `SecretBytes` has no consuming accessor — only `expose(&self)` —
+        // and this function's success value is a public key.
+        //
+        // It still needs the wipe: "public key position" describes what a
+        // WELL-FORMED bundle puts here, not what these bytes are. A
+        // 2400-byte ML-KEM-768 SECRET key stored under `ml_kem_768_pk`
+        // (which expects 1184) lands on exactly this reject, and the
+        // predecessor returned from here with the `Vec` still intact.
+        use zeroize::Zeroize as _;
+        b.zeroize();
         return Err(BundleError::WrongKeySize {
             field,
             expected,
-            got: b.len(),
+            got,
         });
     }
     Ok(b)
@@ -1045,6 +1113,15 @@ mod tests {
     /// duplicate so there is a genuinely not-yet-consumed secret key still
     /// inside `SecretEntries` when `DuplicateField` fires and `map` drops —
     /// not just a counter increment on an already-empty container.
+    ///
+    /// **Exact count, not `> before`** (#560 review). This test used the
+    /// weaker form its two G1 siblings below explicitly reject, and their
+    /// reasoning applies here too: `> before` cannot distinguish "the
+    /// remainder was wiped" from "something, anything, ticked the counter".
+    /// The delta was MEASURED at exactly 1 — one `SecretEntries::drop`,
+    /// carrying the untouched `ed25519_sk` entry — and no other wipe runs on
+    /// this path, since the duplicate fires before any `wipe_leaked_value`
+    /// arm is reachable.
     #[test]
     fn an_early_return_inside_the_field_loop_still_wipes() {
         let bytes = duplicate_field_bundle_cbor_for_test();
@@ -1056,9 +1133,12 @@ mod tests {
             matches!(err, BundleError::DuplicateField(s) if s == KEY_X25519_SK),
             "expected DuplicateField(\"x25519_sk\"), got {err:?}"
         );
-        assert!(
-            crate::cbor::wipe_calls() > before,
-            "the early-return path did not wipe the not-yet-consumed entries (#548)"
+        assert_eq!(
+            crate::cbor::wipe_calls(),
+            before + 1,
+            "expected exactly 1 wipe (SecretEntries::drop, carrying the \
+             not-yet-consumed ed25519_sk entry) — the early-return path did \
+             not wipe the remainder (#548)"
         );
     }
 
@@ -1106,6 +1186,14 @@ mod tests {
     /// forward-compatible v2 bundle field whose KEY encoding a v1 reader
     /// cannot even interpret as text.
     ///
+    /// **The KEY is `Value::Bytes`, not `Value::Integer`.** An earlier
+    /// version of this test used `Value::Integer(0)`, which carries no heap
+    /// payload at all — so it could not detect that this arm wiped `v` and
+    /// dropped `k` intact, which is precisely the defect it now pins. The
+    /// key here is therefore ALSO secret-key-shaped: the arm's own shape
+    /// check guarantees whatever reaches it is not text, and `Value::Bytes`
+    /// is the interesting member of that set.
+    ///
     /// **The assertion must be an EXACT count, not `> before`.** A first
     /// draft of this test used `> before` and passed even with
     /// `wipe_leaked_value` deleted (verified by mutation): `map`
@@ -1115,17 +1203,26 @@ mod tests {
     /// wipe. That one tick is a constant here, present with or without the
     /// G1 fix, and `> before` cannot tell "map's own drop fired" apart from
     /// "map's own drop fired AND `wipe_leaked_value` also ran". Exactly two
-    /// ticks (`SecretEntries::drop` + `wipe_leaked_value`) is what the fix
-    /// actually adds; one entry means one `take_next` call, so nothing else
-    /// on this path can tick the counter a third time.
+    /// ticks (`SecretEntries::drop` + the two `wipe_leaked_value` calls) is
+    /// what the fix actually adds; one entry means one `take_next` call, so
+    /// nothing else on this path can tick the counter a fourth time.
+    ///
+    /// That the counter TICKED is not by itself proof that anything was
+    /// overwritten — `wipe_leaked_value` increments before it walks, so a
+    /// vacuous body would still satisfy this assertion. The complementary
+    /// half is `cbor::secret_tree::tests::wipe_leaked_value_overwrites_
+    /// every_payload_it_is_given`, which is effect-based. Neither test
+    /// alone pins the property; together they do.
     #[test]
     fn non_string_map_key_wipes_its_value() {
         let mut rng = ChaCha20Rng::from_seed([88u8; 32]);
         let mut secret_shaped = [0u8; X25519_SK_LEN];
         rng.fill_bytes(&mut secret_shaped);
+        let mut secret_shaped_key = [0u8; X25519_SK_LEN];
+        rng.fill_bytes(&mut secret_shaped_key);
 
         let entries = vec![(
-            Value::Integer(0.into()),
+            Value::Bytes(secret_shaped_key.to_vec()),
             Value::Bytes(secret_shaped.to_vec()),
         )];
         let mut bytes = Vec::new();
@@ -1140,10 +1237,12 @@ mod tests {
         );
         assert_eq!(
             crate::cbor::wipe_calls(),
-            before + 2,
-            "expected 2 wipes (SecretEntries::drop on the now-empty map, plus \
-             wipe_leaked_value on `v`) — the non-string-key early return did \
-             not wipe its value (#548 fix-round-1 G1)"
+            before + 3,
+            "expected 3 wipes (SecretEntries::drop on the now-empty map, plus \
+             wipe_leaked_value on BOTH `k` and `v`) — the non-string-key early \
+             return must wipe the key as well as the value, since the check it \
+             just failed guarantees `k` is some non-text Value and Value::Bytes \
+             is in that set (#548 fix-round-1 G1, key half added in review)"
         );
     }
 
