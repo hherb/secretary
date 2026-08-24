@@ -655,10 +655,30 @@ pub(crate) fn decode_value(value: &Value) -> Result<Record, RecordError> {
 /// borrows a record subtree that in the nested case belongs to a BLOCK's
 /// own `SecretValueTree` — neither caller can hand this function ownership
 /// without first cloning the whole entry list, which would reintroduce the
-/// unwiped copy this design removes (#547 Task 6). The unavoidable cost of
-/// borrowing instead is documented at the two conversion sites below where
-/// a scalar is actually copied out (the forward-compat `unknown` arm here,
-/// and the field-value arm in [`parse_field_map`]).
+/// unwiped copy this design removes (#547 Task 6).
+///
+/// **The unavoidable cost of borrowing, stated as a class rather than a
+/// count** (an earlier version of this comment named "the two conversion
+/// sites below", which was wrong — a fix-round-1 review found five more it
+/// missed, and a wrong count is worse than none): every `take_*` helper
+/// this function and [`parse_field_map`] call — `take_uuid`, `take_text`,
+/// `take_tags`, `take_u64`, `take_bool` — plus the inline `Value::Map` key
+/// match in this function, in [`parse_field_map`], and in
+/// `take_fields_map`, copies its scalar out of the borrowed `Value`
+/// (`.clone()` where the pre-#547 code moved). Exactly ONE of those
+/// destinations is zeroizing: `parse_field_map`'s `KEY_VALUE` arm, which
+/// lands in a `SecretString`/`SecretBytes` (documented at that call site).
+/// Every other destination is a plain, non-zeroizing `String` / `bool` /
+/// `u64` / `[u8; N]` — including `take_fields_map`'s field-NAME copy,
+/// which is decrypted plaintext in exactly the class CLAUDE.md's #474
+/// section describes (`RecordError::DuplicateKey` once leaked one by
+/// formatting it into an error message). None of these plain copies is
+/// NEW residue relative to before this task: the pre-#547 code held the
+/// identical owned value at the identical point in the identical
+/// non-zeroizing container (a `BTreeMap<String, _>` key, a local
+/// `String`/`Vec<String>`/`bool`/`u64`) — it was moved there instead of
+/// cloned. Borrowing changed how the value arrives, not whether its
+/// destination zeroizes.
 fn parse_record_map(map: &[(Value, Value)]) -> Result<Record, RecordError> {
     let mut record_uuid: Option<[u8; RECORD_UUID_LEN]> = None;
     let mut record_type: Option<String> = None;
@@ -768,6 +788,13 @@ fn take_fields_map(v: &Value) -> Result<BTreeMap<String, RecordField>, RecordErr
     };
     let mut out: BTreeMap<String, RecordField> = BTreeMap::new();
     for (index, (k, val)) in entries.iter().enumerate() {
+        // `fname` is a decrypted, user-authored field NAME — the same
+        // content class #474 names (`RecordError::DuplicateKey` used to
+        // leak one by formatting it). This clone lands in a plain,
+        // non-zeroizing `BTreeMap<String, _>` key, identical to the
+        // pre-#547 code's destination for the same moved value — see
+        // `parse_record_map`'s doc comment for the full class-level
+        // statement this site is called out from.
         let fname = match k {
             Value::Text(s) => s.clone(),
             _ => return Err(RecordError::NonTextKey),

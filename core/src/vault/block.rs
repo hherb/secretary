@@ -999,7 +999,8 @@ fn plaintext_to_canonical(plaintext: &BlockPlaintext) -> CanonicalMap<'_> {
 
 /// Strict canonical-CBOR decoder for a block plaintext (§6.3).
 ///
-/// Validates the same rules as [`super::record::decode`]:
+/// Validates rules 1-6 and 8 the same way [`super::record::decode`] does;
+/// rule 7 is the one exception, called out below where it stops matching:
 ///
 /// 1. Top-level item is a map.
 /// 2. All map keys are text strings.
@@ -2235,6 +2236,21 @@ mod tests {
     fn reorder_first_nested_record_keys_for_test(good: &[u8]) -> Vec<u8> {
         let mut value: Value =
             ciborium::de::from_reader(good).expect("parse canonical block plaintext");
+
+        // Structural check that "only the reorder differs" is a property
+        // of this parse/re-emit round-trip, not an inferred assumption:
+        // re-emit the UNMUTATED tree first and require it to reproduce
+        // `good` byte-for-byte, before touching anything.
+        let mut baseline = Vec::new();
+        ciborium::ser::into_writer(&value, &mut baseline)
+            .expect("ciborium encode of the unmutated parsed tree");
+        assert_eq!(
+            baseline, good,
+            "plain ciborium re-emit of the unmutated tree must reproduce \
+             `good` byte-for-byte, or the tampered output below could \
+             differ from `good` for some reason other than the reorder"
+        );
+
         let Value::Map(entries) = first_record_value_mut(&mut value) else {
             panic!("record must be a map");
         };
@@ -2337,7 +2353,10 @@ mod tests {
         let tampered = indefinite_length_in_first_record_for_test(&good);
         assert_ne!(tampered, good, "tamper helper did not change the bytes");
         assert!(
-            decode_plaintext(&tampered).is_err(),
+            matches!(
+                decode_plaintext(&tampered),
+                Err(BlockError::NonCanonicalEncoding)
+            ),
             "block-level re-encode did not reject an indefinite-length nested item"
         );
     }
