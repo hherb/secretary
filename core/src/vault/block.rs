@@ -86,7 +86,8 @@ use crate::version::{FORMAT_VERSION, MAGIC, SUITE_ID};
 use zeroize::Zeroize as _;
 
 use super::canonical::{
-    reject_floats_and_tags, to_canonical_vec, CanonicalError, CanonicalMap, CanonicalValue,
+    cbor_size_bound, reject_floats_and_tags, to_canonical_vec, CanonicalError, CanonicalMap,
+    CanonicalValue,
 };
 use super::record::{self, Record, RecordError, UnknownValue, RECORD_UUID_LEN};
 
@@ -1178,8 +1179,14 @@ fn take_records(v: &Value) -> Result<Vec<Record>, BlockError> {
 /// don't have a public `UnknownValue::from_value(Value)` constructor by
 /// design (UnknownValue's wrapped field is private), so we round-trip
 /// through canonical CBOR — which also re-validates no-float / no-tag.
+///
+/// Pre-reserved (#560 review), for the same reason
+/// `UnknownValue::to_canonical_cbor` is: a bare `Vec::new()` grows by
+/// doubling and each realloc frees a partial copy of this forward-compat
+/// subtree unwiped. `v` here borrows from the block's `SecretValueTree`,
+/// i.e. decrypted block plaintext.
 fn value_to_unknown(v: &Value) -> Result<UnknownValue, BlockError> {
-    let mut buf = Vec::new();
+    let mut buf = Vec::with_capacity(cbor_size_bound(v));
     ciborium::ser::into_writer(v, &mut buf)
         .map_err(|e| BlockError::CborEncode(classify_ser(&e)))?;
     let u = UnknownValue::from_canonical_cbor(&buf)?;
@@ -2092,12 +2099,18 @@ mod tests {
     /// exactly that call (Task 4) — so a `CanonicalMap::serialize`
     /// comparator regression affects both sides identically and produces
     /// NO divergence at the record level, no matter how adversarial
-    /// `random_record`'s field names are; verified by execution (see the
-    /// mutation check in `task-5-report.md`'s fix-round-1 section — the
-    /// SAME mutation fails `record.rs`'s own differential test, which
+    /// `random_record`'s field names are; verified by execution at the time
+    /// — the SAME mutation fails `record.rs`'s own differential test, which
     /// compares `CanonicalMap::serialize` against the independently
     /// implemented `canonical_sort_entries`, but does not fail this one
-    /// without the change below). At the BLOCK level the two paths
+    /// without the change below. (That evidence was cited as
+    /// `task-5-report.md`'s fix-round-1 section until the #560 review; the
+    /// per-task SDD reports are under a gitignored `.superpowers/` and not
+    /// in the repo, so the conclusion is stated here instead of pointed
+    /// at. Unlike the records-ORDER mutation on
+    /// `block_encode_matches_the_round_trip_path_byte_for_byte` below, this
+    /// one was NOT re-run in that review — it is reported as the
+    /// point-in-time finding it is.) At the BLOCK level the two paths
     /// genuinely diverge: the oracle sorts unknowns via
     /// `canonical_sort_entries`, production via `CanonicalMap::serialize`
     /// — DIFFERENT implementations — so a multi-byte block-level unknown
@@ -2155,9 +2168,17 @@ mod tests {
     /// `n=1` where that one record itself has ZERO fields (an empty
     /// INNER map — a second, independent empty-container edge case), and
     /// two multi-record blocks (`n=2`, `n=3`) so the records array's
-    /// ORDER is actually exercised — see the mutation check recorded in
-    /// `task-5-report.md`, which breaks the new path by reversing that
-    /// order and confirms this test catches it.
+    /// ORDER is actually exercised. That last part is load-bearing and was
+    /// re-verified by execution in the #560 review: adding `.rev()` to
+    /// `plaintext_to_canonical`'s records-array `.map(..).collect()` — i.e.
+    /// emitting the records backwards — makes exactly this test FAIL. The
+    /// `n=0` and `n=1` cases cannot see that mutation; the multi-record
+    /// cases are what catch it.
+    ///
+    /// (That evidence used to be cited as "the mutation check recorded in
+    /// `task-5-report.md`". The per-task SDD reports live under a gitignored
+    /// `.superpowers/` and are not in the repo, so the pointer could not be
+    /// followed — it is re-run and inlined here instead.)
     #[test]
     fn block_encode_matches_the_round_trip_path_byte_for_byte() {
         let mut rng = rand_core::OsRng;
@@ -2868,6 +2889,68 @@ mod tests {
         assert!(
             !format!("{err}").contains(KEY_BLOCK_NAME),
             "the map key leaked into the message: {err}"
+        );
+    }
+
+    /// #557 — `decode_plaintext`'s `SecretValueTree` wrap must be pinned.
+    ///
+    /// Until this test, deleting `SecretValueTree::new` at the top of
+    /// `decode_plaintext` left the ENTIRE suite green: `block.rs` had zero
+    /// `wipe_calls()` assertions, so the highest-volume of the four
+    /// production roots — this one owns a copy of every record in the
+    /// block, i.e. more decrypted plaintext than the other three combined
+    /// — was the only one whose wrap nothing observed. `record::decode`
+    /// (`decode_wipes_its_parsed_tree_on_an_early_return`) and both
+    /// `manifest` roots already had theirs.
+    ///
+    /// A duplicate `block_name` is the trigger because it fails inside
+    /// `parse_plaintext_map`, i.e. AFTER the wrap and BEFORE the function's
+    /// normal exit — which is exactly the early-`?` window `Drop` exists to
+    /// cover and a trailing wipe statement would miss. The block-name value
+    /// is deliberately non-trivial text so the tree being wiped actually
+    /// holds a payload.
+    ///
+    /// **Exact count, not `> before`**, matching the discipline
+    /// `unlock::bundle`'s two G1 tests arrived at: the delta on this path
+    /// was MEASURED at exactly 1, and 1 is the whole mechanism — the single
+    /// `SecretValueTree::drop`. Nothing else on this path ticks the shared
+    /// counter (`block.rs` constructs no `SecretEntries` and calls
+    /// `wipe_leaked_value` nowhere), so `== before + 1` says precisely "the
+    /// wrap exists and its `Drop` fired here", where `> before` would also
+    /// accept a future interior wrap arriving while this one silently went
+    /// away.
+    ///
+    /// That the counter TICKED is not proof that anything was overwritten —
+    /// `SecretValueTree::wipe` increments before it walks. The effect half
+    /// lives in `cbor::secret_tree::tests` (`wipe_reaches_every_depth_and_
+    /// every_container_arm`), which is where the recursive walk is pinned
+    /// for all three of its entry points.
+    #[test]
+    fn decode_plaintext_wipes_its_parsed_tree_on_an_early_return() {
+        let entries: Vec<(Value, Value)> = vec![
+            (
+                Value::Text(KEY_BLOCK_NAME.into()),
+                Value::Text("quarterly-payroll-secrets".into()),
+            ),
+            (
+                Value::Text(KEY_BLOCK_NAME.into()),
+                Value::Text("quarterly-payroll-secrets-dup".into()),
+            ),
+        ];
+        let bytes = cbor_map_bytes_unsorted(&entries);
+
+        let before = crate::cbor::wipe_calls();
+        let err = decode_plaintext(&bytes).expect_err("duplicate key must be rejected");
+        assert!(
+            matches!(err, BlockError::DuplicateKey { .. }),
+            "expected DuplicateKey, got {err:?}"
+        );
+        assert_eq!(
+            crate::cbor::wipe_calls(),
+            before + 1,
+            "expected exactly 1 wipe (SecretValueTree::drop on the early \
+             return out of parse_plaintext_map) — decode_plaintext's wrap is \
+             gone, or no longer covers this path (#557)"
         );
     }
 

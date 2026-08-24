@@ -62,7 +62,8 @@ use crate::identity::fingerprint::Fingerprint;
 use crate::version::{FILE_KIND_MANIFEST, FORMAT_VERSION, MAGIC, SUITE_ID};
 
 use super::canonical::{
-    canonical_sort_entries, encode_canonical_map, reject_floats_and_tags, CanonicalError,
+    canonical_sort_entries, cbor_size_bound, encode_canonical_map, reject_floats_and_tags,
+    CanonicalError,
 };
 use super::record::{RecordError, UnknownValue};
 
@@ -693,36 +694,42 @@ fn record_error_to_cbor_fault(e: RecordError) -> CborFault {
 /// earlier version of this comment named (#547 Task 8 review — corrected
 /// here rather than silently reworded, per this doc's own discipline):
 /// `bytes`, the `to_canonical_cbor` serialisation, and `v`, the
-/// freshly-parsed tree. Only `v` is covered — wrapped in
-/// [`SecretValueTree`] before extraction; `bytes` is a plain `Vec<u8>`,
-/// freed unwiped when this function returns, unchanged from before this
-/// task.
+/// freshly-parsed tree. **`bytes` is the one that is covered**, and the
+/// #560 review is what swapped them round, because Task 7b had it exactly
+/// backwards:
 ///
-/// The wrap is also **residue-neutral on the copy that escapes this
-/// function**, not a net reduction: before this task, `v` moved directly
-/// into the return value, so one unwiped `Value` escaped either way.
-/// After this task, `v` is deep-cloned (`.clone()`, required because
-/// `SecretValueTree` deliberately has no consuming accessor — see its
-/// type doc) and the clone escapes unwiped into the caller's `entries` /
-/// `inner` `Vec<(Value, Value)>`, a PLAIN, non-zeroizing destination (the
-/// same class `block_name`'s destination is — see `parse_block_entry`'s
-/// doc). One unwiped copy escapes either way. The actual gain is
-/// narrower than "wrapped it": the ORIGINAL freshly-parsed buffer — the
-/// one the clone was taken from — is now zeroized instead of silently
-/// freed, which would matter if this function ever grew a `?`-early-return
-/// between the parse and the return; it has none today (no fallible or
-/// panicking operation sits between them, so there is no early-return
-/// window for `Drop` to newly cover — the mutation test below pins that
-/// the wipe still fires on the one exit path that exists). The cost is
-/// one deep clone per forward-compat unknown value per manifest encode.
+/// - `bytes` has a genuine early-return window — the `?` on the
+///   `from_reader` line below sits between its fill and the end of the
+///   function — so wrapping it in [`SecretBytes`] makes `Drop` cover an
+///   exit that a trailing statement would miss. That is the whole
+///   justification for a wrapper, and it applies here.
+/// - `v` has **no** such window. Nothing fallible or panicking sits
+///   between the parse and the return, so a [`SecretValueTree`] wrap
+///   covered no exit that was not already covered. Task 7b wrapped it
+///   anyway, and because that type deliberately has no consuming accessor,
+///   the wrap FORCED a `.clone()` — a full deep copy of the forward-compat
+///   subtree — to get the value back out. The residue was unchanged (one
+///   unwiped `Value` escaped into the caller's plain, non-zeroizing
+///   `Vec<(Value, Value)>` either way), so the wrap bought nothing and
+///   cost a deep clone of decrypted content per unknown per manifest
+///   encode. It is removed; `v` moves straight into the return value as it
+///   did before Task 7b.
+///
+/// The `SecretBytes` wrap on `bytes` is not observable from a test — it
+/// does not tick `cbor::wipe_calls()`, which only `secret_tree`'s three
+/// entry points do — so reverting it would leave the suite green. That is
+/// the class **#558** already tracks for the AEAD plaintext buffers, and
+/// this site now joins it rather than pretending to a coverage it lacks.
+/// The counter-based test Task 7b wrote for the removed `SecretValueTree`
+/// wrap is retired with the wrap it pinned.
 fn unknown_value_inner(u: &UnknownValue) -> Result<Value, ManifestError> {
-    let bytes = u
-        .to_canonical_cbor()
-        .map_err(|e| ManifestError::CborEncode(record_error_to_cbor_fault(e)))?;
-    let v: Value = ciborium::de::from_reader(bytes.as_slice())
+    let bytes = SecretBytes::new(
+        u.to_canonical_cbor()
+            .map_err(|e| ManifestError::CborEncode(record_error_to_cbor_fault(e)))?,
+    );
+    let v: Value = ciborium::de::from_reader(bytes.expose())
         .map_err(|e| ManifestError::CborDecode(classify_de(&e)))?;
-    let parsed = SecretValueTree::new(v);
-    Ok(parsed.as_value().clone())
+    Ok(v)
 }
 
 // ---------------------------------------------------------------------------
@@ -1363,8 +1370,16 @@ fn take_integer_i128(v: &Value, field: &'static str) -> Result<i128, ManifestErr
 /// still allocates its own fresh `Value` by re-parsing `buf`, exactly as
 /// it always has; that allocation is `UnknownValue`'s own, not a copy
 /// this function introduces.
+///
+/// The output buffer is pre-reserved (#560 review). Task 7b removed the
+/// added CLONE from this function but left `buf` a bare `Vec::new()`, which
+/// grows by doubling and frees each old buffer unwiped — and `v` borrows
+/// from `decode_manifest`'s `SecretValueTree`, so this is the same content
+/// the wrap exists to protect. Reserving is what `to_canonical_vec` and
+/// `encode_canonical_map` already do; this site and its two siblings in
+/// `record.rs` / `block.rs` were missed by that pass.
 fn value_to_unknown(v: &Value) -> Result<UnknownValue, ManifestError> {
-    let mut buf = Vec::new();
+    let mut buf = Vec::with_capacity(cbor_size_bound(v));
     ciborium::ser::into_writer(v, &mut buf)
         .map_err(|e| ManifestError::CborEncode(classify_ser(&e)))?;
     UnknownValue::from_canonical_cbor(&buf)
@@ -2422,28 +2437,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn encode_manifest_wipes_unknown_value_inners_intermediate_parse() {
-        // `unknown_value_inner` (#547 Task 7b) round-trips a forward-compat
-        // `UnknownValue` through a fresh `ciborium::de::from_reader` parse
-        // on every encode. Wrapping that parse in `SecretValueTree` wipes
-        // the intermediate copy before it is cloned out; this pins that the
-        // wipe actually fires, not merely that the wrapper type compiles —
-        // deleting the wrap (reverting to a bare `Ok(v)`) makes this fail.
-        let mut m = minimal_manifest();
-        m.unknown.insert(
-            "future_field".into(),
-            UnknownValue::from_canonical_cbor(&[0x82, 0x01, 0x02])
-                .expect("UnknownValue from canonical bytes"),
-        );
-
-        let before = crate::cbor::wipe_calls();
-        let _ = encode_manifest(&m).expect("encode with unknown");
-        assert!(
-            crate::cbor::wipe_calls() > before,
-            "encode_manifest did not wipe unknown_value_inner's intermediate parse"
-        );
-    }
+    // `encode_manifest_wipes_unknown_value_inners_intermediate_parse` stood
+    // here until the #560 review. It pinned `unknown_value_inner`'s
+    // `SecretValueTree` wrap — and that wrap is gone, because it covered no
+    // early-return window and forced a deep clone of decrypted forward-compat
+    // content to get the value back out of a type with no consuming accessor.
+    // See that function's doc for the full reasoning and for what replaced it
+    // (a `SecretBytes` wrap on `bytes`, which DOES have a window). The test is
+    // retired with the wrap it pinned rather than repointed: the replacement
+    // is not counter-observable, which is the #558 class, and writing a test
+    // that asserts nothing about it would be worse than admitting the gap.
 
     // ---- Decode wipes its parsed tree (#547 Task 7b) ----------------------
 
@@ -2451,7 +2454,15 @@ mod tests {
     /// through `decode_manifest` and prove `SecretValueTree::drop` actually
     /// fires, mirroring `record::decode`'s
     /// `decode_wipes_its_parsed_tree_on_an_early_return` and
-    /// `block::decode_plaintext`'s equivalent.
+    /// `block::decode_plaintext`'s
+    /// `decode_plaintext_wipes_its_parsed_tree_on_an_early_return`.
+    ///
+    /// That second citation was FALSE when first written and is corrected
+    /// rather than dropped: no such block test existed, `block.rs` had zero
+    /// `wipe_calls()` assertions of any kind, and open issue #557 said so
+    /// outright — so this comment told a reader the opposite of the tracker.
+    /// The block test was written during the #560 review; the claim is true
+    /// now because the code changed, not because the wording softened.
     ///
     /// `manifest_version` — the FIRST entry `manifest_to_entries` emits —
     /// is corrupted to the wrong CBOR type, so `parse_manifest_map`'s very

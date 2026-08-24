@@ -75,7 +75,8 @@ use crate::cbor::{classify_de, classify_ser, CborFault, SecretValueTree};
 use crate::crypto::secret::{SecretBytes, SecretString};
 
 use super::canonical::{
-    reject_floats_and_tags, to_canonical_vec, CanonicalError, CanonicalMap, CanonicalValue,
+    cbor_size_bound, reject_floats_and_tags, to_canonical_vec, CanonicalError, CanonicalMap,
+    CanonicalValue,
 };
 
 // ---------------------------------------------------------------------------
@@ -302,8 +303,19 @@ impl UnknownValue {
     }
 
     /// Serialise back to canonical CBOR.
+    ///
+    /// Pre-reserved (#560 review). A bare `Vec::new()` here grows by
+    /// doubling — `ciborium` writes into a `Vec<u8>` via `extend_from_slice`
+    /// — and every realloc frees the old buffer UNWIPED. That buffer holds
+    /// a forward-compat unknown subtree, which is decrypted content this
+    /// version simply cannot interpret: `record_to_canonical`'s own comment
+    /// makes the point that a v1 client holding a v2 record may be carrying
+    /// secret content in exactly these keys. It is the same hazard
+    /// `to_canonical_vec` and `encode_canonical_map` each pre-reserve
+    /// against, and this was one of three sibling sites the pass that added
+    /// those missed.
     pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, RecordError> {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(cbor_size_bound(&self.0));
         ciborium::ser::into_writer(&self.0, &mut buf)
             .map_err(|e| RecordError::CborEncode(classify_ser(&e)))?;
         Ok(buf)
@@ -1418,10 +1430,13 @@ mod tests {
         // tie-break either comparator reaches, so a char-count regression
         // would have been invisible to a fixture containing only "k" and
         // "日" (a defect an earlier version of this comment did not
-        // notice — the property IS separately pinned at
-        // `canonical_value_equivalence.rs`'s
-        // `map_key_sort_crosses_head_length_boundary_and_uses_byte_not_char_length`,
-        // which is where the earlier version's claim actually held).
+        // notice — the property IS separately pinned by
+        // `map_key_sort_crosses_head_length_boundary_and_uses_byte_not_char_length`
+        // in `vault::canonical::value`'s test module, which is where the
+        // earlier version's claim actually held). That citation named
+        // `canonical_value_equivalence.rs` until the #560 review; this
+        // branch deleted that file and moved the test into `value.rs`,
+        // leaving the pointer dangling while the test itself was fine.
         fields.insert(
             "\u{65e5}".to_string(),
             RecordField {
