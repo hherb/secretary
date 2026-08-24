@@ -62,10 +62,17 @@ pub(crate) use secret_tree::wipe_leaked_value;
 // own production decode path actually invokes a wipe, not merely that
 // `secret_tree`'s own tests can — the compile error pins the binding's
 // shape, `secret_tree/tests.rs` pins the mechanism, and this re-export is
-// what lets a caller pin the composition of the two. Two callers do, today:
-// `vault::record::tests::decode_wipes_its_parsed_tree_on_an_early_return`
-// and `unlock::bundle::tests::an_early_return_inside_the_field_loop_still_wipes`
-// / `..._wipes_its_entry_list`; `vault::block` has no equivalent yet.
+// what lets a caller pin the composition of the two.
+//
+// WHICH caller modules do so is deliberately NOT enumerated here. The list
+// that stood in this comment was already wrong when the #560 review read
+// it — Task 7b had added `vault::manifest` without updating it, and
+// `vault::block` gained one during that review, so a two-name list was
+// stale in both directions. That is ruling R11's case exactly, and the
+// same treatment `vault::canonical`'s re-export comment already takes:
+// `grep -rn "crate::cbor::wipe_calls()" core/src` answers it in one
+// command and cannot go stale. Prefer that over a cached grep result
+// nothing validates.
 #[cfg(test)]
 pub(crate) use secret_tree::wipe_calls;
 

@@ -1243,10 +1243,26 @@ own repeated warning against exactly that shortcut:
 - **`sync/state.rs`'s `canonical_sort_entries` / `from_reader` calls.**
   `SyncState` carries `vault_uuid`, `device_uuid`, and vector-clock
   counters — no secret material. Out of scope.
-- **The remaining `from_reader` sites** are either the four production
-  roots already tabulated above, `identity/card.rs`'s two sites (no secret
-  content, see above), or `#[cfg(test)]`-gated (every hit in `block.rs`,
-  `record.rs`, `canonical/legacy.rs`'s and `bundle.rs`'s test modules).
+- **The remaining `from_reader` sites.** This bullet claimed they were
+  "either the four production roots already tabulated above,
+  `identity/card.rs`'s two sites, or `#[cfg(test)]`-gated". **That
+  three-bucket claim is false, and is corrected rather than reworded**
+  (#560 review). Two production sites fall in none of the three buckets:
+  - `record.rs`'s `UnknownValue::from_canonical_cbor` — and it is
+    **reachable from block decode**, not an isolated public entry point:
+    `block::value_to_unknown` re-serialises a decrypted block subtree into
+    a bare `Vec<u8>` and parses it back with no `SecretValueTree` wrap,
+    into an `UnknownValue` this memo separately notes has no `Zeroize`
+    impl. (`value_to_unknown`'s output buffer is at least pre-reserved as
+    of the #560 review, closing the realloc half; the parse itself is
+    still unwrapped.)
+  - `sync/state.rs` — discussed elsewhere in this memo, but not by this
+    sentence, and `SyncState` carrying no secret material is a property of
+    that type, not of the bucket list.
+
+  The lesson is the one this memo keeps re-learning: an exhaustiveness
+  claim stated as a closed list of buckets needs the census that produced
+  it re-run, or it silently narrows to "the sites I happened to tabulate".
 
 ### Still open — recorded so it is tracked, not merely discovered later
 
@@ -1273,13 +1289,33 @@ it was judged out of this slice's scope rather than because it was missed:
   Tracked as **#557**, alongside the observation that deleting the
   `decode_plaintext` wrap leaves every existing test green — i.e. nothing
   in the current suite pins that specific wrap's presence.
-- **The `take_*` helper family's shape-mismatch branches** (a field
-  present but the wrong CBOR major type) drop their `Value` unwiped on the
-  error return. Pre-existing, and lower severity than it looks: by the
-  time any of these run, the content has passed AEAD authentication, so it
-  came from a holder of the block/bundle/manifest key and cannot be
-  attacker-chosen ciphertext-controlled plaintext — but it is the same
-  general class as the rest of this section.
+- **~~The `take_*` helper family's shape-mismatch branches~~ — CLOSED in
+  the #560 review.** This bullet read: "(a field present but the wrong CBOR
+  major type) drop their `Value` unwiped on the error return. Pre-existing,
+  and lower severity than it looks: by the time any of these run, the
+  content has passed AEAD authentication…". The severity argument was and
+  remains sound. Two things about the DESCRIPTION were not:
+  - It said "the `take_*` helper family", unqualified. That is true only of
+    `unlock/bundle.rs`, whose five helpers took `v: Value` **by value**.
+    Every `take_*` in `record.rs`, `block.rs` and `manifest.rs` takes
+    `&Value` and therefore cannot drop it at all. As written the bullet
+    overstated the residual across three files that never had it.
+  - It named only *shape-mismatch* branches. The wrong-**LENGTH** branches
+    of `take_uuid` and `take_sized_public` were the same leak and are not
+    shape mismatches — `take_sized_public` freed a `Vec<u8>` intact on a
+    length reject, which is where a 2400-byte ML-KEM-768 SECRET key stored
+    under `ml_kem_768_pk` (expects 1184) would land.
+
+  All six `bundle.rs` helpers now wipe the rejected value (or wrap it
+  before the length check, the pattern `take_fixed_bytes_into` already
+  used). The non-string-key arm also now wipes the map **KEY**, which it
+  did not: it wiped `v` and dropped `k` intact, in the one arm whose shape
+  check guarantees `k` is some non-text `Value` — `Value::Bytes` among
+  them. One arm of the class remains open and is filed as **#566**:
+  `set_once`'s `DuplicateField` return drops an already-extracted
+  `String`/`Vec<u8>` temp unwiped, which needs a different mechanism
+  (`set_once` is generic over `T`) rather than the uniform `mut other =>
+  wipe` shape the rest took.
 - **`UnknownValue` has no `Zeroize` impl**
   (`#[derive(Debug, Clone, PartialEq)]` only). Every clone made of a
   `Value` before wrapping it in `UnknownValue` — `record.rs`'s direct
@@ -1293,12 +1329,40 @@ it was judged out of this slice's scope rather than because it was missed:
   exactly as uncovered before this slice existed), but the type itself is
   the residual gap, not any one call site.
 - **Issues filed during this slice:** **#555** (closed by Task 7),
-  **#556** (`record.rs` is over the project's 500-line split guideline —
-  2603 lines as of this task; it stood at 2544 when #556 was filed after
-  Task 6 and grew further in later tasks, so cite the current count, not
-  a task-report snapshot, if this number is needed again), **#557**
-  (`block::decode_plaintext`'s `SecretValueTree` wrap is unpinned by any
-  test that fails when it is removed — named above).
+  **#556** (`record.rs` is over the project's 500-line split guideline;
+  the count has moved every task and #556's own TITLE is now stale, so
+  run `wc -l` rather than citing any snapshot — this bullet has carried
+  three different numbers), **#557** (`block::decode_plaintext`'s
+  `SecretValueTree` wrap was unpinned — **closed in the #560 review** by
+  `decode_plaintext_wipes_its_parsed_tree_on_an_early_return`, an
+  exact-count assertion measured at exactly one
+  `SecretValueTree::drop`), **#558**, **#559** (**closed in the #560
+  review**: `CanonicalValue`/`CanonicalMap` and `CanonicalMap`'s
+  `with_capacity`/`push` now DECLARE `pub(crate)` instead of relying on a
+  private `mod value;` two files away).
+
+- **Filed by the #560 review**, all from the same slice's code:
+  **#561** (`ciborium`'s `from_reader` 4 KiB stack scratch buffer holds
+  decrypted plaintext and is never wiped — verified by execution, and
+  fixable via the public `from_reader_with_buffer`; not named in this
+  memo's "still open" list before now), **#562** (`golden_vault_001` is
+  pure ASCII with zero `unknown` keys, so the frozen-fixture anchor cannot
+  see a byte-length-vs-char-count comparator regression and never
+  constructs `CanonicalValue::Borrowed`), **#563**/**#564** (`block.rs` at
+  2895 lines and `manifest.rs` at 3844 lines, the two largest files in the
+  tree, both grown by this slice and neither previously filed alongside
+  #556), **#565** (`re_encoded`, promoted from this list's own prose to a
+  tracked issue), **#566** (the `set_once` residual described above),
+  **#567** (the `(len, bytes)` == RFC 8949 §4.2.1 sweep exists only in
+  prose — no committed proptest), **#568** (`parse_manifest_map` is the
+  one decoder of four with no duplicate-key detection, and it silently
+  last-wins), **#569** (`bundle.rs`, `manifest.rs` and `card.rs` encode
+  paths still copy secrets into an owned `ciborium::Value` rather than
+  borrowing through `CanonicalMap` — bundle's copies all four long-term
+  secret keys per encode), **#570** (`ciborium`'s decode side grows
+  payload buffers from capacity 0, so any field over 4 KiB reallocs
+  repeatedly and frees unwiped prefixes — measured at ~14 reallocations
+  for a 100 KB byte string).
 
 ---
 
@@ -1377,9 +1441,20 @@ follow-ups; flagged here so the next reviewer doesn't read
 **This whole "What is *not* covered" block is now stale, and is left in
 place — struck through in substance, not in markup — rather than deleted,
 per this memo's own discipline of correcting a falsified claim in place.**
-Option (a) above is exactly what #547 built: see "Resolved: canonical-CBOR
-codec-boundary residue (#547, #548)" above for the current state, which
-supersedes this paragraph. In short: the `s.expose().to_owned()` /
+#547 built **the first half of option (a)**, not option (a) — this
+sentence read "Option (a) above is exactly what #547 built" until the #560
+review, which is an overclaim inside the very paragraph whose job is
+retiring a stale warning. Option (a) as written above is "a CBOR encoder
+that takes a borrowed `&[u8]`/`&str` **and writes directly to a
+zeroize-typed output buffer**." `CanonicalValue`/`CanonicalMap` deliver the
+borrowing-input half in full. The output half they do not: `to_canonical_vec`
+returns a bare `Vec<u8>`, and the `SecretBytes` wrap happens in the caller
+afterwards (`block.rs`'s `encrypt_block`, `manifest.rs`'s `sign_manifest`)
+— which is why this memo's own "still open" list names `re_encoded`
+(#565) as exactly the unwiped output buffer option (a) called for. See
+"Resolved: canonical-CBOR codec-boundary residue (#547, #548)" above for
+the current state, which supersedes this paragraph. In short: the
+`s.expose().to_owned()` /
 `b.expose().to_vec()` copy this paragraph names by exact call shape no
 longer exists in `record.rs`'s production encode path (Task 4 replaced it
 with a borrow), and the parsed `ciborium::Value` tree on the decode path
