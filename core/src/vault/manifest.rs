@@ -686,21 +686,34 @@ fn record_error_to_cbor_fault(e: RecordError) -> CborFault {
 /// (#547 Task 7b, the second `from_reader` site the task's brief names
 /// alongside `decode_manifest`'s own): the caller is the ENCODE path,
 /// re-materialising an already-decrypted `UnknownValue` for splicing into
-/// the manifest body about to be serialised. Wrapping the freshly-parsed
-/// `v` in [`SecretValueTree`] before extracting it wipes THIS function's
-/// own intermediate copy on return rather than leaving it to an ordinary,
-/// unwiped `Value` drop — but stated precisely, this function's body has
-/// no fallible or panicking operation between the parse and the return, so
-/// there is no `?`-early-return window inside `unknown_value_inner` itself
-/// for `Drop` to newly cover; the mutation test below pins that the wipe
-/// still fires on the one exit path that exists. The `.clone()` is
-/// required because `SecretValueTree` deliberately has no consuming
-/// accessor (see its type doc) — the clone becomes the value actually
-/// spliced into the caller's `entries` / `inner` `Vec<(Value, Value)>`,
-/// a PLAIN, non-zeroizing destination (the same class `block_name`'s
-/// destination is — see `parse_block_entry`'s doc), unchanged from before
-/// this task. What changes is that the ORIGINAL freshly-parsed buffer is
-/// zeroized instead of silently freed.
+/// the manifest body about to be serialised.
+///
+/// This function has TWO intermediate plaintext copies, not the one an
+/// earlier version of this comment named (#547 Task 8 review — corrected
+/// here rather than silently reworded, per this doc's own discipline):
+/// `bytes`, the `to_canonical_cbor` serialisation, and `v`, the
+/// freshly-parsed tree. Only `v` is covered — wrapped in
+/// [`SecretValueTree`] before extraction; `bytes` is a plain `Vec<u8>`,
+/// freed unwiped when this function returns, unchanged from before this
+/// task.
+///
+/// The wrap is also **residue-neutral on the copy that escapes this
+/// function**, not a net reduction: before this task, `v` moved directly
+/// into the return value, so one unwiped `Value` escaped either way.
+/// After this task, `v` is deep-cloned (`.clone()`, required because
+/// `SecretValueTree` deliberately has no consuming accessor — see its
+/// type doc) and the clone escapes unwiped into the caller's `entries` /
+/// `inner` `Vec<(Value, Value)>`, a PLAIN, non-zeroizing destination (the
+/// same class `block_name`'s destination is — see `parse_block_entry`'s
+/// doc). One unwiped copy escapes either way. The actual gain is
+/// narrower than "wrapped it": the ORIGINAL freshly-parsed buffer — the
+/// one the clone was taken from — is now zeroized instead of silently
+/// freed, which would matter if this function ever grew a `?`-early-return
+/// between the parse and the return; it has none today (no fallible or
+/// panicking operation sits between them, so there is no early-return
+/// window for `Drop` to newly cover — the mutation test below pins that
+/// the wipe still fires on the one exit path that exists). The cost is
+/// one deep clone per forward-compat unknown value per manifest encode.
 fn unknown_value_inner(u: &UnknownValue) -> Result<Value, ManifestError> {
     let bytes = u
         .to_canonical_cbor()
@@ -1225,9 +1238,16 @@ fn parse_kdf_params(v: &Value) -> Result<KdfParamsRef, ManifestError> {
 // ---------------------------------------------------------------------------
 
 /// Borrows rather than consumes throughout this whole helper family (#547
-/// Task 7b): every caller holds `v`/`k` as a reference into a
-/// [`SecretValueTree`] one of `decode_manifest`'s own callers holds (see
-/// `parse_manifest_map`'s doc). Every scalar `take_*` clones out of the
+/// Task 7b): every caller holds `v`/`k` as a reference into the
+/// [`SecretValueTree`] `decode_manifest` **itself** holds — not one of
+/// `decode_manifest`'s callers, as an earlier version of this comment
+/// said (#547 Task 8 review — corrected here rather than silently
+/// reworded). No caller of `decode_manifest` holds a `SecretValueTree` at
+/// all; `manifest.rs` has exactly one root, owned by `decode_manifest`
+/// (see `parse_manifest_map`'s doc). That phrasing was carried over from
+/// `record.rs`, which genuinely has two `SecretValueTree`-related sites
+/// across its decode call chain — `manifest.rs` does not share that
+/// shape. Every scalar `take_*` clones out of the
 /// borrowed tree into a genuinely OWNED, plain (non-zeroizing) return
 /// value — `String`, `[u8; N]`, `u8`/`u16`/`u32`/`u64` — one added copy
 /// per call relative to the pre-Task-7b owning version, which moved the

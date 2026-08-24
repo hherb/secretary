@@ -697,9 +697,17 @@ review found the audit's own FIRST-named read-side sub-item still open —
 Value::Map(m) => m, ... }`) is a bare `Vec<(Value, Value)>`, and the loop
 that consumes and wipes it does so on the happy path only. Any early `?`
 inside that loop — `Malformed`, `DuplicateField`, `WrongKeySize`,
-`UnknownField` — drops the iterator with up to three long-term secret keys
-still populated. Tracked as **#548**. Read this section as closing residues
-1-3 of the DECODE HELPERS, not C-4 entire.
+`UnknownField` — drops the iterator with up to **four** long-term secret
+keys still populated, not three as an earlier version of this paragraph
+said (#547 Task 8 review — corrected here rather than silently reworded).
+Canonical RFC 8949 §4.2.1 key order (length-then-bytewise, recomputed by
+hand for all eleven §5 fields during Task 7's own review) puts
+`user_uuid` and `x25519_pk` first among the bundle's map entries — both
+non-secret — so a `Malformed`/`UnknownField` firing on either of those two
+leading entries leaves every one of the four secret-key entries
+(`x25519_sk`, `ed25519_sk`, `ml_dsa_65_sk`, `ml_kem_768_sk`) still
+unconsumed in the remainder of the list. Tracked as **#548**. Read this
+section as closing residues 1-3 of the DECODE HELPERS, not C-4 entire.
 
 Fixed by replacing the by-value `take_fixed_bytes` with write-through
 `take_fixed_bytes_into<const N: usize>(v: Value, field: &'static str, out:
@@ -994,6 +1002,253 @@ now is the point, not pre-empting the fix.
 
 ---
 
+## Resolved: canonical-CBOR codec-boundary residue (#547, #548)
+
+Closes the exact gap the "What is *not* covered" paragraph under "Resolved:
+record-content zeroize" (below) described as an open follow-up, and closes
+audit finding **C-4** the rest of the way — see the correction just made to
+the "Residual closeout" section above ("up to **four**", not three,
+long-term secret keys).
+
+### The six-copy trace, measured rather than described
+
+Tracing one block save of a record carrying a single
+`RecordFieldValue::Text` field, the design spec for this slice
+(`docs/superpowers/specs/2026-08-23-547-canonical-cbor-plaintext-residue-design.md`
+§1) found the same plaintext materialised **six** times before this slice,
+every copy in a `ciborium::Value` or a bare `Vec<u8>`, none `ZeroizeOnDrop`:
+
+| # | Site (pre-slice) | What it copied |
+|---|---|---|
+| 1 | `record.rs` `field_to_entries` | `s.expose().to_owned()` — the copy #547 named |
+| 2 | `canonical.rs` `pair.clone()`, via the inner-field sort | deep clone of #1 |
+| 3 | `canonical.rs` `pair.clone()`, via the outer sort | deep clone of the whole field map |
+| 4 | `canonical.rs` `pair.clone()`, via `encode_canonical_map` | again |
+| 5 | `block.rs` `records_to_value` | `record::encode` → plaintext `Vec<u8>`, **re-parsed** into a fresh `Value` tree |
+| 6 | `canonical.rs` `pair.clone()`, via `block.rs`'s own outer sort | clone of the records array |
+
+Two mechanisms close this, matching the split the repo already draws between
+`SecretBytes::concat` (eliminates a realloc) and `ZeroizingEntries`/its
+successors (wipe what remains): **copies we make can be eliminated; copies
+`ciborium` makes can only be wiped.**
+
+**Mechanism A — eliminate.** `CanonicalValue` / `CanonicalMap`
+([core/src/vault/canonical/value.rs](../../../core/src/vault/canonical/value.rs))
+are a borrowing mirror of the CBOR subset the format uses: `Text(&'a str)`,
+`Bytes(&'a [u8])`, `Map(CanonicalMap<'a>)`, etc. — every leaf borrows straight
+out of a `SecretString`/`SecretBytes` (or a `&Value` for forward-compat
+unknowns, via the `Borrowed` arm) instead of copying into an owned
+`ciborium::Value`. `CanonicalMap` sorts keys **allocation-free**, on
+`(key.len(), key.as_bytes())` — no key is ever materialised into an owned
+buffer, which matters because `record.fields`' keys are user-authored field
+names, i.e. decrypted plaintext in their own right. Applied at
+`record::record_to_canonical` (Task 4, closes copies #1-#4) and
+`block.rs`'s `plaintext_to_entries` (Task 5, closes copies #5-#6 by embedding
+`record_to_canonical` calls inline and deleting the encode→reparse
+round-trip entirely, rather than merely wiping the reparsed tree).
+
+**Mechanism B — wipe.** `SecretValueTree` / `SecretEntries`
+([core/src/cbor/secret_tree/](../../../core/src/cbor/secret_tree/), split out
+of `cbor.rs` once that file passed the project's 500-line threshold) own a
+parsed `Value` (or entry list) and recursively zeroize `Bytes` **and**
+`Text` payloads through `Array`, `Map` (keys and values both) and `Tag`, on
+`Drop`. This is what `ciborium::de::from_reader` itself allocates while
+parsing — that allocation belongs to the parser, not to any caller here, and
+cannot be eliminated, only wiped before drop. Two properties carried over
+from the retired `ZeroizingEntries` (#542) and sharpened by this slice's own
+review: `Value::Text` is wiped here (unlike `ZeroizingEntries`, which
+skipped it because the bundle's only text value, `display_name`, was held
+unwrapped elsewhere anyway); and the walk is **recursive**, not
+top-level-only, because the record shape nests a per-field map inside an
+outer map inside the records array.
+
+### Four production `SecretValueTree`/`SecretEntries` roots, not three
+
+An earlier draft of this section's own outline said three. Verified by
+grepping every production (non-`#[cfg(test)]`) call site of
+`SecretValueTree::new` / `SecretEntries::new`:
+
+| Root | Call site | Direction |
+|---|---|---|
+| `record.rs` | `record::decode` (`record.rs:602`) | decode |
+| `block.rs` | `block::decode_plaintext` (`block.rs:1037`) | decode |
+| `unlock/bundle.rs` | `IdentityBundle::to_canonical_cbor` (`bundle.rs:296`, `SecretEntries`) | **encode** |
+| `unlock/bundle.rs` | `IdentityBundle::from_canonical_cbor` (`bundle.rs:383`, `SecretEntries`) | decode |
+| `manifest.rs` | `unknown_value_inner` (`manifest.rs:723`) — encode-side helper, re-materialising an already-decrypted `UnknownValue` for splicing back into the manifest body | **encode** |
+| `manifest.rs` | `decode_manifest` (`manifest.rs:767`) | decode |
+
+Grouped by *file*, that is **four roots** — `record`, `block`, `bundle`,
+`manifest` — with `bundle` and `manifest` each having both an encode-side and
+a decode-side wrap (six call sites total). `record` and `block` are
+decode-only because their encode sides use Mechanism A (elimination)
+instead — there is nothing to wrap because nothing owned is ever
+materialised.
+
+`identity/card.rs`'s own `from_canonical_cbor` (`ContactCard`) and
+`sync/state.rs`'s `SyncState::from_canonical_cbor` are deliberately outside
+this list: neither carries secret material — the Contact Card is public
+key + display-name material meant to be shared, and `SyncState` carries only
+`vault_uuid` / `device_uuid` / vector-clock counters.
+
+### What `SecretValueTree`/`SecretEntries` do NOT claim
+
+Stated here because a handoff memo is where a future auditor looks first,
+and because this exact overclaim pattern is what CLAUDE.md flags as this
+line of work's most repeated review finding:
+
+- **Freed heap is not observable from safe Rust.** There is no "assert the
+  old allocation was actually wiped before the allocator reused it" test,
+  the same limitation `SecretBytes::concat`'s doc note (above, "why it is
+  not `build`/`try_build`") records for its own no-realloc claim. The wipe
+  is provable by reading `SecretValueTree::wipe`'s body; that the bytes
+  never come back is not independently checkable from outside the process.
+- **A reallocation `ciborium`'s parser performed before we ever saw the
+  value is not covered.** If `from_reader` internally grew a `String`/`Vec`
+  buffer while building the tree, the old (smaller) buffer was freed by the
+  allocator before `SecretValueTree::new` is ever called — that happened
+  inside a dependency this crate does not control, and no wrapper applied
+  afterward can retroactively wipe it.
+- **`SecretValueTree` covers the buffer the tree points at when it drops**
+  — nothing more. A value cloned OUT of the tree before drop (the
+  `UnknownValue` clones both `record.rs`/`block.rs`/`manifest.rs` make for
+  forward-compat unknowns, and `manifest.rs`'s `unknown_value_inner` clone
+  of its own tree's root — see "Still open," below) is a fresh, ordinary,
+  non-zeroizing allocation from that point on. The source is covered; the
+  clone is not.
+
+### The one validation-semantics change, and the test that discharges it
+
+`block::take_records` used to re-serialise each record `Value` into a
+plaintext `buf` and call `record::decode(&buf)` — a full extra encode/parse
+round trip per record, per block open, that also re-ran `record::decode`'s
+own byte-level canonicality re-check on that one record. Task 6 replaced it
+with `record::decode_value(&Value)`, which borrows the record's subtree
+directly out of the block's own `SecretValueTree` and skips that per-record
+re-check.
+
+The claim that nothing is lost is that `block::decode_plaintext`'s own
+whole-plaintext re-encode-and-compare (`encode_plaintext(&plaintext) !=
+bytes` ⇒ `NonCanonicalEncoding`) **subsumes** the deleted per-record check,
+because it covers the nested record's bytes as part of the whole block.
+That is a claim about frozen-format validation, and per this document's own
+standard it needed a test, not an argument: `block.rs`'s
+`a_non_canonical_nested_record_is_still_rejected` plants a non-canonical
+nested record (out-of-order field keys) inside an otherwise-valid block and
+proves `decode_plaintext` still rejects it. Both `decode_value`'s and
+`decode_plaintext`'s own doc comments point at this test by name.
+
+### Census: what remains, and why each hit is justified
+
+Re-running the grep census this section is built on
+(`expose().to_owned()` / `expose().to_vec()` / `.0.clone()`, `pair.clone()`,
+`SecretValueTree::new`, `from_reader` outside `#[cfg(test)]`) turns up
+several more hits than the "four roots" table above — every one of them was
+individually read, not counted from the grep subtotal, per this document's
+own repeated warning against exactly that shortcut:
+
+- **Test-only.** The large majority of `.expose().to_vec()` / `.0.clone()`
+  hits (`unlock/device.rs`'s three `#[test]`-fn sites, `unlock/bundle.rs`'s
+  test-module fixture builders at lines 1585/1601 and its
+  `owned_*_for_test` mirrors in `record.rs`) live inside `#[cfg(test)] mod
+  tests` and never compile into `cargo build --release`.
+- **`unlock/bundle.rs::generate` (`ml_kem_768_sk`/`ml_dsa_65_sk`,
+  lines 270-271).** A single, documented copy at key-*generation* time
+  (not the encode/decode residue class this section is about): the PQC
+  modules wrap their secrets in module-private newtypes, the bundle wants
+  a uniform `Sensitive<Vec<u8>>` across all four keys, and the source
+  wrapper's `SecretBytes` is dropped (zeroized) at the end of the same
+  function. Pre-existing, out of scope for #547/#548.
+- **`unlock/bundle.rs::to_canonical_cbor` (`x25519_sk`/`ed25519_sk`.
+  `.expose().to_vec()`, lines 307/323).** This IS a copy of secret-key
+  material into a `Value::Bytes`, but it is immediately wrapped in
+  `SecretEntries::new(entries)` on the very next statement — this is
+  Mechanism B applied to the bundle's own encode side (#542/#548), not an
+  uncovered residue.
+- **`vault/device_slot.rs:110`, `unlock/device.rs`'s production
+  `secret_bytes` construction pattern.** `SecretBytes::new(device_secret
+  .expose().to_vec())` — a single documented boundary copy (device secret
+  handed back to the caller as the public `SecretBytes` type), unrelated to
+  the CBOR codec boundary this section covers.
+- **`identity/card.rs:562` `pair.clone()`, inside `encode_map`.**
+  `ContactCard` carries only public key material, a display name, and a
+  self-signature — no secret keys, by construction (see the type's own
+  field list). Out of scope: there is no secret content to leak.
+- **`vault/canonical/legacy.rs:32` `pair.clone()`, inside
+  `canonical_sort_entries`.** This is the ONE deliberately-retained clone
+  the design spec calls out by name (§3.3, "What is NOT in scope"):
+  `manifest.rs`'s own *encode* side stays on `canonical_sort_entries` /
+  `encode_canonical_map` rather than migrating to `CanonicalValue`, a
+  churn-avoidance decision, not an oversight. Its only plaintext-bearing
+  caller through this function is `block_entry_to_value`'s `block_name`
+  field (`manifest.rs`) — genuinely user-visible plaintext within the
+  encrypted manifest, cloned once via `.clone()` into the entry list and
+  again via `canonical_sort_entries`'s `pair.clone()`. Two clones of a
+  block name per manifest save; not wiped, not eliminated, and
+  **deliberately** left that way by this slice's own scope decision — see
+  "Still open," below, for why this is not silently accepted as fine
+  either.
+- **`sync/state.rs`'s `canonical_sort_entries` / `from_reader` calls.**
+  `SyncState` carries `vault_uuid`, `device_uuid`, and vector-clock
+  counters — no secret material. Out of scope.
+- **The remaining `from_reader` sites** are either the four production
+  roots already tabulated above, `identity/card.rs`'s two sites (no secret
+  content, see above), or `#[cfg(test)]`-gated (every hit in `block.rs`,
+  `record.rs`, `canonical/legacy.rs`'s and `bundle.rs`'s test modules).
+
+### Still open — recorded so it is tracked, not merely discovered later
+
+Found during this slice and deliberately **not** fixed, each because fixing
+it was judged out of this slice's scope rather than because it was missed:
+
+- **`re_encoded` is an unwiped plaintext buffer** on both `record::decode`
+  and `block::decode_plaintext` — the output of the canonicality re-check's
+  own re-encode (`encode(&record)` / `encode_plaintext(&plaintext)`),
+  compared against the input and then dropped as a plain `Vec<u8>`. Task 6
+  took this from ~2N+1 unwiped buffers per block open (N records) down to
+  this **one** survivor; it is neither eliminated (the re-encode is a
+  correctness gate this slice deliberately keeps, per the design spec §6)
+  nor wrapped.
+- **Non-canonical key order inside a forward-compat `unknown` subtree**
+  escapes both the old per-record canonicality check and the new
+  whole-plaintext one: `CanonicalValue::Borrowed` emits an unknown subtree
+  verbatim on encode, and `UnknownValue::from_canonical_cbor` validates
+  only the no-float / no-tag rules on decode, not full canonical key
+  order. Pre-existing, identical before and after this slice — not a
+  regression, but also not closed by it.
+- **`block::decode_plaintext` has no fuzz target**, while the per-record
+  gate it partly replaced does (`core/fuzz/fuzz_targets/record.rs`).
+  Tracked as **#557**, alongside the observation that deleting the
+  `decode_plaintext` wrap leaves every existing test green — i.e. nothing
+  in the current suite pins that specific wrap's presence.
+- **The `take_*` helper family's shape-mismatch branches** (a field
+  present but the wrong CBOR major type) drop their `Value` unwiped on the
+  error return. Pre-existing, and lower severity than it looks: by the
+  time any of these run, the content has passed AEAD authentication, so it
+  came from a holder of the block/bundle/manifest key and cannot be
+  attacker-chosen ciphertext-controlled plaintext — but it is the same
+  general class as the rest of this section.
+- **`UnknownValue` has no `Zeroize` impl**
+  (`#[derive(Debug, Clone, PartialEq)]` only). Every clone made of a
+  `Value` before wrapping it in `UnknownValue` — `record.rs`'s direct
+  `UnknownValue(v.clone())` (it owns the type, so it constructs directly;
+  `record.rs:753`, `:878`), and `block.rs`'s / `manifest.rs`'s
+  serialise-then-reparse round trip through `value_to_unknown` /
+  `unknown_value_inner` (neither owns `UnknownValue`'s private field) —
+  escapes the enclosing `SecretValueTree` uncovered, by design of the
+  type: the SOURCE stays covered until the tree drops; the CLONE never
+  was. No regression relative to pre-slice behaviour (the clone was
+  exactly as uncovered before this slice existed), but the type itself is
+  the residual gap, not any one call site.
+- **Issues filed during this slice:** **#555** (closed by Task 7),
+  **#556** (`record.rs` is over the project's 500-line split guideline —
+  2603 lines as of this task; it stood at 2544 when #556 was filed after
+  Task 6 and grew further in later tasks, so cite the current count, not
+  a task-report snapshot, if this number is needed again), **#557**
+  (`block::decode_plaintext`'s `SecretValueTree` wrap is unpinned by any
+  test that fails when it is removed — named above).
+
+---
+
 ## Resolved: record-content zeroize
 
 The original audit deferred record-content zeroize as a v2 design
@@ -1065,6 +1320,21 @@ fields, or (b) a wrapping pre-pass that zeroizes the
 `ciborium::Value` between encode and AEAD. Both are non-trivial
 follow-ups; flagged here so the next reviewer doesn't read
 "resolved" as stronger than it is.
+
+**This whole "What is *not* covered" block is now stale, and is left in
+place — struck through in substance, not in markup — rather than deleted,
+per this memo's own discipline of correcting a falsified claim in place.**
+Option (a) above is exactly what #547 built: see "Resolved: canonical-CBOR
+codec-boundary residue (#547, #548)" above for the current state, which
+supersedes this paragraph. In short: the `s.expose().to_owned()` /
+`b.expose().to_vec()` copy this paragraph names by exact call shape no
+longer exists in `record.rs`'s production encode path (Task 4 replaced it
+with a borrow), and the parsed `ciborium::Value` tree on the decode path
+is now wrapped in `SecretValueTree`, which zeroizes it on every exit,
+including the early-return paths this paragraph worried about. The
+residue is not zero — see that section's own "still open" list — but it
+is a different, smaller residue than the one described here, and reading
+this paragraph as the current state would overstate what remains.
 
 ## Resolved: newtype `Zeroize` / `ZeroizeOnDrop` derives on `MlDsa65Secret` and `MlKem768Secret`
 
@@ -1238,14 +1508,21 @@ in-memory-type level (see "Resolved" above): `RecordFieldValue::
 {Text, Bytes}` now wrap `SecretString` / `SecretBytes`, so the
 held representation of the most-sensitive data is zeroized on
 drop alongside the keys. The wire format and Python conformance
-are unchanged. The codec boundary itself still has residual
+are unchanged. ~~The codec boundary itself still has residual
 plaintext lifetime in `ciborium::Value` and the canonical-CBOR
 output buffer (see "What is *not* covered" under Resolved); that
 narrower gap is flagged for follow-up rather than closed by this
-pass.
+pass.~~ **That codec-boundary gap is what #547/#548 closed** — see
+"Resolved: canonical-CBOR codec-boundary residue (#547, #548)" above.
+The struck-through sentence described the state as of this
+(2026-05-28-era) pass; it is no longer the current state and is kept,
+not deleted, so a reader following the document's history can see what
+changed and why, per this memo's own correction discipline.
 
 Memory-hygiene status: **clean for v1's Sub-project A scope at the
-type level**, with the codec-boundary residue carved out as a
-known-narrow follow-up. The Sub-project D clipboard / mlock
+type level**, with the codec-boundary residue closed to the extent
+described in "Resolved: canonical-CBOR codec-boundary residue (#547,
+#548)" above — read that section's own "still open" list before calling
+this boundary fully clean. The Sub-project D clipboard / mlock
 concerns and the upstream-managed crate items remain flagged for
 the appropriate later phases.
