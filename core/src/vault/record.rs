@@ -877,17 +877,52 @@ fn take_uuid(v: Value, field: &'static str) -> Result<[u8; RECORD_UUID_LEN], Rec
 // Tests
 // ---------------------------------------------------------------------------
 
+// `tests` is a private module, so `random_record` / `TombstoneState` being
+// `pub(crate)` inside it is not, by itself, enough for another file's own
+// `#[cfg(test)] mod tests` to name them — module privacy in Rust is not
+// retroactively widened by an inner item's visibility; the PATH SEGMENT
+// `tests` must itself be reachable from the caller, which it is not (it has
+// no `pub` of its own). This re-export solves that at the `record` module's
+// own scope, which sibling modules (`block`, under the same `vault` parent)
+// CAN see. `#[cfg(test)]`-gated to match `mod tests` itself: the re-export
+// only needs to exist, and only compiles, when `mod tests` does — i.e. only
+// in `cargo test` builds of THIS crate. That is the whole mechanism (#547
+// Task 5 fix round 1, review finding E2): same-crate `#[cfg(test)]`
+// visibility works across sibling modules once re-exported at a mutually
+// visible scope; it is cross-CRATE test-only visibility
+// (`core/tests/*.rs`, an external crate from `secretary-core`'s point of
+// view) that needs the different `#[doc(hidden)] pub` mechanism documented
+// at `crate::vault::mod`'s `canonical_test_api`.
+//
+// Declared BEFORE `mod tests` (not after, textually more natural though
+// that would be): `clippy::items_after_test_module` denies any item —
+// including a `use` — appearing textually after a `#[cfg(test)] mod tests`
+// block, under `-D warnings`; caught by `cargo clippy --release --workspace
+// --tests -- -D warnings` when this was first placed at the end of the
+// file (fix round 1).
+#[cfg(test)]
+pub(crate) use tests::{random_record, TombstoneState};
+
 #[cfg(test)]
 mod tests {
     use super::*;
     // `canonical_sort_entries` / `encode_canonical_map` have no production
-    // caller left in THIS file after #547 Task 4 (they still back
-    // `manifest.rs` / `core/src/sync/state.rs` / `identity/card.rs` — NOT
-    // `block.rs` any more either, as of #547 Task 5, which gave that file
-    // the same treatment this one got in Task 4 — which is why they stay
-    // `pub` on `crate::vault::canonical` rather than being deleted) — the
-    // production `use super::canonical::{...}` above deliberately no longer
-    // names them, so a plain `cargo build --release --workspace` (no
+    // caller left in THIS file after #547 Task 4 (NOT `block.rs` either, as
+    // of #547 Task 5, which gave that file the same treatment this one got
+    // in Task 4 — which is why both stay `pub` on `crate::vault::canonical`
+    // rather than being deleted). Naming who calls what, not just "still
+    // used somewhere" (fix round 1 review finding, minor): `manifest.rs`
+    // calls BOTH (`encode_canonical_map` at manifest.rs:438,
+    // `canonical_sort_entries` at manifest.rs:500/561/609/629);
+    // `core/src/sync/state.rs` calls both too (`encode_canonical_map` at
+    // state.rs:125, `canonical_sort_entries` at state.rs:107);
+    // `identity/card.rs` calls only `encode_canonical_map` (card.rs:307) —
+    // it has no `canonical_sort_entries` call of its own. Re-verify this
+    // census if either function gains or loses a caller; it is a
+    // point-in-time claim, not a structural guarantee.
+    //
+    // The production `use super::canonical::{...}` above deliberately no
+    // longer names them, so a plain `cargo build --release --workspace` (no
     // `#[cfg(test)]` code compiled) does not warn `unused_imports`. Test code
     // still needs both, for the retained owned-encoder oracle below and for
     // the many negative-path decode tests that build a canonical entries
@@ -1148,8 +1183,14 @@ mod tests {
     /// instead of exposing two raw bools makes the fourth, invalid one
     /// unconstructible by a caller of `random_record` rather than merely
     /// undocumented.
+    ///
+    /// `pub(crate)`, re-exported below (#547 Task 5 fix round 1): a caller
+    /// needs to name these variants to drive [`random_record`], and
+    /// `block.rs`'s own differential test is exactly that caller — see the
+    /// re-export's doc for why widening this (same-crate, `#[cfg(test)]`
+    /// only) is safe.
     #[derive(Clone, Copy, Debug)]
-    enum TombstoneState {
+    pub(crate) enum TombstoneState {
         /// Never tombstoned: `tombstone == false`, `tombstoned_at_ms == 0`
         /// (both omitted from the wire — §6.3 / §11.3 defaults).
         Live,
@@ -1189,7 +1230,21 @@ mod tests {
     /// `rand_core` 0.9 implements only `TryRngCore`, not `RngCore` — see
     /// `secret_panic_safety.rs`'s `getrandom_fill` for the same
     /// already-documented substitution.
-    fn random_record(
+    ///
+    /// `pub(crate)`, re-exported below (#547 Task 5 fix round 1): originally
+    /// `block.rs`'s own differential test duplicated a much smaller,
+    /// ASCII-only local generator rather than reuse this one, on the theory
+    /// that "record.rs's fixture already covers record-level edge cases
+    /// exhaustively." Review caught the category error — that duplicate
+    /// compared *parse-then-reserialize* against *inline embedding*, a
+    /// different transformation from the one THIS fixture is built to
+    /// stress (`record_to_canonical` vs. the owned encoder), so this
+    /// fixture's adversarial properties (the byte-length-vs-char-count
+    /// multi-byte key pair, the 23/24-byte boundary pair, unknowns, tags,
+    /// non-`Live` tombstone states) never actually ran through the block
+    /// path. One shared generator so the two cannot drift, per the
+    /// original task brief's stated preference.
+    pub(crate) fn random_record(
         rng: &mut impl rand_core::RngCore,
         tags_present: bool,
         tombstone_state: TombstoneState,

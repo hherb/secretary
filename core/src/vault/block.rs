@@ -131,10 +131,19 @@ pub const BLOCK_UUID_LEN: usize = RECORD_UUID_LEN;
 /// match on two enums for one logical operation.
 #[derive(Debug, thiserror::Error)]
 pub enum BlockError {
-    /// Record-level CBOR error bubbled up from [`super::record::encode`]
-    /// or [`super::record::decode`]. Block plaintext delegates record
-    /// serialisation to that module rather than reimplementing it; any
+    /// Record-level CBOR error bubbled up from [`super::record::decode`],
+    /// via `take_records` (block plaintext decode). Block delegates record
+    /// deserialisation to that module rather than reimplementing it; any
     /// error from that layer surfaces here unchanged.
+    ///
+    /// DECODE-ONLY as of #547 Task 5: `super::record::encode` has no
+    /// production caller in this file any more (`plaintext_to_canonical`
+    /// calls the infallible `record_to_canonical` directly), so
+    /// [`encode_plaintext`] can no longer return this variant — its only
+    /// error sources are now the `CanonicalError`-derived variants (see the
+    /// `From<CanonicalError>` impl above). Kept as one variant covering
+    /// both directions anyway, matching this enum's own stated rationale
+    /// (one typical caller touches both halves in sequence).
     #[error("record CBOR error: {0}")]
     Record(#[from] RecordError),
 
@@ -411,12 +420,15 @@ pub enum BlockError {
     #[error("trailing bytes after signature suffix: {count}")]
     TrailingBytes { count: usize },
 
-    /// `crate::vault::canonical::encode_canonical_map`'s pre-reserved
-    /// output buffer needed more bytes than expected (lifted from
-    /// `CanonicalError::CapacityBoundExceeded`, an internal `pub(crate)`
-    /// type not reachable from public docs). This is a post-hoc tripwire
-    /// for a future `ciborium::Value` variant the size bound cannot name,
-    /// not a routine error path.
+    /// `crate::vault::canonical::to_canonical_vec`'s pre-reserved output
+    /// buffer (sized from `CanonicalMap::size_bound`, not
+    /// `encode_canonical_map`'s `cbor_size_bound` — the two are different
+    /// formulas over different input shapes; block's own plaintext encode
+    /// uses `to_canonical_vec` as of #547 Task 5) needed more bytes than
+    /// expected (lifted from `CanonicalError::CapacityBoundExceeded`, an
+    /// internal `pub(crate)` type not reachable from public docs). This is
+    /// a post-hoc tripwire for a future `ciborium::Value` variant the size
+    /// bound cannot name, not a routine error path.
     #[error("canonical CBOR encode exceeded its reserved size bound ({actual} > {bound})")]
     CanonicalSizeBoundExceeded { actual: usize, bound: usize },
 }
@@ -519,12 +531,20 @@ pub struct BlockHeader {
 /// - `schema_version`: u32, same rationale.
 ///
 /// Records are not stored as raw CBOR `Value`s here; they are typed
-/// [`Record`]s built by [`super::record::decode`]. On encode, each
-/// record is canonical-CBOR-encoded by [`super::record::encode`] and the
-/// resulting byte string is parsed back into `ciborium::Value` for
-/// inclusion in this map. (We can't hand `Record` directly to ciborium
-/// because `Record` has its own canonical-encoding rules that ciborium's
-/// generic serde path would not respect.)
+/// [`Record`]s built by [`super::record::decode`] on the decode side. On
+/// encode, each record's canonical map is embedded directly via
+/// `record_to_canonical` — the same borrowing helper
+/// [`super::record::encode`] itself calls — nested straight into this
+/// block's own canonical map (`plaintext_to_canonical`); there is no
+/// per-record byte serialise-then-reparse step (#547 Task 5). Note that
+/// this calls `record_to_canonical` directly, **not**
+/// `super::record::encode`: a future validation or wipe step added inside
+/// `record::encode` itself (as opposed to inside `record_to_canonical`,
+/// which both paths share) would NOT run on the block save path. (We
+/// can't hand `Record` directly to ciborium because `Record` has its own
+/// canonical-encoding rules that ciborium's generic serde path would not
+/// respect — that's why a typed-to-canonical conversion step exists at
+/// all, on both the block and record layers.)
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockPlaintext {
     /// Reserved for future incompatible block-body changes (§6.3 line
@@ -1858,7 +1878,6 @@ pub fn decrypt_block(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::secret::{SecretBytes, SecretString};
     use crate::vault::record::{RecordField, RecordFieldValue};
     // `encode_canonical_map` has no production caller left in THIS file
     // after #547 Task 5 (it still backs `manifest.rs` / `core/src/sync/
@@ -1970,52 +1989,24 @@ mod tests {
         UnknownValue::from_canonical_cbor(&buf).expect("well-formed unknown value")
     }
 
-    /// A record with random content. `empty_fields` drives the
-    /// zero-fields edge case (an empty inner CBOR map — the second
-    /// empty-container shape `block_encode_matches_the_round_trip_path_
-    /// byte_for_byte` exists to catch, alongside `n == 0` records at the
-    /// block level); otherwise the record gets two fields whose names
-    /// differ in byte length (`"k"` vs. `"password"`, mirroring
-    /// `record.rs`'s own `random_record` pairing) so the record-level
-    /// canonical sort inside the embedded map is exercised too, not just
-    /// the block-level one.
-    fn random_record_for_test(rng: &mut impl rand_core::RngCore, empty_fields: bool) -> Record {
+    /// A record with an EMPTY `fields` map — the inner empty-container
+    /// edge case `block_encode_matches_the_round_trip_path_byte_for_byte`
+    /// exists to catch (alongside `n == 0` records at the block level; see
+    /// that test's own doc). `record::random_record` (below) always
+    /// populates several fields — record.rs's own differential test has no
+    /// need for an empty-fields mode, and adding one there only to serve
+    /// this one block-level edge case would be scope creep on that
+    /// module's fixture. This is deliberately NOT a second general-purpose
+    /// record generator (that was review finding E2, fix round 1): it
+    /// builds only the one degenerate state `random_record` doesn't cover,
+    /// nothing else.
+    fn random_record_with_empty_fields_for_test(rng: &mut impl rand_core::RngCore) -> Record {
         let mut record_uuid = [0u8; RECORD_UUID_LEN];
         rng.fill_bytes(&mut record_uuid);
-        let mut device_uuid = [0u8; RECORD_UUID_LEN];
-        rng.fill_bytes(&mut device_uuid);
-
-        let mut fields = BTreeMap::new();
-        if !empty_fields {
-            fields.insert(
-                "k".to_string(),
-                RecordField {
-                    value: RecordFieldValue::Text(SecretString::new(format!(
-                        "v-{:016x}",
-                        rng.next_u64()
-                    ))),
-                    last_mod: rng.next_u64() >> 16,
-                    device_uuid,
-                    unknown: BTreeMap::new(),
-                },
-            );
-            let mut secret_bytes = vec![0u8; 16];
-            rng.fill_bytes(&mut secret_bytes);
-            fields.insert(
-                "password".to_string(),
-                RecordField {
-                    value: RecordFieldValue::Bytes(SecretBytes::new(secret_bytes)),
-                    last_mod: rng.next_u64() >> 16,
-                    device_uuid,
-                    unknown: BTreeMap::new(),
-                },
-            );
-        }
-
         Record {
             record_uuid,
             record_type: "login".to_string(),
-            fields,
+            fields: BTreeMap::new(),
             tags: Vec::new(),
             created_at_ms: rng.next_u64() >> 16,
             last_mod_ms: rng.next_u64() >> 16,
@@ -2025,23 +2016,70 @@ mod tests {
         }
     }
 
-    /// Build a [`BlockPlaintext`] with `n` randomly-generated records
-    /// (the FIRST of which, when `n >= 1`, has an empty `fields` map —
-    /// see [`random_record_for_test`]) plus two block-level forward-compat
-    /// unknowns whose key byte lengths differ (`"q"` vs. a 24-byte key,
-    /// crossing the CBOR text-head 23→24 boundary) so the block-level
-    /// canonical sort is actually exercised, not just the record-level
-    /// one `record.rs`'s own differential test already covers.
+    /// Build a [`BlockPlaintext`] with `n` records plus three block-level
+    /// forward-compat unknowns: `"ab"` (2 bytes / 2 chars) paired with
+    /// `"\u{65e5}"` (日, 3 bytes / 1 char — pins byte-length-vs-char-count
+    /// key sorting, exactly `record.rs`'s own `random_record` pairing
+    /// rationale) and a 24-byte key (crosses the CBOR text-head 23→24
+    /// boundary).
+    ///
+    /// The FIRST record (when `n >= 1`) has an empty `fields` map (see
+    /// [`random_record_with_empty_fields_for_test`]); every other record
+    /// comes from `record::random_record` — the SAME generator
+    /// `record.rs`'s own differential test uses, re-exported `pub(crate)`
+    /// for exactly this reuse (#547 Task 5 fix round 1, review finding
+    /// E2).
+    ///
+    /// **The byte-vs-char pin belongs at THIS (block) level, not only at
+    /// the record level `random_record` already provides — and an earlier
+    /// draft of this fixture got that wrong.** This differential test
+    /// compares `plaintext_to_canonical` (production) against
+    /// `plaintext_to_entries_for_test` (the retained oracle). For a
+    /// RECORD's own fields, both sides route through the identical
+    /// `record_to_canonical` → `CanonicalMap::serialize` — the oracle's
+    /// `records_to_value_for_test` calls `record::encode`, which is
+    /// exactly that call (Task 4) — so a `CanonicalMap::serialize`
+    /// comparator regression affects both sides identically and produces
+    /// NO divergence at the record level, no matter how adversarial
+    /// `random_record`'s field names are; verified by execution (see the
+    /// mutation check in `task-5-report.md`'s fix-round-1 section — the
+    /// SAME mutation fails `record.rs`'s own differential test, which
+    /// compares `CanonicalMap::serialize` against the independently
+    /// implemented `canonical_sort_entries`, but does not fail this one
+    /// without the change below). At the BLOCK level the two paths
+    /// genuinely diverge: the oracle sorts unknowns via
+    /// `canonical_sort_entries`, production via `CanonicalMap::serialize`
+    /// — DIFFERENT implementations — so a multi-byte block-level unknown
+    /// key is what actually exercises this test's ability to catch a
+    /// comparator regression; a purely-ASCII block-level key set (this
+    /// fixture's first draft) cannot, because byte length equals char
+    /// count for every ASCII string.
     fn random_block_plaintext(rng: &mut impl rand_core::RngCore, n: usize) -> BlockPlaintext {
         let mut block_uuid = [0u8; BLOCK_UUID_LEN];
         rng.fill_bytes(&mut block_uuid);
 
         let records = (0..n)
-            .map(|i| random_record_for_test(rng, i == 0))
+            .map(|i| {
+                if i == 0 {
+                    random_record_with_empty_fields_for_test(rng)
+                } else {
+                    let tags_present = i % 2 == 0;
+                    let tombstone_state = match i % 3 {
+                        0 => record::TombstoneState::Live,
+                        1 => record::TombstoneState::Resurrected,
+                        _ => record::TombstoneState::Tombstoned,
+                    };
+                    record::random_record(rng, tags_present, tombstone_state)
+                }
+            })
             .collect();
 
         let mut unknown = BTreeMap::new();
-        unknown.insert("q".to_string(), random_unknown_value_for_test(rng, 4));
+        unknown.insert("ab".to_string(), random_unknown_value_for_test(rng, 4));
+        unknown.insert(
+            "\u{65e5}".to_string(),
+            random_unknown_value_for_test(rng, 4),
+        );
         unknown.insert("r".repeat(24), random_unknown_value_for_test(rng, 6));
 
         BlockPlaintext {
