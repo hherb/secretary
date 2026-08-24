@@ -40,9 +40,12 @@
 //! declared `pub(crate)` (not `pub`) because `record.rs` is an in-crate
 //! caller and needs nothing more. An earlier version, also named
 //! `to_canonical_vec`, was deleted from this file in review round 1 of
-//! Task 2 — see `task-2-report.md` — for returning a `Result<_,
-//! CanonicalError>` that was unnameable through `canonical_test_api`, which
-//! did not re-export `CanonicalError`. `block.rs`'s own plaintext encode was
+//! Task 2, for returning a `Result<_, CanonicalError>` that was unnameable
+//! through `canonical_test_api`, which did not re-export `CanonicalError`.
+//! (That sentence cited `task-2-report.md` until the #560 review; the
+//! per-task SDD reports live under a gitignored `.superpowers/` and are not
+//! in the repo, so the pointer could not be followed — the conclusion is
+//! inlined here instead.) `block.rs`'s own plaintext encode was
 //! unmigrated as of Task 4 — that changed in Task 5, which moved
 //! `block::encode_plaintext` onto `record::record_to_canonical` too (see
 //! `canonical/mod.rs`'s module doc for the detail); production `block.rs`
@@ -50,7 +53,18 @@
 //! more.
 //!
 //! [`CanonicalMap`] / [`CanonicalValue`] are `pub(crate)`, matching the
-//! `canonical` module they live in. An earlier version of this branch made
+//! `canonical` module they live in — and as of the #560 review that is
+//! true of the DECLARATIONS, not merely of the effective visibility. Both
+//! types (and `CanonicalMap`'s `with_capacity` / `push`) were declared
+//! bare `pub` while this paragraph and three others already claimed
+//! `pub(crate)`; the crate boundary came entirely from `mod value;` being
+//! private and `vault/mod.rs`'s `pub(crate) mod canonical;`. That is open
+//! issue #559, and the risk it names is real: changing one keyword in
+//! ANOTHER file would have published both types — and, through
+//! [`CanonicalValue::Borrowed`], the `#[non_exhaustive]` `ciborium::Value`
+//! — with no local signal, because the items themselves said `pub`. The
+//! declarations now carry the restriction they are documented as having.
+//! An earlier version of this branch made
 //! them `pub` instead, re-exported through a `#[doc(hidden)]`
 //! `vault::canonical_test_api` module, so that `core/tests/
 //! canonical_value_equivalence.rs` could construct them directly from an
@@ -88,7 +102,7 @@ use crate::cbor::classify_ser;
 
 /// One value in a canonical map or array. Every arm either borrows or is a
 /// scalar; no arm owns a byte string.
-pub enum CanonicalValue<'a> {
+pub(crate) enum CanonicalValue<'a> {
     /// Borrowed UTF-8 text — typically `SecretString::expose()`.
     Text(&'a str),
     /// Borrowed bytes — typically `SecretBytes::expose()` or a uuid array.
@@ -114,16 +128,16 @@ pub enum CanonicalValue<'a> {
 ///
 /// Construct with [`Self::with_capacity`] and [`Self::push`]; the push order
 /// is irrelevant, because [`Serialize`] imposes the canonical order.
-pub struct CanonicalMap<'a>(Vec<(&'a str, CanonicalValue<'a>)>);
+pub(crate) struct CanonicalMap<'a>(Vec<(&'a str, CanonicalValue<'a>)>);
 
 impl<'a> CanonicalMap<'a> {
     /// An empty map with room for `n` entries.
-    pub fn with_capacity(n: usize) -> Self {
+    pub(crate) fn with_capacity(n: usize) -> Self {
         Self(Vec::with_capacity(n))
     }
 
     /// Append an entry. Order is not significant — [`Serialize`] sorts.
-    pub fn push(&mut self, key: &'a str, value: CanonicalValue<'a>) {
+    pub(crate) fn push(&mut self, key: &'a str, value: CanonicalValue<'a>) {
         self.0.push((key, value));
     }
 
@@ -184,9 +198,13 @@ impl Serialize for CanonicalMap<'_> {
         // `.len()` on `&str` is BYTE length, not char count — load-bearing:
         // a multi-byte UTF-8 key (e.g. 3-byte "日") must sort by its 3 CBOR
         // payload bytes, not by its 1 char, or the order would diverge from
-        // the real CBOR head. `core/tests/canonical_value_equivalence.rs`
-        // pins this with a key pair that would sort the other way under a
-        // char-count comparator.
+        // the real CBOR head. `map_key_sort_crosses_head_length_boundary_
+        // and_uses_byte_not_char_length`, in this file's own test module
+        // below, pins this with a key pair that would sort the other way
+        // under a char-count comparator. (That citation read
+        // `core/tests/canonical_value_equivalence.rs` until the #560
+        // review — a file this branch DELETED when the proof moved in here;
+        // the test survived the move, only its home changed.)
         let mut order: Vec<usize> = (0..self.0.len()).collect();
         order.sort_by(|&a, &b| {
             let (ka, kb) = (self.0[a].0, self.0[b].0);
@@ -395,7 +413,16 @@ mod tests {
 
     #[test]
     fn array_is_byte_identical_across_every_head_boundary() {
-        for &n in &[0usize, 1, 23, 24, 300] {
+        // Uses the shared `LEN_BOUNDARIES` (#560 review). This test and its
+        // map twin below previously stopped at 300, i.e. inside the 2-byte
+        // head class — so the `0x99` -> `0x9A` transition at 65536, where a
+        // CBOR container head grows from a 2-byte to a 4-byte argument, was
+        // the one head-length boundary the byte-identity proof never
+        // crossed for a CONTAINER. The scalar arms (uint / text / bytes)
+        // already swept the full list. Divergence is unlikely, since both
+        // sides route through the same ciborium head writer — but "unlikely"
+        // is not the bar for a format frozen for decades.
+        for &n in LEN_BOUNDARIES {
             let owned = Value::Array((0..n).map(|i| Value::Integer((i as u64).into())).collect());
             let borrowed =
                 CanonicalValue::Array((0..n).map(|i| CanonicalValue::Uint(i as u64)).collect());
@@ -496,7 +523,15 @@ mod tests {
 
     #[test]
     fn map_is_byte_identical_across_every_head_boundary() {
-        for &n in &[0usize, 1, 23, 24, 300] {
+        // Full `LEN_BOUNDARIES` sweep (#560 review) — see the array twin
+        // above for why stopping at 300 left the 65536 container-head
+        // transition unproven. The `{i:05}` width keeps every key 6 bytes
+        // even at n = 65536 (max index 65535, 5 digits), so the sort stays
+        // a pure bytewise comparison at every n and this test keeps
+        // measuring the HEAD, not the comparator — which
+        // `map_key_sort_crosses_head_length_boundary_and_uses_byte_not_char_length`
+        // covers separately.
+        for &n in LEN_BOUNDARIES {
             let names: Vec<String> = (0..n).map(|i| format!("k{i:05}")).collect();
             let mut borrowed = CanonicalMap::with_capacity(n);
             for (i, name) in names.iter().enumerate() {

@@ -62,13 +62,17 @@
 //! [`value::to_canonical_vec`] — the `encode_canonical_map` counterpart over
 //! a [`CanonicalMap`] this doc used to say a later step would introduce
 //! alongside its first real caller (an earlier version, also named
-//! `to_canonical_vec`, was deleted in review round 1 of Task 2 — see
-//! `task-2-report.md` — for returning `Result<_, CanonicalError>` while
-//! `CanonicalError` itself was not test-API-reachable, making its error
-//! type unnameable by the one caller that could have used it). It is
-//! declared `pub(crate)`, not `pub`: unlike [`CanonicalMap`] /
-//! [`CanonicalValue`] themselves, no integration test needs to reach it, so
-//! there is no `canonical_test_api` cross-crate visibility floor to satisfy.
+//! `to_canonical_vec`, was deleted in review round 1 of Task 2 for
+//! returning `Result<_, CanonicalError>` while `CanonicalError` itself was
+//! not test-API-reachable, making its error type unnameable by the one
+//! caller that could have used it — that reasoning was cited to
+//! `task-2-report.md` until the #560 review, which found the per-task SDD
+//! reports live under a gitignored `.superpowers/` and are not in the repo,
+//! so the conclusion is inlined rather than pointed at). It is declared
+//! `pub(crate)`, not `pub` — as, since that same review, are
+//! [`CanonicalMap`] / [`CanonicalValue`] themselves: `canonical_test_api`
+//! and the cross-crate visibility floor it needed are both gone, so
+//! nothing in this module declares more visibility than it uses (#559).
 //! `block.rs`'s own plaintext encode was unmigrated as of Task 4 — it still
 //! called `super::record::encode` once per record and re-parsed the
 //! resulting bytes into the `Value` tree it handed to
@@ -105,8 +109,10 @@ pub(crate) use value::to_canonical_vec;
 // exactly the outcome `cbor::secret_tree` rejected for the same shape of
 // type (see that module's doc comment). The belief that the byte-identity
 // proof had to be an integration test was itself wrong: a `#[cfg(test)]
-// mod tests` in this file runs on every CI run just as an integration test
-// does, and (as of this fix) is where that proof now lives. Both types are
+// mod tests` inside the crate runs on every CI run just as an integration
+// test does, and (as of this fix) is where that proof now lives — in
+// `value.rs`, beside the types it is about, NOT in this file, which has no
+// `mod tests` at all. Both types are
 // therefore back to `pub(crate)`, and `canonical_test_api` no longer
 // exists.
 //
