@@ -426,8 +426,17 @@ impl IdentityBundle {
         // messages (`UnknownField`) cite this index, so it must match
         // exactly.
         let mut index = 0usize;
-        while let Some((k, v)) = map.take_next() {
+        while let Some((k, mut v)) = map.take_next() {
+            // `v` has just left `SecretEntries`' protection (see
+            // `SecretEntries::take_next`'s doc) — from this point it is
+            // this loop's job to fold it into a zeroizing wrapper via one
+            // of the `match` arms below, or wipe it explicitly on any path
+            // that returns without doing so. The non-string-key check below
+            // is exactly such a path: `k` failing the shape check says
+            // nothing about `v`, which may still be a secret-key-shaped
+            // `Value::Bytes` (#548 fix-round-1 G1).
             let Value::Text(key) = k else {
+                crate::cbor::wipe_leaked_value(&mut v);
                 return Err(BundleError::Malformed("non-string map key"));
             };
             match key.as_str() {
@@ -497,6 +506,14 @@ impl IdentityBundle {
                 )?,
                 KEY_CREATED_AT => set_once(&mut created_at_ms, take_u64(v)?, KEY_CREATED_AT)?,
                 _ => {
+                    // Same seam as the non-string-key check above: an
+                    // unrecognised key means `v` is never examined by any
+                    // arm above, so it must be wiped explicitly here rather
+                    // than falling through to a bare, unwiped `Value` drop
+                    // (#548 fix-round-1 G1) — a forward-compatible v2
+                    // bundle carrying a new secret-key field, opened by a
+                    // v1 reader, is exactly the non-hypothetical case.
+                    crate::cbor::wipe_leaked_value(&mut v);
                     return Err(BundleError::UnknownField { index });
                 }
             }
@@ -1059,6 +1076,161 @@ mod tests {
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&Value::Map(entries), &mut buf).unwrap();
         buf
+    }
+
+    /// #548 fix-round-1 G1 — the non-string-key early return.
+    ///
+    /// `k` failing the `Value::Text` shape check says nothing about `v`:
+    /// before the G1 fix, `v` was simply dropped as a bare, unwiped
+    /// `ciborium::Value` on this path. The value here is deliberately
+    /// secret-key-shaped (32 runtime-random bytes under a non-string key)
+    /// to stand in for the failure scenario reviewer G1 named: a
+    /// forward-compatible v2 bundle field whose KEY encoding a v1 reader
+    /// cannot even interpret as text.
+    ///
+    /// **The assertion must be an EXACT count, not `> before`.** A first
+    /// draft of this test used `> before` and passed even with
+    /// `wipe_leaked_value` deleted (verified by mutation): `map`
+    /// (`SecretEntries`) still drops at function exit either way, and
+    /// `SecretEntries::wipe` increments the shared counter UNCONDITIONALLY
+    /// at its top, before it even looks at whether anything remains to
+    /// wipe. That one tick is a constant here, present with or without the
+    /// G1 fix, and `> before` cannot tell "map's own drop fired" apart from
+    /// "map's own drop fired AND `wipe_leaked_value` also ran". Exactly two
+    /// ticks (`SecretEntries::drop` + `wipe_leaked_value`) is what the fix
+    /// actually adds; one entry means one `take_next` call, so nothing else
+    /// on this path can tick the counter a third time.
+    #[test]
+    fn non_string_map_key_wipes_its_value() {
+        let mut rng = ChaCha20Rng::from_seed([88u8; 32]);
+        let mut secret_shaped = [0u8; X25519_SK_LEN];
+        rng.fill_bytes(&mut secret_shaped);
+
+        let entries = vec![(
+            Value::Integer(0.into()),
+            Value::Bytes(secret_shaped.to_vec()),
+        )];
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut bytes).unwrap();
+
+        let before = crate::cbor::wipe_calls();
+        let err = IdentityBundle::from_canonical_cbor(&bytes)
+            .expect_err("a non-string map key must be rejected");
+        assert!(
+            matches!(err, BundleError::Malformed("non-string map key")),
+            "expected Malformed(\"non-string map key\"), got {err:?}"
+        );
+        assert_eq!(
+            crate::cbor::wipe_calls(),
+            before + 2,
+            "expected 2 wipes (SecretEntries::drop on the now-empty map, plus \
+             wipe_leaked_value on `v`) — the non-string-key early return did \
+             not wipe its value (#548 fix-round-1 G1)"
+        );
+    }
+
+    /// #548 fix-round-1 G1 — the `UnknownField` early return.
+    ///
+    /// An unrecognised key means no `match` arm ever examines `v`; before
+    /// the G1 fix it fell through to a bare, unwiped `ciborium::Value`
+    /// drop, same as the non-string-key case above. This is the reviewer's
+    /// own named failure scenario, not a hypothetical: a v2 bundle carrying
+    /// a new secret-key field, opened by a v1 client, hits exactly this
+    /// arm with that field's `Value::Bytes` still populated.
+    ///
+    /// Exact-count assertion for the same reason as the non-string-key test
+    /// above — see that test's doc for why `> before` does not pin this.
+    #[test]
+    fn unknown_field_wipes_its_value() {
+        let mut rng = ChaCha20Rng::from_seed([99u8; 32]);
+        let mut secret_shaped = [0u8; X25519_SK_LEN];
+        rng.fill_bytes(&mut secret_shaped);
+
+        let entries = vec![(
+            Value::Text("rogue".into()),
+            Value::Bytes(secret_shaped.to_vec()),
+        )];
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut bytes).unwrap();
+
+        let before = crate::cbor::wipe_calls();
+        let err = IdentityBundle::from_canonical_cbor(&bytes)
+            .expect_err("an unrecognised field must be rejected");
+        assert!(
+            matches!(err, BundleError::UnknownField { index: 0 }),
+            "expected UnknownField {{ index: 0 }}, got {err:?}"
+        );
+        assert_eq!(
+            crate::cbor::wipe_calls(),
+            before + 2,
+            "expected 2 wipes (SecretEntries::drop on the now-empty map, plus \
+             wipe_leaked_value on `v`) — the UnknownField early return did \
+             not wipe its value (#548 fix-round-1 G1)"
+        );
+    }
+
+    // --- canonical_error_to_bundle_error (#548 fix-round-1 G2) -------------
+    //
+    // Zero coverage before this section: three of its four arms are
+    // structurally unreachable from `to_canonical_cbor`'s own call into
+    // `encode_canonical_map` (see that function's doc), so swapping any of
+    // the `FloatRejected` / `TagRejected` / `CapacityBoundExceeded` message
+    // literals, or mis-mapping one to the wrong `BundleError` variant, left
+    // every test in the workspace green. Modelled on
+    // `identity::card::canonical_error_capacity_bound_exceeded_maps_to_card_error`
+    // — construct each `CanonicalError` arm directly rather than driving it
+    // through the shared encoder, since three of the four cannot be reached
+    // that way at all.
+
+    #[test]
+    fn canonical_error_cbor_encode_maps_to_cbor_fault() {
+        let fault = crate::cbor::CborFault {
+            kind: crate::cbor::CborErrorKind::Syntax,
+            offset: Some(7),
+        };
+        match canonical_error_to_bundle_error(CanonicalError::CborEncode(fault)) {
+            BundleError::CborFault(got) => assert_eq!(got, fault),
+            other => panic!("expected CborFault, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn canonical_error_float_rejected_maps_to_bundle_error() {
+        let err = CanonicalError::FloatRejected { field: "<root>" };
+        match canonical_error_to_bundle_error(err) {
+            BundleError::Malformed(msg) => {
+                assert_eq!(msg, "float values are not permitted in canonical CBOR");
+            }
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn canonical_error_tag_rejected_maps_to_bundle_error() {
+        let err = CanonicalError::TagRejected { field: "<root>" };
+        match canonical_error_to_bundle_error(err) {
+            BundleError::Malformed(msg) => {
+                assert_eq!(msg, "CBOR tags are not permitted in canonical CBOR");
+            }
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn canonical_error_capacity_bound_exceeded_maps_to_bundle_error() {
+        let err = CanonicalError::CapacityBoundExceeded {
+            actual: 42,
+            bound: 17,
+        };
+        match canonical_error_to_bundle_error(err) {
+            BundleError::Malformed(msg) => {
+                assert_eq!(
+                    msg,
+                    "canonical CBOR encode exceeded its reserved size bound"
+                );
+            }
+            other => panic!("expected Malformed, got {other:?}"),
+        }
     }
 
     #[test]

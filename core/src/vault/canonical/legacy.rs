@@ -70,8 +70,10 @@ pub fn encode_canonical_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, Canon
     // Only the KEYS are materialised, to sort on. The values ride along as
     // BORROWS: the `pair.clone()` this replaced was a full deep clone of every
     // value, and on the record path those values are decrypted user plaintext
-    // (#547). Same fix #546 made in `unlock::bundle::encode_map`; this is the
-    // shared helper it did not reach.
+    // (#547). Same fix #546 made in `unlock::bundle`'s own private
+    // `encode_map` at the time; this was the shared helper that fix did not
+    // reach — Task 7 (#548) later deleted that private copy entirely and
+    // moved its one caller onto this function.
     let mut sorted: Vec<(Vec<u8>, (&Value, &Value))> = entries
         .iter()
         .map(|(key, value)| {

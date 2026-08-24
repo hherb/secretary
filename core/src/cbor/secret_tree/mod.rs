@@ -108,6 +108,32 @@ fn wipe_value(value: &mut Value) {
     }
 }
 
+/// Wipe a single, already-`take_next`-yielded `Value` in place before
+/// dropping it on a path that folds it into nothing.
+///
+/// [`SecretEntries::take_next`] documents the seam this exists for: a
+/// yielded `(key, value)` pair leaves `SecretEntries`' own protection the
+/// moment it is handed out, and it is the CALLER's job to either fold it
+/// into a zeroizing wrapper (`Sensitive`/`SecretBytes`) or wipe it before
+/// dropping it. A caller that does neither — because the value was never
+/// examined at all, e.g. an unrecognised map key, or a key that failed a
+/// shape check before any recognised-field arm ran — leaves it to a bare
+/// `ciborium::Value` drop, unwiped. This is that second option, exposed so
+/// a caller does not have to hand-roll the same recursive walk
+/// [`wipe_value`] already performs (`unlock::bundle::from_canonical_cbor`'s
+/// non-string-key and unknown-field early returns, #548 fix-round-1 G1).
+///
+/// Increments the same `WIPE_CALLS` counter [`SecretValueTree::wipe`] /
+/// [`SecretEntries::wipe`] use, so a caller's test can pin that this ran
+/// through `wipe_calls()` (test-only) — the same handle those two types'
+/// own tests use, since a wipe of a soon-to-be-dropped local is not
+/// otherwise observable from safe Rust.
+pub(crate) fn wipe_leaked_value(value: &mut Value) {
+    #[cfg(test)]
+    WIPE_CALLS.with(|c| c.set(c.get() + 1));
+    wipe_value(value);
+}
+
 /// A parsed CBOR tree whose byte-string and text payloads are zeroized on
 /// drop.
 ///
@@ -120,7 +146,13 @@ fn wipe_value(value: &mut Value) {
 /// `Drop` is the mechanism, deliberately: it covers an unwinding panic and
 /// every `?` early return, which a trailing wipe statement does not. #548 is
 /// exactly that gap on the bundle read side, where an early `?` inside the
-/// field loop freed up to three not-yet-consumed secret keys unwiped.
+/// field loop freed up to ALL FOUR not-yet-consumed secret keys unwiped —
+/// canonical key order (RFC 8949 §4.2.1: shorter key first) puts
+/// `user_uuid` and `x25519_pk` ahead of every secret key, so `Malformed` or
+/// `UnknownField` on either of those two fires while none of the four
+/// secret keys has been consumed yet. "Up to three" stood here until
+/// fix-round-1 (this section's own review), an undercount inherited from
+/// the memo on `main` — Task 8 owns correcting the memo itself.
 ///
 /// # What this does not claim
 ///
@@ -191,13 +223,22 @@ impl Drop for SecretValueTree {
 /// [`Self::take_next`] — because the decoder genuinely needs to move each
 /// entry's key/value out to build its result. That is a real, deliberate
 /// gap in wipe coverage, not an oversight: **a yielded entry leaves this
-/// type's protection entirely** the moment `take_next` returns it, and nothing
-/// wipes it from that point on. Task 7's consumer,
-/// `unlock::bundle::IdentityBundle::from_canonical_cbor`, folds each yielded
-/// value straight into a `Sensitive`/`SecretBytes` wrapper (or a plain
-/// public-key/scalar local) rather than cloning it into some other unwiped
-/// local first — cloning would recreate exactly the residue this type
-/// exists to avoid.
+/// type's protection entirely** the moment `take_next` returns it, and
+/// NOTHING WIPES IT AUTOMATICALLY from that point on — the caller must.
+/// [`wipe_leaked_value`] exists for exactly this: a caller that examines a
+/// yielded value has two honest choices, fold it into a zeroizing wrapper
+/// (`Sensitive`/`SecretBytes`) on success, or call `wipe_leaked_value`
+/// before an early return that never examines it at all.
+///
+/// Task 7's consumer, `unlock::bundle::IdentityBundle::from_canonical_cbor`,
+/// does both, and an earlier version of this doc comment claimed only the
+/// first half — found wrong in fix-round-1 G1, because two of its loop's
+/// early-return arms (an entry whose KEY fails the `Value::Text` shape
+/// check; an entry whose key does not match any recognised §5 field) never
+/// reach a wrapper at all. Cloning a yielded value into some other unwiped
+/// local would recreate exactly the residue this type exists to avoid;
+/// dropping it unwiped by falling through to neither choice does the same
+/// thing more quietly.
 ///
 /// No longer `#[cfg(test)]`-gated (struct, impl, and `Drop` below): Task 7
 /// (#548) gives this its first production caller, the same reasoning that

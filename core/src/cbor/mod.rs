@@ -47,6 +47,15 @@ mod secret_tree;
 
 pub(crate) use secret_tree::{SecretEntries, SecretValueTree};
 
+// `wipe_leaked_value` wipes a single, already-yielded `ciborium::Value` in
+// place — for a caller of `SecretEntries::take_next` (or similar) that
+// folds a yielded value into NOTHING (an early return that never examines
+// it) rather than into a zeroizing wrapper. Unconditional, not test-only:
+// `unlock::bundle::from_canonical_cbor`'s non-string-key and
+// unknown-field early returns are real production call sites (#548
+// fix-round-1 G1). See the function's own doc for the seam this closes.
+pub(crate) use secret_tree::wipe_leaked_value;
+
 // `wipe_calls` counts wipe invocations on the thread-local `WIPE_CALLS`
 // counter shared by `SecretValueTree` and `SecretEntries` (#547/#548).
 // Test-only: re-exported here so a CALLER's test module can pin that its

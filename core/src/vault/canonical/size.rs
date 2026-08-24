@@ -13,19 +13,21 @@
 //! Never an exact size. Being over is harmless (the only cost is slack);
 //! being under reopens the hazard, so every arm rounds up.
 //!
-//! Copied here from `unlock::bundle` (#547) — the original still lives at
-//! `bundle.rs`'s own `cbor_size_bound` until Task 7 deletes it — and **made
-//! recursive**. The bundle's version returns `HEAD_MAX` for a container
+//! Originally copied here from `unlock::bundle` (#547) and **made
+//! recursive**. `bundle.rs` carried its own private, non-recursive
+//! `cbor_size_bound` at the time — it returned `HEAD_MAX` for a container
 //! *arm* (i.e. `HEAD_MAX + HEAD_MAX` = 18 for the function as a whole, since
-//! the outer `HEAD_MAX +` in that version is unconditional), which is sound
-//! only because that module's entry lists are flat — a fact its
-//! `ZeroizingEntries::new` `debug_assert` checks at development time only:
+//! the outer `HEAD_MAX +` in that version was unconditional), which was
+//! sound only because that module's entry lists were flat — a fact its
+//! `ZeroizingEntries::new` `debug_assert` checked at development time only:
 //! like the `debug_assert!` this module's own runtime check replaced (see
-//! above), it compiles out of every build this project actually runs, so it
-//! pins nothing at runtime — it is a shape check a contributor sees while
-//! testing in debug mode, not an enforced invariant. The record path nests
-//! a per-field map inside an outer map inside an array, so a flat bound
-//! would under-reserve.
+//! above), it compiled out of every build this project actually runs, so it
+//! pinned nothing at runtime. Task 7 (#548) deleted both `cbor_size_bound`
+//! and `ZeroizingEntries` from `bundle.rs`, which now calls this recursive
+//! version via [`super::encode_canonical_map`] like every other caller. The
+//! record path nests a per-field map inside an outer map inside an array,
+//! so a flat bound would under-reserve — recursion here was never optional
+//! for that caller, only for the bundle's now-retired one.
 
 use ciborium::Value;
 
@@ -75,11 +77,11 @@ pub(crate) fn cbor_size_bound(value: &Value) -> usize {
 mod tests {
     use super::*;
 
-    /// The bundle's original `cbor_size_bound` returns `HEAD_MAX` for a
-    /// container *arm* (18 total for the function, per the module doc),
-    /// which UNDER-reserves on a nested tree. Under-reserving is the whole
-    /// hazard: `into_writer` then grows the buffer, and a realloc frees the
-    /// old block — holding plaintext — unwiped.
+    /// The bundle's now-deleted private `cbor_size_bound` (see the module
+    /// doc) returned `HEAD_MAX` for a container *arm* (18 total for the
+    /// function), which UNDER-reserved on a nested tree. Under-reserving is
+    /// the whole hazard: `into_writer` then grows the buffer, and a realloc
+    /// frees the old block — holding plaintext — unwiped.
     #[test]
     fn size_bound_is_not_under_reserved_for_a_nested_tree() {
         let inner = Value::Map(vec![

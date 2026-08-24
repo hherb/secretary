@@ -245,15 +245,22 @@ fn wipe_is_not_vacuous() {
 
 // --- SecretEntries (#547 / #548, audit C-4) ----------------------------
 //
-// Unlike `SecretValueTree`, Task 3 does not give `SecretEntries` a
-// production caller (Task 7 does). The whole `secret_tree` module is
-// `#[cfg(test)]`-gated (see this file's parent module doc, controller
-// ruling R12), so it exists ONLY in a `--tests` build — but within that
-// build, `new` / `len` / `is_empty` / `as_slice` / `take_next` still need a
-// genuine caller or they are `dead_code` in THIS compilation, and per this
-// branch's R4 ruling an uncalled item gets deleted rather than
-// `#[allow]`-ed. The tests below exist to exercise the real contract, not
-// merely to silence a lint.
+// History, not current state: at Task 3, `SecretEntries` had no production
+// caller (Task 7 gave it one — `unlock::bundle::from_canonical_cbor`), and
+// the whole `secret_tree` module was `#[cfg(test)]`-gated at that point
+// (controller ruling R12), so it existed ONLY in a `--tests` build; within
+// that build, `new` / `len` / `is_empty` / `as_slice` / `take_next` still
+// needed a genuine caller or they were `dead_code` in THIS compilation, and
+// per this branch's R4 ruling an uncalled item gets deleted rather than
+// `#[allow]`-ed.
+//
+// As of Task 7, the module is unconditionally compiled and so is
+// `SecretEntries` itself — `new` / `is_empty` / `as_slice` / `take_next` all
+// have real production callers now. Only `len` remains `#[cfg(test)]`-only
+// (`unlock::bundle`'s production caller never needs it; see that method's
+// own doc in `mod.rs`). The tests below still exist to exercise the real
+// contract, not merely to silence a lint — that reasoning didn't change,
+// only which items need it for that reason.
 
 /// Three distinguishable entries, used to check `take_next`'s ordering
 /// and `SecretEntries`'s wipe-on-drop.
