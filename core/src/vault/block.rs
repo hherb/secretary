@@ -19,10 +19,15 @@
 //!
 //! 3. [`BlockPlaintext`] / [`encode_plaintext`] / [`decode_plaintext`] —
 //!    the canonical-CBOR document that lives inside `aead_ct` (§6.3).
-//!    Records are delegated to [`super::record::encode`] /
-//!    [`super::record::decode`]; this module only owns the block-level
-//!    framing (`block_version`, `block_uuid`, `block_name`,
-//!    `schema_version`, the records array, and forward-compat unknowns).
+//!    Record CBOR shape is delegated to `super::record` — its
+//!    `record_to_canonical` on encode (embedded inline, #547 Task 5), and
+//!    `record::decode_value` on decode (reads the already-parsed subtree
+//!    directly, #547 Task 6; the byte-level canonicality re-check
+//!    [`super::record::decode`] itself performs is instead subsumed by this
+//!    module's own whole-plaintext re-encode-and-compare); this module only
+//!    owns the block-level framing (`block_version`, `block_uuid`,
+//!    `block_name`, `schema_version`, the records array, and forward-compat
+//!    unknowns).
 //!
 //! 4. [`BlockFile`] / [`encode_block_file`] / [`decode_block_file`] /
 //!    [`encrypt_block`] / [`decrypt_block`] — the on-disk composite
@@ -68,10 +73,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use ciborium::Value;
 use rand_core::{CryptoRng, RngCore};
 
-use crate::cbor::{classify_de, classify_ser, CborFault};
+use crate::cbor::{classify_de, classify_ser, CborFault, SecretValueTree};
 use crate::crypto::aead::{self, AeadError, AeadKey, AeadNonce, AEAD_TAG_LEN};
 use crate::crypto::kem::{self, HybridWrap, KemError, ML_KEM_768_CT_LEN, X25519_PK_LEN};
-use crate::crypto::secret::Sensitive;
+use crate::crypto::secret::{SecretBytes, Sensitive};
 use crate::crypto::sig::{
     self, Ed25519Public, Ed25519Secret, HybridSig, MlDsa65Public, MlDsa65Secret, MlDsa65Sig,
     SigError, SigRole, ED25519_SIG_LEN,
@@ -80,7 +85,10 @@ use crate::identity::fingerprint::Fingerprint;
 use crate::version::{FORMAT_VERSION, MAGIC, SUITE_ID};
 use zeroize::Zeroize as _;
 
-use super::canonical::{encode_canonical_map, reject_floats_and_tags, CanonicalError};
+use super::canonical::{
+    cbor_size_bound, reject_floats_and_tags, to_canonical_vec, CanonicalError, CanonicalMap,
+    CanonicalValue,
+};
 use super::record::{self, Record, RecordError, UnknownValue, RECORD_UUID_LEN};
 
 // ---------------------------------------------------------------------------
@@ -128,10 +136,23 @@ pub const BLOCK_UUID_LEN: usize = RECORD_UUID_LEN;
 /// match on two enums for one logical operation.
 #[derive(Debug, thiserror::Error)]
 pub enum BlockError {
-    /// Record-level CBOR error bubbled up from [`super::record::encode`]
-    /// or [`super::record::decode`]. Block plaintext delegates record
-    /// serialisation to that module rather than reimplementing it; any
-    /// error from that layer surfaces here unchanged.
+    /// Record-level CBOR error bubbled up from `record::decode_value`, via
+    /// `take_records` (block plaintext decode). Block delegates record
+    /// deserialisation to that module rather than reimplementing it; any
+    /// error from that layer surfaces here unchanged. `decode_value` reads
+    /// the already-parsed subtree directly rather than re-serialising it
+    /// and calling [`super::record::decode`] (#547 Task 6) — same error
+    /// type either way, since `decode_value` is `decode`'s own map-parsing
+    /// core.
+    ///
+    /// DECODE-ONLY as of #547 Task 5: `super::record::encode` has no
+    /// production caller in this file any more (`plaintext_to_canonical`
+    /// calls the infallible `record_to_canonical` directly), so
+    /// [`encode_plaintext`] can no longer return this variant — its only
+    /// error sources are now the `CanonicalError`-derived variants (see the
+    /// `From<CanonicalError>` impl above). Kept as one variant covering
+    /// both directions anyway, matching this enum's own stated rationale
+    /// (one typical caller touches both halves in sequence).
     #[error("record CBOR error: {0}")]
     Record(#[from] RecordError),
 
@@ -407,6 +428,18 @@ pub enum BlockError {
     /// reject — the v1 spec defines no forward-compat trailing fields.
     #[error("trailing bytes after signature suffix: {count}")]
     TrailingBytes { count: usize },
+
+    /// `crate::vault::canonical::to_canonical_vec`'s pre-reserved output
+    /// buffer (sized from `CanonicalMap::size_bound`, not
+    /// `encode_canonical_map`'s `cbor_size_bound` — the two are different
+    /// formulas over different input shapes; block's own plaintext encode
+    /// uses `to_canonical_vec` as of #547 Task 5) needed more bytes than
+    /// expected (lifted from `CanonicalError::CapacityBoundExceeded`, an
+    /// internal `pub(crate)` type not reachable from public docs). This is
+    /// a post-hoc tripwire for a future `ciborium::Value` variant the size
+    /// bound cannot name, not a routine error path.
+    #[error("canonical CBOR encode exceeded its reserved size bound ({actual} > {bound})")]
+    CanonicalSizeBoundExceeded { actual: usize, bound: usize },
 }
 
 /// Lift a [`CanonicalError`] from the shared
@@ -420,12 +453,27 @@ pub enum BlockError {
 /// `CanonicalError::TagRejected` is intentionally discarded here because
 /// the original `BlockError::TagRejected` did not carry one — the
 /// `From` is a behaviour-preserving bridge, not a surface enrichment.
+///
+/// That "bit-identical" claim is no longer exactly true, and deliberately
+/// so: the surface has since gained exactly one variant beyond the
+/// pre-refactor shape, [`BlockError::CanonicalSizeBoundExceeded`], because
+/// [`CanonicalError::CapacityBoundExceeded`] did not exist before this
+/// module did (see its doc). `BlockError` is not `#[non_exhaustive]`, so
+/// this is a real, compiler-checked surface change, not a documentation
+/// gap — unlike [`RecordError`]'s sibling impl in `record.rs`, nothing
+/// elsewhere in the crate matches `BlockError`'s variants
+/// exhaustively (`VaultError::Block` wraps the whole enum via `#[from]`),
+/// so no other call site needed updating; a full `cargo build --release
+/// --workspace --tests` after adding the variant confirms it.
 impl From<CanonicalError> for BlockError {
     fn from(e: CanonicalError) -> Self {
         match e {
             CanonicalError::CborEncode(fault) => BlockError::CborEncode(fault),
             CanonicalError::FloatRejected { field } => BlockError::FloatRejected { field },
             CanonicalError::TagRejected { .. } => BlockError::TagRejected,
+            CanonicalError::CapacityBoundExceeded { actual, bound } => {
+                BlockError::CanonicalSizeBoundExceeded { actual, bound }
+            }
         }
     }
 }
@@ -492,12 +540,24 @@ pub struct BlockHeader {
 /// - `schema_version`: u32, same rationale.
 ///
 /// Records are not stored as raw CBOR `Value`s here; they are typed
-/// [`Record`]s built by [`super::record::decode`]. On encode, each
-/// record is canonical-CBOR-encoded by [`super::record::encode`] and the
-/// resulting byte string is parsed back into `ciborium::Value` for
-/// inclusion in this map. (We can't hand `Record` directly to ciborium
-/// because `Record` has its own canonical-encoding rules that ciborium's
-/// generic serde path would not respect.)
+/// [`Record`]s built by `record::decode_value` on the decode side — it
+/// reads the record subtree directly out of this block's own parsed tree
+/// rather than re-serialising it and calling [`super::record::decode`]
+/// (#547 Task 6), the same "no per-record byte round-trip" property the
+/// next paragraph describes for the encode direction. On encode, each
+/// record's canonical map is embedded directly via
+/// `record_to_canonical` — the same borrowing helper
+/// [`super::record::encode`] itself calls — nested straight into this
+/// block's own canonical map (`plaintext_to_canonical`); there is no
+/// per-record byte serialise-then-reparse step (#547 Task 5). Note that
+/// this calls `record_to_canonical` directly, **not**
+/// `super::record::encode`: a future validation or wipe step added inside
+/// `record::encode` itself (as opposed to inside `record_to_canonical`,
+/// which both paths share) would NOT run on the block save path. (We
+/// can't hand `Record` directly to ciborium because `Record` has its own
+/// canonical-encoding rules that ciborium's generic serde path would not
+/// respect — that's why a typed-to-canonical conversion step exists at
+/// all, on both the block and record layers.)
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockPlaintext {
     /// Reserved for future incompatible block-body changes (§6.3 line
@@ -861,94 +921,78 @@ fn read_array<const N: usize>(bytes: &[u8], pos: &mut usize) -> Result<[u8; N], 
 /// rules from §6.2). Output is deterministic: `encode_plaintext(p)`
 /// produces the same bytes on every call.
 ///
-/// Records are serialised one-at-a-time via [`super::record::encode`]
-/// then parsed into `ciborium::Value` for inclusion in this map. The
-/// extra parse step is intentional: we must not bypass `record::encode`'s
-/// canonical-encoding discipline, but ciborium's writer takes a `Value`
-/// tree, so we materialise each record's canonical bytes and re-read them.
+/// Each record's canonical map is embedded directly via
+/// `record::record_to_canonical` — this calls the very function
+/// `record::encode` itself calls, rather than serialising each record and
+/// re-parsing the bytes back into a `Value` tree purely to nest it here
+/// (#547). The only error source left is the crate-internal canonical
+/// encoder's own CBOR-encode / capacity-bound checks, lifted to
+/// [`BlockError::CborEncode`] / [`BlockError::CanonicalSizeBoundExceeded`]
+/// by the `From<CanonicalError>` impl above.
 pub fn encode_plaintext(plaintext: &BlockPlaintext) -> Result<Vec<u8>, BlockError> {
-    let entries = plaintext_to_entries(plaintext)?;
-    Ok(encode_canonical_map(&entries)?)
+    Ok(to_canonical_vec(&plaintext_to_canonical(plaintext))?)
 }
 
-fn plaintext_to_entries(plaintext: &BlockPlaintext) -> Result<Vec<(Value, Value)>, BlockError> {
-    // Initial known-fields list. A `vec![]` literal here (rather than
-    // `Vec::new()` + sequential pushes) satisfies clippy's
-    // `vec_init_then_push` lint, which fires when more than three items
-    // are pushed in a row immediately after construction. `record.rs`
-    // interleaves a conditional push so the lint doesn't trigger there;
-    // here every known field is unconditional, so the literal is the
-    // idiomatic choice.
-    let mut entries: Vec<(Value, Value)> = vec![
-        (
-            Value::Text(KEY_BLOCK_VERSION.into()),
-            Value::Integer(u64::from(plaintext.block_version).into()),
-        ),
-        (
-            Value::Text(KEY_BLOCK_UUID.into()),
-            Value::Bytes(plaintext.block_uuid.to_vec()),
-        ),
-        (
-            Value::Text(KEY_BLOCK_NAME.into()),
-            Value::Text(plaintext.block_name.clone()),
-        ),
-        (
-            Value::Text(KEY_SCHEMA_VERSION.into()),
-            Value::Integer(u64::from(plaintext.schema_version).into()),
-        ),
-        (
-            Value::Text(KEY_RECORDS.into()),
-            records_to_value(&plaintext.records)?,
-        ),
-    ];
-
-    // Forward-compat: splice unknowns alongside known keys. The canonical
-    // sort step in encode_canonical_map decides the final byte order, so
-    // it does not matter whether unknowns are pushed before or after the
-    // known entries. Mirrors `record::record_to_entries`.
-    for (k, v) in &plaintext.unknown {
-        entries.push((Value::Text(k.clone()), unknown_to_value(v)?));
-    }
-
-    Ok(entries)
-}
-
-/// Encode each record via [`super::record::encode`] and re-parse the
-/// resulting bytes as a `Value` so they can join the outer map. The
-/// extra serialise/parse round-trip is the price of keeping
-/// `record::encode` as the sole authority on record CBOR shape.
+/// Build the borrowed canonical map for a block plaintext (§6.3).
 ///
-/// Performance hook: if profiling shows this on a hot path (Task 4
-/// onwards will bench AEAD-encrypted block writes), introduce a
-/// `pub(crate) fn record::record_to_value` and `value_to_record` that
-/// skip the byte round-trip. Defer until measurements warrant it.
-fn records_to_value(records: &[Record]) -> Result<Value, BlockError> {
-    let mut items: Vec<Value> = Vec::with_capacity(records.len());
-    for r in records {
-        let bytes = record::encode(r)?;
-        let val: Value = ciborium::de::from_reader(bytes.as_slice())
-            .map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
-        items.push(val);
+/// The `records` entry embeds each record's canonical map INLINE via
+/// [`super::record::record_to_canonical`]. The previous path called
+/// `record::encode` to get canonical bytes and then re-parsed them with
+/// `from_reader` purely to obtain a `Value` to nest — materialising a full
+/// plaintext `Value` tree plus a plaintext `Vec<u8>` per record, per save
+/// (#547 copies 5 and 6).
+///
+/// This STRENGTHENS the invariant the old round-trip existed to protect
+/// ("`record::encode` is the sole authority on record CBOR shape"): block
+/// now calls the very function `record::encode` calls, instead of
+/// re-parsing its output. It also retires the performance hook the old
+/// `records_to_value`'s doc recorded for exactly this round-trip — see
+/// that function's `#[cfg(test)]`-retained copy in the test module below.
+fn plaintext_to_canonical(plaintext: &BlockPlaintext) -> CanonicalMap<'_> {
+    let mut map = CanonicalMap::with_capacity(5 + plaintext.unknown.len());
+
+    map.push(
+        KEY_BLOCK_VERSION,
+        CanonicalValue::Uint(u64::from(plaintext.block_version)),
+    );
+    map.push(KEY_BLOCK_UUID, CanonicalValue::Bytes(&plaintext.block_uuid));
+    map.push(KEY_BLOCK_NAME, CanonicalValue::Text(&plaintext.block_name));
+    map.push(
+        KEY_SCHEMA_VERSION,
+        CanonicalValue::Uint(u64::from(plaintext.schema_version)),
+    );
+    map.push(
+        KEY_RECORDS,
+        CanonicalValue::Array(
+            plaintext
+                .records
+                .iter()
+                .map(|r| CanonicalValue::Map(record::record_to_canonical(r)))
+                .collect(),
+        ),
+    );
+
+    // Forward-compat: splice unknowns alongside known keys, borrowed via
+    // `UnknownValue::as_value` (never cloned — the same discipline
+    // `record::record_to_canonical` uses for its own unknowns). Push order
+    // is irrelevant: `CanonicalMap`'s `Serialize` impl sorts every key —
+    // known and unknown alike — into canonical order at serialise time.
+    for (k, v) in &plaintext.unknown {
+        map.push(k, CanonicalValue::Borrowed(v.as_value()));
     }
-    Ok(Value::Array(items))
+
+    map
 }
 
-/// Convert an [`UnknownValue`] back to a `ciborium::Value` for splicing
-/// into the outer map. Goes through the public canonical-CBOR
-/// serialisation so we don't depend on `UnknownValue`'s private wrapped
-/// field — keeps that abstraction intact across crate boundaries.
-fn unknown_to_value(u: &UnknownValue) -> Result<Value, BlockError> {
-    let bytes = u.to_canonical_cbor()?;
-    let val: Value = ciborium::de::from_reader(bytes.as_slice())
-        .map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
-    Ok(val)
-}
-
-// `encode_canonical_map` and `canonical_sort_entries` live in
-// [`crate::vault::canonical`] so block / record / manifest share one
-// implementation. The shared helpers return a [`CanonicalError`]; the
-// `From<CanonicalError> for BlockError` impl above lifts those errors
-// to the existing block-layer variants so the public surface stays
+// `to_canonical_vec` (used by `plaintext_to_canonical` / `encode_plaintext`
+// above) and `encode_canonical_map` (NOT called by this file any more as of
+// #547 Task 5, but still with real production callers elsewhere in the
+// crate — per ruling R11, not enumerated here; read the callers directly
+// rather than trusting a list) both live in [`crate::vault::canonical`], so
+// every canonical-CBOR layer shares one implementation rather than each
+// hand-rolling its own sort + encode. Both return a [`CanonicalError`];
+// the `From<CanonicalError> for BlockError` impl above lifts it to the
+// existing block-layer variants so the public error surface stays
 // unchanged.
 
 // ---------------------------------------------------------------------------
@@ -957,7 +1001,8 @@ fn unknown_to_value(u: &UnknownValue) -> Result<Value, BlockError> {
 
 /// Strict canonical-CBOR decoder for a block plaintext (§6.3).
 ///
-/// Validates the same rules as [`super::record::decode`]:
+/// Validates rules 1-6 and 8 the same way [`super::record::decode`] does;
+/// rule 7 is the one exception, called out below where it stops matching:
 ///
 /// 1. Top-level item is a map.
 /// 2. All map keys are text strings.
@@ -965,9 +1010,18 @@ fn unknown_to_value(u: &UnknownValue) -> Result<Value, BlockError> {
 /// 4. No CBOR tags anywhere in the tree.
 /// 5. No duplicate map keys at any level.
 /// 6. All required §6.3 block fields are present with their spec types.
-/// 7. Each entry of `records` is itself a canonical record (delegates to
-///    [`super::record::decode`]).
-/// 8. The bytes are themselves canonical (re-encode-and-compare).
+/// 7. Each entry of `records` has the required §6.3 record fields with
+///    their spec types (delegates to `record::decode_value`, the same
+///    map-parsing core [`super::record::decode`] uses). Unlike
+///    `record::decode`, this does NOT re-encode-and-byte-compare each
+///    record in isolation — #547 Task 6 removed that per-record check when
+///    it removed the per-record re-serialise buffer it depended on.
+/// 8. The bytes are themselves canonical (re-encode-and-compare) — over
+///    the WHOLE plaintext, which is what makes rule 7's per-record check
+///    unnecessary: a non-canonical nested record changes what this
+///    whole-document re-encode produces, so it still gets caught here. See
+///    `a_non_canonical_nested_record_is_still_rejected` in the test module
+///    for the test that discharges this claim rather than just arguing it.
 ///
 /// Forward-compat unknown keys are preserved into [`BlockPlaintext::unknown`].
 /// Cross-checking the plaintext's `block_uuid` against a sibling header
@@ -976,22 +1030,31 @@ fn unknown_to_value(u: &UnknownValue) -> Result<Value, BlockError> {
 pub fn decode_plaintext(bytes: &[u8]) -> Result<BlockPlaintext, BlockError> {
     let parsed: Value =
         ciborium::de::from_reader(bytes).map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
+    // Owns a copy of every record's decrypted plaintext, plus every
+    // block-level forward-compat unknown. See `record::decode`'s matching
+    // comment: wrapping means `Drop` wipes it on every exit from this
+    // function, including the `?` early returns below (record-level `?`s
+    // included, via `take_records` -> `record::decode_value`) and an
+    // unwinding panic (#547). The tree is BORROWED from here on.
+    let parsed = SecretValueTree::new(parsed);
 
     // Walk the tree to enforce no-float / no-tag everywhere (including
     // forward-compat unknowns and inside record maps). Doing this once
     // up front means the per-field decoders don't re-check.
-    reject_floats_and_tags(&parsed, "<root>")?;
+    reject_floats_and_tags(parsed.as_value(), "<root>")?;
 
-    let map = match parsed {
-        Value::Map(m) => m,
-        _ => return Err(BlockError::NotAMap),
+    let Value::Map(entries) = parsed.as_value() else {
+        return Err(BlockError::NotAMap);
     };
-
-    let plaintext = parse_plaintext_map(map)?;
+    let plaintext = parse_plaintext_map(entries)?;
 
     // Strict canonical-input check: re-encode and compare. Mirrors
     // `record::decode`. Catches indefinite-length items, non-canonical
-    // map key order, and non-shortest length / integer prefixes.
+    // map key order, and non-shortest length / integer prefixes — for
+    // NESTED records too, now that `take_records` below no longer runs
+    // `record::decode`'s own per-record byte check (#547 Task 6): see
+    // `a_non_canonical_nested_record_is_still_rejected` in the test module,
+    // which proves this whole-plaintext check subsumes it.
     let re_encoded = encode_plaintext(&plaintext)?;
     if re_encoded.as_slice() != bytes {
         return Err(BlockError::NonCanonicalEncoding);
@@ -1005,7 +1068,16 @@ pub fn decode_plaintext(bytes: &[u8]) -> Result<BlockPlaintext, BlockError> {
 // `FloatRejected` / `TagRejected` errors map back to the block-layer
 // variants without changing the public surface.
 
-fn parse_plaintext_map(map: Vec<(Value, Value)>) -> Result<BlockPlaintext, BlockError> {
+/// Parse a top-level CBOR map (already extracted from `Value::Map`) into a
+/// [`BlockPlaintext`]. Unknown block-level keys land in
+/// [`BlockPlaintext::unknown`].
+///
+/// Takes `&[(Value, Value)]` rather than owning the entry list, for the
+/// same reason `record::parse_record_map` does: the caller borrows from a
+/// [`SecretValueTree`] it holds and cannot hand over ownership without
+/// first cloning the whole list, which would reintroduce the unwiped copy
+/// this design removes (#547 Task 6).
+fn parse_plaintext_map(map: &[(Value, Value)]) -> Result<BlockPlaintext, BlockError> {
     let mut block_version: Option<u32> = None;
     let mut block_uuid: Option<[u8; BLOCK_UUID_LEN]> = None;
     let mut block_name: Option<String> = None;
@@ -1014,9 +1086,9 @@ fn parse_plaintext_map(map: Vec<(Value, Value)>) -> Result<BlockPlaintext, Block
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
     let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
-    for (index, (k, v)) in map.into_iter().enumerate() {
+    for (index, (k, v)) in map.iter().enumerate() {
         let key = match k {
-            Value::Text(s) => s,
+            Value::Text(s) => s.clone(),
             _ => return Err(BlockError::NonTextKey),
         };
         if !seen_keys.insert(key.clone()) {
@@ -1044,7 +1116,12 @@ fn parse_plaintext_map(map: Vec<(Value, Value)>) -> Result<BlockPlaintext, Block
             _ => {
                 // Forward-compat: any other key is preserved verbatim.
                 // The float/tag walker at the top of decode_plaintext()
-                // has already vetted v's subtree.
+                // has already vetted v's subtree. `value_to_unknown`
+                // re-serialises `v` to canonical bytes regardless (see its
+                // own doc), so borrowing costs nothing extra here — unlike
+                // the record-layer forward-compat arms, there is no second
+                // "clone straight into a zeroizing wrapper" path available
+                // (`UnknownValue::from_canonical_cbor` only takes bytes).
                 unknown.insert(key, value_to_unknown(v)?);
             }
         }
@@ -1068,12 +1145,20 @@ fn parse_plaintext_map(map: Vec<(Value, Value)>) -> Result<BlockPlaintext, Block
     })
 }
 
-/// Decode each `records` array entry by re-serialising it and feeding the
-/// bytes to [`super::record::decode`]. Same justification as
-/// [`records_to_value`]: keep `record::decode` the sole authority on
-/// record CBOR shape, even at the cost of a serialise/parse round-trip
-/// per record. Same performance-hook note applies — see [`records_to_value`].
-fn take_records(v: Value) -> Result<Vec<Record>, BlockError> {
+/// Decode each `records` array entry straight from the already-parsed
+/// subtree via [`super::record::decode_value`].
+///
+/// The previous path re-serialised each record `Value` into a plaintext
+/// `Vec<u8>` and called [`super::record::decode`] on it — an unwiped
+/// buffer per record per block open (#547 Task 6), and, since
+/// `record::decode` byte-compares its own re-encode, a PER-RECORD
+/// canonicality check this function no longer gets for free.
+/// [`decode_plaintext`]'s own whole-plaintext re-encode-and-compare (which
+/// covers every record subtree, because a record's canonical bytes are
+/// embedded inline in the block's canonical bytes) subsumes it; see
+/// `a_non_canonical_nested_record_is_still_rejected` in the test module for
+/// the proof.
+fn take_records(v: &Value) -> Result<Vec<Record>, BlockError> {
     let items = match v {
         Value::Array(a) => a,
         _ => {
@@ -1085,11 +1170,7 @@ fn take_records(v: Value) -> Result<Vec<Record>, BlockError> {
     };
     let mut out: Vec<Record> = Vec::with_capacity(items.len());
     for item in items {
-        let mut buf = Vec::new();
-        ciborium::ser::into_writer(&item, &mut buf)
-            .map_err(|e| BlockError::CborEncode(classify_ser(&e)))?;
-        let r = record::decode(&buf)?;
-        out.push(r);
+        out.push(record::decode_value(item)?);
     }
     Ok(out)
 }
@@ -1098,17 +1179,23 @@ fn take_records(v: Value) -> Result<Vec<Record>, BlockError> {
 /// don't have a public `UnknownValue::from_value(Value)` constructor by
 /// design (UnknownValue's wrapped field is private), so we round-trip
 /// through canonical CBOR — which also re-validates no-float / no-tag.
-fn value_to_unknown(v: Value) -> Result<UnknownValue, BlockError> {
-    let mut buf = Vec::new();
-    ciborium::ser::into_writer(&v, &mut buf)
+///
+/// Pre-reserved (#560 review), for the same reason
+/// `UnknownValue::to_canonical_cbor` is: a bare `Vec::new()` grows by
+/// doubling and each realloc frees a partial copy of this forward-compat
+/// subtree unwiped. `v` here borrows from the block's `SecretValueTree`,
+/// i.e. decrypted block plaintext.
+fn value_to_unknown(v: &Value) -> Result<UnknownValue, BlockError> {
+    let mut buf = Vec::with_capacity(cbor_size_bound(v));
+    ciborium::ser::into_writer(v, &mut buf)
         .map_err(|e| BlockError::CborEncode(classify_ser(&e)))?;
     let u = UnknownValue::from_canonical_cbor(&buf)?;
     Ok(u)
 }
 
-fn take_text(v: Value, field: &'static str) -> Result<String, BlockError> {
+fn take_text(v: &Value, field: &'static str) -> Result<String, BlockError> {
     match v {
-        Value::Text(s) => Ok(s),
+        Value::Text(s) => Ok(s.clone()),
         _ => Err(BlockError::WrongType {
             field,
             expected: "text string",
@@ -1116,9 +1203,9 @@ fn take_text(v: Value, field: &'static str) -> Result<String, BlockError> {
     }
 }
 
-fn take_u32(v: Value, field: &'static str) -> Result<u32, BlockError> {
+fn take_u32(v: &Value, field: &'static str) -> Result<u32, BlockError> {
     let i = match v {
-        Value::Integer(i) => i,
+        Value::Integer(i) => *i,
         _ => {
             return Err(BlockError::WrongType {
                 field,
@@ -1132,7 +1219,7 @@ fn take_u32(v: Value, field: &'static str) -> Result<u32, BlockError> {
     u32::try_from(as_u64).map_err(|_| BlockError::IntegerOverflow { field })
 }
 
-fn take_uuid(v: Value, field: &'static str) -> Result<[u8; BLOCK_UUID_LEN], BlockError> {
+fn take_uuid(v: &Value, field: &'static str) -> Result<[u8; BLOCK_UUID_LEN], BlockError> {
     let bytes = match v {
         Value::Bytes(b) => b,
         _ => {
@@ -1143,9 +1230,8 @@ fn take_uuid(v: Value, field: &'static str) -> Result<[u8; BLOCK_UUID_LEN], Bloc
         }
     };
     let length = bytes.len();
-    bytes
-        .try_into()
-        .map_err(|_: Vec<u8>| BlockError::InvalidUuid { field, length })
+    <[u8; BLOCK_UUID_LEN]>::try_from(bytes.as_slice())
+        .map_err(|_: std::array::TryFromSliceError| BlockError::InvalidUuid { field, length })
 }
 
 // ---------------------------------------------------------------------------
@@ -1691,16 +1777,23 @@ pub fn encrypt_block<R: RngCore + CryptoRng>(
     // Step 4: fresh AEAD nonce.
     let aead_nonce: AeadNonce = aead::random_nonce(rng);
 
-    // Step 5: canonical-CBOR plaintext.
-    let pt_bytes = encode_plaintext(plaintext)?;
+    // Step 5: canonical-CBOR plaintext. `pt_bytes` is a cleartext CBOR copy
+    // of every record in the block — every password, note and TOTP seed —
+    // so it is wrapped in `SecretBytes` immediately rather than left as a
+    // bare `Vec<u8>` until a trailing `.zeroize()` at the end of the
+    // function. `SecretBytes`'s `ZeroizeOnDrop` then wipes it on every exit
+    // path (normal return, an early `?`, or an unwinding panic), matching
+    // the `bundle_plaintext` pattern in `unlock::create_vault_unchecked`
+    // (#513, #357).
+    let pt_bytes = SecretBytes::new(encode_plaintext(plaintext)?);
 
     // Step 6: AAD = bytes magic..end_of_recipient_entries; AEAD-encrypt.
     let aad = build_body_aad(header, &wraps)?;
     let mut bck_key_bytes = *bck.expose();
     let bck_key: AeadKey = Sensitive::new(bck_key_bytes);
     bck_key_bytes.zeroize();
-    let ct_with_tag = aead::encrypt(&bck_key, &aead_nonce, &aad, &pt_bytes)?;
-    debug_assert_eq!(ct_with_tag.len(), pt_bytes.len() + AEAD_TAG_LEN);
+    let ct_with_tag = aead::encrypt(&bck_key, &aead_nonce, &aad, pt_bytes.expose())?;
+    debug_assert_eq!(ct_with_tag.len(), pt_bytes.expose().len() + AEAD_TAG_LEN);
 
     // Split (ct || tag) into aead_ct (variable) and aead_tag (16).
     let split_at = ct_with_tag.len() - AEAD_TAG_LEN;
@@ -1843,6 +1936,267 @@ pub fn decrypt_block(
 mod tests {
     use super::*;
     use crate::vault::record::{RecordField, RecordFieldValue};
+    // `encode_canonical_map` has no production caller left in THIS file
+    // after #547 Task 5, but still has real production callers elsewhere
+    // in the crate (per ruling R11, not enumerated here — read the callers
+    // directly rather than trusting a list), which is why it stays `pub`
+    // on `crate::vault::canonical` rather than being deleted. The
+    // production `use super::canonical::{...}` above deliberately no
+    // longer names it, so a plain `cargo build --release --workspace` (no
+    // `#[cfg(test)]` code compiled) does not warn `unused_imports`. Test
+    // code still needs it: it is the last step of the retained round-trip
+    // oracle below. Mirrors `record.rs`'s identical `#547` Task 4 comment.
+    use crate::vault::canonical::encode_canonical_map;
+
+    // ---- #547 differential oracle: the pre-Task-5 round-trip path --------
+    //
+    // A verbatim copy of the pre-#547-Task-5 production trio
+    // (`plaintext_to_entries` + `records_to_value` + `unknown_to_value`,
+    // finished off by the same `encode_canonical_map` call
+    // `encode_plaintext` used to make), deliberately kept `#[cfg(test)]`
+    // rather than deleted. It is the byte-identity oracle for
+    // `block_encode_matches_the_round_trip_path_byte_for_byte` below,
+    // proving the inline rewrite changed no bytes. Do not delete this as
+    // dead code, and do not "clean it up" toward the new implementation —
+    // an oracle that has drifted toward what it is supposed to be checking
+    // proves nothing. (Reviewer note: diff this block against
+    // `git show b5208d9b:core/src/vault/block.rs`'s `plaintext_to_entries`
+    // / `records_to_value` / `unknown_to_value` / `encode_plaintext` to
+    // confirm it has not drifted.)
+
+    /// A verbatim copy of the pre-#547-Task-5 `records_to_value`. See the
+    /// note above.
+    fn records_to_value_for_test(records: &[Record]) -> Result<Value, BlockError> {
+        let mut items: Vec<Value> = Vec::with_capacity(records.len());
+        for r in records {
+            let bytes = record::encode(r)?;
+            let val: Value = ciborium::de::from_reader(bytes.as_slice())
+                .map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
+            items.push(val);
+        }
+        Ok(Value::Array(items))
+    }
+
+    /// A verbatim copy of the pre-#547-Task-5 `unknown_to_value`. See the
+    /// note above.
+    fn unknown_to_value_for_test(u: &UnknownValue) -> Result<Value, BlockError> {
+        let bytes = u.to_canonical_cbor()?;
+        let val: Value = ciborium::de::from_reader(bytes.as_slice())
+            .map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
+        Ok(val)
+    }
+
+    /// A verbatim copy of the pre-#547-Task-5 `plaintext_to_entries`. See
+    /// the note above.
+    fn plaintext_to_entries_for_test(
+        plaintext: &BlockPlaintext,
+    ) -> Result<Vec<(Value, Value)>, BlockError> {
+        let mut entries: Vec<(Value, Value)> = vec![
+            (
+                Value::Text(KEY_BLOCK_VERSION.into()),
+                Value::Integer(u64::from(plaintext.block_version).into()),
+            ),
+            (
+                Value::Text(KEY_BLOCK_UUID.into()),
+                Value::Bytes(plaintext.block_uuid.to_vec()),
+            ),
+            (
+                Value::Text(KEY_BLOCK_NAME.into()),
+                Value::Text(plaintext.block_name.clone()),
+            ),
+            (
+                Value::Text(KEY_SCHEMA_VERSION.into()),
+                Value::Integer(u64::from(plaintext.schema_version).into()),
+            ),
+            (
+                Value::Text(KEY_RECORDS.into()),
+                records_to_value_for_test(&plaintext.records)?,
+            ),
+        ];
+
+        for (k, v) in &plaintext.unknown {
+            entries.push((Value::Text(k.clone()), unknown_to_value_for_test(v)?));
+        }
+
+        Ok(entries)
+    }
+
+    /// A verbatim copy of the pre-#547-Task-5 `encode_plaintext` body. See
+    /// the note above.
+    fn encode_plaintext_via_round_trip_for_test(
+        plaintext: &BlockPlaintext,
+    ) -> Result<Vec<u8>, BlockError> {
+        let entries = plaintext_to_entries_for_test(plaintext)?;
+        Ok(encode_canonical_map(&entries)?)
+    }
+
+    /// A minimal well-formed [`UnknownValue`]: a canonical-CBOR byte
+    /// string of `len` random bytes. `UnknownValue`'s wrapped field is
+    /// private (by design — see its own doc), so construction goes
+    /// through the public [`UnknownValue::from_canonical_cbor`] parser,
+    /// same as production `value_to_unknown` does.
+    fn random_unknown_value_for_test(
+        rng: &mut impl rand_core::RngCore,
+        len: usize,
+    ) -> UnknownValue {
+        let mut bytes = vec![0u8; len];
+        rng.fill_bytes(&mut bytes);
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&Value::Bytes(bytes), &mut buf)
+            .expect("ciborium encode of bytes item");
+        UnknownValue::from_canonical_cbor(&buf).expect("well-formed unknown value")
+    }
+
+    /// A record with an EMPTY `fields` map — the inner empty-container
+    /// edge case `block_encode_matches_the_round_trip_path_byte_for_byte`
+    /// exists to catch (alongside `n == 0` records at the block level; see
+    /// that test's own doc). `record::random_record` (below) always
+    /// populates several fields — record.rs's own differential test has no
+    /// need for an empty-fields mode, and adding one there only to serve
+    /// this one block-level edge case would be scope creep on that
+    /// module's fixture. This is deliberately NOT a second general-purpose
+    /// record generator (that was review finding E2, fix round 1): it
+    /// builds only the one degenerate state `random_record` doesn't cover,
+    /// nothing else.
+    fn random_record_with_empty_fields_for_test(rng: &mut impl rand_core::RngCore) -> Record {
+        let mut record_uuid = [0u8; RECORD_UUID_LEN];
+        rng.fill_bytes(&mut record_uuid);
+        Record {
+            record_uuid,
+            record_type: "login".to_string(),
+            fields: BTreeMap::new(),
+            tags: Vec::new(),
+            created_at_ms: rng.next_u64() >> 16,
+            last_mod_ms: rng.next_u64() >> 16,
+            tombstone: false,
+            tombstoned_at_ms: 0,
+            unknown: BTreeMap::new(),
+        }
+    }
+
+    /// Build a [`BlockPlaintext`] with `n` records plus three block-level
+    /// forward-compat unknowns: `"ab"` (2 bytes / 2 chars) paired with
+    /// `"\u{65e5}"` (日, 3 bytes / 1 char — pins byte-length-vs-char-count
+    /// key sorting, exactly `record.rs`'s own `random_record` pairing
+    /// rationale) and a 24-byte key (crosses the CBOR text-head 23→24
+    /// boundary).
+    ///
+    /// The FIRST record (when `n >= 1`) has an empty `fields` map (see
+    /// [`random_record_with_empty_fields_for_test`]); every other record
+    /// comes from `record::random_record` — the SAME generator
+    /// `record.rs`'s own differential test uses, re-exported `pub(crate)`
+    /// for exactly this reuse (#547 Task 5 fix round 1, review finding
+    /// E2).
+    ///
+    /// **The byte-vs-char pin belongs at THIS (block) level, not only at
+    /// the record level `random_record` already provides — and an earlier
+    /// draft of this fixture got that wrong.** This differential test
+    /// compares `plaintext_to_canonical` (production) against
+    /// `plaintext_to_entries_for_test` (the retained oracle). For a
+    /// RECORD's own fields, both sides route through the identical
+    /// `record_to_canonical` → `CanonicalMap::serialize` — the oracle's
+    /// `records_to_value_for_test` calls `record::encode`, which is
+    /// exactly that call (Task 4) — so a `CanonicalMap::serialize`
+    /// comparator regression affects both sides identically and produces
+    /// NO divergence at the record level, no matter how adversarial
+    /// `random_record`'s field names are; verified by execution at the time
+    /// — the SAME mutation fails `record.rs`'s own differential test, which
+    /// compares `CanonicalMap::serialize` against the independently
+    /// implemented `canonical_sort_entries`, but does not fail this one
+    /// without the change below. (That evidence was cited as
+    /// `task-5-report.md`'s fix-round-1 section until the #560 review; the
+    /// per-task SDD reports are under a gitignored `.superpowers/` and not
+    /// in the repo, so the conclusion is stated here instead of pointed
+    /// at. Unlike the records-ORDER mutation on
+    /// `block_encode_matches_the_round_trip_path_byte_for_byte` below, this
+    /// one was NOT re-run in that review — it is reported as the
+    /// point-in-time finding it is.) At the BLOCK level the two paths
+    /// genuinely diverge: the oracle sorts unknowns via
+    /// `canonical_sort_entries`, production via `CanonicalMap::serialize`
+    /// — DIFFERENT implementations — so a multi-byte block-level unknown
+    /// key is what actually exercises this test's ability to catch a
+    /// comparator regression; a purely-ASCII block-level key set (this
+    /// fixture's first draft) cannot, because byte length equals char
+    /// count for every ASCII string.
+    fn random_block_plaintext(rng: &mut impl rand_core::RngCore, n: usize) -> BlockPlaintext {
+        let mut block_uuid = [0u8; BLOCK_UUID_LEN];
+        rng.fill_bytes(&mut block_uuid);
+
+        let records = (0..n)
+            .map(|i| {
+                if i == 0 {
+                    random_record_with_empty_fields_for_test(rng)
+                } else {
+                    let tags_present = i % 2 == 0;
+                    let tombstone_state = match i % 3 {
+                        0 => record::TombstoneState::Live,
+                        1 => record::TombstoneState::Resurrected,
+                        _ => record::TombstoneState::Tombstoned,
+                    };
+                    record::random_record(rng, tags_present, tombstone_state)
+                }
+            })
+            .collect();
+
+        let mut unknown = BTreeMap::new();
+        unknown.insert("ab".to_string(), random_unknown_value_for_test(rng, 4));
+        unknown.insert(
+            "\u{65e5}".to_string(),
+            random_unknown_value_for_test(rng, 4),
+        );
+        unknown.insert("r".repeat(24), random_unknown_value_for_test(rng, 6));
+
+        BlockPlaintext {
+            block_version: 1,
+            block_uuid,
+            block_name: format!("block-{:016x}", rng.next_u64()),
+            schema_version: 1,
+            records,
+            unknown,
+        }
+    }
+
+    /// #547 copy 5 (and 6): `records_to_value` encoded each record to
+    /// plaintext bytes and re-parsed them into a fresh `Value` tree. Both
+    /// are gone; the bytes must not be.
+    ///
+    /// Differential against the round-trip path
+    /// (`encode_plaintext_via_round_trip_for_test`, kept `#[cfg(test)]` as
+    /// the oracle for exactly this comparison). Runs over four adversarial
+    /// shapes rather than one: `n=0` records (an empty records array —
+    /// the shape most likely to hide a definite-length CBOR header bug),
+    /// `n=1` where that one record itself has ZERO fields (an empty
+    /// INNER map — a second, independent empty-container edge case), and
+    /// two multi-record blocks (`n=2`, `n=3`) so the records array's
+    /// ORDER is actually exercised. That last part is load-bearing and was
+    /// re-verified by execution in the #560 review: adding `.rev()` to
+    /// `plaintext_to_canonical`'s records-array `.map(..).collect()` — i.e.
+    /// emitting the records backwards — makes exactly this test FAIL. The
+    /// `n=0` and `n=1` cases cannot see that mutation; the multi-record
+    /// cases are what catch it.
+    ///
+    /// (That evidence used to be cited as "the mutation check recorded in
+    /// `task-5-report.md`". The per-task SDD reports live under a gitignored
+    /// `.superpowers/` and are not in the repo, so the pointer could not be
+    /// followed — it is re-run and inlined here instead.)
+    #[test]
+    fn block_encode_matches_the_round_trip_path_byte_for_byte() {
+        let mut rng = rand_core::OsRng;
+
+        for n in [0usize, 1, 2, 3] {
+            let plaintext = random_block_plaintext(&mut rng, n);
+
+            let direct = encode_plaintext(&plaintext).expect("encode");
+            let via_round_trip =
+                encode_plaintext_via_round_trip_for_test(&plaintext).expect("round-trip encode");
+
+            assert_eq!(
+                direct, via_round_trip,
+                "inlining records changed the block bytes — the on-disk \
+                 format moved (n={n})"
+            );
+        }
+    }
 
     /// Encode a list of `(key, value)` entries as a definite-length CBOR
     /// map *without* canonical sorting. Length prefix uses ciborium's
@@ -1859,6 +2213,182 @@ mod tests {
         ciborium::ser::into_writer(&Value::Map(entries.to_vec()), &mut buf)
             .expect("ciborium encode of unsorted map");
         buf
+    }
+
+    /// Navigate a parsed block-plaintext `Value` tree to the `Value` for
+    /// the first entry of its `records` array. Shared by the two tamper
+    /// helpers below: both need to reach the same nested-record subtree,
+    /// one to mutate it in place, one to read its own canonical bytes.
+    fn first_record_value_mut(value: &mut Value) -> &mut Value {
+        let Value::Map(top) = value else {
+            panic!("block plaintext top level must be a map");
+        };
+        let records_value = top
+            .iter_mut()
+            .find_map(|(k, v)| match k {
+                Value::Text(s) if s == KEY_RECORDS => Some(v),
+                _ => None,
+            })
+            .expect("records key present");
+        let Value::Array(records) = records_value else {
+            panic!("records value must be an array");
+        };
+        records.first_mut().expect("at least one record")
+    }
+
+    /// Read-only twin of [`first_record_value_mut`].
+    fn first_record_value(value: &Value) -> &Value {
+        let Value::Map(top) = value else {
+            panic!("block plaintext top level must be a map");
+        };
+        let records_value = top
+            .iter()
+            .find_map(|(k, v)| match k {
+                Value::Text(s) if s == KEY_RECORDS => Some(v),
+                _ => None,
+            })
+            .expect("records key present");
+        let Value::Array(records) = records_value else {
+            panic!("records value must be an array");
+        };
+        records.first().expect("at least one record")
+    }
+
+    /// Reorder the first nested record's own map entries into a
+    /// non-canonical (reversed) order and re-emit the WHOLE tree with plain
+    /// `ciborium::ser::into_writer` — bypassing `to_canonical_vec` entirely,
+    /// so the only thing that makes the output non-canonical is this one
+    /// map's key order. Everything else in the tree round-trips
+    /// byte-identically through `ciborium::Value` because `good` was
+    /// already canonical (shortest-form, definite-length) when it was
+    /// parsed — the same equivalence Task 5's review established between
+    /// `CanonicalMap`'s serializer and plain `ciborium::Value` serialize.
+    fn reorder_first_nested_record_keys_for_test(good: &[u8]) -> Vec<u8> {
+        let mut value: Value =
+            ciborium::de::from_reader(good).expect("parse canonical block plaintext");
+
+        // Structural check that "only the reorder differs" is a property
+        // of this parse/re-emit round-trip, not an inferred assumption:
+        // re-emit the UNMUTATED tree first and require it to reproduce
+        // `good` byte-for-byte, before touching anything.
+        let mut baseline = Vec::new();
+        ciborium::ser::into_writer(&value, &mut baseline)
+            .expect("ciborium encode of the unmutated parsed tree");
+        assert_eq!(
+            baseline, good,
+            "plain ciborium re-emit of the unmutated tree must reproduce \
+             `good` byte-for-byte, or the tampered output below could \
+             differ from `good` for some reason other than the reorder"
+        );
+
+        let Value::Map(entries) = first_record_value_mut(&mut value) else {
+            panic!("record must be a map");
+        };
+        assert!(
+            entries.len() > 1,
+            "need more than one key for a reorder to be observable"
+        );
+        entries.reverse();
+
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&value, &mut buf)
+            .expect("ciborium encode of tampered tree (reversed nested record keys)");
+        buf
+    }
+
+    /// Rewrite the first nested record's own map wrapper from
+    /// definite-length to indefinite-length CBOR around the SAME entry
+    /// bytes — content-identical, but a shape `ciborium::Value` reads and
+    /// always re-emits definite. The same normalisation `record.rs`'s
+    /// `reject_indefinite_length_map` test exercises at the top level; this
+    /// is the identical splice, one level deeper (the record's own map
+    /// header, `0xa5` for its 5 always-present top-level keys, becomes
+    /// `0xbf ... 0xff`).
+    ///
+    /// Locates the record's byte range by re-encoding it in isolation
+    /// (`record_bytes`) and finding that exact run inside `good` — long
+    /// enough (record #0 has 5 keys and no fields, from
+    /// `random_record_with_empty_fields_for_test`) that a spurious match
+    /// against the fixture's random `block_uuid` / unknown-value bytes is
+    /// not a realistic concern, and the uniqueness assertion below makes
+    /// that structural rather than assumed.
+    fn indefinite_length_in_first_record_for_test(good: &[u8]) -> Vec<u8> {
+        let value: Value =
+            ciborium::de::from_reader(good).expect("parse canonical block plaintext");
+        let record = first_record_value(&value);
+
+        let mut record_bytes = Vec::new();
+        ciborium::ser::into_writer(record, &mut record_bytes)
+            .expect("ciborium encode of the nested record");
+        assert_eq!(
+            record_bytes[0], 0xa5,
+            "expected the first record's 5 always-present top-level keys \
+             (record_uuid, record_type, fields, created_at_ms, \
+             last_mod_ms) to produce a single-byte definite-length map \
+             header — did the fixture shape change?"
+        );
+
+        let hits: Vec<usize> = good
+            .windows(record_bytes.len())
+            .enumerate()
+            .filter(|(_, w)| *w == record_bytes.as_slice())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "expected the record's canonical bytes to appear exactly once \
+             in the block plaintext"
+        );
+        let at = hits[0];
+
+        let mut out = Vec::with_capacity(good.len() + 2);
+        out.extend_from_slice(&good[..at]);
+        out.push(0xbf); // indefinite-length map start
+        out.extend_from_slice(&record_bytes[1..]); // same entries, header dropped
+        out.push(0xff); // break -> closes the indefinite map
+        out.extend_from_slice(&good[at + record_bytes.len()..]);
+        out
+    }
+
+    /// The one validation-semantics change in #547. `take_records` used to
+    /// re-serialise each record `Value` into a plaintext buffer and hand it
+    /// to `record::decode`, which byte-compared its own re-encode. Removing
+    /// that buffer removes the PER-RECORD check; this proves the
+    /// BLOCK-level re-encode still rejects the same inputs.
+    ///
+    /// Two independent non-canonical shapes, because they fail differently:
+    /// out-of-order keys (a sort violation) and an indefinite-length item
+    /// (a `ciborium` normalisation that `Value` reads but re-emits
+    /// definite).
+    #[test]
+    fn a_non_canonical_nested_record_is_still_rejected() {
+        let mut rng = rand_core::OsRng;
+        let plaintext = random_block_plaintext(&mut rng, 1);
+        let good = encode_plaintext(&plaintext).expect("encode");
+        assert!(decode_plaintext(&good).is_ok(), "fixture must decode clean");
+
+        // (a) Out-of-order keys inside the nested record map.
+        let tampered = reorder_first_nested_record_keys_for_test(&good);
+        assert_ne!(tampered, good, "tamper helper did not change the bytes");
+        assert!(
+            matches!(
+                decode_plaintext(&tampered),
+                Err(BlockError::NonCanonicalEncoding)
+            ),
+            "block-level re-encode did not reject out-of-order nested record keys"
+        );
+
+        // (b) An indefinite-length nested record map.
+        let tampered = indefinite_length_in_first_record_for_test(&good);
+        assert_ne!(tampered, good, "tamper helper did not change the bytes");
+        assert!(
+            matches!(
+                decode_plaintext(&tampered),
+                Err(BlockError::NonCanonicalEncoding)
+            ),
+            "block-level re-encode did not reject an indefinite-length nested item"
+        );
     }
 
     /// Smoke test: build a minimal [`BlockHeader`] and a minimal
@@ -2360,5 +2890,89 @@ mod tests {
             !format!("{err}").contains(KEY_BLOCK_NAME),
             "the map key leaked into the message: {err}"
         );
+    }
+
+    /// #557 — `decode_plaintext`'s `SecretValueTree` wrap must be pinned.
+    ///
+    /// Until this test, deleting `SecretValueTree::new` at the top of
+    /// `decode_plaintext` left the ENTIRE suite green: `block.rs` had zero
+    /// `wipe_calls()` assertions, so the highest-volume of the four
+    /// production roots — this one owns a copy of every record in the
+    /// block, i.e. more decrypted plaintext than the other three combined
+    /// — was the only one whose wrap nothing observed. `record::decode`
+    /// (`decode_wipes_its_parsed_tree_on_an_early_return`) and both
+    /// `manifest` roots already had theirs.
+    ///
+    /// A duplicate `block_name` is the trigger because it fails inside
+    /// `parse_plaintext_map`, i.e. AFTER the wrap and BEFORE the function's
+    /// normal exit — which is exactly the early-`?` window `Drop` exists to
+    /// cover and a trailing wipe statement would miss. The block-name value
+    /// is deliberately non-trivial text so the tree being wiped actually
+    /// holds a payload.
+    ///
+    /// **Exact count, not `> before`**, matching the discipline
+    /// `unlock::bundle`'s two G1 tests arrived at: the delta on this path
+    /// was MEASURED at exactly 1, and 1 is the whole mechanism — the single
+    /// `SecretValueTree::drop`. Nothing else on this path ticks the shared
+    /// counter (`block.rs` constructs no `SecretEntries` and calls
+    /// `wipe_leaked_value` nowhere), so `== before + 1` says precisely "the
+    /// wrap exists and its `Drop` fired here", where `> before` would also
+    /// accept a future interior wrap arriving while this one silently went
+    /// away.
+    ///
+    /// That the counter TICKED is not proof that anything was overwritten —
+    /// `SecretValueTree::wipe` increments before it walks. The effect half
+    /// lives in `cbor::secret_tree::tests` (`wipe_reaches_every_depth_and_
+    /// every_container_arm`), which is where the recursive walk is pinned
+    /// for all three of its entry points.
+    #[test]
+    fn decode_plaintext_wipes_its_parsed_tree_on_an_early_return() {
+        let entries: Vec<(Value, Value)> = vec![
+            (
+                Value::Text(KEY_BLOCK_NAME.into()),
+                Value::Text("quarterly-payroll-secrets".into()),
+            ),
+            (
+                Value::Text(KEY_BLOCK_NAME.into()),
+                Value::Text("quarterly-payroll-secrets-dup".into()),
+            ),
+        ];
+        let bytes = cbor_map_bytes_unsorted(&entries);
+
+        let before = crate::cbor::wipe_calls();
+        let err = decode_plaintext(&bytes).expect_err("duplicate key must be rejected");
+        assert!(
+            matches!(err, BlockError::DuplicateKey { .. }),
+            "expected DuplicateKey, got {err:?}"
+        );
+        assert_eq!(
+            crate::cbor::wipe_calls(),
+            before + 1,
+            "expected exactly 1 wipe (SecretValueTree::drop on the early \
+             return out of parse_plaintext_map) — decode_plaintext's wrap is \
+             gone, or no longer covers this path (#557)"
+        );
+    }
+
+    /// `From<CanonicalError> for BlockError` must preserve both fields of
+    /// `CapacityBoundExceeded` unchanged (#547 round 2, N4). The error path
+    /// itself is unreachable by construction on today's `Value` variant set
+    /// (see `size.rs`'s tests), which is why this constructs the
+    /// `CanonicalError` directly rather than driving it through
+    /// `encode_canonical_map` — but the `From` mapping is ordinary code
+    /// with no such excuse, and had zero coverage before this test.
+    #[test]
+    fn canonical_error_capacity_bound_exceeded_maps_to_block_error() {
+        let err = CanonicalError::CapacityBoundExceeded {
+            actual: 42,
+            bound: 17,
+        };
+        match BlockError::from(err) {
+            BlockError::CanonicalSizeBoundExceeded { actual, bound } => {
+                assert_eq!(actual, 42);
+                assert_eq!(bound, 17);
+            }
+            other => panic!("expected CanonicalSizeBoundExceeded, got {other:?}"),
+        }
     }
 }

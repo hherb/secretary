@@ -51,8 +51,9 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 
-use crate::cbor::{classify_de, classify_ser, CborErrorKind, CborFault};
+use crate::cbor::{classify_de, classify_ser, CborErrorKind, CborFault, SecretValueTree};
 use crate::crypto::aead::{self, AeadKey, AeadNonce, AEAD_TAG_LEN};
+use crate::crypto::secret::SecretBytes;
 use crate::crypto::sig::{
     self, Ed25519Public, Ed25519Secret, Ed25519Sig, HybridSig, MlDsa65Public, MlDsa65Secret,
     MlDsa65Sig, SigError, SigRole, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN,
@@ -61,7 +62,8 @@ use crate::identity::fingerprint::Fingerprint;
 use crate::version::{FILE_KIND_MANIFEST, FORMAT_VERSION, MAGIC, SUITE_ID};
 
 use super::canonical::{
-    canonical_sort_entries, encode_canonical_map, reject_floats_and_tags, CanonicalError,
+    canonical_sort_entries, cbor_size_bound, encode_canonical_map, reject_floats_and_tags,
+    CanonicalError,
 };
 use super::record::{RecordError, UnknownValue};
 
@@ -670,7 +672,8 @@ fn record_error_to_cbor_fault(e: RecordError) -> CborFault {
         | RecordError::DuplicateKey { .. }
         | RecordError::FloatRejected { .. }
         | RecordError::TagRejected
-        | RecordError::NonCanonicalEncoding => CborFault {
+        | RecordError::NonCanonicalEncoding
+        | RecordError::CanonicalSizeBoundExceeded { .. } => CborFault {
             kind: CborErrorKind::Semantic,
             offset: None,
         },
@@ -680,11 +683,51 @@ fn record_error_to_cbor_fault(e: RecordError) -> CborFault {
 /// Extract the underlying CBOR `Value` from an [`UnknownValue`] for
 /// splicing into a parent map. We round-trip via canonical CBOR bytes so
 /// the call site does not need access to `UnknownValue`'s inner field.
+///
+/// `from_reader` here is a production parse of forward-compat plaintext
+/// (#547 Task 7b, the second `from_reader` site the task's brief names
+/// alongside `decode_manifest`'s own): the caller is the ENCODE path,
+/// re-materialising an already-decrypted `UnknownValue` for splicing into
+/// the manifest body about to be serialised.
+///
+/// This function has TWO intermediate plaintext copies, not the one an
+/// earlier version of this comment named (#547 Task 8 review — corrected
+/// here rather than silently reworded, per this doc's own discipline):
+/// `bytes`, the `to_canonical_cbor` serialisation, and `v`, the
+/// freshly-parsed tree. **`bytes` is the one that is covered**, and the
+/// #560 review is what swapped them round, because Task 7b had it exactly
+/// backwards:
+///
+/// - `bytes` has a genuine early-return window — the `?` on the
+///   `from_reader` line below sits between its fill and the end of the
+///   function — so wrapping it in [`SecretBytes`] makes `Drop` cover an
+///   exit that a trailing statement would miss. That is the whole
+///   justification for a wrapper, and it applies here.
+/// - `v` has **no** such window. Nothing fallible or panicking sits
+///   between the parse and the return, so a [`SecretValueTree`] wrap
+///   covered no exit that was not already covered. Task 7b wrapped it
+///   anyway, and because that type deliberately has no consuming accessor,
+///   the wrap FORCED a `.clone()` — a full deep copy of the forward-compat
+///   subtree — to get the value back out. The residue was unchanged (one
+///   unwiped `Value` escaped into the caller's plain, non-zeroizing
+///   `Vec<(Value, Value)>` either way), so the wrap bought nothing and
+///   cost a deep clone of decrypted content per unknown per manifest
+///   encode. It is removed; `v` moves straight into the return value as it
+///   did before Task 7b.
+///
+/// The `SecretBytes` wrap on `bytes` is not observable from a test — it
+/// does not tick `cbor::wipe_calls()`, which only `secret_tree`'s three
+/// entry points do — so reverting it would leave the suite green. That is
+/// the class **#558** already tracks for the AEAD plaintext buffers, and
+/// this site now joins it rather than pretending to a coverage it lacks.
+/// The counter-based test Task 7b wrote for the removed `SecretValueTree`
+/// wrap is retired with the wrap it pinned.
 fn unknown_value_inner(u: &UnknownValue) -> Result<Value, ManifestError> {
-    let bytes = u
-        .to_canonical_cbor()
-        .map_err(|e| ManifestError::CborEncode(record_error_to_cbor_fault(e)))?;
-    let v: Value = ciborium::de::from_reader(bytes.as_slice())
+    let bytes = SecretBytes::new(
+        u.to_canonical_cbor()
+            .map_err(|e| ManifestError::CborEncode(record_error_to_cbor_fault(e)))?,
+    );
+    let v: Value = ciborium::de::from_reader(bytes.expose())
         .map_err(|e| ManifestError::CborDecode(classify_de(&e)))?;
     Ok(v)
 }
@@ -715,20 +758,58 @@ fn unknown_value_inner(u: &UnknownValue) -> Result<Value, ManifestError> {
 pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
     let parsed: Value =
         ciborium::de::from_reader(bytes).map_err(|e| ManifestError::CborDecode(classify_de(&e)))?;
+    // The parsed tree owns a copy of every decrypted plaintext value in
+    // `bytes` — including every `block_name` (user-visible, plaintext
+    // within the encrypted manifest — see `BlockEntry::block_name`'s own
+    // doc comment) and every forward-compat `unknown` value. #547 Task 6
+    // wrapped `record::decode` / `block::decode_plaintext` in exactly this
+    // type; `manifest.rs` was excluded from that task on the premise that
+    // it "carries no decrypted user content" — false, contradicted by
+    // `block_name`'s own doc comment, which predates the exclusion (see
+    // the design spec's corrected "Scope note", #547 Task 7b). Wrapping
+    // means `Drop` wipes this copy on every exit from this function —
+    // including the `?` early returns below and inside every nested
+    // `parse_*` helper `parse_manifest_map` calls, and an unwinding panic
+    // — where the pre-Task-7b code left it unwiped on every one of those
+    // paths. The tree is BORROWED from here on; nothing moves out of it.
+    let parsed = SecretValueTree::new(parsed);
 
     // Walk the tree once up front to enforce no-float / no-tag everywhere
     // (including inside forward-compat unknown values).
-    reject_floats_and_tags(&parsed, "<root>")?;
+    reject_floats_and_tags(parsed.as_value(), "<root>")?;
 
-    let map = match parsed {
-        Value::Map(m) => m,
-        _ => return Err(ManifestError::NotAMap),
+    let Value::Map(entries) = parsed.as_value() else {
+        return Err(ManifestError::NotAMap);
     };
 
-    parse_manifest_map(map)
+    parse_manifest_map(entries)
 }
 
-fn parse_manifest_map(map: Vec<(Value, Value)>) -> Result<Manifest, ManifestError> {
+/// Takes `&[(Value, Value)]` rather than owning the entry list:
+/// [`decode_manifest`] borrows from a [`SecretValueTree`] it holds and
+/// cannot hand over ownership without first cloning the whole entry list,
+/// which would reintroduce the unwiped copy this design removes (#547
+/// Task 7b, mirroring Task 6's `record::parse_record_map` /
+/// `block::parse_plaintext_map`). Every nested `parse_*` helper below
+/// (`parse_vector_clock`, `parse_blocks` / `parse_block_entry`,
+/// `parse_trash` / `parse_trash_entry`, `parse_kdf_params`) and every
+/// `take_*` helper is converted the same way, all the way down, for the
+/// same reason.
+///
+/// Unlike `unlock::bundle::from_canonical_cbor`'s `SecretEntries`-based
+/// field loop (#548), nothing is ever moved OUT of the tree here — `k`/`v`
+/// stay references into the caller's still-alive `SecretValueTree` for the
+/// full duration of this call, including every nested helper it invokes.
+/// A `?` anywhere below therefore does not need a `wipe_leaked_value` call
+/// the way `bundle.rs`'s `take_next`-yielded entries do: there is no
+/// "yielded, now-unprotected" value to leak, because nothing is ever taken
+/// out of the tree by value. (Checked deliberately, per #547 Task 7b's
+/// brief, against the same fall-through shape Task 7 found in
+/// `bundle.rs` — it does not recur here, for the reason just given.)
+/// Whatever this function — or any callee — returns early from,
+/// `decode_manifest`'s `SecretValueTree` still covers everything, wherever
+/// in the tree it sits, the moment it drops.
+fn parse_manifest_map(map: &[(Value, Value)]) -> Result<Manifest, ManifestError> {
     let mut manifest_version: Option<u8> = None;
     let mut vault_uuid: Option<[u8; UUID_LEN]> = None;
     let mut format_version: Option<u16> = None;
@@ -740,7 +821,7 @@ fn parse_manifest_map(map: Vec<(Value, Value)>) -> Result<Manifest, ManifestErro
     let mut kdf_params: Option<KdfParamsRef> = None;
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
 
-    for (k, v) in map {
+    for (k, v) in map.iter() {
         let key = take_text_key(k)?;
         match key.as_str() {
             KEY_MANIFEST_VERSION => {
@@ -818,7 +899,7 @@ fn parse_manifest_map(map: Vec<(Value, Value)>) -> Result<Manifest, ManifestErro
 }
 
 fn parse_vector_clock(
-    v: Value,
+    v: &Value,
     field: &'static str,
 ) -> Result<Vec<VectorClockEntry>, ManifestError> {
     let items = match v {
@@ -846,7 +927,7 @@ fn parse_vector_clock(
     Ok(out)
 }
 
-fn parse_vector_clock_entry(v: Value) -> Result<VectorClockEntry, ManifestError> {
+fn parse_vector_clock_entry(v: &Value) -> Result<VectorClockEntry, ManifestError> {
     let entries = match v {
         Value::Map(m) => m,
         _ => {
@@ -890,7 +971,7 @@ fn parse_vector_clock_entry(v: Value) -> Result<VectorClockEntry, ManifestError>
     })
 }
 
-fn parse_blocks(v: Value) -> Result<Vec<BlockEntry>, ManifestError> {
+fn parse_blocks(v: &Value) -> Result<Vec<BlockEntry>, ManifestError> {
     let items = match v {
         Value::Array(a) => a,
         _ => {
@@ -912,7 +993,7 @@ fn parse_blocks(v: Value) -> Result<Vec<BlockEntry>, ManifestError> {
     Ok(out)
 }
 
-fn parse_block_entry(v: Value) -> Result<BlockEntry, ManifestError> {
+fn parse_block_entry(v: &Value) -> Result<BlockEntry, ManifestError> {
     let entries = match v {
         Value::Map(m) => m,
         _ => {
@@ -939,6 +1020,22 @@ fn parse_block_entry(v: Value) -> Result<BlockEntry, ManifestError> {
                 block_uuid = Some(take_fixed_bytes::<UUID_LEN>(val, KEY_BLOCK_UUID)?);
             }
             KEY_BLOCK_NAME => {
+                // #547 Task 7b: `block_name` is user-visible plaintext
+                // within the encrypted manifest (see the doc comment on
+                // `BlockEntry::block_name`) — the exact content this task
+                // exists to cover; the design spec's "manifest.rs carries
+                // no decrypted user content" premise was false precisely
+                // because of this field (see the corrected "Scope note").
+                // `take_text` clones it out of the borrowed tree into a
+                // PLAIN, non-zeroizing `String` — `BlockEntry::block_name`'s
+                // own type, the same class of destination
+                // `block::parse_plaintext_map` uses for the block-layer
+                // `block_name` field. The SOURCE `Value::Text` inside the
+                // tree stays covered by `decode_manifest`'s
+                // `SecretValueTree` until it drops; this clone is not
+                // additionally wiped — no regression, since a plain
+                // `String` destination was never wiped before this task
+                // either.
                 block_name = Some(take_text(val, KEY_BLOCK_NAME)?);
             }
             KEY_FINGERPRINT => {
@@ -997,7 +1094,7 @@ fn parse_block_entry(v: Value) -> Result<BlockEntry, ManifestError> {
     })
 }
 
-fn parse_recipients(v: Value) -> Result<Vec<[u8; UUID_LEN]>, ManifestError> {
+fn parse_recipients(v: &Value) -> Result<Vec<[u8; UUID_LEN]>, ManifestError> {
     let items = match v {
         Value::Array(a) => a,
         _ => {
@@ -1008,12 +1105,12 @@ fn parse_recipients(v: Value) -> Result<Vec<[u8; UUID_LEN]>, ManifestError> {
         }
     };
     items
-        .into_iter()
+        .iter()
         .map(|item| take_fixed_bytes::<UUID_LEN>(item, KEY_RECIPIENTS))
         .collect()
 }
 
-fn parse_trash(v: Value) -> Result<Vec<TrashEntry>, ManifestError> {
+fn parse_trash(v: &Value) -> Result<Vec<TrashEntry>, ManifestError> {
     let items = match v {
         Value::Array(a) => a,
         _ => {
@@ -1024,7 +1121,7 @@ fn parse_trash(v: Value) -> Result<Vec<TrashEntry>, ManifestError> {
         }
     };
     let out: Vec<TrashEntry> = items
-        .into_iter()
+        .iter()
         .map(parse_trash_entry)
         .collect::<Result<_, _>>()?;
     let mut ids: Vec<[u8; UUID_LEN]> = out.iter().map(|t| t.block_uuid).collect();
@@ -1035,7 +1132,7 @@ fn parse_trash(v: Value) -> Result<Vec<TrashEntry>, ManifestError> {
     Ok(out)
 }
 
-fn parse_trash_entry(v: Value) -> Result<TrashEntry, ManifestError> {
+fn parse_trash_entry(v: &Value) -> Result<TrashEntry, ManifestError> {
     let entries = match v {
         Value::Map(m) => m,
         _ => {
@@ -1095,7 +1192,7 @@ fn parse_trash_entry(v: Value) -> Result<TrashEntry, ManifestError> {
     })
 }
 
-fn parse_kdf_params(v: Value) -> Result<KdfParamsRef, ManifestError> {
+fn parse_kdf_params(v: &Value) -> Result<KdfParamsRef, ManifestError> {
     let entries = match v {
         Value::Map(m) => m,
         _ => {
@@ -1148,16 +1245,37 @@ fn parse_kdf_params(v: Value) -> Result<KdfParamsRef, ManifestError> {
 // call until a fourth caller materialises).
 // ---------------------------------------------------------------------------
 
-fn take_text_key(v: Value) -> Result<String, ManifestError> {
+/// Borrows rather than consumes throughout this whole helper family (#547
+/// Task 7b): every caller holds `v`/`k` as a reference into the
+/// [`SecretValueTree`] `decode_manifest` **itself** holds — not one of
+/// `decode_manifest`'s callers, as an earlier version of this comment
+/// said (#547 Task 8 review — corrected here rather than silently
+/// reworded). No caller of `decode_manifest` holds a `SecretValueTree` at
+/// all; `manifest.rs` has exactly one root, owned by `decode_manifest`
+/// (see `parse_manifest_map`'s doc). That phrasing was carried over from
+/// `record.rs`, which genuinely has two `SecretValueTree`-related sites
+/// across its decode call chain — `manifest.rs` does not share that
+/// shape. Every scalar `take_*` clones out of the
+/// borrowed tree into a genuinely OWNED, plain (non-zeroizing) return
+/// value — `String`, `[u8; N]`, `u8`/`u16`/`u32`/`u64` — one added copy
+/// per call relative to the pre-Task-7b owning version, which moved the
+/// value out instead. The SOURCE is covered from that point on (the
+/// enclosing `SecretValueTree` wipes it on drop); the destination here is
+/// not — no regression, since none of these destinations (`Manifest`,
+/// `BlockEntry`, `TrashEntry`, `KdfParamsRef`, `VectorClockEntry` fields)
+/// was ever wrapped in a zeroizing type before this task either. See
+/// `parse_block_entry`'s `KEY_BLOCK_NAME` arm for the one call here that
+/// clones genuinely user-authored plaintext.
+fn take_text_key(v: &Value) -> Result<String, ManifestError> {
     match v {
-        Value::Text(s) => Ok(s),
+        Value::Text(s) => Ok(s.clone()),
         _ => Err(ManifestError::NonTextKey),
     }
 }
 
-fn take_text(v: Value, field: &'static str) -> Result<String, ManifestError> {
+fn take_text(v: &Value, field: &'static str) -> Result<String, ManifestError> {
     match v {
-        Value::Text(s) => Ok(s),
+        Value::Text(s) => Ok(s.clone()),
         _ => Err(ManifestError::WrongType {
             field,
             expected: "text string",
@@ -1166,7 +1284,7 @@ fn take_text(v: Value, field: &'static str) -> Result<String, ManifestError> {
 }
 
 fn take_fixed_bytes<const N: usize>(
-    v: Value,
+    v: &Value,
     field: &'static str,
 ) -> Result<[u8; N], ManifestError> {
     let bytes = match v {
@@ -1179,16 +1297,16 @@ fn take_fixed_bytes<const N: usize>(
         }
     };
     let length = bytes.len();
-    bytes
-        .try_into()
-        .map_err(|_: Vec<u8>| ManifestError::InvalidByteLength {
+    <[u8; N]>::try_from(bytes.as_slice()).map_err(|_: std::array::TryFromSliceError| {
+        ManifestError::InvalidByteLength {
             field,
             expected: N,
             length,
-        })
+        }
+    })
 }
 
-fn take_u8(v: Value, field: &'static str) -> Result<u8, ManifestError> {
+fn take_u8(v: &Value, field: &'static str) -> Result<u8, ManifestError> {
     let i = take_integer_i128(v, field)?;
     if !(0..=u8::MAX as i128).contains(&i) {
         return Err(ManifestError::IntegerOutOfRange { field, value: i });
@@ -1196,7 +1314,7 @@ fn take_u8(v: Value, field: &'static str) -> Result<u8, ManifestError> {
     Ok(i as u8)
 }
 
-fn take_u16(v: Value, field: &'static str) -> Result<u16, ManifestError> {
+fn take_u16(v: &Value, field: &'static str) -> Result<u16, ManifestError> {
     let i = take_integer_i128(v, field)?;
     if !(0..=u16::MAX as i128).contains(&i) {
         return Err(ManifestError::IntegerOutOfRange { field, value: i });
@@ -1204,7 +1322,7 @@ fn take_u16(v: Value, field: &'static str) -> Result<u16, ManifestError> {
     Ok(i as u16)
 }
 
-fn take_u32(v: Value, field: &'static str) -> Result<u32, ManifestError> {
+fn take_u32(v: &Value, field: &'static str) -> Result<u32, ManifestError> {
     let i = take_integer_i128(v, field)?;
     if !(0..=u32::MAX as i128).contains(&i) {
         return Err(ManifestError::IntegerOutOfRange { field, value: i });
@@ -1212,7 +1330,7 @@ fn take_u32(v: Value, field: &'static str) -> Result<u32, ManifestError> {
     Ok(i as u32)
 }
 
-fn take_u64(v: Value, field: &'static str) -> Result<u64, ManifestError> {
+fn take_u64(v: &Value, field: &'static str) -> Result<u64, ManifestError> {
     let i = take_integer_i128(v, field)?;
     if !(0..=u64::MAX as i128).contains(&i) {
         return Err(ManifestError::IntegerOutOfRange { field, value: i });
@@ -1221,10 +1339,13 @@ fn take_u64(v: Value, field: &'static str) -> Result<u64, ManifestError> {
 }
 
 /// Decode a CBOR integer as i128 so all of [u8 .. u64] fit a single
-/// accessor. `ciborium::value::Integer` → `i128` is infallible.
-fn take_integer_i128(v: Value, field: &'static str) -> Result<i128, ManifestError> {
+/// accessor. `ciborium::value::Integer` → `i128` is infallible, and
+/// `Integer` is `Copy`, so borrowing costs nothing extra here — unlike
+/// every other `take_*` above, there is no added clone at this specific
+/// site.
+fn take_integer_i128(v: &Value, field: &'static str) -> Result<i128, ManifestError> {
     match v {
-        Value::Integer(i) => Ok(i128::from(i)),
+        Value::Integer(i) => Ok(i128::from(*i)),
         _ => Err(ManifestError::WrongType {
             field,
             expected: "unsigned integer",
@@ -1236,9 +1357,30 @@ fn take_integer_i128(v: Value, field: &'static str) -> Result<i128, ManifestErro
 /// an [`UnknownValue`] for round-trip preservation. We re-encode and
 /// re-decode through `UnknownValue::from_canonical_cbor` so any future
 /// tightening of the unknown-value invariant fires here too.
-fn value_to_unknown(v: Value) -> Result<UnknownValue, ManifestError> {
-    let mut buf = Vec::new();
-    ciborium::ser::into_writer(&v, &mut buf)
+///
+/// Borrows rather than consumes (#547 Task 7b): every caller now holds
+/// `v` as a reference into a [`SecretValueTree`] (directly for
+/// `parse_manifest_map`, or transitively via a parent entry map for
+/// `parse_block_entry` / `parse_trash_entry`) and cannot hand over
+/// ownership without first cloning the whole subtree. Unlike every
+/// `take_*` helper above, this conversion needs NO added clone at all:
+/// serialising only ever needed a borrow — `ciborium::ser::into_writer`'s
+/// `value` parameter is `&T` — so the pre-Task-7b `Value` parameter was
+/// already only used as `&v`. `UnknownValue::from_canonical_cbor` below
+/// still allocates its own fresh `Value` by re-parsing `buf`, exactly as
+/// it always has; that allocation is `UnknownValue`'s own, not a copy
+/// this function introduces.
+///
+/// The output buffer is pre-reserved (#560 review). Task 7b removed the
+/// added CLONE from this function but left `buf` a bare `Vec::new()`, which
+/// grows by doubling and frees each old buffer unwiped — and `v` borrows
+/// from `decode_manifest`'s `SecretValueTree`, so this is the same content
+/// the wrap exists to protect. Reserving is what `to_canonical_vec` and
+/// `encode_canonical_map` already do; this site and its two siblings in
+/// `record.rs` / `block.rs` were missed by that pass.
+fn value_to_unknown(v: &Value) -> Result<UnknownValue, ManifestError> {
+    let mut buf = Vec::with_capacity(cbor_size_bound(v));
+    ciborium::ser::into_writer(v, &mut buf)
         .map_err(|e| ManifestError::CborEncode(classify_ser(&e)))?;
     UnknownValue::from_canonical_cbor(&buf)
         .map_err(|e| ManifestError::CborDecode(record_error_to_cbor_fault(e)))
@@ -1790,12 +1932,19 @@ pub fn sign_manifest(
     sk_ed: &Ed25519Secret,
     sk_pq: &MlDsa65Secret,
 ) -> Result<ManifestFile, ManifestError> {
-    // Step 1: encode the manifest body to canonical CBOR.
-    let body_bytes = encode_manifest(body)?;
+    // Step 1: encode the manifest body to canonical CBOR. `body_bytes` is a
+    // cleartext copy of every user-authored `block_name` in the vault, so it
+    // is wrapped in `SecretBytes` immediately rather than left as a bare
+    // `Vec<u8>` until a trailing `.zeroize()` at the end of the function.
+    // `SecretBytes`'s `ZeroizeOnDrop` then wipes it on every exit path
+    // (normal return, an early `?`, or an unwinding panic), matching the
+    // `bundle_plaintext` pattern in `unlock::create_vault_unchecked` (#513,
+    // #357).
+    let body_bytes = SecretBytes::new(encode_manifest(body)?);
 
     // Step 2: AEAD-encrypt with header AAD.
-    let ct_with_tag = encrypt_manifest_body(&header, &body_bytes, ibk, nonce)?;
-    debug_assert_eq!(ct_with_tag.len(), body_bytes.len() + AEAD_TAG_LEN);
+    let ct_with_tag = encrypt_manifest_body(&header, body_bytes.expose(), ibk, nonce)?;
+    debug_assert_eq!(ct_with_tag.len(), body_bytes.expose().len() + AEAD_TAG_LEN);
 
     // Split (ct || tag) into aead_ct (variable) and aead_tag (16).
     let split_at = ct_with_tag.len() - AEAD_TAG_LEN;
@@ -2288,6 +2437,73 @@ mod tests {
         );
     }
 
+    // `encode_manifest_wipes_unknown_value_inners_intermediate_parse` stood
+    // here until the #560 review. It pinned `unknown_value_inner`'s
+    // `SecretValueTree` wrap — and that wrap is gone, because it covered no
+    // early-return window and forced a deep clone of decrypted forward-compat
+    // content to get the value back out of a type with no consuming accessor.
+    // See that function's doc for the full reasoning and for what replaced it
+    // (a `SecretBytes` wrap on `bytes`, which DOES have a window). The test is
+    // retired with the wrap it pinned rather than repointed: the replacement
+    // is not counter-observable, which is the #558 class, and writing a test
+    // that asserts nothing about it would be worse than admitting the gap.
+
+    // ---- Decode wipes its parsed tree (#547 Task 7b) ----------------------
+
+    /// THE test #547 Task 7b's brief asks for: drive an early-return path
+    /// through `decode_manifest` and prove `SecretValueTree::drop` actually
+    /// fires, mirroring `record::decode`'s
+    /// `decode_wipes_its_parsed_tree_on_an_early_return` and
+    /// `block::decode_plaintext`'s
+    /// `decode_plaintext_wipes_its_parsed_tree_on_an_early_return`.
+    ///
+    /// That second citation was FALSE when first written and is corrected
+    /// rather than dropped: no such block test existed, `block.rs` had zero
+    /// `wipe_calls()` assertions of any kind, and open issue #557 said so
+    /// outright — so this comment told a reader the opposite of the tracker.
+    /// The block test was written during the #560 review; the claim is true
+    /// now because the code changed, not because the wording softened.
+    ///
+    /// `manifest_version` — the FIRST entry `manifest_to_entries` emits —
+    /// is corrupted to the wrong CBOR type, so `parse_manifest_map`'s very
+    /// first `take_u8(KEY_MANIFEST_VERSION)` call fails and the `?`
+    /// propagates all the way back to `decode_manifest` before the
+    /// `blocks` array entry — carrying a structurally valid `block_name`
+    /// ("logins"), the user-visible plaintext this whole task exists to
+    /// cover — is ever examined. Wiping here proves not-yet-examined
+    /// content is covered too, not just already-consumed content.
+    #[test]
+    fn decode_manifest_wipes_its_parsed_tree_on_an_early_return() {
+        let m = populated_manifest();
+        let mut entries = manifest_to_entries(&m).expect("encode entries");
+        let version_idx = entries
+            .iter()
+            .position(|(k, _)| matches!(k, Value::Text(s) if s == KEY_MANIFEST_VERSION))
+            .expect("manifest_version entry present");
+        entries[version_idx].1 = Value::Text("not-a-u8".to_string());
+
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut bytes).expect("serialize");
+
+        let before = crate::cbor::wipe_calls();
+        let err =
+            decode_manifest(&bytes).expect_err("wrong-typed manifest_version must be rejected");
+        assert!(
+            matches!(
+                err,
+                ManifestError::WrongType {
+                    field: KEY_MANIFEST_VERSION,
+                    expected: "unsigned integer",
+                }
+            ),
+            "expected WrongType {{ field: manifest_version, expected: unsigned integer }}, got {err:?}"
+        );
+        assert!(
+            crate::cbor::wipe_calls() > before,
+            "decode_manifest's early return did not wipe its parsed SecretValueTree"
+        );
+    }
+
     // ---- Negative paths --------------------------------------------------
 
     /// Build a top-level manifest CBOR map by hand. Useful for negative
@@ -2645,7 +2861,9 @@ mod tests {
 
     /// Regression: ensures `decode_manifest` rejects a fixed-length `bstr`
     /// field whose byte count is wrong. `vault_uuid` is `bstr 16`; here we
-    /// supply 15 bytes so `take_fixed_bytes::<16>` fails its `try_into`.
+    /// supply 15 bytes so `take_fixed_bytes::<16>` fails its
+    /// `<[u8; N]>::try_from` conversion (#547 Task 7b: was `Vec::try_into`
+    /// before the borrow conversion — same failure, different spelling).
     #[test]
     fn rejects_invalid_byte_length_for_vault_uuid() {
         let entries: Vec<(Value, Value)> = vec![

@@ -47,11 +47,13 @@
 //! the produced bytes are bit-identical to the input, because:
 //!
 //! - We collect every unrecognised key into the `unknown` map.
-//! - On re-encode we splice unknown entries back alongside the known
-//!   entries and let `encode_canonical_map` re-sort them by canonical
-//!   CBOR-encoded key. Since canonical sort is total and stable, the
-//!   resulting byte layout matches the input exactly when the input was
-//!   itself canonical.
+//! - On re-encode, `record_to_canonical` splices unknown entries (borrowed
+//!   via `UnknownValue::as_value`, never cloned) into the same
+//!   `CanonicalMap` as the known entries; its `Serialize` impl sorts every
+//!   key — known and unknown alike — into canonical order at serialise
+//!   time. Since that sort is total, deterministic, and depends only on the
+//!   key bytes, the resulting byte layout matches the input exactly when
+//!   the input was itself canonical.
 //!
 //! The decoder's strict canonical-input check (re-encode the parsed
 //! representation and compare to the input bytes) makes the round-trip
@@ -69,11 +71,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ciborium::Value;
 
-use crate::cbor::{classify_de, classify_ser, CborFault};
+use crate::cbor::{classify_de, classify_ser, CborFault, SecretValueTree};
 use crate::crypto::secret::{SecretBytes, SecretString};
 
 use super::canonical::{
-    canonical_sort_entries, encode_canonical_map, reject_floats_and_tags, CanonicalError,
+    cbor_size_bound, reject_floats_and_tags, to_canonical_vec, CanonicalError, CanonicalMap,
+    CanonicalValue,
 };
 
 // ---------------------------------------------------------------------------
@@ -214,6 +217,17 @@ pub enum RecordError {
     /// covers the full set.
     #[error("non-canonical CBOR encoding (e.g. indefinite-length item, key disorder, or non-shortest length)")]
     NonCanonicalEncoding,
+
+    /// `crate::vault::canonical::to_canonical_vec`'s pre-reserved output
+    /// buffer (sized from `CanonicalMap::size_bound`, not
+    /// `encode_canonical_map`'s `cbor_size_bound` — the two are different
+    /// formulas over different input shapes) needed more bytes than
+    /// expected (lifted from `CanonicalError::CapacityBoundExceeded`, an
+    /// internal `pub(crate)` type not reachable from public docs). This is
+    /// a post-hoc tripwire for a future `ciborium::Value` variant the size
+    /// bound cannot name, not a routine error path.
+    #[error("canonical CBOR encode exceeded its reserved size bound ({actual} > {bound})")]
+    CanonicalSizeBoundExceeded { actual: usize, bound: usize },
 }
 
 /// Lift a [`CanonicalError`] from the shared
@@ -227,12 +241,26 @@ pub enum RecordError {
 /// `CanonicalError::TagRejected` is intentionally discarded here because
 /// the original `RecordError::TagRejected` did not carry one — the
 /// `From` is a behaviour-preserving bridge, not a surface enrichment.
+///
+/// That "bit-identical" claim is no longer exactly true, and deliberately
+/// so: the surface has since gained exactly one variant beyond the
+/// pre-refactor shape, [`RecordError::CanonicalSizeBoundExceeded`],
+/// because [`CanonicalError::CapacityBoundExceeded`] did not exist before
+/// this module did (see its doc). `RecordError` is not `#[non_exhaustive]`,
+/// so this is a real, compiler-checked surface change, not a documentation
+/// gap: `manifest.rs`'s `record_error_to_cbor_fault` — an exhaustive match
+/// over every `RecordError` variant with no wildcard, by design — needed
+/// (and got) a matching arm added in the same commit that added this
+/// variant.
 impl From<CanonicalError> for RecordError {
     fn from(e: CanonicalError) -> Self {
         match e {
             CanonicalError::CborEncode(fault) => RecordError::CborEncode(fault),
             CanonicalError::FloatRejected { field } => RecordError::FloatRejected { field },
             CanonicalError::TagRejected { .. } => RecordError::TagRejected,
+            CanonicalError::CapacityBoundExceeded { actual, bound } => {
+                RecordError::CanonicalSizeBoundExceeded { actual, bound }
+            }
         }
     }
 }
@@ -275,11 +303,34 @@ impl UnknownValue {
     }
 
     /// Serialise back to canonical CBOR.
+    ///
+    /// Pre-reserved (#560 review). A bare `Vec::new()` here grows by
+    /// doubling — `ciborium` writes into a `Vec<u8>` via `extend_from_slice`
+    /// — and every realloc frees the old buffer UNWIPED. That buffer holds
+    /// a forward-compat unknown subtree, which is decrypted content this
+    /// version simply cannot interpret: `record_to_canonical`'s own comment
+    /// makes the point that a v1 client holding a v2 record may be carrying
+    /// secret content in exactly these keys. It is the same hazard
+    /// `to_canonical_vec` and `encode_canonical_map` each pre-reserve
+    /// against, and this was one of three sibling sites the pass that added
+    /// those missed.
     pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, RecordError> {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(cbor_size_bound(&self.0));
         ciborium::ser::into_writer(&self.0, &mut buf)
             .map_err(|e| RecordError::CborEncode(classify_ser(&e)))?;
         Ok(buf)
+    }
+
+    /// Borrow the wrapped CBOR value.
+    ///
+    /// `pub(crate)` deliberately: the wrapped `ciborium::Value` is a private
+    /// implementation detail of the public API (that is why `UnknownValue`
+    /// exists at all), and this accessor is only for the canonical encoder,
+    /// which needs to emit the subtree verbatim WITHOUT cloning it. The
+    /// previous encode path did `v.0.clone()`, a deep clone of a forward-compat
+    /// subtree that could carry a future version's secret content (#547).
+    pub(crate) fn as_value(&self) -> &Value {
+        &self.0
     }
 }
 
@@ -357,13 +408,20 @@ pub struct Record {
     /// generic key/value lists).
     pub record_type: String,
     /// Field name → field. [`BTreeMap`] for in-memory iteration
-    /// determinism only; the wire ordering is decided by
-    /// `canonical_sort_entries` against materialised CBOR-encoded key
-    /// bytes (length-then-bytewise), which differs from `BTreeMap`'s
-    /// `String` ordering for keys of differing UTF-8 lengths (e.g. `"z"`
-    /// sorts before `"ab"` in canonical CBOR but after it in
-    /// `BTreeMap<String, _>`). The two orders coincide only for keys of
-    /// equal byte-length. (`IndexMap` would preserve insertion order,
+    /// determinism only; the wire ordering is decided by `CanonicalMap`'s
+    /// `Serialize` impl, which compares keys directly as `(byte length,
+    /// bytes)` — an ALLOCATION-FREE comparison, deliberately: a field name
+    /// here is user-authored, decrypted plaintext (the same class of data
+    /// `RecordError::DuplicateKey` used to leak by formatting one, #474), so
+    /// the encoder must never materialise a key into an owned,
+    /// CBOR-encoded sort buffer. Do not "restore" a materialise-then-sort
+    /// step to make this doc's old wording true again — that would reopen
+    /// the leak this ordering exists to close (see `canonical/value.rs`'s
+    /// module doc for the full rationale). This ordering differs from
+    /// `BTreeMap`'s `String` ordering for keys of differing UTF-8 byte
+    /// lengths (e.g. `"z"` sorts before `"ab"` in canonical CBOR but after
+    /// it in `BTreeMap<String, _>`); the two orders coincide only for keys
+    /// of equal byte length. (`IndexMap` would preserve insertion order,
     /// which is the wrong invariant for a canonical encoder.)
     pub fields: BTreeMap<String, RecordField>,
     /// Cross-cutting tags. Empty `Vec` = absent on the wire.
@@ -415,118 +473,114 @@ pub struct Record {
 /// per §6.3's "absent on the wire" rules. Forward-compat unknown keys
 /// (§6.3.2) are spliced in alongside known keys; the canonical-key sort
 /// imposes the deterministic ordering.
+///
+/// Cannot fail on the borrow side — `record_to_canonical` has no fallible
+/// step — so the only error source left is the crate-internal canonical
+/// encoder's own CBOR-encode / capacity-bound checks, lifted to
+/// [`RecordError::CborEncode`] / [`RecordError::CanonicalSizeBoundExceeded`]
+/// by the `From<CanonicalError>` impl above.
 pub fn encode(record: &Record) -> Result<Vec<u8>, RecordError> {
-    let entries = record_to_entries(record)?;
-    Ok(encode_canonical_map(&entries)?)
+    Ok(to_canonical_vec(&record_to_canonical(record))?)
 }
 
-/// Build the unsorted `(key, value)` list for a record. Sorting happens
-/// inside [`encode_canonical_map`].
-fn record_to_entries(record: &Record) -> Result<Vec<(Value, Value)>, RecordError> {
-    let mut entries: Vec<(Value, Value)> = Vec::new();
+/// Build the borrowed canonical map for a record (§6.3).
+///
+/// Every value BORROWS: a [`RecordFieldValue::Text`] serialises straight out
+/// of its [`SecretString`], where the previous path did
+/// `s.expose().to_owned()` and then deep-cloned that copy two more times on
+/// the way to the wire, once per `canonical_sort_entries` call
+/// (inner field-map sort, then outer record-map sort) (#547).
+///
+/// Key push order is irrelevant here — [`CanonicalMap`]'s `Serialize` imposes
+/// the RFC 8949 §4.2.1 order, recursively, at serialise time.
+pub(crate) fn record_to_canonical(record: &Record) -> CanonicalMap<'_> {
+    // 5 always-pushed keys + up to 3 conditional ones (`tags`, `tombstone`,
+    // `tombstoned_at_ms`) + one slot per forward-compat unknown. `push`
+    // handles any mismatch correctly either way — this is a size hint, not
+    // an invariant.
+    let mut map = CanonicalMap::with_capacity(8 + record.unknown.len());
 
-    entries.push((
-        Value::Text(KEY_RECORD_UUID.into()),
-        Value::Bytes(record.record_uuid.to_vec()),
-    ));
-    entries.push((
-        Value::Text(KEY_RECORD_TYPE.into()),
-        Value::Text(record.record_type.clone()),
-    ));
-    entries.push((
-        Value::Text(KEY_FIELDS.into()),
-        fields_to_value(&record.fields)?,
-    ));
+    map.push(KEY_RECORD_UUID, CanonicalValue::Bytes(&record.record_uuid));
+    map.push(KEY_RECORD_TYPE, CanonicalValue::Text(&record.record_type));
+
+    let mut fields = CanonicalMap::with_capacity(record.fields.len());
+    for (name, f) in &record.fields {
+        fields.push(name, CanonicalValue::Map(field_to_canonical(f)));
+    }
+    map.push(KEY_FIELDS, CanonicalValue::Map(fields));
+
+    // §6.3: empty `tags` is absent on the wire.
     if !record.tags.is_empty() {
-        entries.push((
-            Value::Text(KEY_TAGS.into()),
-            Value::Array(record.tags.iter().map(|t| Value::Text(t.clone())).collect()),
-        ));
+        map.push(
+            KEY_TAGS,
+            CanonicalValue::Array(
+                record
+                    .tags
+                    .iter()
+                    .map(|t| CanonicalValue::Text(t))
+                    .collect(),
+            ),
+        );
     }
-    entries.push((
-        Value::Text(KEY_CREATED_AT_MS.into()),
-        Value::Integer(record.created_at_ms.into()),
-    ));
-    entries.push((
-        Value::Text(KEY_LAST_MOD_MS.into()),
-        Value::Integer(record.last_mod_ms.into()),
-    ));
+    map.push(
+        KEY_CREATED_AT_MS,
+        CanonicalValue::Uint(record.created_at_ms),
+    );
+    map.push(KEY_LAST_MOD_MS, CanonicalValue::Uint(record.last_mod_ms));
+    // §6.3: `tombstone == false` is absent on the wire.
     if record.tombstone {
-        entries.push((Value::Text(KEY_TOMBSTONE.into()), Value::Bool(true)));
+        map.push(KEY_TOMBSTONE, CanonicalValue::Bool(true));
     }
+    // §11.3: the never-tombstoned default (0) is absent on the wire.
     if record.tombstoned_at_ms != 0 {
-        entries.push((
-            Value::Text(KEY_TOMBSTONED_AT_MS.into()),
-            Value::Integer(record.tombstoned_at_ms.into()),
-        ));
+        map.push(
+            KEY_TOMBSTONED_AT_MS,
+            CanonicalValue::Uint(record.tombstoned_at_ms),
+        );
     }
 
-    // Forward-compat: splice unknowns alongside known keys. The canonical
-    // sort step in encode_canonical_map decides the final byte order, so
-    // it does not matter whether unknowns are pushed before or after the
-    // known entries.
+    // Forward-compat (§6.3.2): splice unknowns alongside known keys. Emitted
+    // verbatim as a BORROW — the previous path cloned the subtree, which for
+    // a v1 client holding a v2 record could be secret content this version
+    // cannot recognise.
     for (k, v) in &record.unknown {
-        entries.push((Value::Text(k.clone()), v.0.clone()));
+        map.push(k, CanonicalValue::Borrowed(v.as_value()));
     }
 
-    Ok(entries)
+    map
 }
 
-/// Build the inner `fields` CBOR map. Each entry is itself a canonical
-/// sub-map.
-fn fields_to_value(fields: &BTreeMap<String, RecordField>) -> Result<Value, RecordError> {
-    // We construct the outer map's entries here but defer canonical
-    // sorting to the outer encode pass. Each inner field-map IS sorted
-    // here because we have to materialise its bytes for the parent's
-    // canonical encoding step.
-    //
-    // Equivalently: we could leave inner maps unsorted and let the
-    // top-level `encode_canonical_map` recurse — but ciborium's
-    // serialiser walks the Value tree once and emits whatever order is
-    // there, with no recursive sort. So the sort must happen here, by
-    // building each inner map's entries and immediately turning them
-    // into a `Value::Map` whose entries are already canonically ordered.
-    let mut outer: Vec<(Value, Value)> = Vec::with_capacity(fields.len());
-    for (fname, f) in fields {
-        let inner = field_to_entries(f);
-        let sorted_inner = canonical_sort_entries(&inner)?;
-        outer.push((Value::Text(fname.clone()), Value::Map(sorted_inner)));
-    }
-    let sorted_outer = canonical_sort_entries(&outer)?;
-    Ok(Value::Map(sorted_outer))
-}
-
-/// Build the unsorted `(key, value)` list for one field.
-fn field_to_entries(field: &RecordField) -> Vec<(Value, Value)> {
-    let mut entries: Vec<(Value, Value)> = Vec::new();
-
+/// Build the borrowed canonical map for one field (§6.3.2).
+fn field_to_canonical(field: &RecordField) -> CanonicalMap<'_> {
+    let mut map = CanonicalMap::with_capacity(3 + field.unknown.len());
     let value = match &field.value {
-        RecordFieldValue::Text(s) => Value::Text(s.expose().to_owned()),
-        RecordFieldValue::Bytes(b) => Value::Bytes(b.expose().to_vec()),
+        // The whole point of #547: a borrow where there was a copy.
+        RecordFieldValue::Text(s) => CanonicalValue::Text(s.expose()),
+        RecordFieldValue::Bytes(b) => CanonicalValue::Bytes(b.expose()),
     };
-    entries.push((Value::Text(KEY_VALUE.into()), value));
-    entries.push((
-        Value::Text(KEY_LAST_MOD.into()),
-        Value::Integer(field.last_mod.into()),
-    ));
-    entries.push((
-        Value::Text(KEY_DEVICE_UUID.into()),
-        Value::Bytes(field.device_uuid.to_vec()),
-    ));
-
+    map.push(KEY_VALUE, value);
+    map.push(KEY_LAST_MOD, CanonicalValue::Uint(field.last_mod));
+    map.push(KEY_DEVICE_UUID, CanonicalValue::Bytes(&field.device_uuid));
     for (k, v) in &field.unknown {
-        entries.push((Value::Text(k.clone()), v.0.clone()));
+        map.push(k, CanonicalValue::Borrowed(v.as_value()));
     }
-
-    entries
+    map
 }
 
-// `encode_canonical_map` and `canonical_sort_entries` live in
-// [`crate::vault::canonical`] so block / record / manifest share one
-// implementation. The shared helpers return a [`CanonicalError`]; the
-// `From<CanonicalError> for RecordError` impl above lifts those errors
-// to the existing record-layer variants so the public surface stays
-// unchanged.
+// `to_canonical_vec` and `CanonicalMap`/`CanonicalValue` live in
+// [`crate::vault::canonical`] so block / record / manifest can share one
+// borrowing-encoder implementation as each migrates onto it. The shared
+// [`CanonicalError`] is lifted to the existing record-layer variants by the
+// `From<CanonicalError> for RecordError` impl above, so the public surface
+// stays unchanged.
+//
+// The pre-#547 owned encoder this function replaces (`record_to_entries` +
+// `fields_to_value` + `field_to_entries`) is kept, `#[cfg(test)]`, as
+// `owned_record_entries_for_test` in the test module below — both as the
+// differential byte-identity oracle for
+// `record_to_canonical_matches_the_owned_encoder_byte_for_byte` and as the
+// entries-list builder the pre-existing negative-path decode tests already
+// depended on before this rewrite. Do not delete it as dead code.
 
 // ---------------------------------------------------------------------------
 // Decode
@@ -551,18 +605,20 @@ fn field_to_entries(field: &RecordField) -> Vec<(Value, Value)> {
 pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
     let parsed: Value =
         ciborium::de::from_reader(bytes).map_err(|e| RecordError::CborDecode(classify_de(&e)))?;
+    // The parsed tree owns a copy of every decrypted field value in
+    // `bytes`. Wrapping it means `Drop` wipes that copy on every exit from
+    // this function — including the `?` early returns below and an
+    // unwinding panic (#547) — where the pre-#547 code left it unwiped on
+    // every one of those paths. The tree is BORROWED from here on;
+    // nothing moves out of it.
+    let parsed = SecretValueTree::new(parsed);
 
     // Walk the tree to enforce the no-float and no-tag rules everywhere
     // (including inside forward-compat unknown values). Doing this once
     // up front means the per-field decoders don't need to re-check.
-    reject_floats_and_tags(&parsed, "<root>")?;
+    reject_floats_and_tags(parsed.as_value(), "<root>")?;
 
-    let map = match parsed {
-        Value::Map(m) => m,
-        _ => return Err(RecordError::NotAMap),
-    };
-
-    let record = parse_record_map(map)?;
+    let record = decode_value(parsed.as_value())?;
 
     // Strict canonical-input check: re-encode the parsed representation
     // and require byte-identical match. Same pattern as
@@ -583,9 +639,59 @@ pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
 // `FloatRejected` / `TagRejected` errors map back to the record-layer
 // variants without changing the public surface.
 
+/// Decode a record from an already-parsed CBOR value.
+///
+/// `pub(crate)` for [`super::block`], which holds each record as a subtree
+/// of the block's own parsed plaintext. Going through this instead of
+/// re-serialising that subtree and calling [`decode`] removes a plaintext
+/// `Vec<u8>` per record per block open (#547).
+///
+/// Does NOT perform the byte-level canonicality re-check [`decode`] does —
+/// there are no bytes at this level to compare against. For the nested case
+/// that check is subsumed by the block's own re-encode-and-compare over the
+/// whole plaintext, which covers the nested record bytes; `block.rs`'s test
+/// `a_non_canonical_nested_record_is_still_rejected` is what discharges that
+/// claim.
+pub(crate) fn decode_value(value: &Value) -> Result<Record, RecordError> {
+    let Value::Map(entries) = value else {
+        return Err(RecordError::NotAMap);
+    };
+    parse_record_map(entries)
+}
+
 /// Parse a top-level CBOR map (already extracted from `Value::Map`) into
 /// a [`Record`]. Unknown record-level keys land in [`Record::unknown`].
-fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
+///
+/// Takes `&[(Value, Value)]` rather than owning the entry list: [`decode`]
+/// borrows from a [`SecretValueTree`] it holds, and [`decode_value`]
+/// borrows a record subtree that in the nested case belongs to a BLOCK's
+/// own `SecretValueTree` — neither caller can hand this function ownership
+/// without first cloning the whole entry list, which would reintroduce the
+/// unwiped copy this design removes (#547 Task 6).
+///
+/// **The unavoidable cost of borrowing, stated as a class rather than a
+/// count** (an earlier version of this comment named "the two conversion
+/// sites below", which was wrong — a fix-round-1 review found five more it
+/// missed, and a wrong count is worse than none): every `take_*` helper
+/// this function and [`parse_field_map`] call — `take_uuid`, `take_text`,
+/// `take_tags`, `take_u64`, `take_bool` — plus the inline `Value::Map` key
+/// match in this function, in [`parse_field_map`], and in
+/// `take_fields_map`, copies its scalar out of the borrowed `Value`
+/// (`.clone()` where the pre-#547 code moved). Exactly ONE of those
+/// destinations is zeroizing: `parse_field_map`'s `KEY_VALUE` arm, which
+/// lands in a `SecretString`/`SecretBytes` (documented at that call site).
+/// Every other destination is a plain, non-zeroizing `String` / `bool` /
+/// `u64` / `[u8; N]` — including `take_fields_map`'s field-NAME copy,
+/// which is decrypted plaintext in exactly the class CLAUDE.md's #474
+/// section describes (`RecordError::DuplicateKey` once leaked one by
+/// formatting it into an error message). None of these plain copies is
+/// NEW residue relative to before this task: the pre-#547 code held the
+/// identical owned value at the identical point in the identical
+/// non-zeroizing container (a `BTreeMap<String, _>` key, a local
+/// `String`/`Vec<String>`/`bool`/`u64`) — it was moved there instead of
+/// cloned. Borrowing changed how the value arrives, not whether its
+/// destination zeroizes.
+fn parse_record_map(map: &[(Value, Value)]) -> Result<Record, RecordError> {
     let mut record_uuid: Option<[u8; RECORD_UUID_LEN]> = None;
     let mut record_type: Option<String> = None;
     let mut fields: Option<BTreeMap<String, RecordField>> = None;
@@ -600,9 +706,9 @@ fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
     // copies fall into the unknown bucket.
     let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
-    for (index, (k, v)) in map.into_iter().enumerate() {
+    for (index, (k, v)) in map.iter().enumerate() {
         let key = match k {
-            Value::Text(s) => s,
+            Value::Text(s) => s.clone(),
             _ => return Err(RecordError::NonTextKey),
         };
         if !seen_keys.insert(key.clone()) {
@@ -640,7 +746,23 @@ fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
                 // Forward-compat: any other key is preserved verbatim.
                 // The float/tag walker at the top of decode() has
                 // already vetted v's subtree.
-                unknown.insert(key, UnknownValue(v));
+                //
+                // `v.clone()` is a real added copy relative to the
+                // pre-#547 owning path, which moved `v` straight into the
+                // `UnknownValue` with zero copies. Borrowing forces this
+                // clone because `v` belongs to the caller's
+                // `SecretValueTree` and cannot be moved out (#547 Task 6).
+                // The SOURCE is now covered (the enclosing
+                // `SecretValueTree`'s `Drop` wipes it), where the pre-#547
+                // single buffer was uncovered on any `?` earlier in this
+                // loop. This CLONE is not additionally wiped —
+                // `UnknownValue` has no `Zeroize` impl, unchanged by this
+                // task — so it is exactly as covered as the pre-#547
+                // buffer was once it reached `Record::unknown`: no
+                // regression, but also not the "both sides covered"
+                // property the `KEY_VALUE` arm in `parse_field_map` gets
+                // from landing in a `SecretString`/`SecretBytes`.
+                unknown.insert(key, UnknownValue(v.clone()));
             }
         }
     }
@@ -666,7 +788,7 @@ fn parse_record_map(map: Vec<(Value, Value)>) -> Result<Record, RecordError> {
     })
 }
 
-fn take_fields_map(v: Value) -> Result<BTreeMap<String, RecordField>, RecordError> {
+fn take_fields_map(v: &Value) -> Result<BTreeMap<String, RecordField>, RecordError> {
     let entries = match v {
         Value::Map(m) => m,
         _ => {
@@ -677,9 +799,16 @@ fn take_fields_map(v: Value) -> Result<BTreeMap<String, RecordField>, RecordErro
         }
     };
     let mut out: BTreeMap<String, RecordField> = BTreeMap::new();
-    for (index, (k, val)) in entries.into_iter().enumerate() {
+    for (index, (k, val)) in entries.iter().enumerate() {
+        // `fname` is a decrypted, user-authored field NAME — the same
+        // content class #474 names (`RecordError::DuplicateKey` used to
+        // leak one by formatting it). This clone lands in a plain,
+        // non-zeroizing `BTreeMap<String, _>` key, identical to the
+        // pre-#547 code's destination for the same moved value — see
+        // `parse_record_map`'s doc comment for the full class-level
+        // statement this site is called out from.
         let fname = match k {
-            Value::Text(s) => s,
+            Value::Text(s) => s.clone(),
             _ => return Err(RecordError::NonTextKey),
         };
         if out.contains_key(&fname) {
@@ -694,7 +823,7 @@ fn take_fields_map(v: Value) -> Result<BTreeMap<String, RecordField>, RecordErro
     Ok(out)
 }
 
-fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
+fn parse_field_map(v: &Value) -> Result<RecordField, RecordError> {
     let entries = match v {
         Value::Map(m) => m,
         _ => {
@@ -711,9 +840,9 @@ fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
     let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
-    for (index, (k, val)) in entries.into_iter().enumerate() {
+    for (index, (k, val)) in entries.iter().enumerate() {
         let key = match k {
-            Value::Text(s) => s,
+            Value::Text(s) => s.clone(),
             _ => return Err(RecordError::NonTextKey),
         };
         if !seen_keys.insert(key.clone()) {
@@ -724,9 +853,20 @@ fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
         }
         match key.as_str() {
             KEY_VALUE => {
+                // The whole point of #547 Task 6's accepted trade-off
+                // (controller ruling R1): `val` is borrowed from the
+                // caller's `SecretValueTree` and cannot be moved out, so
+                // `.clone()` is unavoidable here — but the clone lands
+                // straight in a `SecretString`/`SecretBytes`, a genuinely
+                // zeroizing destination, which is exactly the copy we
+                // WANT: both the source (wiped by the enclosing
+                // `SecretValueTree`) and this destination (wiped on its
+                // own `Drop`) end up covered, where the pre-#547 single
+                // owned buffer was uncovered on any `?` earlier in this
+                // loop.
                 value = Some(match val {
-                    Value::Text(s) => RecordFieldValue::Text(SecretString::new(s)),
-                    Value::Bytes(b) => RecordFieldValue::Bytes(SecretBytes::new(b)),
+                    Value::Text(s) => RecordFieldValue::Text(SecretString::new(s.clone())),
+                    Value::Bytes(b) => RecordFieldValue::Bytes(SecretBytes::new(b.clone())),
                     _ => {
                         return Err(RecordError::WrongType {
                             field: KEY_VALUE,
@@ -742,7 +882,12 @@ fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
                 device_uuid = Some(take_uuid(val, KEY_DEVICE_UUID)?);
             }
             _ => {
-                unknown.insert(key, UnknownValue(val));
+                // Same trade-off as `parse_record_map`'s forward-compat
+                // arm: the source is covered by `SecretValueTree`, this
+                // clone is exactly as (un)covered as the pre-#547 buffer
+                // was, since `UnknownValue` has no `Zeroize` impl either
+                // before or after this task.
+                unknown.insert(key, UnknownValue(val.clone()));
             }
         }
     }
@@ -759,7 +904,7 @@ fn parse_field_map(v: Value) -> Result<RecordField, RecordError> {
     })
 }
 
-fn take_tags(v: Value) -> Result<Vec<String>, RecordError> {
+fn take_tags(v: &Value) -> Result<Vec<String>, RecordError> {
     let items = match v {
         Value::Array(a) => a,
         _ => {
@@ -770,9 +915,9 @@ fn take_tags(v: Value) -> Result<Vec<String>, RecordError> {
         }
     };
     items
-        .into_iter()
+        .iter()
         .map(|item| match item {
-            Value::Text(s) => Ok(s),
+            Value::Text(s) => Ok(s.clone()),
             _ => Err(RecordError::WrongType {
                 field: KEY_TAGS,
                 expected: "array of text strings",
@@ -781,9 +926,9 @@ fn take_tags(v: Value) -> Result<Vec<String>, RecordError> {
         .collect()
 }
 
-fn take_text(v: Value, field: &'static str) -> Result<String, RecordError> {
+fn take_text(v: &Value, field: &'static str) -> Result<String, RecordError> {
     match v {
-        Value::Text(s) => Ok(s),
+        Value::Text(s) => Ok(s.clone()),
         _ => Err(RecordError::WrongType {
             field,
             expected: "text string",
@@ -791,9 +936,9 @@ fn take_text(v: Value, field: &'static str) -> Result<String, RecordError> {
     }
 }
 
-fn take_u64(v: Value, field: &'static str) -> Result<u64, RecordError> {
+fn take_u64(v: &Value, field: &'static str) -> Result<u64, RecordError> {
     let i = match v {
-        Value::Integer(i) => i,
+        Value::Integer(i) => *i,
         _ => {
             return Err(RecordError::WrongType {
                 field,
@@ -805,9 +950,9 @@ fn take_u64(v: Value, field: &'static str) -> Result<u64, RecordError> {
         .map_err(|_| RecordError::IntegerOverflow { field })
 }
 
-fn take_bool(v: Value, field: &'static str) -> Result<bool, RecordError> {
+fn take_bool(v: &Value, field: &'static str) -> Result<bool, RecordError> {
     match v {
-        Value::Bool(b) => Ok(b),
+        Value::Bool(b) => Ok(*b),
         _ => Err(RecordError::WrongType {
             field,
             expected: "boolean",
@@ -815,7 +960,7 @@ fn take_bool(v: Value, field: &'static str) -> Result<bool, RecordError> {
     }
 }
 
-fn take_uuid(v: Value, field: &'static str) -> Result<[u8; RECORD_UUID_LEN], RecordError> {
+fn take_uuid(v: &Value, field: &'static str) -> Result<[u8; RECORD_UUID_LEN], RecordError> {
     let bytes = match v {
         Value::Bytes(b) => b,
         _ => {
@@ -826,18 +971,69 @@ fn take_uuid(v: Value, field: &'static str) -> Result<[u8; RECORD_UUID_LEN], Rec
         }
     };
     let length = bytes.len();
-    bytes
-        .try_into()
-        .map_err(|_: Vec<u8>| RecordError::InvalidUuid { field, length })
+    <[u8; RECORD_UUID_LEN]>::try_from(bytes.as_slice())
+        .map_err(|_: std::array::TryFromSliceError| RecordError::InvalidUuid { field, length })
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
+// `tests` is a private module, so `random_record` / `TombstoneState` being
+// `pub(crate)` inside it is not, by itself, enough for another file's own
+// `#[cfg(test)] mod tests` to name them — module privacy in Rust is not
+// retroactively widened by an inner item's visibility; the PATH SEGMENT
+// `tests` must itself be reachable from the caller, which it is not (it has
+// no `pub` of its own). This re-export solves that at the `record` module's
+// own scope, which sibling modules (`block`, under the same `vault` parent)
+// CAN see. `#[cfg(test)]`-gated to match `mod tests` itself: the re-export
+// only needs to exist, and only compiles, when `mod tests` does — i.e. only
+// in `cargo test` builds of THIS crate. That is the whole mechanism (#547
+// Task 5 fix round 1, review finding E2): same-crate `#[cfg(test)]`
+// visibility works across sibling modules once re-exported at a mutually
+// visible scope; it is cross-CRATE test-only visibility
+// (`core/tests/*.rs`, an external crate from `secretary-core`'s point of
+// view) that needs the different `#[doc(hidden)] pub` mechanism — see
+// `crate::sync::__test_dispatch` for a live example. `vault::mod` used to
+// carry a second example of that mechanism, `canonical_test_api`, for
+// `CanonicalMap`/`CanonicalValue`; the final whole-branch review of #547
+// retired it (those types' byte-identity tests moved into an in-file
+// `#[cfg(test)] mod tests` instead, and the types dropped back to
+// `pub(crate)` — see `canonical/value.rs`'s module doc), so it is no longer
+// an example to point to here.
+//
+// Declared BEFORE `mod tests` (not after, textually more natural though
+// that would be): `clippy::items_after_test_module` denies any item —
+// including a `use` — appearing textually after a `#[cfg(test)] mod tests`
+// block, under `-D warnings`; caught by `cargo clippy --release --workspace
+// --tests -- -D warnings` when this was first placed at the end of the
+// file (fix round 1).
+#[cfg(test)]
+pub(crate) use tests::{random_record, TombstoneState};
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `canonical_sort_entries` / `encode_canonical_map` have no production
+    // caller left in THIS file after #547 Task 4 (NOT `block.rs` either, as
+    // of #547 Task 5, which gave that file the same treatment this one got
+    // in Task 4 — which is why both stay `pub` on `crate::vault::canonical`
+    // rather than being deleted). Both still have real production callers
+    // elsewhere in the crate, so their non-dead-code status does not
+    // depend on the `pub` path or on this test module. Per ruling R11: an
+    // enumeration of the specific call sites is deliberately not kept
+    // here — it is a cached `grep` result, invalidated by any future task,
+    // and nothing checks it; it has been written wrong more than once. Read
+    // the callers directly (`grep -rn` for the function name) rather than
+    // trusting a list.
+    //
+    // The production `use super::canonical::{...}` above deliberately no
+    // longer names them, so a plain `cargo build --release --workspace` (no
+    // `#[cfg(test)]` code compiled) does not warn `unused_imports`. Test code
+    // still needs both, for the retained owned-encoder oracle below and for
+    // the many negative-path decode tests that build a canonical entries
+    // list by hand.
+    use crate::vault::canonical::{canonical_sort_entries, encode_canonical_map};
 
     // ---- Construction helpers --------------------------------------------
 
@@ -935,14 +1131,450 @@ mod tests {
     /// `(key, value)` pairs the encoder would emit for `record`,
     /// pre-canonical-sort). Used by tests that want to mutate one entry
     /// (e.g. swap a u64 for a float) and re-emit canonically.
+    ///
+    /// Built via [`owned_record_entries_for_test`], not the production
+    /// `record_to_canonical` — for two reasons, not one:
+    ///
+    /// 1. **Type mismatch.** `record_to_canonical` returns a borrowing
+    ///    [`CanonicalMap`], and these `Vec<(Value, Value)>`-mutating
+    ///    negative-path tests need an OWNED, `ciborium::Value`-based entry
+    ///    list to splice a hand-built float / tag / duplicate-key fragment
+    ///    into — `CanonicalValue` has no arm for either forbidden node
+    ///    type, by design (that is what makes it a canonical-CBOR-only
+    ///    mirror). There is no `CanonicalMap`-based way to build these
+    ///    fixtures at all, not merely an inconvenient one.
+    /// 2. **It is still the right baseline, not a fallback.** These callers
+    ///    are DECODE-path tests: they assert that `decode` rejects a
+    ///    specific malformed byte sequence, and the sequence's malformed
+    ///    part is what the test cares about — the surrounding well-formed
+    ///    entries only need to be SOME valid canonical encoding of
+    ///    `record`, not specifically today's production encoding.
+    ///    `record_to_canonical_matches_the_owned_encoder_byte_for_byte`
+    ///    (below) is the test that carries the burden of proving
+    ///    `owned_record_entries_for_test` and `record_to_canonical` agree
+    ///    byte-for-byte on every well-formed record; once that holds, using
+    ///    the oracle here is not a weaker substitute for production, it is
+    ///    an equally valid witness of "a canonical encoding of `record`" —
+    ///    the only property these tests need from it.
     fn record_entries_canonical(record: &Record) -> Vec<(Value, Value)> {
-        let entries = record_to_entries(record).expect("record_to_entries");
+        let entries = owned_record_entries_for_test(record);
         canonical_sort_entries(&entries).expect("canonical_sort_entries")
     }
 
     /// Re-encode a list of entries as a canonical CBOR map (sorted).
     fn encode_entries_canonical(entries: &[(Value, Value)]) -> Vec<u8> {
         encode_canonical_map(entries).expect("encode_canonical_map")
+    }
+
+    // ---- #547 differential oracle: the pre-change owned encoder ----------
+    //
+    // A verbatim copy of the pre-Task-4 production trio
+    // (`record_to_entries` + `fields_to_value` + `field_to_entries`),
+    // deliberately kept `#[cfg(test)]` rather than deleted. It serves two
+    // purposes: (1) the byte-identity oracle for
+    // `record_to_canonical_matches_the_owned_encoder_byte_for_byte` below,
+    // proving the borrowing rewrite changed no bytes; (2) the entries-list
+    // builder `record_entries_canonical` (above) needs, since that helper
+    // and the many negative-path decode tests built on it predate the
+    // borrowing rewrite and still need an owned, mutable `Vec<(Value,
+    // Value)>` to splice hand-built CBOR fragments into — something the
+    // production `record_to_canonical`'s borrowing `CanonicalMap` cannot
+    // provide. Do not delete this as dead code.
+    //
+    // Differs from the original only in error handling: `?` becomes
+    // `.expect(...)` on the two fallible `canonical_sort_entries` calls,
+    // because this is now a test-fixture builder called with well-formed
+    // `Record`s that cannot make those calls fail, not a fallible library
+    // function whose caller needs to propagate the error.
+
+    /// A verbatim copy of the pre-#547 `record_to_entries`. See the module
+    /// note above.
+    fn owned_record_entries_for_test(record: &Record) -> Vec<(Value, Value)> {
+        let mut entries: Vec<(Value, Value)> = Vec::new();
+
+        entries.push((
+            Value::Text(KEY_RECORD_UUID.into()),
+            Value::Bytes(record.record_uuid.to_vec()),
+        ));
+        entries.push((
+            Value::Text(KEY_RECORD_TYPE.into()),
+            Value::Text(record.record_type.clone()),
+        ));
+        entries.push((
+            Value::Text(KEY_FIELDS.into()),
+            owned_fields_to_value_for_test(&record.fields),
+        ));
+        if !record.tags.is_empty() {
+            entries.push((
+                Value::Text(KEY_TAGS.into()),
+                Value::Array(record.tags.iter().map(|t| Value::Text(t.clone())).collect()),
+            ));
+        }
+        entries.push((
+            Value::Text(KEY_CREATED_AT_MS.into()),
+            Value::Integer(record.created_at_ms.into()),
+        ));
+        entries.push((
+            Value::Text(KEY_LAST_MOD_MS.into()),
+            Value::Integer(record.last_mod_ms.into()),
+        ));
+        if record.tombstone {
+            entries.push((Value::Text(KEY_TOMBSTONE.into()), Value::Bool(true)));
+        }
+        if record.tombstoned_at_ms != 0 {
+            entries.push((
+                Value::Text(KEY_TOMBSTONED_AT_MS.into()),
+                Value::Integer(record.tombstoned_at_ms.into()),
+            ));
+        }
+
+        // Forward-compat: splice unknowns alongside known keys. The
+        // canonical sort step in encode_canonical_map decides the final
+        // byte order, so it does not matter whether unknowns are pushed
+        // before or after the known entries.
+        for (k, v) in &record.unknown {
+            entries.push((Value::Text(k.clone()), v.0.clone()));
+        }
+
+        entries
+    }
+
+    /// A verbatim copy of the pre-#547 `fields_to_value`. See the module
+    /// note above `owned_record_entries_for_test`.
+    fn owned_fields_to_value_for_test(fields: &BTreeMap<String, RecordField>) -> Value {
+        let mut outer: Vec<(Value, Value)> = Vec::with_capacity(fields.len());
+        for (fname, f) in fields {
+            let inner = owned_field_entries_for_test(f);
+            let sorted_inner =
+                canonical_sort_entries(&inner).expect("canonical_sort_entries inner");
+            outer.push((Value::Text(fname.clone()), Value::Map(sorted_inner)));
+        }
+        let sorted_outer = canonical_sort_entries(&outer).expect("canonical_sort_entries outer");
+        Value::Map(sorted_outer)
+    }
+
+    /// A verbatim copy of the pre-#547 `field_to_entries` — including the
+    /// `s.expose().to_owned()` copy Task 4 exists to remove from
+    /// production. See the module note above
+    /// `owned_record_entries_for_test`.
+    fn owned_field_entries_for_test(field: &RecordField) -> Vec<(Value, Value)> {
+        let mut entries: Vec<(Value, Value)> = Vec::new();
+
+        let value = match &field.value {
+            RecordFieldValue::Text(s) => Value::Text(s.expose().to_owned()),
+            RecordFieldValue::Bytes(b) => Value::Bytes(b.expose().to_vec()),
+        };
+        entries.push((Value::Text(KEY_VALUE.into()), value));
+        entries.push((
+            Value::Text(KEY_LAST_MOD.into()),
+            Value::Integer(field.last_mod.into()),
+        ));
+        entries.push((
+            Value::Text(KEY_DEVICE_UUID.into()),
+            Value::Bytes(field.device_uuid.to_vec()),
+        ));
+
+        for (k, v) in &field.unknown {
+            entries.push((Value::Text(k.clone()), v.0.clone()));
+        }
+
+        entries
+    }
+
+    /// The three well-formed states of `(tombstone, tombstoned_at_ms)` —
+    /// see `Record::tombstoned_at_ms`'s doc for the invariants that make
+    /// this an enum rather than two independent bools. `tombstone == true`
+    /// FORCES `tombstoned_at_ms == last_mod_ms`, so only three of the four
+    /// `(bool, bool)` combinations are ever well-formed; naming them
+    /// instead of exposing two raw bools makes the fourth, invalid one
+    /// unconstructible by a caller of `random_record` rather than merely
+    /// undocumented.
+    ///
+    /// `pub(crate)`, re-exported below (#547 Task 5 fix round 1): a caller
+    /// needs to name these variants to drive [`random_record`], and
+    /// `block.rs`'s own differential test is exactly that caller — see the
+    /// re-export's doc for why widening this (same-crate, `#[cfg(test)]`
+    /// only) is safe.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum TombstoneState {
+        /// Never tombstoned: `tombstone == false`, `tombstoned_at_ms == 0`
+        /// (both omitted from the wire — §6.3 / §11.3 defaults).
+        Live,
+        /// Tombstoned, then resurrected by a later live edit:
+        /// `tombstone == false` (omitted) but `tombstoned_at_ms != 0`
+        /// (present — the death clock survives resurrection, §11.3). A
+        /// REAL CRDT state, and the one a fixture that only ever couples
+        /// `tombstone` and `tombstoned_at_ms` to the same flag can never
+        /// reach: it needs `tombstone == false` and
+        /// `tombstoned_at_ms != 0` simultaneously.
+        Resurrected,
+        /// Currently tombstoned: `tombstone == true` and
+        /// `tombstoned_at_ms == last_mod_ms` (both present on the wire).
+        Tombstoned,
+    }
+
+    /// A record with randomly-generated content in every field, including a
+    /// forward-compat unknown at both record and field level.
+    ///
+    /// `tags_present` and `tombstone_state` are independent parameters —
+    /// deliberately not a single coupled flag. Each of `tags`, `tombstone`
+    /// and `tombstoned_at_ms` has its own §6.3 "absent on the wire when
+    /// default" conditional in `record_to_canonical`, and a fixture that
+    /// only ever drives them together cannot catch a bug where one guard
+    /// is cross-wired to another's field (e.g. gating `tombstone` on
+    /// `tombstoned_at_ms != 0` instead of on `record.tombstone` itself) —
+    /// under a coupled fixture the two conditions are always equal, so the
+    /// swap is byte-invisible. The differential test below loops over
+    /// every `(tags_present, tombstone_state)` combination for exactly
+    /// this reason; see its own doc and the mutation check recorded in
+    /// `task-4-report.md`'s fix-round-1 section.
+    ///
+    /// Random rather than literal per the repo's test convention: hardcoded
+    /// crypto-shaped byte arrays trip CodeQL. Uses `rand_core::OsRng` (a
+    /// direct, non-dev `secretary-core` dependency) rather than the `rand`
+    /// crate's own `OsRng`, which in the resolved `rand` 0.9 /
+    /// `rand_core` 0.9 implements only `TryRngCore`, not `RngCore` — see
+    /// `secret_panic_safety.rs`'s `getrandom_fill` for the same
+    /// already-documented substitution.
+    ///
+    /// `pub(crate)`, re-exported below (#547 Task 5 fix round 1): originally
+    /// `block.rs`'s own differential test duplicated a much smaller,
+    /// ASCII-only local generator rather than reuse this one, on the theory
+    /// that "record.rs's fixture already covers record-level edge cases
+    /// exhaustively." Review caught the category error — that duplicate
+    /// compared *parse-then-reserialize* against *inline embedding*, a
+    /// different transformation from the one THIS fixture is built to
+    /// stress (`record_to_canonical` vs. the owned encoder), so this
+    /// fixture's adversarial properties (the byte-length-vs-char-count
+    /// multi-byte key pair, the 23/24-byte boundary pair, unknowns, tags,
+    /// non-`Live` tombstone states) never actually ran through the block
+    /// path. One shared generator so the two cannot drift, per the
+    /// original task brief's stated preference.
+    pub(crate) fn random_record(
+        rng: &mut impl rand_core::RngCore,
+        tags_present: bool,
+        tombstone_state: TombstoneState,
+    ) -> Record {
+        let mut record_uuid = [0u8; RECORD_UUID_LEN];
+        rng.fill_bytes(&mut record_uuid);
+        let mut device_uuid = [0u8; RECORD_UUID_LEN];
+        rng.fill_bytes(&mut device_uuid);
+        let mut other_device_uuid = [0u8; RECORD_UUID_LEN];
+        rng.fill_bytes(&mut other_device_uuid);
+        let mut secret_bytes = vec![0u8; 64];
+        rng.fill_bytes(&mut secret_bytes);
+        let mut record_unknown_bytes = vec![0u8; 8];
+        rng.fill_bytes(&mut record_unknown_bytes);
+        let mut field_unknown_bytes = vec![0u8; 5];
+        rng.fill_bytes(&mut field_unknown_bytes);
+
+        let mut fields = BTreeMap::new();
+        // "password": 8 bytes — a field name whose byte length differs from
+        // "k" below, so the canonical length-then-lex key sort is actually
+        // exercised (it differs from `BTreeMap`'s `String` order only for
+        // keys of unequal byte length).
+        let mut password_unknown = BTreeMap::new();
+        password_unknown.insert(
+            "x_field_ext".to_string(),
+            UnknownValue(Value::Bytes(field_unknown_bytes)),
+        );
+        fields.insert(
+            "password".to_string(),
+            RecordField {
+                value: RecordFieldValue::Text(SecretString::new(format!(
+                    "pw-{:016x}",
+                    rng.next_u64()
+                ))),
+                last_mod: rng.next_u64() >> 16,
+                device_uuid,
+                unknown: password_unknown,
+            },
+        );
+        // "k": 1 byte — deliberately a different byte length from
+        // "password" (8 bytes), and `RecordFieldValue::Bytes` where the
+        // first field is `::Text`, so both value arms round-trip through
+        // the differential.
+        fields.insert(
+            "k".to_string(),
+            RecordField {
+                value: RecordFieldValue::Bytes(SecretBytes::new(secret_bytes)),
+                last_mod: rng.next_u64() >> 16,
+                device_uuid: other_device_uuid,
+                unknown: BTreeMap::new(),
+            },
+        );
+        // A 2-byte ASCII field name. On its own this would prove nothing
+        // about byte-vs-char sorting — it is the PAIRING with "日" just
+        // below that matters; see that field's comment.
+        fields.insert(
+            "ab".to_string(),
+            RecordField {
+                value: RecordFieldValue::Text(SecretString::new(format!(
+                    "ab-{:x}",
+                    rng.next_u64()
+                ))),
+                last_mod: rng.next_u64() >> 16,
+                device_uuid,
+                unknown: BTreeMap::new(),
+            },
+        );
+        // A multi-byte UTF-8 field name ("日" — 1 char, 3 bytes). Paired
+        // with "ab" above (2 bytes, 2 chars), this is what actually proves
+        // the sort compares BYTE length, not char count: under byte length,
+        // "ab"(2) < "日"(3); under char COUNT, "日"(1 char) < "ab"(2 chars)
+        // — a genuine order flip, which the differential test's
+        // independently-implemented oracle sort would then disagree with
+        // byte-for-byte. Without "ab", this field alone does NOT pin the
+        // property: "k" above (1 byte, 1 char) and "日" (3 bytes, 1 char)
+        // TIE under char-count and fall through to the same bytewise
+        // tie-break either comparator reaches, so a char-count regression
+        // would have been invisible to a fixture containing only "k" and
+        // "日" (a defect an earlier version of this comment did not
+        // notice — the property IS separately pinned by
+        // `map_key_sort_crosses_head_length_boundary_and_uses_byte_not_char_length`
+        // in `vault::canonical::value`'s test module, which is where the
+        // earlier version's claim actually held). That citation named
+        // `canonical_value_equivalence.rs` until the #560 review; this
+        // branch deleted that file and moved the test into `value.rs`,
+        // leaving the pointer dangling while the test itself was fine.
+        fields.insert(
+            "\u{65e5}".to_string(),
+            RecordField {
+                value: RecordFieldValue::Text(SecretString::new(format!(
+                    "note-{:x}",
+                    rng.next_u64()
+                ))),
+                last_mod: rng.next_u64() >> 16,
+                device_uuid,
+                unknown: BTreeMap::new(),
+            },
+        );
+        // A 24-byte field name, crossing the CBOR text-head 23→24 boundary
+        // (one-byte head vs. two-byte head), paired with a 23-byte name so
+        // both sides of the boundary are present in one record.
+        fields.insert(
+            "b".repeat(23),
+            RecordField {
+                value: RecordFieldValue::Text(SecretString::new(format!(
+                    "v23-{:x}",
+                    rng.next_u64()
+                ))),
+                last_mod: rng.next_u64() >> 16,
+                device_uuid,
+                unknown: BTreeMap::new(),
+            },
+        );
+        fields.insert(
+            "c".repeat(24),
+            RecordField {
+                value: RecordFieldValue::Text(SecretString::new(format!(
+                    "v24-{:x}",
+                    rng.next_u64()
+                ))),
+                last_mod: rng.next_u64() >> 16,
+                device_uuid,
+                unknown: BTreeMap::new(),
+            },
+        );
+
+        let mut record_unknown = BTreeMap::new();
+        record_unknown.insert(
+            "x_record_ext".to_string(),
+            UnknownValue(Value::Text(format!("ext-{:x}", rng.next_u64()))),
+        );
+        record_unknown.insert(
+            "x_record_ext_bytes".to_string(),
+            UnknownValue(Value::Bytes(record_unknown_bytes)),
+        );
+
+        let last_mod_ms = rng.next_u64() >> 16;
+        // Invariants from `Record::tombstoned_at_ms`'s doc: `tombstone ==
+        // true` forces `tombstoned_at_ms == last_mod_ms`; the `Resurrected`
+        // arm picks a nonzero value strictly before `last_mod_ms`, matching
+        // "preserved unchanged" across a resurrecting edit (§11.3).
+        let (tombstone, tombstoned_at_ms) = match tombstone_state {
+            TombstoneState::Live => (false, 0),
+            TombstoneState::Resurrected => {
+                let earlier = last_mod_ms
+                    .saturating_sub(1 + (rng.next_u64() % 1_000_000))
+                    .max(1);
+                (false, earlier)
+            }
+            TombstoneState::Tombstoned => (true, last_mod_ms),
+        };
+        Record {
+            record_uuid,
+            record_type: "login".to_string(),
+            fields,
+            tags: if tags_present {
+                vec!["work".to_string(), "a".to_string()]
+            } else {
+                Vec::new()
+            },
+            created_at_ms: rng.next_u64() >> 16,
+            last_mod_ms,
+            tombstone,
+            tombstoned_at_ms,
+            unknown: record_unknown,
+        }
+    }
+
+    /// #547: encoding a record must not copy its field plaintext out of the
+    /// `SecretString` wrapper. The copy is not directly observable, so this
+    /// test pins the OBSERVABLE consequence of the borrowing encoder: the
+    /// bytes are unchanged from what the owned encoder produced.
+    ///
+    /// Runs against every `(tags_present, tombstone_state)` combination —
+    /// six in total, `tags_present ∈ {false, true}` crossed with all three
+    /// `TombstoneState` arms. `tags`, `tombstone` and `tombstoned_at_ms`
+    /// each have their OWN independent §6.3 "absent on the wire when
+    /// default" rule in `record_to_canonical`, and driving them from a
+    /// single coupled flag (an earlier version of this fixture did exactly
+    /// that) leaves two classes of bug invisible: a plain omission bug
+    /// (never observing the "present" or the "absent" side of one
+    /// conditional) AND a CROSS-WIRING bug, where one guard is
+    /// accidentally gated on a DIFFERENT field's default-ness — under a
+    /// coupled fixture `record.tombstone` and `record.tombstoned_at_ms !=
+    /// 0` are always equal, so swapping which one gates the `tombstone`
+    /// wire-emission is byte-invisible. `TombstoneState::Resurrected`
+    /// (`tombstone == false`, `tombstoned_at_ms != 0`) is what makes that
+    /// swap visible; see the mutation check recorded in
+    /// `task-4-report.md`'s fix-round-1 section, which planted exactly
+    /// this cross-wiring bug and confirmed this loop catches it where the
+    /// single-flag version could not have.
+    ///
+    /// Uses a runtime-random record (see `random_record`) rather than a
+    /// pasted literal expectation, so this test does not itself become
+    /// stale documentation the moment either encoder changes.
+    #[test]
+    fn record_to_canonical_matches_the_owned_encoder_byte_for_byte() {
+        let mut rng = rand_core::OsRng;
+
+        for tags_present in [false, true] {
+            for tombstone_state in [
+                TombstoneState::Live,
+                TombstoneState::Resurrected,
+                TombstoneState::Tombstoned,
+            ] {
+                let record = random_record(&mut rng, tags_present, tombstone_state);
+
+                let via_canonical = encode(&record).expect("encode");
+
+                // Rebuild the same map the OWNED path built, and encode it
+                // the old way. Both must agree, which is what makes the
+                // borrowing encoder a safe substitution rather than a
+                // format change.
+                let owned_entries = owned_record_entries_for_test(&record);
+                let via_owned = encode_canonical_map(&owned_entries).expect("owned encode");
+
+                assert_eq!(
+                    via_canonical, via_owned,
+                    "the borrowing encoder changed the bytes — the on-disk \
+                     format moved (tags_present={tags_present}, \
+                     tombstone_state={tombstone_state:?})"
+                );
+            }
+        }
     }
 
     // ---- Round-trip / encode-decode equivalence --------------------------
@@ -1647,6 +2279,38 @@ mod tests {
         );
     }
 
+    /// Composition check, added alongside #548's read-side fix in
+    /// `unlock::bundle`: `SecretValueTree`'s Drop mechanism is pinned by
+    /// `cbor::secret_tree::tests`, and `decode` is pinned to CONSTRUCT one by
+    /// type, but nothing previously proved a PRODUCTION decode path actually
+    /// invokes the wipe at runtime. Reuses the exact fixture above —
+    /// `decode`'s `RecordError::DuplicateKey` early return fires AFTER
+    /// `SecretValueTree::new(parsed)` inside `decode` (see that function),
+    /// so this drives the same early-`?` path `reject_duplicate_keys` pins
+    /// the error variant for, and additionally asserts the parsed tree was
+    /// wiped.
+    #[test]
+    fn decode_wipes_its_parsed_tree_on_an_early_return() {
+        let r = dummy_record();
+        let mut entries = record_entries_canonical(&r);
+        entries.push((
+            Value::Text(KEY_RECORD_TYPE.into()),
+            Value::Text("imposter".into()),
+        ));
+        let bytes = cbor_map_bytes_unsorted(&entries);
+
+        let before = crate::cbor::wipe_calls();
+        let err = decode(&bytes).expect_err("duplicate key must be rejected");
+        assert!(
+            matches!(err, RecordError::DuplicateKey { .. }),
+            "expected DuplicateKey, got {err:?}"
+        );
+        assert!(
+            crate::cbor::wipe_calls() > before,
+            "decode's early return did not wipe its parsed SecretValueTree"
+        );
+    }
+
     /// `record.rs` — the `fields` map. THE site the issue names: `key`
     /// here is a decrypted user field name, not a spec constant.
     #[test]
@@ -1685,7 +2349,7 @@ mod tests {
             ),
         ];
 
-        let err = take_fields_map(Value::Map(field_entries))
+        let err = take_fields_map(&Value::Map(field_entries))
             .expect_err("duplicate field name must be rejected");
 
         assert!(
@@ -1709,7 +2373,7 @@ mod tests {
             (Value::Text(KEY_VALUE.into()), Value::Text("b".into())),
         ];
 
-        let err = parse_field_map(Value::Map(entries))
+        let err = parse_field_map(&Value::Map(entries))
             .expect_err("duplicate field-level key must be rejected");
 
         assert!(
@@ -1931,6 +2595,28 @@ mod tests {
                 !rendered_debug.contains(leak_marker),
                 "Debug leaked ciborium's Debug-form marker {leak_marker:?}: {rendered_debug}"
             );
+        }
+    }
+
+    /// `From<CanonicalError> for RecordError` must preserve both fields of
+    /// `CapacityBoundExceeded` unchanged (#547 round 2, N4). The error path
+    /// itself is unreachable by construction on today's `Value` variant set
+    /// (see `size.rs`'s tests), which is why this constructs the
+    /// `CanonicalError` directly rather than driving it through
+    /// `encode_canonical_map` — but the `From` mapping is ordinary code with
+    /// no such excuse, and had zero coverage before this test.
+    #[test]
+    fn canonical_error_capacity_bound_exceeded_maps_to_record_error() {
+        let err = CanonicalError::CapacityBoundExceeded {
+            actual: 42,
+            bound: 17,
+        };
+        match RecordError::from(err) {
+            RecordError::CanonicalSizeBoundExceeded { actual, bound } => {
+                assert_eq!(actual, 42);
+                assert_eq!(bound, 17);
+            }
+            other => panic!("expected CanonicalSizeBoundExceeded, got {other:?}"),
         }
     }
 }

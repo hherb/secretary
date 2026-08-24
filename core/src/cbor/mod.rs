@@ -18,8 +18,63 @@
 //! upstream does.
 //!
 //! See `docs/superpowers/specs/2026-08-05-474-error-payload-hygiene-design.md`.
+//!
+//! Split into a directory module (#547 Task 3): this file keeps the codec
+//! error classification; `secret_tree` (a private submodule) holds
+//! `SecretValueTree` / `SecretEntries`, the zeroize-on-drop wrapper for
+//! what `ciborium::de::from_reader` itself allocates while parsing — a
+//! different concern from the error classification above, kept as one
+//! further file rather than split again since it stays comfortably under
+//! the project's 500-line-per-file threshold on its own.
 
 use std::fmt;
+
+// Task 3 (fix round 1, controller ruling R12) gated this whole submodule
+// behind `#[cfg(test)]` because `SecretValueTree` / `SecretEntries` had no
+// production caller yet: an earlier version instead made both types fully
+// `pub` plus a `#[doc(hidden)] pub cbor_test_api` re-export to dodge
+// `dead_code`, which put a third-party `#[non_exhaustive]` enum
+// (`ciborium::Value`) into three public function signatures of a crate
+// whose stated purpose is decades-long readability. Task 6 (#547) gave
+// `SecretValueTree` its first real caller (`record::decode` /
+// `block::decode_plaintext`), so the module itself became unconditionally
+// compiled. Task 7 (#548) gives `SecretEntries` its own first production
+// caller — `unlock::bundle::IdentityBundle::from_canonical_cbor` — so its
+// struct/impl/Drop definitions in `secret_tree/mod.rs` are no longer
+// individually `#[cfg(test)]`-gated either; both types are unconditionally
+// `pub(crate)`.
+mod secret_tree;
+
+pub(crate) use secret_tree::{SecretEntries, SecretValueTree};
+
+// `wipe_leaked_value` wipes a single, already-yielded `ciborium::Value` in
+// place — for a caller of `SecretEntries::take_next` (or similar) that
+// folds a yielded value into NOTHING (an early return that never examines
+// it) rather than into a zeroizing wrapper. Unconditional, not test-only:
+// `unlock::bundle::from_canonical_cbor`'s non-string-key and
+// unknown-field early returns are real production call sites (#548
+// fix-round-1 G1). See the function's own doc for the seam this closes.
+pub(crate) use secret_tree::wipe_leaked_value;
+
+// `wipe_calls` counts wipe invocations on the thread-local `WIPE_CALLS`
+// counter shared by `SecretValueTree` and `SecretEntries` (#547/#548).
+// Test-only: re-exported here so a CALLER's test module can pin that its
+// own production decode path actually invokes a wipe, not merely that
+// `secret_tree`'s own tests can — the compile error pins the binding's
+// shape, `secret_tree/tests.rs` pins the mechanism, and this re-export is
+// what lets a caller pin the composition of the two.
+//
+// WHICH caller modules do so is deliberately NOT enumerated here. The list
+// that stood in this comment was already wrong when the #560 review read
+// it — Task 7b had added `vault::manifest` without updating it, and
+// `vault::block` gained one during that review, so a two-name list was
+// stale in both directions. That is ruling R11's case exactly, and the
+// same treatment `vault::canonical`'s re-export comment already takes:
+// `grep -rn "crate::cbor::wipe_calls()" core/src` answers it in one
+// command and cannot go stale. Prefer that over a cached grep result
+// nothing validates.
+#[cfg(test)]
+pub(crate) use secret_tree::wipe_calls;
 
 /// Which upstream codec failure occurred, with no payload of its own.
 ///

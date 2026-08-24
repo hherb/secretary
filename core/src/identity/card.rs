@@ -589,6 +589,16 @@ fn canonical_error_to_card_error(e: CanonicalError) -> CardError {
         CanonicalError::TagRejected { .. } => {
             CardError::Malformed("CBOR tags are not permitted in canonical CBOR")
         }
+        // Post-hoc tripwire for a future `ciborium::Value` variant the size
+        // bound in `crate::vault::canonical` cannot name — see
+        // `CanonicalError::CapacityBoundExceeded`. `actual`/`bound` are
+        // discarded rather than threaded through: `CardError::Malformed`
+        // only carries `&'static str` by design (a closed set of literals,
+        // never runtime content), and this arm is not expected to fire on
+        // any input this crate constructs today.
+        CanonicalError::CapacityBoundExceeded { .. } => {
+            CardError::Malformed("canonical CBOR encode exceeded its reserved size bound")
+        }
     }
 }
 
@@ -1046,5 +1056,33 @@ mod tests {
             out.push_str(&format!("{b:02x}"));
         }
         out
+    }
+
+    /// `canonical_error_to_card_error` must map `CapacityBoundExceeded` to
+    /// `CardError::Malformed`, not silently drop it (#547 round 2, N4). The
+    /// error path itself is unreachable by construction on today's `Value`
+    /// variant set (see `size.rs`'s tests), which is why this constructs
+    /// the `CanonicalError` directly rather than driving it through
+    /// `encode_canonical_map` — but the mapping function is ordinary code
+    /// with no such excuse, and had zero coverage before this test. `actual`
+    /// / `bound` are discarded by design (`CardError::Malformed` only ever
+    /// carries a `&'static str` literal), so this asserts on the resulting
+    /// variant and message rather than on numbers that were never threaded
+    /// through.
+    #[test]
+    fn canonical_error_capacity_bound_exceeded_maps_to_card_error() {
+        let err = CanonicalError::CapacityBoundExceeded {
+            actual: 42,
+            bound: 17,
+        };
+        match canonical_error_to_card_error(err) {
+            CardError::Malformed(msg) => {
+                assert_eq!(
+                    msg,
+                    "canonical CBOR encode exceeded its reserved size bound"
+                );
+            }
+            other => panic!("expected Malformed, got {other:?}"),
+        }
     }
 }
