@@ -46,8 +46,31 @@ runs the complete encode pipeline N+1 times.
 
 ### Scope note
 
-`manifest.rs` and `block.rs`'s own header fields carry no decrypted user
-content. Only the record path and the identity bundle are plaintext-bearing.
+~~`manifest.rs` and `block.rs`'s own header fields carry no decrypted user
+content. Only the record path and the identity bundle are plaintext-bearing.~~
+**The `manifest.rs` half of this claim was wrong, and is corrected here
+rather than silently edited** — the same discipline §5 item 4 follows.
+`manifest.rs`'s own `BlockEntry::block_name` doc comment says the opposite,
+and predates this design doc: `/// User-visible block name, plaintext
+within the encrypted manifest.` (`core/src/vault/manifest.rs:347` as of the
+branch base). `docs/vault-format.md` §4.2 makes the identical statement
+about the wire schema (`"block_name": <tstr>, ; user-visible, plaintext
+within encrypted manifest`, line 209). `decode_manifest`'s parsed
+`ciborium::Value` tree therefore owns a copy of every block's
+user-authored name on every manifest open — exactly the residue class Task
+6 closed for `record.rs` / `block.rs`'s own plaintext body, and
+`manifest.rs` was excluded from that task on a premise its own
+neighbouring doc comment already contradicted. **Task 7b** exists because
+of this: it wraps `decode_manifest`'s (and `unknown_value_inner`'s) parsed
+tree in `SecretValueTree` and borrow-converts `parse_manifest_map` and its
+`take_*` helpers, mirroring Task 6's `record.rs` / `block.rs` conversion.
+The `block.rs` half of the struck-through claim stands uncorrected and is
+about a different thing: `block.rs`'s own binary-file-header fields
+(`magic`, `file_kind`, `block_uuid`, `suite_id` — the §6.1 cleartext AEAD
+AAD, not the decrypted `BlockPlaintext` body Task 6 already covers) really
+do carry no decrypted content; conflating the two in one sentence is what
+let the `manifest.rs` half go unnoticed.
+
 The eliminations below nevertheless benefit all three callers, because they
 remove work rather than adding a guard.
 
@@ -167,9 +190,16 @@ recorded for exactly this round-trip.
 
 ### 3.3 `manifest.rs`
 
-Unchanged. It carries no plaintext, and `canonical_sort_entries` /
+Unchanged. ~~It carries no plaintext, and~~ `canonical_sort_entries` /
 `encode_canonical_map` remain for it — with `pair.clone()` replaced by a
-borrow, which is a pure win and no behaviour change.
+borrow, which is a pure win and no behaviour change. "It carries no
+plaintext" is the same false premise the "Scope note" (§1) and §6's
+`CanonicalValue`-migration bullet state and correct — `BlockEntry.block_name`
+is user-visible plaintext within the encrypted manifest. What this section
+describes remains accurate as an *encode-path* statement: the ENCODE side
+genuinely stays on `canonical_sort_entries` / `encode_canonical_map`
+(unmigrated to `CanonicalValue`) through this task and Task 7b alike — only
+the justification was wrong, not the scope decision itself.
 
 ---
 
@@ -183,6 +213,15 @@ All three parse entry points wrap the tree the parser hands back:
   `Drop` then covers every `?` inside the field loop: `Malformed` on a
   non-string key, `DuplicateField` via `set_once`, `WrongKeySize`,
   `UnknownField`.
+
+**A fourth, added by Task 7b once the "manifest.rs carries no plaintext"
+premise above was found false** (see the corrected "Scope note", §1):
+`manifest::decode_manifest` (plus `manifest::unknown_value_inner` on the
+*encode* side, a from_reader call with no comparable `?`-window of its own
+— see that function's doc comment for why it is still wrapped). "All
+three" was accurate ONLY under that false premise; it is left as written
+above rather than silently bumped to "four", per this doc's own
+correction discipline.
 
 ### 4.1 The one validation-semantics change
 
@@ -274,16 +313,53 @@ KAT needs regenerating, the change is a format change and the slice is wrong.
 - **`record::decode`'s own re-encode canonicality check.** It re-runs the
   encode pipeline on every decode. With the new encoder that is now cheap and
   copy-free, so it stays — it is a correctness gate, not a residue.
-- **`manifest.rs` migration to `CanonicalValue`.** No plaintext; churn on
-  frozen-adjacent code for no security gain.
+- **`manifest.rs` migration to `CanonicalValue`.** ~~No plaintext;~~ churn on
+  frozen-adjacent code for no security gain. The "no plaintext" premise is
+  wrong — see the corrected §1 "Scope note" — so the decision to skip this
+  particular migration stands on the churn-avoidance half alone, not on
+  that premise. It remains out of scope: Task 7b (the manifest.rs-specific
+  follow-on this premise's falseness led to) covers the *decode*-side
+  residue via `SecretValueTree` + borrow conversion, the same mechanism
+  `record.rs` / `block.rs` use, without migrating `manifest.rs`'s *encode*
+  side off `canonical_sort_entries` / `encode_canonical_map` onto the
+  `CanonicalValue` enum.
 - **#519** (ffi-uniffi accessors), **#551** (`Sensitive::<Vec<u8>>::try_build`
   reaches the realloc hazard), **#543** (the `bundle.rs` split). Each tracked
   separately; #543 gets partial relief here as a side effect, not as a goal.
-- **The `unknown` map's `Value`s.** Forward-compat values from a future
-  version could in principle carry secret content, but this version cannot know
-  their shape, and they are already covered on the decode side by
+- **The `unknown` map's `Value`s.** ~~Forward-compat values from a future
+  version could in principle carry secret content, but this version cannot
+  know their shape, and they are already covered on the decode side by
   `SecretValueTree`'s recursion. On the encode side they are borrowed, not
-  cloned, so no new copy is created.
+  cloned, so no new copy is created.~~ **Both halves of this claim were
+  wrong — found during Task 6's own review, and corrected here rather than
+  silently reworded, same discipline as §5 item 4 and the "Scope note"
+  above.** Decode side: `record::parse_record_map` /
+  `block::parse_plaintext_map` (and, as of Task 7b,
+  `manifest::parse_manifest_map` / `parse_block_entry` / `parse_trash_entry`)
+  each clone a forward-compat value out of the tree into
+  `UnknownValue(v.clone())` (`record.rs`/`block.rs`) or, for `manifest.rs`,
+  into an `UnknownValue` built by `value_to_unknown`'s
+  serialise-then-re-parse round-trip. `UnknownValue` has **no `Zeroize`
+  impl** (`#[derive(Debug, Clone, PartialEq)]` only —
+  `core/src/vault/record.rs`), so that clone is NOT covered by
+  `SecretValueTree`'s recursion — only the SOURCE `Value` still inside the
+  tree is, until the tree drops. This is not a regression relative to
+  pre-Task-6/7b behaviour (the clone was exactly as uncovered before), but
+  "already covered" overstated the property; the accurate claim is "the
+  source is covered, the clone is not, no regression either way" — the
+  same three-part shape each `take_*`/forward-compat doc comment in
+  `record.rs` / `block.rs` / `manifest.rs` now states explicitly at its own
+  call site. Encode side: true for `record.rs` / `block.rs`, whose
+  `CanonicalValue::Borrowed(&'a Value)` genuinely borrows `UnknownValue`'s
+  inner field with zero allocation — but false for `manifest.rs`'s
+  `unknown_value_inner`, which round-trips through `to_canonical_cbor()`
+  (serialise) then `ciborium::de::from_reader` (re-parse) on every encode
+  call, allocating a genuinely NEW `Value` tree each time — a real copy,
+  not a borrow. Task 7b wraps that new tree in `SecretValueTree` before
+  extracting it (wiping the intermediate copy on return) but does not
+  eliminate the copy itself; see `unknown_value_inner`'s own doc comment
+  for the precise, honest statement of what that wrap does and does not
+  buy.
 
 ---
 
