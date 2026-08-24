@@ -35,16 +35,30 @@ use std::fmt;
 // `pub` plus a `#[doc(hidden)] pub cbor_test_api` re-export to dodge
 // `dead_code`, which put a third-party `#[non_exhaustive]` enum
 // (`ciborium::Value`) into three public function signatures of a crate
-// whose stated purpose is decades-long readability. Task 6 (#547) gives
+// whose stated purpose is decades-long readability. Task 6 (#547) gave
 // `SecretValueTree` its first real caller (`record::decode` /
-// `block::decode_plaintext`), so the module itself is now unconditionally
-// compiled. `SecretEntries` still has none — Task 7 wires that in — so its
-// own struct/impl/Drop definitions in `secret_tree/mod.rs` stay
-// individually `#[cfg(test)]`-gated rather than the whole module; both
-// remain `pub(crate)`.
+// `block::decode_plaintext`), so the module itself became unconditionally
+// compiled. Task 7 (#548) gives `SecretEntries` its own first production
+// caller — `unlock::bundle::IdentityBundle::from_canonical_cbor` — so its
+// struct/impl/Drop definitions in `secret_tree/mod.rs` are no longer
+// individually `#[cfg(test)]`-gated either; both types are unconditionally
+// `pub(crate)`.
 mod secret_tree;
 
-pub(crate) use secret_tree::SecretValueTree;
+pub(crate) use secret_tree::{SecretEntries, SecretValueTree};
+
+// `wipe_calls` counts wipe invocations on the thread-local `WIPE_CALLS`
+// counter shared by `SecretValueTree` and `SecretEntries` (#547/#548).
+// Test-only: re-exported here so a CALLER's test module can pin that its
+// own production decode path actually invokes a wipe, not merely that
+// `secret_tree`'s own tests can — the compile error pins the binding's
+// shape, `secret_tree/tests.rs` pins the mechanism, and this re-export is
+// what lets a caller pin the composition of the two. Two callers do, today:
+// `vault::record::tests::decode_wipes_its_parsed_tree_on_an_early_return`
+// and `unlock::bundle::tests::an_early_return_inside_the_field_loop_still_wipes`
+// / `..._wipes_its_entry_list`; `vault::block` has no equivalent yet.
+#[cfg(test)]
+pub(crate) use secret_tree::wipe_calls;
 
 /// Which upstream codec failure occurred, with no payload of its own.
 ///

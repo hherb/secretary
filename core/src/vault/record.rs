@@ -2260,6 +2260,38 @@ mod tests {
         );
     }
 
+    /// Composition check, added alongside #548's read-side fix in
+    /// `unlock::bundle`: `SecretValueTree`'s Drop mechanism is pinned by
+    /// `cbor::secret_tree::tests`, and `decode` is pinned to CONSTRUCT one by
+    /// type, but nothing previously proved a PRODUCTION decode path actually
+    /// invokes the wipe at runtime. Reuses the exact fixture above —
+    /// `decode`'s `RecordError::DuplicateKey` early return fires AFTER
+    /// `SecretValueTree::new(parsed)` inside `decode` (see that function),
+    /// so this drives the same early-`?` path `reject_duplicate_keys` pins
+    /// the error variant for, and additionally asserts the parsed tree was
+    /// wiped.
+    #[test]
+    fn decode_wipes_its_parsed_tree_on_an_early_return() {
+        let r = dummy_record();
+        let mut entries = record_entries_canonical(&r);
+        entries.push((
+            Value::Text(KEY_RECORD_TYPE.into()),
+            Value::Text("imposter".into()),
+        ));
+        let bytes = cbor_map_bytes_unsorted(&entries);
+
+        let before = crate::cbor::wipe_calls();
+        let err = decode(&bytes).expect_err("duplicate key must be rejected");
+        assert!(
+            matches!(err, RecordError::DuplicateKey { .. }),
+            "expected DuplicateKey, got {err:?}"
+        );
+        assert!(
+            crate::cbor::wipe_calls() > before,
+            "decode's early return did not wipe its parsed SecretValueTree"
+        );
+    }
+
     /// `record.rs` — the `fields` map. THE site the issue names: `key`
     /// here is a decrypted user field name, not a spec constant.
     #[test]

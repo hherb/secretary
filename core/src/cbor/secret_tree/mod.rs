@@ -29,16 +29,18 @@
 //! a breaking change to `secretary-core`. `#[cfg(test)]` adds no such
 //! surface.
 //!
-//! Task 6 (#547) gives `SecretValueTree` its first real production caller
+//! Task 6 (#547) gave `SecretValueTree` its first real production caller
 //! (`record::decode` / `block::decode_plaintext`), so the module-level gate
 //! moved up one level to `cbor/mod.rs`'s `mod secret_tree;` line, and this
-//! file's `SecretValueTree` definition is unconditionally compiled.
-//! `SecretEntries` still has no production caller — Task 7 wires it in —
-//! so its struct/impl/`Drop` definitions below stay individually
-//! `#[cfg(test)]`-gated instead: same reasoning as the module-level gate
-//! this paragraph describes, just scoped to the one type that still needs
-//! it. Task 7 deletes that narrower gate at the point `SecretEntries`
-//! gains a real call site.
+//! file's `SecretValueTree` definition became unconditionally compiled.
+//! Task 7 (#548) does the same for `SecretEntries`: its first production
+//! caller is `unlock::bundle::IdentityBundle::from_canonical_cbor`, so its
+//! struct/impl/`Drop` definitions below are no longer individually
+//! `#[cfg(test)]`-gated either — same reasoning as the module-level gate
+//! this paragraph describes, now applied to the one type that used to need
+//! the narrower version of it. `wipe_for_test` stays `#[cfg(test)]`:
+//! production code relies on `Drop` precisely because it cannot be skipped,
+//! so a way to skip it is deliberately test-only.
 
 use ciborium::Value;
 
@@ -190,20 +192,18 @@ impl Drop for SecretValueTree {
 /// entry's key/value out to build its result. That is a real, deliberate
 /// gap in wipe coverage, not an oversight: **a yielded entry leaves this
 /// type's protection entirely** the moment `take_next` returns it, and nothing
-/// wipes it from that point on. Task 7, which consumes this, must fold a
-/// yielded value straight into a `SecretBytes`/`SecretString` (or discard
-/// it) rather than clone it into some other unwiped local first — cloning
-/// would recreate exactly the residue this type exists to avoid.
+/// wipes it from that point on. Task 7's consumer,
+/// `unlock::bundle::IdentityBundle::from_canonical_cbor`, folds each yielded
+/// value straight into a `Sensitive`/`SecretBytes` wrapper (or a plain
+/// public-key/scalar local) rather than cloning it into some other unwiped
+/// local first — cloning would recreate exactly the residue this type
+/// exists to avoid.
 ///
-/// `#[cfg(test)]`-gated (struct, impl, and `Drop` below — not the whole
-/// module; see the module doc): Task 6 (#547) gives `SecretValueTree` its
-/// first production caller but leaves this type's own with none, so an
-/// unconditional build would flag every method here `dead_code` under
-/// `-D warnings`. Task 7 deletes this gate at the point it gains one.
-#[cfg(test)]
+/// No longer `#[cfg(test)]`-gated (struct, impl, and `Drop` below): Task 7
+/// (#548) gives this its first production caller, the same reasoning that
+/// un-gated `SecretValueTree` in Task 6 (#547) — see the module doc.
 pub(crate) struct SecretEntries(Vec<(Value, Value)>);
 
-#[cfg(test)]
 impl SecretEntries {
     /// Take ownership of an entry list.
     pub(crate) fn new(entries: Vec<(Value, Value)>) -> Self {
@@ -211,13 +211,24 @@ impl SecretEntries {
     }
 
     /// Number of entries currently held (shrinks as [`Self::take_next`]
-    /// drains the front).
+    /// drains the front). Test-only: `unlock::bundle`'s production caller
+    /// never needs it (`take_next` alone drives the decode loop, and
+    /// [`Self::is_empty`] is what `take_next` itself checks), so an
+    /// unconditional build flags it `dead_code` under `-D warnings`
+    /// (verified by execution). `tests.rs` still exercises it directly, and
+    /// both this and [`Self::is_empty`] compile together under `--tests`,
+    /// which is what `clippy::len_without_is_empty` (a type with `len()` but
+    /// no `is_empty()`) wants to see whenever `len()` exists at all.
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.0.len()
     }
 
-    /// Whether every entry has been drained. Required by
-    /// `clippy::len_without_is_empty` once [`Self::len`] exists; also the
+    /// Whether every entry has been drained. Not itself required by
+    /// `clippy::len_without_is_empty` (that lint fires the other direction —
+    /// `len()` without a matching `is_empty()` — and does not object to
+    /// `is_empty()` existing alone); kept alongside [`Self::len`] so the two
+    /// pair up whenever `len()` compiles (see that method's doc). Also the
     /// check [`Self::take_next`] itself uses.
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -283,7 +294,6 @@ impl SecretEntries {
     }
 }
 
-#[cfg(test)]
 impl Drop for SecretEntries {
     fn drop(&mut self) {
         self.wipe();
