@@ -53,6 +53,7 @@ use ciborium::Value;
 
 use crate::cbor::{classify_de, classify_ser, CborErrorKind, CborFault, SecretValueTree};
 use crate::crypto::aead::{self, AeadKey, AeadNonce, AEAD_TAG_LEN};
+use crate::crypto::secret::SecretBytes;
 use crate::crypto::sig::{
     self, Ed25519Public, Ed25519Secret, Ed25519Sig, HybridSig, MlDsa65Public, MlDsa65Secret,
     MlDsa65Sig, SigError, SigRole, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN,
@@ -1916,12 +1917,19 @@ pub fn sign_manifest(
     sk_ed: &Ed25519Secret,
     sk_pq: &MlDsa65Secret,
 ) -> Result<ManifestFile, ManifestError> {
-    // Step 1: encode the manifest body to canonical CBOR.
-    let body_bytes = encode_manifest(body)?;
+    // Step 1: encode the manifest body to canonical CBOR. `body_bytes` is a
+    // cleartext copy of every user-authored `block_name` in the vault, so it
+    // is wrapped in `SecretBytes` immediately rather than left as a bare
+    // `Vec<u8>` until a trailing `.zeroize()` at the end of the function.
+    // `SecretBytes`'s `ZeroizeOnDrop` then wipes it on every exit path
+    // (normal return, an early `?`, or an unwinding panic), matching the
+    // `bundle_plaintext` pattern in `unlock::create_vault_unchecked` (#513,
+    // #357).
+    let body_bytes = SecretBytes::new(encode_manifest(body)?);
 
     // Step 2: AEAD-encrypt with header AAD.
-    let ct_with_tag = encrypt_manifest_body(&header, &body_bytes, ibk, nonce)?;
-    debug_assert_eq!(ct_with_tag.len(), body_bytes.len() + AEAD_TAG_LEN);
+    let ct_with_tag = encrypt_manifest_body(&header, body_bytes.expose(), ibk, nonce)?;
+    debug_assert_eq!(ct_with_tag.len(), body_bytes.expose().len() + AEAD_TAG_LEN);
 
     // Split (ct || tag) into aead_ct (variable) and aead_tag (16).
     let split_at = ct_with_tag.len() - AEAD_TAG_LEN;

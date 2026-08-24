@@ -76,7 +76,7 @@ use rand_core::{CryptoRng, RngCore};
 use crate::cbor::{classify_de, classify_ser, CborFault, SecretValueTree};
 use crate::crypto::aead::{self, AeadError, AeadKey, AeadNonce, AEAD_TAG_LEN};
 use crate::crypto::kem::{self, HybridWrap, KemError, ML_KEM_768_CT_LEN, X25519_PK_LEN};
-use crate::crypto::secret::Sensitive;
+use crate::crypto::secret::{SecretBytes, Sensitive};
 use crate::crypto::sig::{
     self, Ed25519Public, Ed25519Secret, HybridSig, MlDsa65Public, MlDsa65Secret, MlDsa65Sig,
     SigError, SigRole, ED25519_SIG_LEN,
@@ -984,9 +984,10 @@ fn plaintext_to_canonical(plaintext: &BlockPlaintext) -> CanonicalMap<'_> {
 }
 
 // `to_canonical_vec` (used by `plaintext_to_canonical` / `encode_plaintext`
-// above) and `encode_canonical_map` (still used by `manifest.rs`,
-// `core/src/sync/state.rs`, and `identity/card.rs` — NOT by this file any
-// more as of #547 Task 5) both live in [`crate::vault::canonical`], so
+// above) and `encode_canonical_map` (NOT called by this file any more as of
+// #547 Task 5, but still with real production callers elsewhere in the
+// crate — per ruling R11, not enumerated here; read the callers directly
+// rather than trusting a list) both live in [`crate::vault::canonical`], so
 // every canonical-CBOR layer shares one implementation rather than each
 // hand-rolling its own sort + encode. Both return a [`CanonicalError`];
 // the `From<CanonicalError> for BlockError` impl above lifts it to the
@@ -1769,16 +1770,23 @@ pub fn encrypt_block<R: RngCore + CryptoRng>(
     // Step 4: fresh AEAD nonce.
     let aead_nonce: AeadNonce = aead::random_nonce(rng);
 
-    // Step 5: canonical-CBOR plaintext.
-    let pt_bytes = encode_plaintext(plaintext)?;
+    // Step 5: canonical-CBOR plaintext. `pt_bytes` is a cleartext CBOR copy
+    // of every record in the block — every password, note and TOTP seed —
+    // so it is wrapped in `SecretBytes` immediately rather than left as a
+    // bare `Vec<u8>` until a trailing `.zeroize()` at the end of the
+    // function. `SecretBytes`'s `ZeroizeOnDrop` then wipes it on every exit
+    // path (normal return, an early `?`, or an unwinding panic), matching
+    // the `bundle_plaintext` pattern in `unlock::create_vault_unchecked`
+    // (#513, #357).
+    let pt_bytes = SecretBytes::new(encode_plaintext(plaintext)?);
 
     // Step 6: AAD = bytes magic..end_of_recipient_entries; AEAD-encrypt.
     let aad = build_body_aad(header, &wraps)?;
     let mut bck_key_bytes = *bck.expose();
     let bck_key: AeadKey = Sensitive::new(bck_key_bytes);
     bck_key_bytes.zeroize();
-    let ct_with_tag = aead::encrypt(&bck_key, &aead_nonce, &aad, &pt_bytes)?;
-    debug_assert_eq!(ct_with_tag.len(), pt_bytes.len() + AEAD_TAG_LEN);
+    let ct_with_tag = aead::encrypt(&bck_key, &aead_nonce, &aad, pt_bytes.expose())?;
+    debug_assert_eq!(ct_with_tag.len(), pt_bytes.expose().len() + AEAD_TAG_LEN);
 
     // Split (ct || tag) into aead_ct (variable) and aead_tag (16).
     let split_at = ct_with_tag.len() - AEAD_TAG_LEN;
@@ -1922,9 +1930,10 @@ mod tests {
     use super::*;
     use crate::vault::record::{RecordField, RecordFieldValue};
     // `encode_canonical_map` has no production caller left in THIS file
-    // after #547 Task 5 (it still backs `manifest.rs` / `core/src/sync/
-    // state.rs` / `identity/card.rs`, which is why it stays `pub` on
-    // `crate::vault::canonical` rather than being deleted) — the
+    // after #547 Task 5, but still has real production callers elsewhere
+    // in the crate (per ruling R11, not enumerated here — read the callers
+    // directly rather than trusting a list), which is why it stays `pub`
+    // on `crate::vault::canonical` rather than being deleted. The
     // production `use super::canonical::{...}` above deliberately no
     // longer names it, so a plain `cargo build --release --workspace` (no
     // `#[cfg(test)]` code compiled) does not warn `unused_imports`. Test

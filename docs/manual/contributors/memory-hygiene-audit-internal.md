@@ -1137,6 +1137,59 @@ nested record (out-of-order field keys) inside an otherwise-valid block and
 proves `decode_plaintext` still rejects it. Both `decode_value`'s and
 `decode_plaintext`'s own doc comments point at this test by name.
 
+### `pt_bytes` / `body_bytes`: the terminal AEAD-input buffer, missed by the six-copy trace and closed in the final fix wave
+
+The six-copy trace above and the Mechanism A/B accounting both stop one step
+short of where each save path actually ends: the already-canonical `Vec<u8>`
+that `encode_plaintext` (`block.rs`) / `encode_manifest` (`manifest.rs`)
+returns, which is handed straight to `aead::encrypt`. Neither mechanism's
+grep covered it — it holds no `ciborium::Value`, so `SecretValueTree`
+(Mechanism B) has nothing to wrap, and it is the *output* of the borrowing
+encoder, not a copy `CanonicalValue`/`CanonicalMap` (Mechanism A) could have
+eliminated by construction. Found in the final whole-branch review, not by
+either census.
+
+- **`block::encrypt_block`'s `pt_bytes`** was a bare `Vec<u8>` holding the
+  canonical-CBOR encoding of the **entire block plaintext** — every record,
+  every field, every password/note/TOTP seed in the block — dropped unwiped
+  on every save. It is the single largest unwiped plaintext buffer this
+  slice's save path produced, larger than any one of the six copies the
+  trace above counts, because it is the whole block rather than one field.
+- **`manifest::sign_manifest`'s `body_bytes`** is the same shape one layer
+  up: the canonical-CBOR encoding of the whole manifest body, including
+  every `BlockEntry::block_name` (the plaintext this document's Census
+  section, below, already tracks two OTHER unwiped clones of, upstream in
+  `canonical_sort_entries`).
+
+Both are now wrapped at construction — `SecretBytes::new(encode_plaintext
+(plaintext)?)` / `SecretBytes::new(encode_manifest(body)?)` — with
+`.expose()` passed to `aead::encrypt`, matching the `bundle_plaintext`
+pattern in `unlock::create_vault_unchecked` (#513, #357): `ZeroizeOnDrop`
+then covers every exit path (normal return, an early `?`, an unwinding
+panic), not just the happy path a trailing `.zeroize()` would have covered.
+Byte-identity is unaffected — `SecretBytes::new` takes ownership of the same
+`Vec` and `.expose()` returns `&[u8]` over the same allocation, so this is a
+wrapper change, not a data change, and `golden_vault_001_pinned` (which
+rebuilds every vault file and byte-compares against the frozen fixture)
+confirms it.
+
+**Save-path copy count, re-derived (not adjusted arithmetically) after this
+fix:**
+
+- **Block save (`encrypt_block`).** Zero unwiped plaintext copies remain.
+  Per-record/per-field copies were already eliminated by Mechanism A (Task
+  4/5); `pt_bytes`, the one bare `Vec<u8>` that survived past Mechanism A
+  because it isn't a `ciborium::Value` copy, is now wrapped.
+- **Manifest save (`sign_manifest`).** Two unwiped plaintext copies remain,
+  down from three: the two `block_name` clones inside
+  `canonical_sort_entries` this document's Census section already tracks as
+  **deliberately** out of scope (manifest.rs's encode side stays on
+  `canonical_sort_entries`/`encode_canonical_map` rather than migrating to
+  `CanonicalValue` — a churn-avoidance decision recorded in the design
+  spec's §6, not an oversight, and not touched by this fix). `body_bytes`,
+  the third copy — and the only one this section's mechanisms had not
+  already accounted for — is now wrapped.
+
 ### Census: what remains, and why each hit is justified
 
 Re-running the grep census this section is built on

@@ -80,21 +80,6 @@ pub use trash_merge::{merge_trash_entry, merge_trash_lists, resolve_live_vs_tras
 pub use orchestrators::{format_uuid_hyphenated, BLOCKS_SUBDIR, BLOCK_FILE_EXTENSION};
 pub use record::{Record, RecordError, RecordField, RecordFieldValue, UnknownValue};
 
-/// Test-only re-export of the borrowed canonical encoder, so
-/// `core/tests/canonical_value_equivalence.rs` can pin the byte-identity
-/// property from an integration test. `--cfg test` is not propagated to
-/// dependent crates, so a `#[cfg(test)]` item would be invisible there; the
-/// established workaround in this repo is `#[doc(hidden)] pub`, the same
-/// pattern the cross-target test-hook re-exports above and
-/// `crate::sync::__test_dispatch` use.
-///
-/// Not part of the supported API surface. Nothing outside `core/tests/`
-/// should use it.
-#[doc(hidden)]
-pub mod canonical_test_api {
-    pub use super::canonical::{CanonicalMap, CanonicalValue};
-}
-
 /// Umbrella error type for the vault format layer.
 ///
 /// Aggregates [`RecordError`], [`BlockError`], and [`ManifestError`].

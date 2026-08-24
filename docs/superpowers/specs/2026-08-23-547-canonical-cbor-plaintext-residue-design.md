@@ -107,6 +107,22 @@ pub(crate) enum CanonicalValue<'a> {
 pub(crate) struct CanonicalMap<'a>(Vec<(CanonicalKey<'a>, CanonicalValue<'a>)>);
 ```
 
+**This sketch does not match what shipped, and is left as originally
+written rather than silently edited — corrected here, found in the final
+whole-branch review.** There is no `CanonicalKey<'a>` type: `CanonicalMap`
+is `Vec<(&'a str, CanonicalValue<'a>)>` — a bare borrowed `&str` key, sorted
+allocation-free on `(key.len(), key.as_bytes())` rather than through a
+wrapper type. And the visibility drifted twice before landing back where
+this sketch put it: `CanonicalMap`/`CanonicalValue` shipped `pub` (not
+`pub(crate)`) for most of this branch's life, re-exported through a
+`#[doc(hidden)]` `vault::canonical_test_api` module so an integration test
+could construct them directly; the final whole-branch review found that
+put a third-party `#[non_exhaustive]` enum (`ciborium::Value`, via
+`CanonicalValue::Borrowed`) into `secretary-core`'s public API surface, and
+moved the byte-identity tests into this file's own `#[cfg(test)] mod
+tests` instead. Both types are `pub(crate)` in the shipped code, matching
+this sketch after all — but by a different route than the sketch implies.
+
 `CanonicalMap`'s `serde::Serialize` impl materialises **keys only** — never a
 value — sorts on the encoded key bytes per RFC 8949 §4.2.1, and emits via
 `serialize_map(Some(n))`. Because nested `Map`s serialise themselves, the eager
@@ -146,9 +162,22 @@ Three properties carried over from `ZeroizingEntries` (#542) and its own review:
 3. **`ciborium::Value` is `#[non_exhaustive]`**, so no match arm will ever warn
    when a shape is missed. The catch-all arm is therefore explicit and
    documented, and a test enumerates every variant the walker can encounter.
-   The shape assertion goes at **construction**, not in `wipe`: `wipe` is
+   ~~The shape assertion goes at **construction**, not in `wipe`: `wipe` is
    reachable from `Drop`, and a panic in a `Drop` running during an unwind
-   aborts the process.
+   aborts the process.~~ **That is not what shipped, found in the final
+   whole-branch review and corrected here rather than silently edited.**
+   `SecretValueTree::new` performs no assertion at all — it is a bare
+   `Self(value)`. The "no match arm will ever warn when a shape is missed"
+   property is instead carried entirely by
+   `every_ciborium_value_variant_is_accounted_for` /
+   `assert_named_variants_still_exist` in `core/src/cbor/secret_tree/
+   tests.rs`: an exhaustive match with a named arm per variant that fails to
+   **compile** (not to run) the moment a variant is removed or renamed. The
+   `Drop`-panic-aborts-the-process reasoning is still why there is no
+   runtime assertion in `wipe` — that half was right — but there was never
+   a runtime assertion at construction either to move it away from; the
+   real answer to "where does the shape guarantee live" is compile-time, in
+   a test file, not at any runtime call site.
 
 **What this does not claim.** A wipe of freed heap is not observable from safe
 Rust; neither is a `String`/`Vec` reallocation that happened inside `ciborium`'s
@@ -377,8 +406,23 @@ core/src/vault/canonical/
     size.rs       — cbor_size_bound, moved from bundle.rs      (~80)
 ```
 
-`core/src/cbor.rs` is 221 lines and gains `SecretValueTree` (~150 with docs),
-landing near 370 — under the guideline, so it stays a single file.
+~~`core/src/cbor.rs` is 221 lines and gains `SecretValueTree` (~150 with docs),
+landing near 370 — under the guideline, so it stays a single file.~~ **Wrong
+— found in the final whole-branch review, corrected here rather than
+silently edited.** It did not stay a single file. Task 3 split it into a
+directory module once `SecretEntries` (added for #548, not budgeted for
+above) pushed the combined file over the 500-line threshold:
+
+```
+core/src/cbor/
+    mod.rs                — classify_de / classify_ser / CborFault, unchanged
+    secret_tree/
+        mod.rs             — SecretValueTree / SecretEntries / wipe_leaked_value
+        tests.rs           — their unit tests
+```
+
+Two files under `secret_tree/`, plus `cbor/mod.rs` itself — three files
+total where this section predicted one.
 
 ## 8. Testing
 

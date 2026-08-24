@@ -354,6 +354,24 @@ impl IdentityBundle {
         // as an unwrapped `String` — wiping the CLONE here is neither
         // harmful nor load-bearing, just a side effect of using the shared
         // type instead of a bundle-specific one.
+        //
+        // On `main`, before #547/#548 shared this call with `record.rs` /
+        // `block.rs` / `manifest.rs`, this file's own `encode_map` took the
+        // WRAPPER (`&ZeroizingEntries`), not `&[(Value, Value)]` — the
+        // comment there said plainly: "passing the inner slice made the
+        // wrapper optional at its only call site, so reverting this line to
+        // a bare `vec![…]` compiled and passed the whole suite. The
+        // signature is what makes the invariant hold." `encode_canonical_map`
+        // is the shared helper `record.rs`/`block.rs`/`manifest.rs` also
+        // call, and its signature is `&[(Value, Value)]` — it cannot take
+        // `&SecretEntries` without forcing every OTHER caller through the
+        // same wrapper, several of which build entries with no secret
+        // content at all. Sharing the mechanism therefore traded that
+        // type-level guarantee for a test-level one: nothing stops a future
+        // edit here from reverting to a bare `vec![…]` and still
+        // compiling — [`to_canonical_cbor_wipes_its_entry_list`] is what
+        // would catch it, by asserting the production encode path actually
+        // wipes via `crate::cbor::wipe_calls()`, not by construction.
         crate::vault::canonical::encode_canonical_map(entries.as_slice())
             .map_err(canonical_error_to_bundle_error)
     }

@@ -33,9 +33,18 @@
 //! value side (only keys are materialised, to sort on) and
 //! [`reject_floats_and_tags`] clones nothing (it only ever reads through
 //! `&Value`) — [`canonical_sort_entries`] is the one holdout: it still
-//! `pair.clone()`s every entry, unchanged from before the split, because it
-//! is a later build-sequence step (Task 4) that removes its last
-//! plaintext-bearing caller, not this one. [`size`]
+//! `pair.clone()`s every entry, unchanged from before the split. Task 4
+//! removed its plaintext-bearing caller in `record.rs`, but that was not
+//! its *last* one: `manifest.rs` still calls it (several sites, one per
+//! manifest sub-structure), and one of those callers —
+//! `block_entry_to_value`'s `block_name` field — is genuinely user-visible
+//! plaintext within the encrypted manifest, cloned once into the entry
+//! list and again by this function's own `pair.clone()`: two clones of a
+//! block name per manifest save, deliberately left unmigrated by this
+//! slice's own scope decision — see
+//! `docs/manual/contributors/memory-hygiene-audit-internal.md`. This clone
+//! is therefore still live, not merely unchanged-for-now scaffolding.
+//! [`size`]
 //! holds [`cbor_size_bound`], the pre-reservation helper
 //! `encode_canonical_map` uses so its output buffer is sized to avoid
 //! reallocating; a real runtime check (not a `debug_assert!`, which compiles
@@ -60,11 +69,17 @@
 //! declared `pub(crate)`, not `pub`: unlike [`CanonicalMap`] /
 //! [`CanonicalValue`] themselves, no integration test needs to reach it, so
 //! there is no `canonical_test_api` cross-crate visibility floor to satisfy.
-//! `block.rs`'s own plaintext encode is unmigrated as of this step — it
-//! still calls [`super::record::encode`] once per record and re-parses the
-//! resulting bytes into the `Value` tree it hands to
+//! `block.rs`'s own plaintext encode was unmigrated as of Task 4 — it still
+//! called `super::record::encode` once per record and re-parsed the
+//! resulting bytes into the `Value` tree it handed to
 //! [`legacy::encode_canonical_map`], rather than nesting a borrowed
-//! `CanonicalMap` — a later build-sequence step's concern, not this one's.
+//! `CanonicalMap`. **That is no longer true**: Task 5 migrated
+//! `block::encode_plaintext` onto `record::record_to_canonical` the same
+//! way `record::encode` itself uses it (see that function's doc comment),
+//! so production `block.rs` calls neither `record::encode` nor
+//! `encode_canonical_map` any more. Both survive only in `block.rs`'s
+//! `#[cfg(test)]` equivalence oracle, which deliberately keeps the old
+//! round-trip path alive to prove the new one produces identical bytes.
 
 #![forbid(unsafe_code)]
 
@@ -77,29 +92,29 @@ mod value;
 pub use legacy::{canonical_sort_entries, encode_canonical_map, reject_floats_and_tags};
 pub(crate) use size::{cbor_size_bound, HEAD_MAX};
 pub(crate) use value::to_canonical_vec;
-// `CanonicalMap`/`CanonicalValue` are re-exported `pub` (not `pub(crate)`),
-// even though this `canonical` module itself is `pub(crate)` (see
-// `vault/mod.rs`): `vault::canonical_test_api` needs a `pub`-visibility
-// chain all the way down to reach them from `core/tests/*.rs` (E0365 —
+// `CanonicalMap`/`CanonicalValue` were re-exported `pub` (not `pub(crate)`)
+// through the end of the final whole-branch review of #547: `vault::
+// canonical_test_api` needed a `pub`-visibility chain all the way down to
+// reach them from `core/tests/canonical_value_equivalence.rs` (E0365 —
 // re-exporting an item as more public than its own established visibility
-// is rejected, and a `pub(crate)` hop here would set that ceiling).
-//
-// As of Task 4 (#547), both have a genuine in-crate production caller —
-// `record::record_to_canonical` — so, unlike at the point this comment was
-// first written (Task 2), their `pub` path is no longer what keeps them out
-// of `dead_code`; ordinary crate-internal usage does that now, the same as
-// for the three `legacy` functions re-exported just above. The `pub`
-// visibility stays for the ORIGINAL reason stated two paragraphs up:
-// `canonical_test_api` needs it so
-// `core/tests/canonical_value_equivalence.rs` can construct these types
-// directly, and dropping to `pub(crate)` would still fail at E0365 even
-// though `dead_code` would no longer object.
+// is rejected, and a `pub(crate)` hop here would have set that ceiling).
+// That review found the tradeoff wrong: it put a third-party
+// `#[non_exhaustive]` enum (`ciborium::Value`, via `CanonicalValue::
+// Borrowed`) into this crate's public API surface, so a `ciborium` 0.3
+// bump would have become a semver-breaking change for `secretary-core` —
+// exactly the outcome `cbor::secret_tree` rejected for the same shape of
+// type (see that module's doc comment). The belief that the byte-identity
+// proof had to be an integration test was itself wrong: a `#[cfg(test)]
+// mod tests` in this file runs on every CI run just as an integration test
+// does, and (as of this fix) is where that proof now lives. Both types are
+// therefore back to `pub(crate)`, and `canonical_test_api` no longer
+// exists.
 //
 // (Which in-crate files call them beyond `record.rs` is deliberately not
 // enumerated here — that list has been written wrong twice; read the
 // callers directly instead of trusting a cached grep result nothing
 // validates.)
-pub use value::{CanonicalMap, CanonicalValue};
+pub(crate) use value::{CanonicalMap, CanonicalValue};
 
 /// Errors emitted by the three canonical-CBOR helpers in this module.
 ///

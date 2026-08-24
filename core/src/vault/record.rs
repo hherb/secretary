@@ -49,7 +49,7 @@
 //! - We collect every unrecognised key into the `unknown` map.
 //! - On re-encode, `record_to_canonical` splices unknown entries (borrowed
 //!   via `UnknownValue::as_value`, never cloned) into the same
-//!   [`CanonicalMap`] as the known entries; its `Serialize` impl sorts every
+//!   `CanonicalMap` as the known entries; its `Serialize` impl sorts every
 //!   key — known and unknown alike — into canonical order at serialise
 //!   time. Since that sort is total, deterministic, and depends only on the
 //!   key bytes, the resulting byte layout matches the input exactly when
@@ -396,7 +396,7 @@ pub struct Record {
     /// generic key/value lists).
     pub record_type: String,
     /// Field name → field. [`BTreeMap`] for in-memory iteration
-    /// determinism only; the wire ordering is decided by [`CanonicalMap`]'s
+    /// determinism only; the wire ordering is decided by `CanonicalMap`'s
     /// `Serialize` impl, which compares keys directly as `(byte length,
     /// bytes)` — an ALLOCATION-FREE comparison, deliberately: a field name
     /// here is user-authored, decrypted plaintext (the same class of data
@@ -981,8 +981,14 @@ fn take_uuid(v: &Value, field: &'static str) -> Result<[u8; RECORD_UUID_LEN], Re
 // visibility works across sibling modules once re-exported at a mutually
 // visible scope; it is cross-CRATE test-only visibility
 // (`core/tests/*.rs`, an external crate from `secretary-core`'s point of
-// view) that needs the different `#[doc(hidden)] pub` mechanism documented
-// at `crate::vault::mod`'s `canonical_test_api`.
+// view) that needs the different `#[doc(hidden)] pub` mechanism — see
+// `crate::sync::__test_dispatch` for a live example. `vault::mod` used to
+// carry a second example of that mechanism, `canonical_test_api`, for
+// `CanonicalMap`/`CanonicalValue`; the final whole-branch review of #547
+// retired it (those types' byte-identity tests moved into an in-file
+// `#[cfg(test)] mod tests` instead, and the types dropped back to
+// `pub(crate)` — see `canonical/value.rs`'s module doc), so it is no longer
+// an example to point to here.
 //
 // Declared BEFORE `mod tests` (not after, textually more natural though
 // that would be): `clippy::items_after_test_module` denies any item —
@@ -1000,16 +1006,14 @@ mod tests {
     // caller left in THIS file after #547 Task 4 (NOT `block.rs` either, as
     // of #547 Task 5, which gave that file the same treatment this one got
     // in Task 4 — which is why both stay `pub` on `crate::vault::canonical`
-    // rather than being deleted). Naming who calls what, not just "still
-    // used somewhere" (fix round 1 review finding, minor): `manifest.rs`
-    // calls BOTH (`encode_canonical_map` at manifest.rs:438,
-    // `canonical_sort_entries` at manifest.rs:500/561/609/629);
-    // `core/src/sync/state.rs` calls both too (`encode_canonical_map` at
-    // state.rs:125, `canonical_sort_entries` at state.rs:107);
-    // `identity/card.rs` calls only `encode_canonical_map` (card.rs:307) —
-    // it has no `canonical_sort_entries` call of its own. Re-verify this
-    // census if either function gains or loses a caller; it is a
-    // point-in-time claim, not a structural guarantee.
+    // rather than being deleted). Both still have real production callers
+    // elsewhere in the crate, so their non-dead-code status does not
+    // depend on the `pub` path or on this test module. Per ruling R11: an
+    // enumeration of the specific call sites is deliberately not kept
+    // here — it is a cached `grep` result, invalidated by any future task,
+    // and nothing checks it; it has been written wrong more than once. Read
+    // the callers directly (`grep -rn` for the function name) rather than
+    // trusting a list.
     //
     // The production `use super::canonical::{...}` above deliberately no
     // longer names them, so a plain `cargo build --release --workspace` (no

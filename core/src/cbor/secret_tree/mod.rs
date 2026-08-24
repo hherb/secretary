@@ -19,15 +19,20 @@
 //! is nothing for `dead_code` to flag; under `--tests` it is compiled and
 //! fully exercised by the unit tests in `tests.rs`. An earlier version of
 //! this module made both types fully `pub` instead, with a `#[doc(hidden)]
-//! pub` re-export reachable from the crate root (the same
-//! `dead_code`-avoidance pattern `vault::canonical_test_api` uses for
-//! `CanonicalMap` / `CanonicalValue`) — reverted because it put a
-//! third-party `#[non_exhaustive]` enum (`ciborium::Value`) into three
-//! public function signatures of a crate whose stated purpose is
-//! decades-long readability; `#[doc(hidden)]` hides an item from rendered
-//! docs, not from the semver surface, so a `ciborium` 0.3 would have become
-//! a breaking change to `secretary-core`. `#[cfg(test)]` adds no such
-//! surface.
+//! pub` re-export reachable from the crate root — at the time this
+//! paragraph was written, the same `dead_code`-avoidance pattern
+//! `vault::canonical_test_api` used for `CanonicalMap` / `CanonicalValue` —
+//! reverted because it put a third-party `#[non_exhaustive]` enum
+//! (`ciborium::Value`) into three public function signatures of a crate
+//! whose stated purpose is decades-long readability; `#[doc(hidden)]` hides
+//! an item from rendered docs, not from the semver surface, so a `ciborium`
+//! 0.3 would have become a breaking change to `secretary-core`.
+//! `#[cfg(test)]` adds no such surface. The final whole-branch review of
+//! #547 later reached the same conclusion for `CanonicalMap` /
+//! `CanonicalValue` themselves and retired `canonical_test_api` — see
+//! `vault::canonical::value`'s module doc — so this is no longer a
+//! divergence between the two modules, only a description of one that used
+//! to exist.
 //!
 //! Task 6 (#547) gave `SecretValueTree` its first real production caller
 //! (`record::decode` / `block::decode_plaintext`), so the module-level gate
