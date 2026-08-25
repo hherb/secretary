@@ -48,6 +48,7 @@ use core::fmt;
 
 use ciborium::Value;
 use rand_core::{CryptoRng, RngCore};
+use zeroize::Zeroize;
 
 use crate::cbor::{CborFault, SecretEntries};
 use crate::crypto::kem::{
@@ -652,8 +653,24 @@ pub(super) fn canonical_key_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
     a_buf.cmp(&b_buf)
 }
 
-fn set_once<T>(slot: &mut Option<T>, v: T, key: &'static str) -> Result<(), BundleError> {
+/// Write `v` into `slot`, rejecting a second write for the same key.
+///
+/// `T: Zeroize` is load-bearing, not decoration. `v` is fully evaluated by
+/// the caller — `take_text(v)?` has already produced an owned `String`,
+/// `take_uuid(v)?` a `[u8; 16]` — so on the duplicate path that decoded
+/// copy is live and would otherwise be dropped unwiped (#566). The
+/// `Sensitive`-returning helpers are covered by their own `Drop`; the
+/// plain `String` / `Vec<u8>` / `[u8; N]` returns are what this closes.
+///
+/// The bound is on the signature rather than applied at each of the 11
+/// call sites deliberately: a future call site cannot forget it.
+fn set_once<T: Zeroize>(
+    slot: &mut Option<T>,
+    mut v: T,
+    key: &'static str,
+) -> Result<(), BundleError> {
     if slot.is_some() {
+        v.zeroize();
         return Err(BundleError::DuplicateField(key));
     }
     *slot = Some(v);
@@ -1810,6 +1827,103 @@ mod tests {
         assert!(
             matches!(err, BundleError::NonCanonicalCbor),
             "unexpected error: {err:?}"
+        );
+    }
+
+    // --- set_once (#566) -----------------------------------------------
+
+    /// A duplicate field must not drop its already-decoded value unwiped
+    /// (#566). `set_once`'s `v` argument is fully evaluated before the
+    /// duplicate check runs, so the rejected copy is live at that point.
+    ///
+    /// This pins the REJECTION and that the first value stands. It does
+    /// NOT by itself pin the wipe: this exact assertion set passes
+    /// unchanged with the `v.zeroize()` call deleted from `set_once`
+    /// (verified by mutation). `set_once_wipes_the_rejected_value_not_the_first`
+    /// below is the test that catches that deletion.
+    #[test]
+    fn a_duplicate_field_is_rejected_and_the_first_value_stands() {
+        let mut slot: Option<String> = Some("first".to_string());
+        let err = set_once(&mut slot, "second".to_string(), KEY_DISPLAY_NAME)
+            .expect_err("second write must be rejected");
+        assert!(matches!(err, BundleError::DuplicateField(KEY_DISPLAY_NAME)));
+        assert_eq!(slot.as_deref(), Some("first"), "the first value must stand");
+    }
+
+    /// Test-only `Zeroize` conformer that records, through a flag that
+    /// outlives the value itself, whether `zeroize()` was called on it.
+    ///
+    /// Needed because `set_once` consumes its rejected `v` by value and
+    /// drops it before returning: there is no way to inspect the moved-in
+    /// value afterwards from the caller, only a side channel that survives
+    /// the drop. `Rc<Cell<bool>>` is that channel — cloning it before the
+    /// move gives the test a handle into the value `set_once` goes on to
+    /// wipe and drop.
+    struct WipeRecorder(std::rc::Rc<std::cell::Cell<bool>>);
+
+    impl Zeroize for WipeRecorder {
+        fn zeroize(&mut self) {
+            self.0.set(true);
+        }
+    }
+
+    /// Pins the wipe CALL itself, not just the rejection-and-first-value-
+    /// stands behavior the test above covers.
+    ///
+    /// `crate::cbor::wipe_calls()` cannot be used here: it is bumped only
+    /// from `SecretEntries`/`SecretValueTree::drop`, and `set_once`'s bare
+    /// `Zeroize::zeroize()` call touches neither.
+    ///
+    /// Verified by mutation: deleting the `v.zeroize()` line in `set_once`
+    /// makes `second_wiped.get()` read `false` and this test fail, while
+    /// the test above keeps passing unchanged — proving that one does not,
+    /// by itself, pin the wipe.
+    #[test]
+    fn set_once_wipes_the_rejected_value_not_the_first() {
+        let first_wiped = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mut slot: Option<WipeRecorder> = Some(WipeRecorder(first_wiped.clone()));
+
+        let second_wiped = std::rc::Rc::new(std::cell::Cell::new(false));
+        let v = WipeRecorder(second_wiped.clone());
+        let err =
+            set_once(&mut slot, v, KEY_DISPLAY_NAME).expect_err("second write must be rejected");
+
+        assert!(matches!(err, BundleError::DuplicateField(KEY_DISPLAY_NAME)));
+        assert!(
+            second_wiped.get(),
+            "the REJECTED (second) value's zeroize() must have been called"
+        );
+        assert!(
+            !first_wiped.get(),
+            "the value that STANDS must not be wiped"
+        );
+    }
+
+    /// End-to-end: a bundle whose CBOR carries a repeated key is rejected.
+    #[test]
+    fn a_bundle_with_a_repeated_key_is_rejected() {
+        let mut rng = ChaCha20Rng::from_seed([62u8; 32]);
+        let bundle = generate("dup-test", 1_700_000_000_000, &mut rng);
+        let encoded = bundle.to_canonical_cbor().expect("encode");
+
+        // Parse, duplicate the first entry, re-encode. Non-canonical by
+        // construction, which is fine: `set_once` must reject it BEFORE
+        // the canonicality comparison, so the error must be
+        // `DuplicateField`.
+        let Value::Map(mut entries) =
+            ciborium::de::from_reader::<Value, _>(encoded.as_slice()).expect("parse")
+        else {
+            panic!("bundle CBOR must be a map");
+        };
+        entries.push(entries[0].clone());
+        let mut doubled = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut doubled).expect("re-encode");
+
+        let err = IdentityBundle::from_canonical_cbor(&doubled)
+            .expect_err("a repeated key must be rejected");
+        assert!(
+            matches!(err, BundleError::DuplicateField(_)),
+            "expected DuplicateField, got {err:?}"
         );
     }
 }
