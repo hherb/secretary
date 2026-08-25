@@ -3010,7 +3010,7 @@ mod tests {
         //    unconditionally inserts exactly 3 block-level unknown entries
         //    ("ab", "日", "r"-repeat-24) regardless of `n`. Unlike
         //    `record.rs`, which folds an unknown field straight into
-        //    `UnknownValue(v.clone())` (record.rs:771, :896 — a clone of
+        //    `UnknownValue(v.clone())` (record.rs:770, :895 — a clone of
         //    the already-parsed `Value`, no re-parse), `block.rs`'s
         //    `value_to_unknown` (used by `parse_plaintext_map` for every
         //    block-level unknown key) re-ENCODES the subtree back to bytes

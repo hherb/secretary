@@ -153,12 +153,15 @@ impl Drop for CborScratch {
 ///
 /// This is the sanctioned entry point for every secret-bearing parse in the
 /// crate. As of Task 1 (#561) it had **zero** production callers; Task 2
-/// wired in the first ones. `grep -rn "ciborium::de::from_reader" core/src`
+/// wired in the first ones. `grep -rn "cbor::from_secret_reader(" core/src`
 /// now shows six production call sites routed through this function
 /// (`unlock/bundle.rs`, `vault/block.rs`, `vault/manifest.rs` x2,
-/// `vault/record.rs` x2) plus two that deliberately stay on plain
+/// `vault/record.rs` x2) — note that's a grep for the NEW call, not the old
+/// `ciborium::de::from_reader` one: none of the six spell that anymore, so
+/// that grep now shows only the two sites that deliberately stay on plain
 /// `from_reader`, each carrying a comment saying why its input provably
-/// holds no secret (`identity/card.rs`, `sync/state.rs`).
+/// holds no secret (`identity/card.rs`, `sync/state.rs`), plus test code
+/// and prose.
 ///
 /// Takes an already-materialized `&[u8]` rather than a generic
 /// `ciborium_io::Read` — see the module doc's "Why `&[u8]`" section — and

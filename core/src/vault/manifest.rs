@@ -2480,6 +2480,23 @@ mod tests {
     /// ("logins"), the user-visible plaintext this whole task exists to
     /// cover — is ever examined. Wiping here proves not-yet-examined
     /// content is covered too, not just already-consumed content.
+    ///
+    /// **Updated to `before + 2` by Task 2 (#561), and re-tightened to an
+    /// exact count in review.** `decode_manifest` now parses through
+    /// `crate::cbor::from_secret_reader` instead of plain
+    /// `ciborium::de::from_reader`; that call's own `CborScratch` wipes
+    /// unconditionally when it drops at the end of `from_secret_reader`,
+    /// before `parse_manifest_map` even runs — so a first pass at this
+    /// update left the assertion as `> before`, which the added scratch
+    /// wipe alone satisfies regardless of whether the early-return path
+    /// wipes anything. Proven by mutation: wrapping
+    /// `SecretValueTree::new(parsed)` in `ManuallyDrop` inside
+    /// `decode_manifest` (killing that `Drop`) left the `> before` form of
+    /// this test PASSING — only the happy-path exact-count test below
+    /// failed. `before + 2` is exact: 1 scratch wipe (`from_secret_reader`,
+    /// unconditional) + 1 `SecretValueTree::drop` on the early return this
+    /// test exists to pin — the second of the two is what the mutation
+    /// above proved this assertion was no longer covering.
     #[test]
     fn decode_manifest_wipes_its_parsed_tree_on_an_early_return() {
         let m = populated_manifest();
@@ -2506,9 +2523,13 @@ mod tests {
             ),
             "expected WrongType {{ field: manifest_version, expected: unsigned integer }}, got {err:?}"
         );
-        assert!(
-            crate::cbor::wipe_calls() > before,
-            "decode_manifest's early return did not wipe its parsed SecretValueTree"
+        assert_eq!(
+            crate::cbor::wipe_calls(),
+            before + 2,
+            "expected exactly 2 wipes (from_secret_reader's scratch wipe, \
+             plus SecretValueTree::drop on the early return out of \
+             parse_manifest_map) — decode_manifest's wrap is gone, or no \
+             longer covers this path (#561)"
         );
     }
 
