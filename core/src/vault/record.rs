@@ -483,8 +483,17 @@ pub struct Record {
 /// encoder's own CBOR-encode / capacity-bound checks, lifted to
 /// [`RecordError::CborEncode`] / [`RecordError::CanonicalSizeBoundExceeded`]
 /// by the `From<CanonicalError>` impl above.
-pub fn encode(record: &Record) -> Result<Vec<u8>, RecordError> {
-    Ok(to_canonical_vec(&record_to_canonical(record))?)
+///
+/// Returns [`SecretBytes`], not `Vec<u8>`: the output is the decrypted
+/// canonical form of a record — every field value it holds. Returning the
+/// wrapper rather than leaving each caller to apply one means the wrap
+/// cannot be deleted without a compile error, which is the difference
+/// between this and the deletable `SecretBytes::new(..)` call sites #558
+/// and #565 record.
+pub fn encode(record: &Record) -> Result<SecretBytes, RecordError> {
+    Ok(SecretBytes::new(to_canonical_vec(&record_to_canonical(
+        record,
+    ))?))
 }
 
 /// Build the borrowed canonical map for a record (§6.3).
@@ -631,8 +640,14 @@ pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
     // indefinite-length items (which `ciborium::Value` reads but
     // normalises on re-emit), non-canonical map key order, and non-
     // shortest length prefixes.
+    //
+    // `re_encoded` is a full re-encoding of the decrypted content and was
+    // previously freed intact on every successful open (#565). `encode`
+    // now returns `SecretBytes`, so this buffer is wrapped BY CONSTRUCTION
+    // — there is no separate `SecretBytes::new` call here for a future edit
+    // to drop.
     let re_encoded = encode(&record)?;
-    if re_encoded.as_slice() != bytes {
+    if re_encoded.expose() != bytes {
         return Err(RecordError::NonCanonicalEncoding);
     }
 
@@ -1573,7 +1588,8 @@ mod tests {
                 let via_owned = encode_canonical_map(&owned_entries).expect("owned encode");
 
                 assert_eq!(
-                    via_canonical, via_owned,
+                    via_canonical.expose(),
+                    via_owned.as_slice(),
                     "the borrowing encoder changed the bytes — the on-disk \
                      format moved (tags_present={tags_present}, \
                      tombstone_state={tombstone_state:?})"
@@ -1588,7 +1604,7 @@ mod tests {
     fn smoke_encode_decode_roundtrip() {
         let r = sample_record();
         let bytes = encode(&r).expect("encode");
-        let parsed = decode(&bytes).expect("decode");
+        let parsed = decode(bytes.expose()).expect("decode");
         assert_eq!(parsed, r);
         let bytes_again = encode(&parsed).expect("re-encode");
         assert_eq!(bytes, bytes_again, "encode is deterministic");
@@ -1628,7 +1644,7 @@ mod tests {
         };
 
         let bytes = encode(&record).expect("encode full record");
-        let parsed = decode(&bytes).expect("decode full record");
+        let parsed = decode(bytes.expose()).expect("decode full record");
         assert_eq!(parsed, record);
         let bytes_again = encode(&parsed).expect("re-encode");
         assert_eq!(bytes, bytes_again, "round-trip is bit-identical");
@@ -1639,7 +1655,7 @@ mod tests {
         // Empty fields, empty tags, tombstone = false.
         let r = dummy_record();
         let bytes = encode(&r).expect("encode minimal");
-        let parsed = decode(&bytes).expect("decode minimal");
+        let parsed = decode(bytes.expose()).expect("decode minimal");
         assert_eq!(parsed, r);
         let bytes_again = encode(&parsed).expect("re-encode minimal");
         assert_eq!(
@@ -1653,7 +1669,7 @@ mod tests {
         let mut r = dummy_record();
         r.record_type = "weird_future_type".to_string();
         let bytes = encode(&r).expect("encode custom type");
-        let parsed = decode(&bytes).expect("decode custom type");
+        let parsed = decode(bytes.expose()).expect("decode custom type");
         assert_eq!(parsed, r);
         let bytes_again = encode(&parsed).expect("re-encode");
         assert_eq!(bytes, bytes_again);
@@ -1672,7 +1688,7 @@ mod tests {
         r.fields = fields;
 
         let bytes = encode(&r).expect("encode bytes value");
-        let parsed = decode(&bytes).expect("decode bytes value");
+        let parsed = decode(bytes.expose()).expect("decode bytes value");
         assert_eq!(parsed, r);
         match parsed
             .fields
@@ -1701,7 +1717,7 @@ mod tests {
         r.fields = fields;
 
         let bytes = encode(&r).expect("encode unicode");
-        let parsed = decode(&bytes).expect("decode unicode");
+        let parsed = decode(bytes.expose()).expect("decode unicode");
         assert_eq!(parsed, r);
         match parsed
             .fields
@@ -1726,7 +1742,7 @@ mod tests {
         let r = dummy_record();
         assert!(!r.tombstone);
         let bytes = encode(&r).expect("encode");
-        let parsed = decode(&bytes).expect("decode");
+        let parsed = decode(bytes.expose()).expect("decode");
         assert!(
             !parsed.tombstone,
             "absent tombstone key on the wire decodes to false"
@@ -1744,7 +1760,7 @@ mod tests {
         // Re-parse via ciborium directly (bypassing decode()) so we can
         // inspect the raw map keys without depending on Record's view.
         let value: Value =
-            ciborium::de::from_reader(&bytes[..]).expect("ciborium parse of canonical record");
+            ciborium::de::from_reader(bytes.expose()).expect("ciborium parse of canonical record");
         let entries = match value {
             Value::Map(e) => e,
             _ => panic!("encoded record is not a CBOR map"),
@@ -1766,7 +1782,7 @@ mod tests {
         let r = dummy_record();
         assert_eq!(r.tombstoned_at_ms, 0);
         let bytes = encode(&r).expect("encode");
-        let parsed = decode(&bytes).expect("decode");
+        let parsed = decode(bytes.expose()).expect("decode");
         assert_eq!(
             parsed.tombstoned_at_ms, 0,
             "absent tombstoned_at_ms key on the wire decodes to 0"
@@ -1781,7 +1797,7 @@ mod tests {
         assert_eq!(r.tombstoned_at_ms, 0);
         let bytes = encode(&r).expect("encode");
         let value: Value =
-            ciborium::de::from_reader(&bytes[..]).expect("ciborium parse of canonical record");
+            ciborium::de::from_reader(bytes.expose()).expect("ciborium parse of canonical record");
         let entries = match value {
             Value::Map(e) => e,
             _ => panic!("encoded record is not a CBOR map"),
@@ -1805,7 +1821,7 @@ mod tests {
         r.last_mod_ms = 1_714_060_800_500;
         r.tombstoned_at_ms = 1_714_060_800_500;
         let bytes = encode(&r).expect("encode");
-        let parsed = decode(&bytes).expect("decode");
+        let parsed = decode(bytes.expose()).expect("decode");
         assert!(parsed.tombstone);
         assert_eq!(parsed.tombstoned_at_ms, 1_714_060_800_500);
         // Re-encode is bit-identical (canonical-CBOR round-trip invariant).
@@ -1821,7 +1837,7 @@ mod tests {
         let r = dummy_record();
         assert!(r.tags.is_empty());
         let bytes = encode(&r).expect("encode");
-        let parsed = decode(&bytes).expect("decode");
+        let parsed = decode(bytes.expose()).expect("decode");
         assert!(parsed.tags.is_empty(), "absent tags key decodes to empty");
     }
 
@@ -1831,7 +1847,7 @@ mod tests {
         assert!(r.tags.is_empty());
         let bytes = encode(&r).expect("encode");
 
-        let value: Value = ciborium::de::from_reader(&bytes[..]).expect("ciborium parse");
+        let value: Value = ciborium::de::from_reader(bytes.expose()).expect("ciborium parse");
         let entries = match value {
             Value::Map(e) => e,
             _ => panic!("encoded record is not a CBOR map"),
@@ -1868,7 +1884,8 @@ mod tests {
 
         let bytes_again = encode(&parsed).expect("re-encode with preserved unknown");
         assert_eq!(
-            bytes, bytes_again,
+            bytes.as_slice(),
+            bytes_again.expose(),
             "unknown record-level key round-trips bit-identically"
         );
     }
@@ -1925,7 +1942,8 @@ mod tests {
 
         let bytes_again = encode(&parsed).expect("re-encode preserves unknown field key");
         assert_eq!(
-            bytes, bytes_again,
+            bytes.as_slice(),
+            bytes_again.expose(),
             "unknown field-level key round-trips bit-identically"
         );
     }
@@ -1980,7 +1998,7 @@ mod tests {
         assert!(username.unknown.contains_key("future_attr"));
 
         let bytes_again = encode(&parsed).expect("re-encode");
-        assert_eq!(bytes, bytes_again);
+        assert_eq!(bytes.as_slice(), bytes_again.expose());
     }
 
     #[test]
@@ -2011,7 +2029,8 @@ mod tests {
         assert!(parsed.unknown.contains_key("future_struct"));
         let bytes_again = encode(&parsed).expect("re-encode nested unknown");
         assert_eq!(
-            bytes, bytes_again,
+            bytes.as_slice(),
+            bytes_again.expose(),
             "nested-map unknown value round-trips bit-identically"
         );
     }
@@ -2092,6 +2111,7 @@ mod tests {
                         // strip the leading map-header byte, and append before our 0xFF.
         let r = dummy_record();
         let canonical = encode(&r).expect("baseline encode");
+        let canonical = canonical.expose();
         // The first byte of the canonical map is 0xa0 + n (n entries
         // since dummy_record encodes 5 keys: record_uuid, record_type,
         // fields, created_at_ms, last_mod_ms). Sanity-check then strip.
@@ -2116,6 +2136,7 @@ mod tests {
         let mut r = dummy_record();
         r.tags = vec!["work".into()];
         let canonical = encode(&r).expect("baseline encode");
+        let canonical = canonical.expose();
 
         // ciborium parses the canonical bytes back to a Value tree, then
         // we substitute the tags array with a hand-crafted indefinite
@@ -2137,8 +2158,7 @@ mod tests {
         // ciborium, then re-emit the map header followed by the entries,
         // substituting the tags entry's value with raw indefinite-array
         // bytes.
-        let value: Value =
-            ciborium::de::from_reader(&canonical[..]).expect("parse canonical record");
+        let value: Value = ciborium::de::from_reader(canonical).expect("parse canonical record");
         let entries = match value {
             Value::Map(e) => e,
             _ => panic!("not a map"),
@@ -2221,6 +2241,7 @@ mod tests {
         // payload.
         let r = dummy_record();
         let canonical = encode(&r).expect("baseline encode");
+        let canonical = canonical.expose();
 
         // Locate the byte sequence: 0x65 'l' 'o' 'g' 'i' 'n'
         let needle: [u8; 6] = [0x65, b'l', b'o', b'g', b'i', b'n'];
@@ -2350,7 +2371,7 @@ mod tests {
         let bytes = encode(&record).expect("encode");
 
         let before = crate::cbor::wipe_calls();
-        let decoded = decode(&bytes).expect("decode");
+        let decoded = decode(bytes.expose()).expect("decode");
         let after = crate::cbor::wipe_calls();
 
         assert_eq!(decoded.record_uuid, record.record_uuid);

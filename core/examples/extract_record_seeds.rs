@@ -122,9 +122,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let note = build_secure_note_record();
     let api_key = build_api_key_record();
 
-    fs::write(out_dir.join("login.cbor"), record::encode(&login)?)?;
-    fs::write(out_dir.join("secure_note.cbor"), record::encode(&note)?)?;
-    fs::write(out_dir.join("api_key.cbor"), record::encode(&api_key)?)?;
+    fs::write(out_dir.join("login.cbor"), record::encode(&login)?.expose())?;
+    fs::write(
+        out_dir.join("secure_note.cbor"),
+        record::encode(&note)?.expose(),
+    )?;
+    fs::write(
+        out_dir.join("api_key.cbor"),
+        record::encode(&api_key)?.expose(),
+    )?;
 
     println!("wrote 3 record seeds to {}", out_dir.display());
     Ok(())

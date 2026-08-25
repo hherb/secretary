@@ -408,7 +408,7 @@ fn generate_revoke_kat() {
         },
         "expected_plaintext": {
             "_doc": "Canonical-CBOR bytes of the BlockPlaintext the remaining recipient recovers from after_block under the new BCK. Equivalent to encode_plaintext(decrypt_block(after_block, alice_keys)).",
-            "cbor": hex::encode(&expected_plaintext),
+            "cbor": hex::encode(expected_plaintext.expose()),
         },
     });
 
@@ -517,7 +517,8 @@ fn revoke_kat_after_block_matches_inputs() {
     let recovered_cbor = encode_plaintext(&recovered).expect("re-encode recovered plaintext");
     let expected_cbor = hex_bytes(&inputs["expected_plaintext"]["cbor"]);
     assert_eq!(
-        recovered_cbor, expected_cbor,
+        recovered_cbor.expose(),
+        expected_cbor.as_slice(),
         "(b) recovered plaintext must equal the committed expected_plaintext"
     );
 

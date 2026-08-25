@@ -929,8 +929,17 @@ fn read_array<const N: usize>(bytes: &[u8], pos: &mut usize) -> Result<[u8; N], 
 /// encoder's own CBOR-encode / capacity-bound checks, lifted to
 /// [`BlockError::CborEncode`] / [`BlockError::CanonicalSizeBoundExceeded`]
 /// by the `From<CanonicalError>` impl above.
-pub fn encode_plaintext(plaintext: &BlockPlaintext) -> Result<Vec<u8>, BlockError> {
-    Ok(to_canonical_vec(&plaintext_to_canonical(plaintext))?)
+///
+/// Returns [`SecretBytes`], not `Vec<u8>`: the output is the decrypted
+/// canonical form of a block — every record and field value it holds.
+/// Returning the wrapper rather than leaving each caller to apply one means
+/// the wrap cannot be deleted without a compile error, which is the
+/// difference between this and the deletable `SecretBytes::new(..)` call
+/// site #558 and #565 record.
+pub fn encode_plaintext(plaintext: &BlockPlaintext) -> Result<SecretBytes, BlockError> {
+    Ok(SecretBytes::new(to_canonical_vec(
+        &plaintext_to_canonical(plaintext),
+    )?))
 }
 
 /// Build the borrowed canonical map for a block plaintext (§6.3).
@@ -1056,8 +1065,15 @@ pub fn decode_plaintext(bytes: &[u8]) -> Result<BlockPlaintext, BlockError> {
     // `record::decode`'s own per-record byte check (#547 Task 6): see
     // `a_non_canonical_nested_record_is_still_rejected` in the test module,
     // which proves this whole-plaintext check subsumes it.
+    //
+    // `re_encoded` is a full re-encoding of the decrypted block plaintext —
+    // every record and field value it holds — and was previously freed
+    // intact on every successful open (#565). `encode_plaintext` now
+    // returns `SecretBytes`, so this buffer is wrapped BY CONSTRUCTION —
+    // there is no separate `SecretBytes::new` call here for a future edit
+    // to drop.
     let re_encoded = encode_plaintext(&plaintext)?;
-    if re_encoded.as_slice() != bytes {
+    if re_encoded.expose() != bytes {
         return Err(BlockError::NonCanonicalEncoding);
     }
 
@@ -1780,13 +1796,14 @@ pub fn encrypt_block<R: RngCore + CryptoRng>(
 
     // Step 5: canonical-CBOR plaintext. `pt_bytes` is a cleartext CBOR copy
     // of every record in the block — every password, note and TOTP seed —
-    // so it is wrapped in `SecretBytes` immediately rather than left as a
-    // bare `Vec<u8>` until a trailing `.zeroize()` at the end of the
-    // function. `SecretBytes`'s `ZeroizeOnDrop` then wipes it on every exit
-    // path (normal return, an early `?`, or an unwinding panic), matching
-    // the `bundle_plaintext` pattern in `unlock::create_vault_unchecked`
-    // (#513, #357).
-    let pt_bytes = SecretBytes::new(encode_plaintext(plaintext)?);
+    // so it must be wiped on every exit path (normal return, an early `?`,
+    // or an unwinding panic), matching the `bundle_plaintext` pattern in
+    // `unlock::create_vault_unchecked` (#513, #357). `encode_plaintext`
+    // now returns `SecretBytes` directly (#558, #565): the wrap is
+    // structural, part of the function's return type, rather than a
+    // separate `SecretBytes::new(..)` call here that a future edit could
+    // silently drop.
+    let pt_bytes = encode_plaintext(plaintext)?;
 
     // Step 6: AAD = bytes magic..end_of_recipient_entries; AEAD-encrypt.
     let aad = build_body_aad(header, &wraps)?;
@@ -1984,7 +2001,7 @@ mod tests {
         let mut items: Vec<Value> = Vec::with_capacity(records.len());
         for r in records {
             let bytes = record::encode(r)?;
-            let val: Value = ciborium::de::from_reader(bytes.as_slice())
+            let val: Value = ciborium::de::from_reader(bytes.expose())
                 .map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
             items.push(val);
         }
@@ -2205,11 +2222,33 @@ mod tests {
                 encode_plaintext_via_round_trip_for_test(&plaintext).expect("round-trip encode");
 
             assert_eq!(
-                direct, via_round_trip,
+                direct.expose(),
+                via_round_trip.as_slice(),
                 "inlining records changed the block bytes — the on-disk \
                  format moved (n={n})"
             );
         }
+    }
+
+    /// `encode_plaintext` returns a `SecretBytes`, not a `Vec<u8>`, so the
+    /// wrap at the AEAD call site cannot be deleted without a compile error
+    /// (#558) and `decode_plaintext`'s `re_encoded` buffer is wrapped by
+    /// construction (#565). This test pins the OBSERVABLE half — that the
+    /// bytes are unchanged; the type itself is pinned by the compiler.
+    #[test]
+    fn encode_plaintext_returns_wrapped_bytes_identical_to_the_canonical_form() {
+        use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+        let mut rng = ChaCha20Rng::from_seed([31u8; 32]);
+        let plaintext = random_block_plaintext(&mut rng, 2);
+        let wrapped = encode_plaintext(&plaintext).expect("encode");
+        let decoded = decode_plaintext(wrapped.expose()).expect("round-trip");
+        assert_eq!(decoded.block_uuid, plaintext.block_uuid);
+        assert_eq!(
+            wrapped.expose(),
+            encode_plaintext(&decoded).expect("re-encode").expose(),
+            "encoding must be deterministic and unchanged by the wrapper"
+        );
     }
 
     /// Encode a list of `(key, value)` entries as a definite-length CBOR
@@ -2380,11 +2419,18 @@ mod tests {
         let mut rng = rand_core::OsRng;
         let plaintext = random_block_plaintext(&mut rng, 1);
         let good = encode_plaintext(&plaintext).expect("encode");
-        assert!(decode_plaintext(&good).is_ok(), "fixture must decode clean");
+        assert!(
+            decode_plaintext(good.expose()).is_ok(),
+            "fixture must decode clean"
+        );
 
         // (a) Out-of-order keys inside the nested record map.
-        let tampered = reorder_first_nested_record_keys_for_test(&good);
-        assert_ne!(tampered, good, "tamper helper did not change the bytes");
+        let tampered = reorder_first_nested_record_keys_for_test(good.expose());
+        assert_ne!(
+            tampered.as_slice(),
+            good.expose(),
+            "tamper helper did not change the bytes"
+        );
         assert!(
             matches!(
                 decode_plaintext(&tampered),
@@ -2394,8 +2440,12 @@ mod tests {
         );
 
         // (b) An indefinite-length nested record map.
-        let tampered = indefinite_length_in_first_record_for_test(&good);
-        assert_ne!(tampered, good, "tamper helper did not change the bytes");
+        let tampered = indefinite_length_in_first_record_for_test(good.expose());
+        assert_ne!(
+            tampered.as_slice(),
+            good.expose(),
+            "tamper helper did not change the bytes"
+        );
         assert!(
             matches!(
                 decode_plaintext(&tampered),
@@ -2483,7 +2533,8 @@ mod tests {
             unknown: BTreeMap::new(),
         };
         let plaintext_bytes = encode_plaintext(&plaintext).expect("encode_plaintext");
-        let decoded_plaintext = decode_plaintext(&plaintext_bytes).expect("decode_plaintext");
+        let decoded_plaintext =
+            decode_plaintext(plaintext_bytes.expose()).expect("decode_plaintext");
         assert_eq!(decoded_plaintext, plaintext);
 
         // ---- Cross-check --------------------------------------------
@@ -2993,7 +3044,7 @@ mod tests {
         let bytes = encode_plaintext(&plaintext).expect("encode");
 
         let before = crate::cbor::wipe_calls();
-        let decoded = decode_plaintext(&bytes).expect("decode");
+        let decoded = decode_plaintext(bytes.expose()).expect("decode");
         let after = crate::cbor::wipe_calls();
 
         assert_eq!(decoded.block_uuid, plaintext.block_uuid);

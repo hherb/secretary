@@ -435,9 +435,15 @@ pub struct Manifest {
 /// `trash`, every block's `recipients`) are sorted on output per the
 /// §4.2 sort disciplines. Forward-compat unknown keys are spliced in
 /// alongside known keys at the canonical-sort step.
-pub fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>, ManifestError> {
+///
+/// Returns [`SecretBytes`], not `Vec<u8>`: the output is the decrypted
+/// canonical form of a manifest body. Returning the wrapper rather than
+/// leaving each caller to apply one means the wrap cannot be deleted
+/// without a compile error, which is the difference between this and the
+/// deletable `SecretBytes::new(..)` call sites #558 and #565 record.
+pub fn encode_manifest(manifest: &Manifest) -> Result<SecretBytes, ManifestError> {
     let entries = manifest_to_entries(manifest)?;
-    Ok(encode_canonical_map(&entries)?)
+    Ok(SecretBytes::new(encode_canonical_map(&entries)?))
 }
 
 fn manifest_to_entries(m: &Manifest) -> Result<Vec<(Value, Value)>, ManifestError> {
@@ -1549,15 +1555,19 @@ fn slice_array<const N: usize>(bytes: &[u8], pos: &mut usize) -> [u8; N] {
 /// `manifest_bytes` is the output of [`encode_manifest`]; callers that
 /// haven't encoded yet should pipe through that function first. We don't
 /// take a `&Manifest` directly because callers occasionally already have
-/// the canonical bytes in hand (e.g. cached on a previous read).
+/// the canonical bytes in hand (e.g. cached on a previous read) — those
+/// bytes now arrive wrapped: `manifest_bytes` is `&SecretBytes`, matching
+/// [`encode_manifest`]'s return type, so the seventh `aead::encrypt` call
+/// site (#558, #565) is pinned by the parameter type rather than by a
+/// deletable wrap at each caller.
 pub fn encrypt_manifest_body(
     header: &ManifestHeader,
-    manifest_bytes: &[u8],
+    manifest_bytes: &SecretBytes,
     ibk: &AeadKey,
     nonce: &AeadNonce,
 ) -> Result<Vec<u8>, ManifestError> {
     let aad = header.encode();
-    aead::encrypt(ibk, nonce, &aad, manifest_bytes).map_err(|_| ManifestError::AeadFailure)
+    aead::encrypt(ibk, nonce, &aad, manifest_bytes.expose()).map_err(|_| ManifestError::AeadFailure)
 }
 
 /// AEAD-decrypt a manifest body. `ct_with_tag` is the concatenation of
@@ -1942,16 +1952,17 @@ pub fn sign_manifest(
 ) -> Result<ManifestFile, ManifestError> {
     // Step 1: encode the manifest body to canonical CBOR. `body_bytes` is a
     // cleartext copy of every user-authored `block_name` in the vault, so it
-    // is wrapped in `SecretBytes` immediately rather than left as a bare
-    // `Vec<u8>` until a trailing `.zeroize()` at the end of the function.
-    // `SecretBytes`'s `ZeroizeOnDrop` then wipes it on every exit path
-    // (normal return, an early `?`, or an unwinding panic), matching the
-    // `bundle_plaintext` pattern in `unlock::create_vault_unchecked` (#513,
-    // #357).
-    let body_bytes = SecretBytes::new(encode_manifest(body)?);
+    // must be wiped on every exit path (normal return, an early `?`, or an
+    // unwinding panic), matching the `bundle_plaintext` pattern in
+    // `unlock::create_vault_unchecked` (#513, #357). `encode_manifest` now
+    // returns `SecretBytes` directly (#558, #565): the wrap is structural,
+    // part of the function's return type, rather than a separate
+    // `SecretBytes::new(..)` call here that a future edit could silently
+    // drop.
+    let body_bytes = encode_manifest(body)?;
 
     // Step 2: AEAD-encrypt with header AAD.
-    let ct_with_tag = encrypt_manifest_body(&header, body_bytes.expose(), ibk, nonce)?;
+    let ct_with_tag = encrypt_manifest_body(&header, &body_bytes, ibk, nonce)?;
     debug_assert_eq!(ct_with_tag.len(), body_bytes.expose().len() + AEAD_TAG_LEN);
 
     // Split (ct || tag) into aead_ct (variable) and aead_tag (16).
@@ -2194,7 +2205,7 @@ mod tests {
         let mut m = populated_manifest();
         m.trash[0].fingerprint = Some([0x7a; BLOCK_FINGERPRINT_LEN]);
         let bytes = encode_manifest(&m).unwrap();
-        let decoded = decode_manifest(&bytes).unwrap();
+        let decoded = decode_manifest(bytes.expose()).unwrap();
         assert_eq!(
             decoded.trash[0].fingerprint,
             Some([0x7a; BLOCK_FINGERPRINT_LEN]),
@@ -2227,7 +2238,7 @@ mod tests {
             !String::from_utf8_lossy(&entry_bytes).contains("fingerprint"),
             "None must not emit the fingerprint key"
         );
-        let decoded = decode_manifest(&bytes).unwrap();
+        let decoded = decode_manifest(bytes.expose()).unwrap();
         assert_eq!(decoded.trash[0].fingerprint, None, "None must round-trip");
     }
 
@@ -2240,7 +2251,7 @@ mod tests {
         let mut m = populated_manifest();
         m.trash[0].purged_at_ms = Some(1_724_000_000_123);
         let bytes = encode_manifest(&m).unwrap();
-        let decoded = decode_manifest(&bytes).unwrap();
+        let decoded = decode_manifest(bytes.expose()).unwrap();
         assert_eq!(
             decoded.trash[0].purged_at_ms,
             Some(1_724_000_000_123),
@@ -2269,7 +2280,7 @@ mod tests {
         );
 
         let bytes = encode_manifest(&m).unwrap();
-        let decoded = decode_manifest(&bytes).unwrap();
+        let decoded = decode_manifest(bytes.expose()).unwrap();
         assert_eq!(decoded.trash[0].purged_at_ms, None, "None must round-trip");
 
         // Absent key, not explicit null: re-encoding the decoded entry
@@ -2289,7 +2300,7 @@ mod tests {
     fn roundtrip_minimal_manifest() {
         let m = minimal_manifest();
         let bytes = encode_manifest(&m).expect("encode minimal");
-        let parsed = decode_manifest(&bytes).expect("decode minimal");
+        let parsed = decode_manifest(bytes.expose()).expect("decode minimal");
         assert_eq!(parsed, m);
         let bytes_again = encode_manifest(&parsed).expect("re-encode minimal");
         assert_eq!(bytes, bytes_again, "encode is deterministic");
@@ -2299,7 +2310,7 @@ mod tests {
     fn roundtrip_populated_manifest() {
         let m = populated_manifest();
         let bytes = encode_manifest(&m).expect("encode populated");
-        let parsed = decode_manifest(&bytes).expect("decode populated");
+        let parsed = decode_manifest(bytes.expose()).expect("decode populated");
         // We can't compare `parsed == m` directly because the input
         // vector_clock and recipients arrays were built in non-canonical
         // order. After encode-then-decode they come back sorted. So we
@@ -2366,7 +2377,7 @@ mod tests {
     fn encoding_sorts_arrays_on_output() {
         let m = populated_manifest();
         let bytes = encode_manifest(&m).expect("encode");
-        let map = parse_to_value_map(&bytes);
+        let map = parse_to_value_map(bytes.expose());
 
         // vector_clock sorted ascending by device_uuid.
         let vc = find_array(&map, KEY_VECTOR_CLOCK);
@@ -2433,7 +2444,7 @@ mod tests {
                 .expect("UnknownValue from canonical bytes"),
         );
         let bytes = encode_manifest(&m).expect("encode with unknown");
-        let parsed = decode_manifest(&bytes).expect("decode with unknown");
+        let parsed = decode_manifest(bytes.expose()).expect("decode with unknown");
         assert!(
             parsed.unknown.contains_key("future_field"),
             "unknown top-level key preserved on decode"
@@ -2545,7 +2556,7 @@ mod tests {
         let bytes = encode_manifest(&m).expect("encode");
 
         let before = crate::cbor::wipe_calls();
-        let decoded = decode_manifest(&bytes).expect("decode");
+        let decoded = decode_manifest(bytes.expose()).expect("decode");
         let after = crate::cbor::wipe_calls();
 
         assert_eq!(decoded.vault_uuid, m.vault_uuid);
@@ -2692,8 +2703,8 @@ mod tests {
             unknown: BTreeMap::new(),
         };
         let bytes = encode_manifest(&m).expect("encode duplicates");
-        let err =
-            decode_manifest(&bytes).expect_err("duplicate device_uuid must be rejected on decode");
+        let err = decode_manifest(bytes.expose())
+            .expect_err("duplicate device_uuid must be rejected on decode");
         assert!(
             matches!(err, ManifestError::VectorClockDuplicateDevice),
             "expected VectorClockDuplicateDevice, got {err:?}"
@@ -2727,8 +2738,8 @@ mod tests {
             unknown: BTreeMap::new(),
         };
         let bytes = encode_manifest(&m).expect("encode duplicates");
-        let err =
-            decode_manifest(&bytes).expect_err("duplicate block_uuid must be rejected on decode");
+        let err = decode_manifest(bytes.expose())
+            .expect_err("duplicate block_uuid must be rejected on decode");
         assert!(
             matches!(err, ManifestError::DuplicateBlockUuid),
             "expected DuplicateBlockUuid, got {err:?}"
@@ -2763,7 +2774,7 @@ mod tests {
             unknown: BTreeMap::new(),
         };
         let bytes = encode_manifest(&m).expect("encode duplicates");
-        let err = decode_manifest(&bytes)
+        let err = decode_manifest(bytes.expose())
             .expect_err("duplicate trash block_uuid must be rejected on decode");
         assert!(
             matches!(err, ManifestError::DuplicateTrashUuid),
