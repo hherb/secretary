@@ -49,7 +49,7 @@ use core::fmt;
 use ciborium::Value;
 use rand_core::{CryptoRng, RngCore};
 
-use crate::cbor::{classify_de, CborFault, SecretEntries};
+use crate::cbor::{CborFault, SecretEntries};
 use crate::crypto::kem::{
     generate_ml_kem_768, generate_x25519, ML_KEM_768_PK_LEN, ML_KEM_768_SK_LEN, X25519_PK_LEN,
     X25519_SK_LEN,
@@ -385,8 +385,12 @@ impl IdentityBundle {
     /// reader must recognise v1 inputs only, so a future v2 writer (or a
     /// tampered file) is rejected loudly rather than silently accepted.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, BundleError> {
-        let value: Value = ciborium::de::from_reader(bytes)
-            .map_err(|e| BundleError::CborFault(classify_de(&e)))?;
+        // `from_secret_reader`, not `from_reader` (#561): this input's
+        // payloads include the X25519 secret key, the 2400-byte ML-KEM-768
+        // decapsulation key, the Ed25519 secret key and the ML-DSA-65 seed —
+        // every long-term secret key the identity bundle holds.
+        let value: Value =
+            crate::cbor::from_secret_reader(bytes).map_err(BundleError::CborFault)?;
         let Value::Map(m) = value else {
             return Err(BundleError::Malformed("expected top-level CBOR map"));
         };
@@ -1122,6 +1126,16 @@ mod tests {
     /// carrying the untouched `ed25519_sk` entry — and no other wipe runs on
     /// this path, since the duplicate fires before any `wipe_leaked_value`
     /// arm is reachable.
+    ///
+    /// **Updated to `before + 2` by Task 2 (#561).** `from_canonical_cbor`
+    /// now parses through `crate::cbor::from_secret_reader` instead of
+    /// plain `ciborium::de::from_reader`; that call's own `CborScratch`
+    /// wipes unconditionally when it drops at the end of
+    /// `from_secret_reader`, before the field loop that raises
+    /// `DuplicateField` even starts — so the scratch wipe fires on every
+    /// call to this function regardless of this test's own error path. The
+    /// `SecretEntries::drop` this test was written to pin is the SECOND of
+    /// the two.
     #[test]
     fn an_early_return_inside_the_field_loop_still_wipes() {
         let bytes = duplicate_field_bundle_cbor_for_test();
@@ -1135,10 +1149,11 @@ mod tests {
         );
         assert_eq!(
             crate::cbor::wipe_calls(),
-            before + 1,
-            "expected exactly 1 wipe (SecretEntries::drop, carrying the \
-             not-yet-consumed ed25519_sk entry) — the early-return path did \
-             not wipe the remainder (#548)"
+            before + 2,
+            "expected exactly 2 wipes (from_secret_reader's scratch wipe, \
+             plus SecretEntries::drop carrying the not-yet-consumed \
+             ed25519_sk entry) — the early-return path did not wipe the \
+             remainder (#548, #561)"
         );
     }
 
@@ -1213,6 +1228,15 @@ mod tests {
     /// half is `cbor::secret_tree::tests::wipe_leaked_value_overwrites_
     /// every_payload_it_is_given`, which is effect-based. Neither test
     /// alone pins the property; together they do.
+    ///
+    /// **Updated to `before + 4` by Task 2 (#561).** `from_canonical_cbor`
+    /// now parses through `crate::cbor::from_secret_reader` instead of
+    /// plain `ciborium::de::from_reader`; that call's own `CborScratch`
+    /// wipes unconditionally when it drops at the end of
+    /// `from_secret_reader`, before the field loop that rejects the
+    /// non-string key even starts — so the scratch wipe fires on every call
+    /// to this function regardless of this test's own error path, on top of
+    /// the 3 the G1 fix itself accounts for.
     #[test]
     fn non_string_map_key_wipes_its_value() {
         let mut rng = ChaCha20Rng::from_seed([88u8; 32]);
@@ -1237,12 +1261,14 @@ mod tests {
         );
         assert_eq!(
             crate::cbor::wipe_calls(),
-            before + 3,
-            "expected 3 wipes (SecretEntries::drop on the now-empty map, plus \
+            before + 4,
+            "expected 4 wipes (from_secret_reader's scratch wipe, plus \
+             SecretEntries::drop on the now-empty map, plus \
              wipe_leaked_value on BOTH `k` and `v`) — the non-string-key early \
              return must wipe the key as well as the value, since the check it \
              just failed guarantees `k` is some non-text Value and Value::Bytes \
-             is in that set (#548 fix-round-1 G1, key half added in review)"
+             is in that set (#548 fix-round-1 G1, key half added in review; \
+             #561)"
         );
     }
 
@@ -1257,6 +1283,13 @@ mod tests {
     ///
     /// Exact-count assertion for the same reason as the non-string-key test
     /// above — see that test's doc for why `> before` does not pin this.
+    ///
+    /// **Updated to `before + 3` by Task 2 (#561).** Same reasoning as the
+    /// non-string-key test above: `from_canonical_cbor` now parses through
+    /// `crate::cbor::from_secret_reader`, whose `CborScratch` wipes
+    /// unconditionally on drop, before the field loop that rejects the
+    /// unknown field even starts — one further wipe on top of the 2 the G1
+    /// fix itself accounts for.
     #[test]
     fn unknown_field_wipes_its_value() {
         let mut rng = ChaCha20Rng::from_seed([99u8; 32]);
@@ -1279,10 +1312,11 @@ mod tests {
         );
         assert_eq!(
             crate::cbor::wipe_calls(),
-            before + 2,
-            "expected 2 wipes (SecretEntries::drop on the now-empty map, plus \
+            before + 3,
+            "expected 3 wipes (from_secret_reader's scratch wipe, plus \
+             SecretEntries::drop on the now-empty map, plus \
              wipe_leaked_value on `v`) — the UnknownField early return did \
-             not wipe its value (#548 fix-round-1 G1)"
+             not wipe its value (#548 fix-round-1 G1, #561)"
         );
     }
 

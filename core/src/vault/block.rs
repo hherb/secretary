@@ -73,7 +73,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ciborium::Value;
 use rand_core::{CryptoRng, RngCore};
 
-use crate::cbor::{classify_de, classify_ser, CborFault, SecretValueTree};
+use crate::cbor::{classify_ser, CborFault, SecretValueTree};
 use crate::crypto::aead::{self, AeadError, AeadKey, AeadNonce, AEAD_TAG_LEN};
 use crate::crypto::kem::{self, HybridWrap, KemError, ML_KEM_768_CT_LEN, X25519_PK_LEN};
 use crate::crypto::secret::{SecretBytes, Sensitive};
@@ -1028,8 +1028,9 @@ fn plaintext_to_canonical(plaintext: &BlockPlaintext) -> CanonicalMap<'_> {
 /// (§6.4 step 9) is the *caller's* responsibility — see
 /// [`BlockError::BlockUuidMismatch`].
 pub fn decode_plaintext(bytes: &[u8]) -> Result<BlockPlaintext, BlockError> {
-    let parsed: Value =
-        ciborium::de::from_reader(bytes).map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
+    // `from_secret_reader`, not `from_reader` (#561): this input is the
+    // entire decrypted block plaintext, including every record it holds.
+    let parsed: Value = crate::cbor::from_secret_reader(bytes).map_err(BlockError::CborDecode)?;
     // Owns a copy of every record's decrypted plaintext, plus every
     // block-level forward-compat unknown. See `record::decode`'s matching
     // comment: wrapping means `Drop` wipes it on every exit from this
@@ -1935,6 +1936,19 @@ pub fn decrypt_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `classify_de` has no production caller left in THIS file after
+    // Task 2 (#561) routed `decode_plaintext` through
+    // `crate::cbor::from_secret_reader`, which classifies internally. It
+    // still has real production callers elsewhere in the crate (per ruling
+    // R11, not enumerated here — read the callers directly rather than
+    // trusting a list). The production `use crate::cbor::{...}` above
+    // deliberately no longer names it, so a plain `cargo build --release
+    // --workspace` (no `#[cfg(test)]` code compiled) does not warn
+    // `unused_imports`. Test code still needs it: the two pre-#547-Task-5
+    // oracle helpers below call it directly. Mirrors the identical
+    // `encode_canonical_map` treatment just below and `record.rs`'s
+    // `#547` Task 4 comment.
+    use crate::cbor::classify_de;
     use crate::vault::record::{RecordField, RecordFieldValue};
     // `encode_canonical_map` has no production caller left in THIS file
     // after #547 Task 5, but still has real production callers elsewhere
@@ -2925,6 +2939,16 @@ mod tests {
     /// lives in `cbor::secret_tree::tests` (`wipe_reaches_every_depth_and_
     /// every_container_arm`), which is where the recursive walk is pinned
     /// for all three of its entry points.
+    ///
+    /// **Updated to `before + 2` by Task 2 (#561).** `decode_plaintext` now
+    /// parses through `crate::cbor::from_secret_reader` instead of plain
+    /// `ciborium::de::from_reader`; that call's own `CborScratch` wipes
+    /// unconditionally when it drops at the end of `from_secret_reader`,
+    /// before `parse_plaintext_map` even runs — the duplicate `block_name`
+    /// is a semantic failure the CBOR parse itself does not hit, so the
+    /// scratch wipe fires on every call to this function regardless of
+    /// this test's own error path. The `SecretValueTree::drop` this test
+    /// was written to pin is the SECOND of the two.
     #[test]
     fn decode_plaintext_wipes_its_parsed_tree_on_an_early_return() {
         let entries: Vec<(Value, Value)> = vec![
@@ -2947,10 +2971,64 @@ mod tests {
         );
         assert_eq!(
             crate::cbor::wipe_calls(),
-            before + 1,
-            "expected exactly 1 wipe (SecretValueTree::drop on the early \
-             return out of parse_plaintext_map) — decode_plaintext's wrap is \
-             gone, or no longer covers this path (#557)"
+            before + 2,
+            "expected exactly 2 wipes (from_secret_reader's scratch wipe, \
+             plus SecretValueTree::drop on the early return out of \
+             parse_plaintext_map) — decode_plaintext's wrap is gone, or no \
+             longer covers this path (#557, #561)"
+        );
+    }
+
+    /// `decode_plaintext` must parse through `cbor::from_secret_reader`,
+    /// whose scratch buffer holds a copy of every record's decrypted
+    /// plaintext in the input (#561). Pinning the COMPOSITION on the
+    /// HAPPY path, complementing the early-return test above: `scratch.rs`'s
+    /// own tests prove the wipe fires, this one proves this path uses it.
+    #[test]
+    fn decode_plaintext_wipes_the_parser_scratch_buffer() {
+        use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+        let mut rng = ChaCha20Rng::from_seed([42u8; 32]);
+        let plaintext = random_block_plaintext(&mut rng, 2);
+        let bytes = encode_plaintext(&plaintext).expect("encode");
+
+        let before = crate::cbor::wipe_calls();
+        let decoded = decode_plaintext(&bytes).expect("decode");
+        let after = crate::cbor::wipe_calls();
+
+        assert_eq!(decoded.block_uuid, plaintext.block_uuid);
+        // Five wipes on the happy path — NOT the 2 a first guess (one
+        // scratch wipe + one `SecretValueTree::drop`) would predict; this
+        // was measured by running the test, not assumed, and the extra 3
+        // are a real architectural difference from `record::decode`, worth
+        // recording rather than normalising away:
+        //
+        // 1. `from_secret_reader`'s own `CborScratch::drop`, fires
+        //    unconditionally at the end of that call.
+        // 2. `SecretValueTree::drop` at the end of `decode_plaintext`.
+        // 3-5. ONE PER BLOCK-LEVEL UNKNOWN VALUE. `random_block_plaintext`
+        //    unconditionally inserts exactly 3 block-level unknown entries
+        //    ("ab", "日", "r"-repeat-24) regardless of `n`. Unlike
+        //    `record.rs`, which folds an unknown field straight into
+        //    `UnknownValue(v.clone())` (record.rs:771, :896 — a clone of
+        //    the already-parsed `Value`, no re-parse), `block.rs`'s
+        //    `value_to_unknown` (used by `parse_plaintext_map` for every
+        //    block-level unknown key) re-ENCODES the subtree back to bytes
+        //    and calls `UnknownValue::from_canonical_cbor` on it — which,
+        //    after this task, is itself routed through
+        //    `from_secret_reader`. So each block-level unknown value gets
+        //    its own independent scratch-buffer wipe, on top of the two
+        //    above. `record::decode_value` (called per-record via
+        //    `take_records`) does not re-parse — it decodes an
+        //    already-parsed subtree — and `encode_plaintext`'s
+        //    re-encode-and-compare check re-encodes rather than
+        //    re-parsing, so records contribute no further wipes here.
+        assert_eq!(
+            after - before,
+            5,
+            "expected exactly 5 wipes on the decode_plaintext path (1 top-level \
+             scratch wipe + 1 SecretValueTree::drop + 1 per block-level unknown \
+             value, of which random_block_plaintext always inserts 3)"
         );
     }
 

@@ -316,6 +316,14 @@ impl ContactCard {
     ///
     /// Does **not** verify signatures. Call [`Self::verify_self`] for that.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, CardError> {
+        // Deliberately plain `from_reader`, not `cbor::from_secret_reader`
+        // (#561): a ContactCard holds `card_version`, `contact_uuid`,
+        // `display_name`, four PUBLIC keys, `created_at_ms` and two
+        // self-signatures — no `Sensitive` / `SecretBytes` / `SecretString`
+        // field anywhere in the type. The card is the artifact handed to
+        // other users; there is no plaintext here for a scratch buffer to
+        // retain. Stated rather than left to inference: #561's own site
+        // list read as incomplete because its secrecy filter was unstated.
         let value: Value =
             ciborium::de::from_reader(bytes).map_err(|e| CardError::CborDecode(classify_de(&e)))?;
         let map = match value {

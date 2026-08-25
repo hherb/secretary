@@ -132,6 +132,10 @@ impl SyncState {
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, SyncError> {
         use ciborium::value::Value;
 
+        // Deliberately plain `from_reader`, not `cbor::from_secret_reader`
+        // (#561): `SyncState` is sync bookkeeping — vector clocks and
+        // timestamps — and carries no vault content. Same reasoning as
+        // `identity::card::ContactCard::from_canonical_cbor`.
         let value: Value =
             ciborium::de::from_reader(bytes).map_err(|e| SyncError::StateDecodeFailed {
                 // Classified, not stringified: ciborium's Display is its Debug

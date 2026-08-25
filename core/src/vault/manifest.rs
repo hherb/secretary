@@ -51,7 +51,7 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 
-use crate::cbor::{classify_de, classify_ser, CborErrorKind, CborFault, SecretValueTree};
+use crate::cbor::{classify_ser, CborErrorKind, CborFault, SecretValueTree};
 use crate::crypto::aead::{self, AeadKey, AeadNonce, AEAD_TAG_LEN};
 use crate::crypto::secret::SecretBytes;
 use crate::crypto::sig::{
@@ -727,8 +727,12 @@ fn unknown_value_inner(u: &UnknownValue) -> Result<Value, ManifestError> {
         u.to_canonical_cbor()
             .map_err(|e| ManifestError::CborEncode(record_error_to_cbor_fault(e)))?,
     );
-    let v: Value = ciborium::de::from_reader(bytes.expose())
-        .map_err(|e| ManifestError::CborDecode(classify_de(&e)))?;
+    // `from_secret_reader`, not `from_reader` (#561): `bytes` is a
+    // re-encode of a forward-compat unknown subtree from inside the
+    // encrypted manifest — plaintext this version cannot interpret but
+    // must still not leave staged in `ciborium`'s own frame.
+    let v: Value =
+        crate::cbor::from_secret_reader(bytes.expose()).map_err(ManifestError::CborDecode)?;
     Ok(v)
 }
 
@@ -756,8 +760,12 @@ fn unknown_value_inner(u: &UnknownValue) -> Result<Value, ManifestError> {
 /// Forward-compat unknown keys are preserved into the relevant `unknown`
 /// bag verbatim.
 pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
+    // `from_secret_reader`, not `from_reader` (#561): the parser stages
+    // every payload through a 4 KiB scratch buffer, and this input's
+    // payloads include every `block_name` — user-visible plaintext inside
+    // the encrypted manifest.
     let parsed: Value =
-        ciborium::de::from_reader(bytes).map_err(|e| ManifestError::CborDecode(classify_de(&e)))?;
+        crate::cbor::from_secret_reader(bytes).map_err(ManifestError::CborDecode)?;
     // The parsed tree owns a copy of every decrypted plaintext value in
     // `bytes` — including every `block_name` (user-visible, plaintext
     // within the encrypted manifest — see `BlockEntry::block_name`'s own
@@ -2501,6 +2509,78 @@ mod tests {
         assert!(
             crate::cbor::wipe_calls() > before,
             "decode_manifest's early return did not wipe its parsed SecretValueTree"
+        );
+    }
+
+    /// `decode_manifest` must parse through `cbor::from_secret_reader`,
+    /// whose scratch buffer holds a copy of every decrypted plaintext value
+    /// in the input — including every `block_name` (#561). Pinning the
+    /// COMPOSITION on the HAPPY path, complementing the early-return test
+    /// above: `scratch.rs`'s own tests prove the wipe fires, this one
+    /// proves this path uses it.
+    #[test]
+    fn decode_manifest_wipes_the_parser_scratch_buffer() {
+        let m = populated_manifest();
+        let bytes = encode_manifest(&m).expect("encode");
+
+        let before = crate::cbor::wipe_calls();
+        let decoded = decode_manifest(&bytes).expect("decode");
+        let after = crate::cbor::wipe_calls();
+
+        assert_eq!(decoded.vault_uuid, m.vault_uuid);
+        // Two wipes: one scratch wipe from `from_secret_reader`'s own
+        // `CborScratch::drop` (fires unconditionally at the end of that
+        // call), and one tree wipe from `SecretValueTree::drop` at the end
+        // of `decode_manifest`. `populated_manifest()` deliberately carries
+        // NO forward-compat `unknown` entries at any level (manifest,
+        // block-entry, or trash-entry — all three are `BTreeMap::new()`),
+        // so `parse_manifest_map`'s `value_to_unknown` — which, like
+        // `block.rs`'s function of the same name, re-encodes and re-parses
+        // through `UnknownValue::from_canonical_cbor`, itself now routed
+        // through `from_secret_reader` — is never called on this fixture.
+        // `block::decode_plaintext_wipes_the_parser_scratch_buffer`'s own
+        // comment documents what happens when it IS: one extra wipe per
+        // unknown value. Do not copy this fixture's "2" onto a manifest
+        // that carries any `unknown` entry without re-deriving the count.
+        assert_eq!(
+            after - before,
+            2,
+            "expected exactly 2 wipes on the decode_manifest path"
+        );
+    }
+
+    /// `unknown_value_inner` must parse through `cbor::from_secret_reader`
+    /// (#561): its input is a re-encode of a forward-compat unknown
+    /// subtree, plaintext this version cannot interpret but must still not
+    /// leave staged in `ciborium`'s own frame. Called directly rather than
+    /// through `encode_manifest`, matching the file's existing convention
+    /// of testing this private helper in isolation (see the retired-test
+    /// comment above this section) — an end-to-end `encode_manifest` call
+    /// would also exercise `value_to_unknown` on the decode side, which
+    /// wipes independently and would muddy this function's own count.
+    #[test]
+    fn unknown_value_inner_wipes_the_parser_scratch_buffer() {
+        // CBOR for a tiny array `[1, 2]`: 0x82 0x01 0x02.
+        let uv = UnknownValue::from_canonical_cbor(&[0x82, 0x01, 0x02])
+            .expect("UnknownValue from canonical bytes");
+
+        let before = crate::cbor::wipe_calls();
+        let v = unknown_value_inner(&uv).expect("unknown_value_inner");
+        let after = crate::cbor::wipe_calls();
+
+        assert_eq!(
+            v,
+            Value::Array(vec![Value::Integer(1.into()), Value::Integer(2.into())])
+        );
+        // One wipe: `unknown_value_inner` calls `from_secret_reader` exactly
+        // once and returns the raw parsed `Value` with no further wrap
+        // (see the function's own doc for why the `SecretValueTree` wrap
+        // that used to sit here was removed — it covered no early-return
+        // window since `Ok(v)` is the very next line).
+        assert_eq!(
+            after - before,
+            1,
+            "expected exactly 1 wipe on the unknown_value_inner path"
         );
     }
 

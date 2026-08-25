@@ -151,19 +151,14 @@ impl Drop for CborScratch {
 /// `?`, or an unwinding panic — rather than left intact in `ciborium`'s
 /// frame.
 ///
-/// This is **intended** to become the sanctioned entry point for every
-/// secret-bearing parse in the crate, but as of this commit it has **zero**
-/// production callers — this task (#561 Task 1) only adds the mechanism.
-/// `grep -rn "ciborium::de::from_reader" core/src` shows today's state: 8
-/// production call sites (`identity/card.rs`, `sync/state.rs`,
-/// `unlock/bundle.rs`, `vault/manifest.rs` x2, `vault/block.rs`,
-/// `vault/record.rs` x2), none yet carrying a comment either way. Task 2
-/// routes the six secret-bearing ones (`bundle.rs`, `manifest.rs` x2,
-/// `block.rs`, `record.rs` x2) here; the other two (`card.rs`,
-/// `sync/state.rs`) are expected to stay on plain `from_reader`, each
-/// gaining a comment saying why its input provably holds no secret. Neither
-/// half of that is true yet — do not read this doc comment as a coverage
-/// claim about the current tree.
+/// This is the sanctioned entry point for every secret-bearing parse in the
+/// crate. As of Task 1 (#561) it had **zero** production callers; Task 2
+/// wired in the first ones. `grep -rn "ciborium::de::from_reader" core/src`
+/// now shows six production call sites routed through this function
+/// (`unlock/bundle.rs`, `vault/block.rs`, `vault/manifest.rs` x2,
+/// `vault/record.rs` x2) plus two that deliberately stay on plain
+/// `from_reader`, each carrying a comment saying why its input provably
+/// holds no secret (`identity/card.rs`, `sync/state.rs`).
 ///
 /// Takes an already-materialized `&[u8]` rather than a generic
 /// `ciborium_io::Read` — see the module doc's "Why `&[u8]`" section — and

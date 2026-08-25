@@ -47,29 +47,22 @@ mod secret_tree;
 
 pub(crate) use secret_tree::{SecretEntries, SecretValueTree};
 
-// `#[cfg(test)]`, not a bare `mod scratch;` — same reasoning, and the same
-// controller ruling (R12), as `mod secret_tree;` two lines up: this task
-// (#561 Task 1) ships `from_secret_reader` / `CBOR_SCRATCH_LEN` with no
-// production caller yet — Task 2 wires in the first one. A `pub(crate)`
-// item with zero callers anywhere in the non-test build is `dead_code`
-// (verified by execution: `cargo clippy --release --workspace -- -D
-// warnings`, i.e. without `--tests`, fails on exactly this module without
-// the gate — `CBOR_SCRATCH_LEN`/`CborScratch`/`from_secret_reader` each
-// "never used"), and a `pub(crate) use` re-exporting an otherwise-uncalled
-// item is `unused_imports`, the same failure class. Gating the whole
-// submodule on `#[cfg(test)]` means it does not exist at all outside a
-// `--tests` build, so neither lint has anything to flag there; under
-// `--tests` it is compiled and fully exercised by its own unit tests.
-// `from_secret_reader` / `CBOR_SCRATCH_LEN` stay `pub(crate)` throughout —
-// no `pub` + `#[doc(hidden)]` workaround, which is exactly what R12
-// rejected the first time this situation came up in this file. Net public
-// API added by Task 1 is zero. No `pub(crate) use scratch::{...}` re-export
-// here yet either, for the same reason: whichever task gives
-// `from_secret_reader` its first production call site should add both the
-// removal of this `#[cfg(test)]` and the re-export together, at the point
-// either is genuinely used.
-#[cfg(test)]
+// Unconditional as of Task 2 (#561): `from_secret_reader` now has six
+// production call sites (`unlock::bundle`, `vault::block`, `vault::manifest`
+// x2, `vault::record` x2), so the `#[cfg(test)]` gate this comment used to
+// describe — and the `dead_code` / `unused_imports` failures it existed to
+// avoid — no longer apply. `from_secret_reader` stays `pub(crate)`: no
+// `pub` + `#[doc(hidden)]` workaround, matching what controller ruling R12
+// rejected the first time this situation came up in this file
+// (`mod secret_tree;` above). `CBOR_SCRATCH_LEN` is NOT re-exported here —
+// unlike `from_secret_reader`, no caller outside `scratch.rs` itself names
+// it (verified: `pub(crate) use scratch::{from_secret_reader,
+// CBOR_SCRATCH_LEN};`, the form an earlier draft of this task used, reds
+// `cargo clippy --release --workspace --tests -- -D warnings` with
+// `unused_imports` on `CBOR_SCRATCH_LEN` — confirmed by running it).
 mod scratch;
+
+pub(crate) use scratch::from_secret_reader;
 
 // `wipe_leaked_value` wipes a single, already-yielded `ciborium::Value` in
 // place — for a caller of `SecretEntries::take_next` (or similar) that

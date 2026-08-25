@@ -71,7 +71,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ciborium::Value;
 
-use crate::cbor::{classify_de, classify_ser, CborFault, SecretValueTree};
+use crate::cbor::{classify_ser, CborFault, SecretValueTree};
 use crate::crypto::secret::{SecretBytes, SecretString};
 
 use super::canonical::{
@@ -296,8 +296,12 @@ impl UnknownValue {
     /// individual unknown values constructed in isolation are validated
     /// only for the no-float / no-tag rules.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, RecordError> {
-        let parsed: Value = ciborium::de::from_reader(bytes)
-            .map_err(|e| RecordError::CborDecode(classify_de(&e)))?;
+        // `from_secret_reader`, not `from_reader` (#561): this input is a
+        // forward-compat unknown subtree carried inside a decrypted record —
+        // plaintext this version cannot interpret but must still not leave
+        // staged in `ciborium`'s own frame.
+        let parsed: Value =
+            crate::cbor::from_secret_reader(bytes).map_err(RecordError::CborDecode)?;
         reject_floats_and_tags(&parsed, "<unknown>")?;
         Ok(UnknownValue(parsed))
     }
@@ -603,8 +607,9 @@ fn field_to_canonical(field: &RecordField) -> CanonicalMap<'_> {
 /// Forward-compat unknown keys are preserved into [`Record::unknown`]
 /// and [`RecordField::unknown`] verbatim.
 pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
-    let parsed: Value =
-        ciborium::de::from_reader(bytes).map_err(|e| RecordError::CborDecode(classify_de(&e)))?;
+    // `from_secret_reader`, not `from_reader` (#561): this input is
+    // decrypted record field plaintext.
+    let parsed: Value = crate::cbor::from_secret_reader(bytes).map_err(RecordError::CborDecode)?;
     // The parsed tree owns a copy of every decrypted field value in
     // `bytes`. Wrapping it means `Drop` wipes that copy on every exit from
     // this function — including the `?` early returns below and an
@@ -2311,6 +2316,38 @@ mod tests {
         );
     }
 
+    /// `decode` must parse through `cbor::from_secret_reader`, whose scratch
+    /// buffer holds a copy of every decrypted field value in the input
+    /// (#561). Pinning the COMPOSITION, not just the mechanism: `scratch.rs`'s
+    /// own tests prove the wipe fires, this one proves this path uses it.
+    #[test]
+    fn decode_wipes_the_parser_scratch_buffer() {
+        use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+        let mut rng = ChaCha20Rng::from_seed([41u8; 32]);
+        let record = random_record(&mut rng, true, TombstoneState::Live);
+        let bytes = encode(&record).expect("encode");
+
+        let before = crate::cbor::wipe_calls();
+        let decoded = decode(&bytes).expect("decode");
+        let after = crate::cbor::wipe_calls();
+
+        assert_eq!(decoded.record_uuid, record.record_uuid);
+        // Two wipes on the happy path: one scratch wipe from
+        // `from_secret_reader`'s own `CborScratch::drop` (fires
+        // unconditionally at the end of that call, success or not), and one
+        // tree wipe from `SecretValueTree::drop` at the end of `decode`.
+        // `decode` does not re-parse its input anywhere on the success
+        // path — the canonical-form check re-ENCODES `parsed` and compares
+        // bytes, it does not decode a second time — so there is no third
+        // wipe to account for here.
+        assert_eq!(
+            after - before,
+            2,
+            "expected exactly 2 wipes on the decode path"
+        );
+    }
+
     /// `record.rs` — the `fields` map. THE site the issue names: `key`
     /// here is a decrypted user field name, not a spec constant.
     #[test]
@@ -2522,6 +2559,39 @@ mod tests {
         assert_eq!(
             bytes, bytes_again,
             "UnknownValue round-trip is bit-identical for canonical input"
+        );
+    }
+
+    /// `UnknownValue::from_canonical_cbor` must parse through
+    /// `cbor::from_secret_reader`, whose scratch buffer holds a copy of
+    /// this forward-compat unknown subtree — plaintext this version cannot
+    /// interpret but must still not leave staged in `ciborium`'s own frame
+    /// (#561).
+    #[test]
+    fn unknown_value_from_canonical_cbor_wipes_the_parser_scratch_buffer() {
+        let entries = vec![
+            (Value::Text("a".into()), Value::Integer(1u64.into())),
+            (Value::Text("b".into()), Value::Text("two".into())),
+        ];
+        let sorted = canonical_sort_entries(&entries).expect("sort");
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(sorted), &mut bytes).expect("encode test map");
+
+        let before = crate::cbor::wipe_calls();
+        let _uv = UnknownValue::from_canonical_cbor(&bytes)
+            .expect("from_canonical_cbor accepts canonical map");
+        let after = crate::cbor::wipe_calls();
+
+        // One wipe: `from_secret_reader`'s own `CborScratch::drop`.
+        // `UnknownValue` wraps its parsed `Value` directly — `Ok(UnknownValue(
+        // parsed))` — with no `SecretValueTree` wrap around it (see the
+        // module-level note that `UnknownValue` has no `Zeroize` impl of its
+        // own), so there is no second, tree-level wipe on this path the way
+        // `decode` has.
+        assert_eq!(
+            after - before,
+            1,
+            "expected exactly 1 wipe on the UnknownValue::from_canonical_cbor path"
         );
     }
 
