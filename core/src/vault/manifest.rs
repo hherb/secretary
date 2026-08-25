@@ -47,7 +47,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ciborium::Value;
 
@@ -154,6 +154,18 @@ pub enum ManifestError {
     /// A map key was not a text string. §4.2 keys are all `tstr`.
     #[error("manifest map keys must be text strings")]
     NonTextKey,
+
+    /// A CBOR map key appeared more than once. RFC 8949 §5.4 leaves this
+    /// to the application; every other decoder in this crate rejects, and
+    /// silent last-wins is the wrong direction.
+    ///
+    /// Payload is data-free by construction (#474): `field` is a
+    /// compile-time map-level hint, `index` the entry's ordinal. The
+    /// repeated key itself is never carried — a forward-compat unknown key
+    /// is attacker-influenced text, and `RecordError::DuplicateKey` once
+    /// leaked exactly that class.
+    #[error("duplicate CBOR map key in {field} at entry {index}")]
+    DuplicateKey { field: &'static str, index: usize },
 
     /// A required §4.2 field was absent from the parsed CBOR map. The
     /// payload is the §4.2 CBOR key name.
@@ -834,9 +846,21 @@ fn parse_manifest_map(map: &[(Value, Value)]) -> Result<Manifest, ManifestError>
     let mut trash: Option<Vec<TrashEntry>> = None;
     let mut kdf_params: Option<KdfParamsRef> = None;
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
+    let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
-    for (k, v) in map.iter() {
+    for (index, (k, v)) in map.iter().enumerate() {
         let key = take_text_key(k)?;
+        // RFC 8949 §5.4: reject a repeated key rather than last-wins.
+        // `take_text_key` already clones, so `seen_keys` costs one further
+        // String per key. These are top-level manifest keys plus
+        // forward-compat unknown keys — structural, not user content;
+        // `block_name` is a VALUE inside the blocks array, not a key here.
+        if !seen_keys.insert(key.clone()) {
+            return Err(ManifestError::DuplicateKey {
+                field: "<manifest>",
+                index,
+            });
+        }
         match key.as_str() {
             KEY_MANIFEST_VERSION => {
                 manifest_version = Some(take_u8(v, KEY_MANIFEST_VERSION)?);
@@ -2914,6 +2938,49 @@ mod tests {
         assert!(
             matches!(err, ManifestError::NonTextKey),
             "expected NonTextKey, got {err:?}"
+        );
+    }
+
+    /// `parse_manifest_map` is the last of four decoders without a
+    /// duplicate-key check; the other three reject and this one silently
+    /// last-wins (#568). Defence in depth, not a live hole: the manifest
+    /// body is covered by the hybrid signature (Ed25519 AND ML-DSA-65),
+    /// computed over the on-disk AEAD ciphertext — an attacker without the
+    /// owner's signing keys cannot forge a duplicate-key manifest that
+    /// still verifies. Unlike `block::decode_plaintext` / `record::decode`,
+    /// `decode_manifest` has no independent re-encode-and-compare
+    /// canonicality backstop of its own (#572) — before this fix the
+    /// signature was the *only* defence a duplicate key ran into, not a
+    /// second layer over an existing one.
+    #[test]
+    fn a_manifest_with_a_repeated_key_is_rejected() {
+        let m = populated_manifest();
+        let bytes = encode_manifest(&m).expect("encode");
+
+        // Re-parse, duplicate the first entry, re-encode. Non-canonical by
+        // construction (irrelevant here — `decode_manifest` has no
+        // re-encode-and-compare canonicality check of its own, #572 — but
+        // the duplicate-key check must still be the thing that fires, not
+        // some other decode failure downstream).
+        let mut entries =
+            match ciborium::de::from_reader::<Value, _>(bytes.expose()).expect("parse") {
+                Value::Map(m) => m,
+                other => panic!("expected a map, got {other:?}"),
+            };
+        entries.push(entries[0].clone());
+        let mut doubled = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut doubled).expect("re-encode");
+
+        let err = decode_manifest(&doubled).expect_err("a repeated key must be rejected");
+        assert!(
+            matches!(
+                err,
+                ManifestError::DuplicateKey {
+                    field: "<manifest>",
+                    index: _
+                }
+            ),
+            "expected DuplicateKey, got {err:?}"
         );
     }
 
