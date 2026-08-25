@@ -62,6 +62,21 @@ thread_local! {
     static WIPE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// Bump the shared wipe counter from a sibling module in `cbor`.
+///
+/// `WIPE_CALLS` is private to this module, but `scratch::CborScratch`
+/// (#561) needs to record its own wipe against the same counter so a
+/// caller's test can pin it through `crate::cbor::wipe_calls()`. Exposing
+/// one `pub(super)` bump function is a smaller change than relocating the
+/// counter into `cbor/mod.rs`, which would touch all three existing
+/// bump sites — frozen-adjacent code this task has no reason to churn.
+///
+/// `#[cfg(test)]`-gated like every other bump site: zero production cost.
+#[cfg(test)]
+pub(super) fn note_wipe() {
+    WIPE_CALLS.with(|c| c.set(c.get() + 1));
+}
+
 /// Number of wipes performed so far on this thread. Test-only.
 #[cfg(test)]
 pub(crate) fn wipe_calls() -> usize {

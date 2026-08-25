@@ -47,6 +47,30 @@ mod secret_tree;
 
 pub(crate) use secret_tree::{SecretEntries, SecretValueTree};
 
+// `#[cfg(test)]`, not a bare `mod scratch;` — same reasoning, and the same
+// controller ruling (R12), as `mod secret_tree;` two lines up: this task
+// (#561 Task 1) ships `from_secret_reader` / `CBOR_SCRATCH_LEN` with no
+// production caller yet — Task 2 wires in the first one. A `pub(crate)`
+// item with zero callers anywhere in the non-test build is `dead_code`
+// (verified by execution: `cargo clippy --release --workspace -- -D
+// warnings`, i.e. without `--tests`, fails on exactly this module without
+// the gate — `CBOR_SCRATCH_LEN`/`CborScratch`/`from_secret_reader` each
+// "never used"), and a `pub(crate) use` re-exporting an otherwise-uncalled
+// item is `unused_imports`, the same failure class. Gating the whole
+// submodule on `#[cfg(test)]` means it does not exist at all outside a
+// `--tests` build, so neither lint has anything to flag there; under
+// `--tests` it is compiled and fully exercised by its own unit tests.
+// `from_secret_reader` / `CBOR_SCRATCH_LEN` stay `pub(crate)` throughout —
+// no `pub` + `#[doc(hidden)]` workaround, which is exactly what R12
+// rejected the first time this situation came up in this file. Net public
+// API added by Task 1 is zero. No `pub(crate) use scratch::{...}` re-export
+// here yet either, for the same reason: whichever task gives
+// `from_secret_reader` its first production call site should add both the
+// removal of this `#[cfg(test)]` and the re-export together, at the point
+// either is genuinely used.
+#[cfg(test)]
+mod scratch;
+
 // `wipe_leaked_value` wipes a single, already-yielded `ciborium::Value` in
 // place — for a caller of `SecretEntries::take_next` (or similar) that
 // folds a yielded value into NOTHING (an early return that never examines
