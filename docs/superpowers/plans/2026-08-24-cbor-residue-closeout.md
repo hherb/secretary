@@ -481,12 +481,33 @@ Expected: FAIL — the counts are one lower than asserted, because the paths sti
 
 - [ ] **Step 3: Convert the six sites**
 
-At each, replace `ciborium::de::from_reader(` with `crate::cbor::from_secret_reader(` (or `from_secret_reader(` if already imported) and leave the surrounding `map_err` untouched. Example, `core/src/vault/record.rs:607`:
+**Controller ruling T1-A — the `map_err` MUST change too.** Ruling P1 gave
+`from_secret_reader` the signature
+`fn from_secret_reader(bytes: &[u8]) -> Result<Value, CborFault>`: it classifies
+internally. So the existing `.map_err(|e| XError::CborDecode(classify_de(&e)))`
+would double-classify and does not typecheck. Every one of the six sites becomes
+`.map_err(XError::CborDecode)`.
+
+**Also from Task 1:** `cbor/mod.rs` currently declares `#[cfg(test)] mod scratch;`
+with no re-export, because Task 1 shipped no production caller and an unconditional
+declaration reds `clippy --release --workspace -- -D warnings` (no `--tests`) with
+`dead_code`/`unused_imports` — the same situation, in the same file, that commit
+`6ac4cfed` (ruling R12) resolved the same way for `mod secret_tree;`. **This task
+adds the first production callers, so it must un-gate the module**: drop the
+`#[cfg(test)]` and add the `pub(crate) use scratch::{from_secret_reader, CBOR_SCRATCH_LEN};`
+re-export alongside the first converted call site.
+
+At each site, replace `ciborium::de::from_reader(` with `crate::cbor::from_secret_reader(`.
+Example, `core/src/vault/record.rs:607`:
 
 ```rust
-    let parsed: Value = crate::cbor::from_secret_reader(bytes)
-        .map_err(|e| RecordError::CborDecode(classify_de(&e)))?;
+    let parsed: Value =
+        crate::cbor::from_secret_reader(bytes).map_err(RecordError::CborDecode)?;
 ```
+
+Check whether `classify_de` is still used elsewhere in each file before removing its
+import — several files use it on the *encode* side too (`classify_ser`) or at other
+decode sites. An unused import reds the clippy gate.
 
 Above each converted call, add a one-line reason naming what that site's scratch buffer holds — e.g. for `manifest.rs:760`:
 
