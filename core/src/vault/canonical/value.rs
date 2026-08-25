@@ -609,4 +609,104 @@ mod tests {
         let unk = Value::Array(vec![Value::Text("x".into()), Value::Bytes(vec![1, 2, 3])]);
         assert_eq!(enc(&unk), enc(&CanonicalValue::Borrowed(&unk)));
     }
+
+    /// The `(byte length, bytes)` comparator `CanonicalMap::serialize`
+    /// uses must be *exactly* RFC 8949 §4.2.1 order — i.e. identical to
+    /// ordering on each key's full CBOR encoding.
+    ///
+    /// This is the property that lets the sort read straight through the
+    /// borrowed `&str`s and materialise no key buffer, which is the whole
+    /// security point: record field names are decrypted plaintext. If it
+    /// ever breaks, the on-disk format moves silently.
+    ///
+    /// It has been checked twice by exhaustive sweep (184,041 pairwise
+    /// comparisons; 400,000 in an independent reproduction) and neither
+    /// sweep was committed — both lived in prose (#567). This makes it
+    /// permanent. `golden_vault_001` cannot cover it: every key there is
+    /// ASCII, so a byte-length -> char-count regression yields
+    /// byte-identical output for that vault (#562).
+    ///
+    /// `enc_text` is written locally on purpose. Reusing the production
+    /// encoder would make the test circular.
+    fn enc_text(s: &str) -> Vec<u8> {
+        let n = s.len();
+        let mut out = Vec::with_capacity(n + 9);
+        // RFC 8949 §3: major type 3 (text string) is 0b011_xxxxx.
+        const MAJOR_TEXT: u8 = 0x60;
+        match n {
+            0..=23 => out.push(MAJOR_TEXT | n as u8),
+            24..=0xFF => {
+                out.push(MAJOR_TEXT | 24);
+                out.push(n as u8);
+            }
+            0x100..=0xFFFF => {
+                out.push(MAJOR_TEXT | 25);
+                out.extend_from_slice(&(n as u16).to_be_bytes());
+            }
+            0x1_0000..=0xFFFF_FFFF => {
+                out.push(MAJOR_TEXT | 26);
+                out.extend_from_slice(&(n as u32).to_be_bytes());
+            }
+            _ => {
+                out.push(MAJOR_TEXT | 27);
+                out.extend_from_slice(&(n as u64).to_be_bytes());
+            }
+        }
+        out.extend_from_slice(s.as_bytes());
+        out
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn len_then_bytes_matches_full_cbor_encoding_order(a: String, b: String) {
+            let by_parts = (a.len(), a.as_bytes()).cmp(&(b.len(), b.as_bytes()));
+            let by_encoding = enc_text(&a).cmp(&enc_text(&b));
+            proptest::prop_assert_eq!(
+                by_parts,
+                by_encoding,
+                "comparator diverged from RFC 8949 4.2.1 for {:?} vs {:?}",
+                a,
+                b
+            );
+        }
+    }
+
+    /// `proptest`'s default `String` strategy is heavily ASCII-weighted,
+    /// so the property above would rarely exercise the multi-byte case
+    /// that a char-count regression breaks. Pin it explicitly.
+    #[test]
+    fn byte_length_not_char_count_decides_order() {
+        // "日" is 1 char but 3 UTF-8 bytes; "ab" is 2 chars and 2 bytes.
+        // Under (byte length, bytes) "ab" sorts first. Under a char count
+        // it would not — that is the regression this pins.
+        assert_eq!(
+            ("ab".len(), "ab".as_bytes()).cmp(&("日".len(), "日".as_bytes())),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            enc_text("ab").cmp(&enc_text("日")),
+            std::cmp::Ordering::Less
+        );
+        assert!("ab".chars().count() > "日".chars().count());
+
+        // Direct production-path check: push both keys into a real
+        // CanonicalMap (pushed out of canonical order) and confirm
+        // `CanonicalMap::serialize`'s own comparator — not just `enc_text`
+        // above, which is test-local — places "ab" before "日". Without
+        // this, a regression in the production comparator alone (leaving
+        // `enc_text` untouched) would not fail this test, only the
+        // pre-existing `map_key_sort_crosses_head_length_boundary_and_
+        // uses_byte_not_char_length` below; mutation-checked (#567 task
+        // brief step 3) against a `chars().count()` regression in
+        // `CanonicalMap::serialize` to confirm this assertion, not that
+        // sibling test, is what catches it.
+        let mut m = CanonicalMap::with_capacity(2);
+        m.push("日", CanonicalValue::Uint(1));
+        m.push("ab", CanonicalValue::Uint(0));
+        let owned = Value::Map(vec![
+            (Value::Text("ab".into()), Value::Integer(0u64.into())),
+            (Value::Text("日".into()), Value::Integer(1u64.into())),
+        ]);
+        assert_eq!(enc(&owned), enc(&m));
+    }
 }
