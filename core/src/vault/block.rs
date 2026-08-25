@@ -1797,12 +1797,14 @@ pub fn encrypt_block<R: RngCore + CryptoRng>(
     // Step 5: canonical-CBOR plaintext. `pt_bytes` is a cleartext CBOR copy
     // of every record in the block — every password, note and TOTP seed —
     // so it must be wiped on every exit path (normal return, an early `?`,
-    // or an unwinding panic), matching the `bundle_plaintext` pattern in
-    // `unlock::create_vault_unchecked` (#513, #357). `encode_plaintext`
-    // now returns `SecretBytes` directly (#558, #565): the wrap is
-    // structural, part of the function's return type, rather than a
-    // separate `SecretBytes::new(..)` call here that a future edit could
-    // silently drop.
+    // or an unwinding panic), the same PROPERTY the `bundle_plaintext`
+    // pattern in `unlock::create_vault_unchecked` establishes (#513, #357)
+    // — but no longer the same MECHANISM. `bundle_plaintext` is still a
+    // caller-side `SecretBytes::new(identity.to_canonical_cbor()?)`.
+    // `encode_plaintext` now returns `SecretBytes` directly (#558, #565):
+    // the wrap is structural, part of the function's return type, rather
+    // than a separate `SecretBytes::new(..)` call here that a future edit
+    // could silently drop.
     let pt_bytes = encode_plaintext(plaintext)?;
 
     // Step 6: AAD = bytes magic..end_of_recipient_entries; AEAD-encrypt.
@@ -1993,7 +1995,16 @@ mod tests {
     // proves nothing. (Reviewer note: diff this block against
     // `git show b5208d9b:core/src/vault/block.rs`'s `plaintext_to_entries`
     // / `records_to_value` / `unknown_to_value` / `encode_plaintext` to
-    // confirm it has not drifted.)
+    // confirm it has not drifted. That diff is NOT expected to be empty as
+    // of the cbor-residue-closeout follow-up slice: `record::encode`'s
+    // return type changed from `Vec<u8>` to `SecretBytes` (#558, #565),
+    // which forces `records_to_value_for_test` below to read
+    // `bytes.expose()` where `b5208d9b` had `bytes.as_slice()`. That is a
+    // type-forced adaptation to keep this oracle compiling, not a drift in
+    // what it checks — the byte-identity claim it exists to pin is
+    // unchanged. `unknown_to_value_for_test`'s `bytes.as_slice()` is
+    // untouched: `UnknownValue::to_canonical_cbor` still returns a bare
+    // `Vec<u8>`.)
 
     /// A verbatim copy of the pre-#547-Task-5 `records_to_value`. See the
     /// note above.
@@ -2234,7 +2245,11 @@ mod tests {
     /// wrap at the AEAD call site cannot be deleted without a compile error
     /// (#558) and `decode_plaintext`'s `re_encoded` buffer is wrapped by
     /// construction (#565). This test pins the OBSERVABLE half — that the
-    /// bytes are unchanged; the type itself is pinned by the compiler.
+    /// bytes are unchanged BY THE ROUND-TRIP (encode, decode, re-encode,
+    /// compare) and that encoding stays deterministic; the type itself is
+    /// pinned by the compiler. There is no frozen byte anchor here —
+    /// byte-identity against the pre-#558/#565 encoding is what
+    /// `golden_vault_001_pinned` covers, not this test.
     #[test]
     fn encode_plaintext_returns_wrapped_bytes_identical_to_the_canonical_form() {
         use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};

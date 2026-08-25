@@ -188,6 +188,29 @@ pub(crate) fn wipe_leaked_value(value: &mut Value) {
 /// `Vec::drop` runs — again correct behaviour, not a residual, because a
 /// spine holds pointers and lengths, not secret bytes.
 ///
+/// Two more gaps in the same "not covered" family, named explicitly rather
+/// than left inside the general reallocation clause above:
+///
+/// - **The parser's scratch buffer.** `ciborium::de::from_reader` stages
+///   every payload of 4096 bytes or fewer through a `[0u8; 4096]` in its
+///   own stack frame. That buffer is not part of the tree this type
+///   wraps, so `Drop` here never reached it. As of #561 the secret-bearing
+///   decode paths do not use `from_reader` at all — they route through
+///   [`crate::cbor::from_secret_reader`], which owns that buffer and wipes
+///   it. See `super::scratch`'s module doc for the mechanism.
+/// - **Reallocation inside the parser's visitor, which is ROUTINE above
+///   4 KiB, not an edge case.** The general reallocation clause above
+///   already names this class; the threshold is the part a reader needs.
+///   `ciborium`'s `deserialize_byte_buf` / `deserialize_string` build the
+///   final payload with `Vec::new()` / `String::new()` plus per-chunk
+///   `extend_from_slice`, so a payload larger than the parser's scratch
+///   buffer still grows by doubling and frees an unwiped prefix at each
+///   step — measured at capacity 131072 grown from 0 for a 100,000-byte
+///   `bstr`, roughly 14 reallocations. For an attachment, a long note or a
+///   stored key file that is the normal case, not the exception. This
+///   happens inside the parser's visitor, before any wrapper here sees the
+///   value, and there is no public hook for it. Tracked as **#570**.
+///
 /// # Why there is no `&mut` or consuming accessor
 ///
 /// There is deliberately no way to get the inner `Value` out by value or by

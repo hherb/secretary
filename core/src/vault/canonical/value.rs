@@ -52,6 +52,17 @@
 //! calls neither `record::encode` nor `legacy::encode_canonical_map` any
 //! more.
 //!
+//! A THIRD consumer joined later, on a separate slice: the
+//! cbor-residue-closeout follow-up (#569) migrated
+//! `unlock::bundle::IdentityBundle::to_canonical_cbor` onto `CanonicalMap`
+//! directly (not through `record_to_canonical` — the bundle's fields don't
+//! share a `Record`'s shape), eliminating four long-term secret-key copies
+//! per encode. Which files call this module is deliberately not tracked as
+//! a running list past this point, for the reason `canonical/mod.rs`'s own
+//! module doc gives for not enumerating them at all: read the callers
+//! directly (`grep -rn "CanonicalMap::with_capacity" core/src`) rather than
+//! trusting a count that has already needed correcting twice.
+//!
 //! [`CanonicalMap`] / [`CanonicalValue`] are `pub(crate)`, matching the
 //! `canonical` module they live in — and as of the #560 review that is
 //! true of the DECLARATIONS, not merely of the effective visibility. Both

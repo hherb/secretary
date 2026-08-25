@@ -486,10 +486,17 @@ pub struct Record {
 ///
 /// Returns [`SecretBytes`], not `Vec<u8>`: the output is the decrypted
 /// canonical form of a record — every field value it holds. Returning the
-/// wrapper rather than leaving each caller to apply one means the wrap
-/// cannot be deleted without a compile error, which is the difference
-/// between this and the deletable `SecretBytes::new(..)` call sites #558
-/// and #565 record.
+/// wrapper rather than leaving a caller to apply one means the wrap
+/// cannot be deleted without a compile error — a stronger guarantee than a
+/// caller-side `SecretBytes::new(..)` call, which is deletable with the
+/// whole suite still green (verified by execution, #558/#565). That
+/// contrast describes `block.rs`'s `encrypt_block` and `manifest.rs`'s
+/// `sign_manifest`, which used to apply exactly that caller-side wrap;
+/// this function never had one to begin with — `re_encoded`'s comparison
+/// (below) was the only call site, and it never wrapped the result either.
+/// The property this signature buys is the same regardless of which
+/// pre-state a given call site came from: nothing calling `encode` can
+/// forget to wrap its output, because there is no unwrapped form to forget.
 pub fn encode(record: &Record) -> Result<SecretBytes, RecordError> {
     Ok(SecretBytes::new(to_canonical_vec(&record_to_canonical(
         record,

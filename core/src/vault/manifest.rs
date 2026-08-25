@@ -1986,12 +1986,14 @@ pub fn sign_manifest(
     // Step 1: encode the manifest body to canonical CBOR. `body_bytes` is a
     // cleartext copy of every user-authored `block_name` in the vault, so it
     // must be wiped on every exit path (normal return, an early `?`, or an
-    // unwinding panic), matching the `bundle_plaintext` pattern in
-    // `unlock::create_vault_unchecked` (#513, #357). `encode_manifest` now
-    // returns `SecretBytes` directly (#558, #565): the wrap is structural,
-    // part of the function's return type, rather than a separate
-    // `SecretBytes::new(..)` call here that a future edit could silently
-    // drop.
+    // unwinding panic), the same PROPERTY the `bundle_plaintext` pattern in
+    // `unlock::create_vault_unchecked` establishes (#513, #357) — but no
+    // longer the same MECHANISM. `bundle_plaintext` is still a caller-side
+    // `SecretBytes::new(identity.to_canonical_cbor()?)`. `encode_manifest`
+    // now returns `SecretBytes` directly (#558, #565): the wrap is
+    // structural, part of the function's return type, rather than a
+    // separate `SecretBytes::new(..)` call here that a future edit could
+    // silently drop.
     let body_bytes = encode_manifest(body)?;
 
     // Step 2: AEAD-encrypt with header AAD.
