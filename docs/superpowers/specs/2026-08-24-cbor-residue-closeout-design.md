@@ -173,10 +173,23 @@ Mirrors `block.rs:1087-1099` exactly: a `BTreeSet<String> seen_keys`, an enumera
 new `ManifestError::DuplicateKey { field: &'static str, index: usize }` — **data-free by construction**
 per #474, so the payload guard's E1 rule passes without an allowlist entry.
 
-Defence-in-depth, not a live hole: the manifest body is covered by the hybrid signature (Ed25519 **AND**
+~~Defence-in-depth, not a live hole: the manifest body is covered by the hybrid signature (Ed25519 **AND**
 ML-DSA-65), and `decode_manifest`'s re-encode-and-compare canonicality check would reject the resulting
-non-canonical bytes anyway. Filed and fixed because "the signature covers it" stops being true after an
-unrelated refactor.
+non-canonical bytes anyway.~~ **CORRECTION (controller ruling T6-A, found by Task 6's implementer and
+verified independently): the second half of that sentence is FALSE.** `decode_manifest`
+(`core/src/vault/manifest.rs:780`) has **no** re-encode-and-compare canonicality check — unlike
+`record::decode` and `block::decode_plaintext`, which both have one. Its body ends
+`reject_floats_and_tags(...)` -> destructure -> `parse_manifest_map(entries)`. Nothing re-encodes.
+
+The correct framing: the manifest body is covered by the hybrid signature, and that is the **only**
+backstop — there is no second, independent check the way the record and block paths have one. That makes
+this fix **more** valuable than the original text implied, not less, and it makes the "the signature
+covers it stops being true after an unrelated refactor" argument load-bearing rather than rhetorical.
+The missing canonicality check is filed separately as **#572**.
+
+I wrote the false half of that claim into this spec without checking it, and it propagated into the
+plan and into Task 6's brief. It is corrected in place rather than silently edited, per this project's
+convention — see §2's own note on census claims that do not survive re-running.
 
 Note: `take_text_key` already clones the key, so `seen_keys` adds one more `String` clone per key. These
 are top-level manifest keys (`manifest_version`, `vault_uuid`, …) plus forward-compat unknown keys —
