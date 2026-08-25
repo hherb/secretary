@@ -1565,6 +1565,42 @@ Add two clauses:
 
 Apply the same correction to `expose_bytes`'s "Same #519 caveat" reference if it now points at changed text.
 
+- [ ] **Step 2b: CORRECT the doc passages this slice falsified (controller ruling T3-A)**
+
+Task 8's original text said only *add* a section. That is not enough — Task 3 falsified
+several existing passages, and a slice that leaves them standing reproduces this repo's
+single most repeated defect. Correct each of these **by name**:
+
+**Falsified by Task 3 (encoders now return `SecretBytes`):**
+- `docs/manual/contributors/memory-hygiene-audit-internal.md:1272-1279` — says `re_encoded`
+  "is an unwiped plaintext buffer … neither eliminated … nor wrapped". It is now wrapped by
+  construction on both paths.
+- `docs/manual/contributors/memory-hygiene-audit-internal.md:1449-1453` — says "the
+  `SecretBytes` wrap happens in the caller afterwards (`block.rs`'s `encrypt_block`,
+  `manifest.rs`'s `sign_manifest`)". Both callers no longer wrap; the encoders do.
+- `CLAUDE.md`'s memory-hygiene bullet — lists "an unwiped `re_encoded` re-check buffer" under
+  what is still open. It is closed.
+
+**Comments Task 3's review found inaccurate:**
+- `core/src/vault/record.rs:487-492` — the doc claims a contrast with "the deletable
+  `SecretBytes::new(..)` call sites #558 and #565 record". True for `block.rs` and
+  `manifest.rs`; **false for `record.rs`**, which never had a caller that wrapped its output —
+  `re_encoded` was never wrapped at all. Reword so it does not assert a pre-state that never
+  existed.
+- `core/src/vault/block.rs:2236-2237` — the pinning test's doc says it pins "that the bytes are
+  unchanged". It has no frozen anchor; it pins determinism and round-trip. Byte-identity against
+  the pre-task encoding is pinned by `golden_vault_001_pinned`, not here. Say "unchanged by the
+  round-trip".
+- `core/src/vault/block.rs:1983-1996` — the block comment instructs a reviewer to diff the oracle
+  trio against `git show b5208d9b:core/src/vault/block.rs` to confirm no drift. Task 3 changed
+  one line (`records_to_value_for_test`, `bytes.as_slice()` → `bytes.expose()`), so that diff now
+  shows a difference and the instruction misleads. Add a clause recording the forced adaptation.
+- `core/src/vault/block.rs:1801` and `core/src/vault/manifest.rs:1957` — both cite
+  `unlock::create_vault_unchecked`'s `bundle_plaintext` as the pattern they match, one line
+  before explaining that they now work differently (structural wrap vs. a caller-side
+  `SecretBytes::new`). Note the divergence rather than leaving the citation reading as
+  "same as".
+
 - [ ] **Step 3: Extend the memory-hygiene memo**
 
 In `docs/manual/contributors/memory-hygiene-audit-internal.md`, add a section for this slice covering: the six converted parse sites and the two deliberately excluded; the bundle encode migration and what it eliminates (four long-term secret keys, 2400 B of ML-KEM-768 among them); the encoder return-type change and *why it is stronger than a wrap*; and an explicit **"what this does not claim"** — the >4 KiB realloc class (#570), and the fact that a wipe of freed heap is not observable from safe Rust.
