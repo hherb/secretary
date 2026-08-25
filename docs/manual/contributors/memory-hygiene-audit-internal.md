@@ -1087,9 +1087,23 @@ that call to wrap.
 Second: this table used to carry a fifth row — `manifest.rs` |
 `unknown_value_inner` (then cited at line 723, refreshed to 748 during
 this same task) | **encode**. **That row was never true.** Independently
-re-verified: `grep -rn "SecretValueTree::new\|SecretEntries::new" core/src
-| grep -v secret_tree/` returns exactly the four rows above — nothing for
-`unknown_value_inner`. Its own doc comment
+re-verified — and the reproduction itself needs re-verifying before you
+trust it, because a prior version of this paragraph named a command that
+does not reproduce its own claim: the bare `grep -rn
+"SecretValueTree::new\|SecretEntries::new" core/src | grep -v
+secret_tree/` returns **ten** rows on the committed tree, not four — the
+four production sites in the table above, one test-fixture call
+(`bundle.rs:1047`, `wipe_fixture()`, inside `#[cfg(test)] mod tests`), and
+five doc-comment mentions (`bundle.rs:1132`, `manifest.rs:2539`,
+`block.rs:2977`, `record.rs:2321`, `record.rs:2335`). Anchored to the
+shape a real construction site actually has — every production call binds
+its result to a local with `let` (`let parsed =
+SecretValueTree::new(parsed);` / `let mut map = SecretEntries::new(m);`),
+while the test fixture returns its value directly with no binding and
+every doc-comment hit is prose, never a `let` statement — `grep -rnE "let
+.* = (SecretValueTree|SecretEntries)::new\(" core/src | grep -v
+secret_tree/` returns exactly the four rows above, and only those four;
+nothing for `unknown_value_inner`. Its own doc comment
 (`manifest.rs:745-747`) says why: *"The counter-based test Task 7b wrote
 for the removed `SecretValueTree` wrap is retired with the wrap it
 pinned"* — the wrap was removed before this branch existed, absent at

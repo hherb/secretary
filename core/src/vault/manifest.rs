@@ -663,7 +663,7 @@ fn kdf_params_to_value(k: &KdfParamsRef) -> Result<Value, ManifestError> {
 /// `ciborium::{de,ser}::Error` directly — `RecordError` itself has no
 /// `#[from]`-worthy conversion to `ManifestError` (unlike `BlockError`,
 /// which has a dedicated `Record(#[from] RecordError)` variant), so there is
-/// no raw ciborium error left to hand to [`classify_de`] / [`classify_ser`]
+/// no raw ciborium error left to hand to [`crate::cbor::classify_de`] / [`classify_ser`]
 /// at this call site.
 ///
 /// `RecordError::CborEncode` / `CborDecode` already carry a `CborFault`
