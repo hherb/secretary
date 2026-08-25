@@ -635,9 +635,14 @@ fn canonical_error_to_bundle_error(e: CanonicalError) -> BundleError {
 /// Compute the canonical CBOR sort order for two map keys. Test-only: lets
 /// the test module build deliberately non-canonical maps that are then
 /// sorted (or deliberately not sorted) to exercise the strict-decoder
-/// branches. Production encode does the sorting itself inside
-/// [`crate::vault::canonical::encode_canonical_map`] against materialised
-/// key bytes.
+/// branches. Production encode (#569) does the sorting itself inside
+/// [`CanonicalMap`](crate::vault::canonical::CanonicalMap)'s `Serialize`
+/// impl, and — unlike this test-only comparator, which fully encodes both
+/// keys and compares the resulting bytes — that impl materialises no key
+/// bytes at all: it orders on `(byte length, bytes)` read straight through
+/// the borrowed `&str` keys, which RFC 8949 §4.2.1 canonical order reduces
+/// to for text keys. See `vault::canonical::value`'s module doc and
+/// `CanonicalMap`'s own `Serialize` impl for why the two orderings agree.
 #[cfg(test)]
 pub(super) fn canonical_key_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
     let mut a_buf = Vec::new();
@@ -1100,6 +1105,39 @@ mod tests {
         assert_eq!(keys, expected, "keys must be in (byte length, bytes) order");
     }
 
+    /// #569's whole point, pinned directly: encode no longer WIPES because
+    /// it no longer COPIES. Neither of the two assertions in
+    /// [`canonical_encoding_is_unchanged_by_the_borrowing_mirror`] above
+    /// distinguishes the new borrowing body from the old
+    /// `SecretEntries`-wrapping one — byte-stability and key order both
+    /// held under the old implementation too (that is what made it safe to
+    /// migrate). Without this test, a future revert of `to_canonical_cbor`
+    /// back to `SecretEntries::new(vec![...])` + `encode_canonical_map`
+    /// leaves the entire suite green, `golden_vault_001_pinned` included —
+    /// exactly the "the mechanism is right, but nothing would notice if it
+    /// were removed" failure #557/#558 exist to close. This is the one
+    /// assertion a revert actually trips: `crate::cbor::wipe_calls()` is the
+    /// same counter [`secret_entries_drop_runs_wipe`] and
+    /// [`an_early_return_inside_the_field_loop_still_wipes`] use to prove
+    /// *decode* wipes; here it proves the opposite for *encode* — that the
+    /// counter does not move at all, because no `SecretEntries` (or any
+    /// other wipe-on-drop wrapper) is ever constructed on this path.
+    #[test]
+    fn to_canonical_cbor_touches_no_wipe_counter() {
+        let mut rng = ChaCha20Rng::from_seed([62u8; 32]);
+        let bundle = generate("no-copy-check", 1_700_000_000_001, &mut rng);
+
+        let before = crate::cbor::wipe_calls();
+        let _encoded = bundle.to_canonical_cbor().expect("encode");
+        assert_eq!(
+            crate::cbor::wipe_calls(),
+            before,
+            "to_canonical_cbor invoked a wipe — it must construct no \
+             SecretEntries/SecretValueTree at all, since every value it \
+             encodes borrows directly out of the bundle's own fields (#569)"
+        );
+    }
+
     /// #548 — the C-4 read side, and the audit's own FIRST-named sub-item.
     ///
     /// `from_canonical_cbor` used to destructure the parsed top level into a
@@ -1321,10 +1359,11 @@ mod tests {
     //
     // Zero coverage before this section: three of its four arms are
     // structurally unreachable from `to_canonical_cbor`'s own call into
-    // `encode_canonical_map` (see that function's doc), so swapping any of
-    // the `FloatRejected` / `TagRejected` / `CapacityBoundExceeded` message
-    // literals, or mis-mapping one to the wrong `BundleError` variant, left
-    // every test in the workspace green. Modelled on
+    // `to_canonical_vec` (#569 — previously `encode_canonical_map`; see that
+    // function's doc), so swapping any of the `FloatRejected` / `TagRejected`
+    // / `CapacityBoundExceeded` message literals, or mis-mapping one to the
+    // wrong `BundleError` variant, left every test in the workspace green.
+    // Modelled on
     // `identity::card::canonical_error_capacity_bound_exceeded_maps_to_card_error`
     // — construct each `CanonicalError` arm directly rather than driving it
     // through the shared encoder, since three of the four cannot be reached
