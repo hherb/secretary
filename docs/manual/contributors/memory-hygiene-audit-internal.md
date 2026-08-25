@@ -1070,24 +1070,55 @@ grepping every production (non-`#[cfg(test)]`) call site of
 
 | Root | Call site | Direction |
 |---|---|---|
-| `record.rs` | `record::decode` (`record.rs:628`) | decode |
+| `record.rs` | `record::decode` (`record.rs:635`) | decode |
 | `block.rs` | `block::decode_plaintext` (`block.rs:1049`) | decode |
 | `unlock/bundle.rs` | `IdentityBundle::from_canonical_cbor` (`bundle.rs:367`, `SecretEntries`) | decode |
-| `manifest.rs` | `unknown_value_inner` (`manifest.rs:748`) — encode-side helper, re-materialising an already-decrypted `UnknownValue` for splicing back into the manifest body | **encode** |
 | `manifest.rs` | `decode_manifest` (`manifest.rs:810`) | decode |
 
-**This table is narrower than it was.** A follow-up slice
-(cbor-residue-closeout, #569) migrated `IdentityBundle::to_canonical_cbor`'s
-encode side off `SecretEntries` onto the borrowing `CanonicalMap` — see
-"Resolved: cbor-residue-closeout follow-up" below — so the row this table
-used to carry for it (`bundle.rs`, then line 296, **encode**) no longer
-exists: there is nothing left for that call to wrap. Grouped by *file*,
-this is now **four roots** — `record`, `block`, `bundle`, `manifest` — with
-only `manifest` having both an encode-side and a decode-side wrap (five
-call sites total, not six). `record` and `block` were already decode-only
-because their encode sides use Mechanism A (elimination) instead; `bundle`
-joined them with this same migration. There is nothing to wrap on any of
-the three encode sides because nothing owned is ever materialised.
+**This table is narrower than it was, twice over — and the second
+correction fixes an error THIS task introduced, not one it inherited.**
+First: a follow-up slice (cbor-residue-closeout, #569) migrated
+`IdentityBundle::to_canonical_cbor`'s encode side off `SecretEntries` onto
+the borrowing `CanonicalMap` — see "Resolved: cbor-residue-closeout
+follow-up" below — so the row this table used to carry for it (`bundle.rs`,
+then line 296, **encode**) no longer exists: there is nothing left for
+that call to wrap.
+
+Second: this table used to carry a fifth row — `manifest.rs` |
+`unknown_value_inner` (then cited at line 723, refreshed to 748 during
+this same task) | **encode**. **That row was never true.** Independently
+re-verified: `grep -rn "SecretValueTree::new\|SecretEntries::new" core/src
+| grep -v secret_tree/` returns exactly the four rows above — nothing for
+`unknown_value_inner`. Its own doc comment
+(`manifest.rs:745-747`) says why: *"The counter-based test Task 7b wrote
+for the removed `SecretValueTree` wrap is retired with the wrap it
+pinned"* — the wrap was removed before this branch existed, absent at
+`main` and at this branch's own pre-Task-8 tip. During this task the row's
+CITATION was refreshed (line 723 → 748) without re-verifying the
+underlying FACT, which made a stale claim read as freshly confirmed — the
+exact defect class this whole slice exists to fight, landed in the one
+task whose entire product is prose. `unknown_value_inner` still calls
+`from_secret_reader` (see the six-call-site count in "Resolved:
+cbor-residue-closeout follow-up" below, which is a
+DIFFERENT count — of `from_secret_reader` call sites, not of
+`SecretValueTree`/`SecretEntries` construction sites, and stays six); the
+`Value` it parses is real and secret-bearing, but nothing wraps it. That
+gap is not new, not caused by this slice, and not covered by any of
+#561/#565-#570 — it is the same class `unknown_value_inner`'s own comment
+already places under **#558** (the AEAD-plaintext-buffer class), stated
+outright rather than pretending to a coverage this table used to imply.
+
+Grouped by *file*, this is now **four roots — record, block, bundle,
+manifest — and all four are decode-only** for `SecretValueTree`/
+`SecretEntries`: **four call sites total**, not five, not six. That
+uniformity has two different causes, and conflating them would itself be
+an overclaim: `record`, `block` and `bundle` are decode-only because their
+encode sides use Mechanism A (elimination) — nothing owned is ever
+materialised, so there is nothing to wrap. `manifest.rs` is decode-only
+for a different reason — its encode side (`unknown_value_inner`) DOES
+materialise an owned, secret-bearing `Value`, and that value is simply
+unwrapped, a real residual rather than an eliminated copy. Do not read
+"four roots, all decode-only" as "four roots, uniformly covered."
 
 `identity/card.rs`'s own `from_canonical_cbor` (`ContactCard`) and
 `sync/state.rs`'s `SyncState::from_canonical_cbor` are deliberately outside
@@ -1390,12 +1421,19 @@ it was judged out of this slice's scope rather than because it was missed:
   `len_then_bytes_matches_full_cbor_encoding_order` as a committed
   proptest),
   **#568** (`parse_manifest_map` is the one decoder of four with no
-  duplicate-key detection, and it silently last-wins — as filed; **closed
-  by the same follow-up slice** at the top level: `parse_manifest_map` now
-  rejects a repeated key via `ManifestError::DuplicateKey`. The four
-  NESTED parsers this bullet's "one decoder of four" count already flagged
-  — `parse_vector_clock_entry`, `parse_block_entry`, `parse_trash_entry`,
-  `parse_kdf_params` — are unchanged and tracked separately as #573),
+  duplicate-key detection, and it silently last-wins — as filed. That
+  "four" counts the four `SecretValueTree`/`SecretEntries` top-level
+  decode roots this memo tracks above (`record`, `block`, `bundle`,
+  `manifest`); it is a DIFFERENT group from the nested parsers named next,
+  and a prior version of this entry conflated the two — reading the four
+  nested parsers as the same "four" the filing counted, which does not add
+  up (one-of-four plus four-nested is five). **Closed by the same
+  follow-up slice** at the top level: `parse_manifest_map` now rejects a
+  repeated key via `ManifestError::DuplicateKey`. That leaves
+  `manifest.rs`'s own four NESTED parsers — `parse_vector_clock_entry`,
+  `parse_block_entry`, `parse_trash_entry`, `parse_kdf_params` — with no
+  equivalent check of their own; unchanged by this slice, tracked
+  separately as #573),
   **#569** (`bundle.rs`, `manifest.rs` and `card.rs` encode paths still
   copy secrets into an owned `ciborium::Value` rather than borrowing
   through `CanonicalMap` — bundle's copies all four long-term secret keys
@@ -1405,9 +1443,12 @@ it was judged out of this slice's scope rather than because it was missed:
   user-visible block-name clone and `card.rs`'s public-key-only encode are unchanged;
   neither carries the secret-key material #569 was filed over), **#570**
   (`ciborium`'s decode side grows payload buffers from capacity 0, so any
-  field over 4 KiB reallocs
-  repeatedly and frees unwiped prefixes — measured at ~14 reallocations
-  for a 100 KB byte string).
+  field over 4 KiB reallocs repeatedly and frees unwiped prefixes —
+  measured, by execution, at 6 allocation events / 5 reallocations for a
+  100,000-byte `bstr`, final capacity 131072. This entry originally read
+  "~14 reallocations" — wrong by roughly 3x, corrected here rather than
+  carried forward a third time; see "Resolved: cbor-residue-closeout
+  follow-up" below for the reproduction).
 
 ---
 
@@ -1505,11 +1546,14 @@ wipe to cover it.
 - **`parse_manifest_map` rejects duplicate top-level keys (#568).** RFC
   8949 §5.4 requires rejecting a repeated map key rather than silently
   taking the last one; `parse_manifest_map` was the one decoder of four
-  that did not. It now tracks the keys seen so far in a set and returns
-  `ManifestError::DuplicateKey` on a repeat. Scoped to the top level only —
-  the four nested parsers (`parse_vector_clock_entry`, `parse_block_entry`,
-  `parse_trash_entry`, `parse_kdf_params`) have no equivalent check of
-  their own, tracked separately as **#573**.
+  (the four `SecretValueTree`/`SecretEntries` top-level decode roots —
+  `record`, `block`, `bundle`, `manifest` — not the nested parsers below,
+  a separate group) that did not. It now tracks the keys seen so far in a
+  set and returns `ManifestError::DuplicateKey` on a repeat. Scoped to the
+  top level only — `manifest.rs`'s own four NESTED parsers
+  (`parse_vector_clock_entry`, `parse_block_entry`, `parse_trash_entry`,
+  `parse_kdf_params`) have no equivalent check of their own, tracked
+  separately as **#573**.
 - **The `(len, bytes)` == RFC 8949 §4.2.1 claim is now a committed
   proptest (#567).** `CanonicalMap::serialize`'s key sort — the mechanism
   that lets its keys stay borrowed `&str`s with no key buffer ever
@@ -1528,9 +1572,11 @@ wipe to cover it.
   per-chunk grow-and-copy, so any field larger than the parser's 4096-byte
   scratch buffer still grows by doubling and frees an unwiped prefix at
   every step, inside the parser's own visitor — before `from_secret_reader`
-  or `SecretValueTree` ever sees the value. Measured at capacity 131072
-  grown from 0 for a 100,000-byte `bstr`: roughly 14 reallocations. For an
-  attachment, a long note, or a stored key file this is the routine case,
+  or `SecretValueTree` ever sees the value. Measured, by execution
+  (`Vec<u8>::extend_from_slice` in 4096-byte chunks to 100,000 bytes
+  total): 6 allocation events, 5 of them reallocations, final capacity
+  131072 grown from 0. For an attachment, a long note, or a stored key
+  file this is the routine case,
   not an edge case, and there is no public `ciborium` hook to reach it.
   Both `core/src/cbor/scratch.rs`'s and `core/src/cbor/secret_tree/mod.rs`'s
   own "What this does not claim" sections now name this threshold

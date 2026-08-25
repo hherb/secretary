@@ -104,11 +104,11 @@ impl FieldHandle {
     /// String is caller-owned; caller MUST zeroize after use.
     ///
     /// #519: there is no Rust-side wipe here. The reason is NOT that there
-    /// is no local to wrapper-type — the bridge's `expose().to_vec()`
-    /// result IS a local this crate owns. There are three copies per call,
-    /// and the second is the one that cannot be reached:
+    /// is no local to wrapper-type — the bridge's `expose().to_owned()`
+    /// result (a `String`) IS a local this crate owns. There are three
+    /// copies per call, and the second is the one that cannot be reached:
     ///
-    /// 1. the bridge's `to_vec()` — ours, unwiped;
+    /// 1. the bridge's `to_owned()` — ours, unwiped;
     /// 2. the `RustBuffer` — `lower_into_rust_buffer`
     ///    (`uniffi_core-0.32.0/src/ffi_converter_traits.rs:265`) builds a
     ///    `Vec<u8>` and hands it to the foreign side, which frees it

@@ -205,11 +205,13 @@ pub(crate) fn wipe_leaked_value(value: &mut Value) {
 ///   final payload with `Vec::new()` / `String::new()` plus per-chunk
 ///   `extend_from_slice`, so a payload larger than the parser's scratch
 ///   buffer still grows by doubling and frees an unwiped prefix at each
-///   step — measured at capacity 131072 grown from 0 for a 100,000-byte
-///   `bstr`, roughly 14 reallocations. For an attachment, a long note or a
-///   stored key file that is the normal case, not the exception. This
-///   happens inside the parser's visitor, before any wrapper here sees the
-///   value, and there is no public hook for it. Tracked as **#570**.
+///   step — measured, by execution (`Vec<u8>::extend_from_slice` in
+///   4096-byte chunks to 100,000 bytes total), at 6 allocation events and
+///   5 reallocations, final capacity 131072 grown from 0. For an
+///   attachment, a long note or a stored key file that is the normal case,
+///   not the exception. This happens inside the parser's visitor, before
+///   any wrapper here sees the value, and there is no public hook for it.
+///   Tracked as **#570**.
 ///
 /// # Why there is no `&mut` or consuming accessor
 ///
