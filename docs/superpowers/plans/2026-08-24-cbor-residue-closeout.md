@@ -1581,6 +1581,23 @@ single most repeated defect. Correct each of these **by name**:
 - `CLAUDE.md`'s memory-hygiene bullet — lists "an unwiped `re_encoded` re-check buffer" under
   what is still open. It is closed.
 
+**Falsified by Task 4 (bundle encode no longer builds `SecretEntries`) — controller ruling T4-A:**
+- `docs/manual/contributors/memory-hygiene-audit-internal.md:1075` — the table row listing
+  `IdentityBundle::to_canonical_cbor` (`bundle.rs:296`, `SecretEntries`) as an **encode** root.
+  Bundle is now decode-only.
+- `docs/manual/contributors/memory-hygiene-audit-internal.md:1080-1081` — "`bundle` and `manifest`
+  each having both an encode-side and a decode-side wrap (**six** call sites total)". Now five.
+- `docs/manual/contributors/memory-hygiene-audit-internal.md:1214-1219` — "This IS a copy of
+  secret-key material … immediately wrapped in `SecretEntries::new`". No copy is made any more.
+- `docs/manual/contributors/memory-hygiene-audit-internal.md:1359-1361` — still lists #569 as open
+  for the bundle. Closed in code by Task 4.
+- `CLAUDE.md`'s "four roots (record, block, bundle, manifest)" **survives** — bundle is still a
+  decode root. Do not "correct" it.
+- `core/src/vault/canonical/mod.rs:58-88` and `core/src/vault/canonical/value.rs:36-54` enumerate
+  `CanonicalMap`'s production consumers as record, then block. The bundle is now a third and is
+  unlisted. Not falsified (neither claims exhaustivity) but drifting — add it or drop the
+  enumeration, per ruling R11's "delete an enumeration rather than correct it a third time".
+
 **Comments Task 3's review found inaccurate:**
 - `core/src/vault/record.rs:487-492` — the doc claims a contrast with "the deletable
   `SecretBytes::new(..)` call sites #558 and #565 record". True for `block.rs` and
