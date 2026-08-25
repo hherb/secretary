@@ -295,7 +295,16 @@ impl SecretEntries {
         self.0.is_empty()
     }
 
-    /// Read-only view of every entry currently held.
+    /// Read-only view of every entry currently held. Test-only as of #569:
+    /// `unlock::bundle::to_canonical_cbor` was this method's only production
+    /// caller (it fed `entries.as_slice()` into
+    /// `crate::vault::canonical::encode_canonical_map`), and #569 replaced
+    /// that whole encode path with the borrowing `CanonicalMap` mirror,
+    /// which never constructs a `SecretEntries` at all. `tests.rs` still
+    /// exercises this directly, so — same reasoning as [`Self::len`] above —
+    /// it is `#[cfg(test)]`-gated rather than left to trip `dead_code` under
+    /// `-D warnings` (verified by execution).
+    #[cfg(test)]
     pub(crate) fn as_slice(&self) -> &[(Value, Value)] {
         &self.0
     }

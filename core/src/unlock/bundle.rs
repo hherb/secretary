@@ -59,7 +59,7 @@ use crate::crypto::sig::{
     generate_ed25519, generate_ml_dsa_65, ED25519_PK_LEN, ED25519_SK_LEN, ML_DSA_65_PK_LEN,
     ML_DSA_65_SEED_LEN,
 };
-use crate::vault::canonical::CanonicalError;
+use crate::vault::canonical::{to_canonical_vec, CanonicalError, CanonicalMap, CanonicalValue};
 
 // ---------------------------------------------------------------------------
 // Constants (§14)
@@ -91,6 +91,11 @@ const KEY_ED25519_PK: &str = "ed25519_pk";
 const KEY_ML_DSA_65_SK: &str = "ml_dsa_65_sk";
 const KEY_ML_DSA_65_PK: &str = "ml_dsa_65_pk";
 const KEY_CREATED_AT: &str = "created_at";
+
+/// Number of entries in the §5 identity-bundle CBOR map. A capacity hint
+/// for `CanonicalMap::with_capacity`, not an invariant — `push` is correct
+/// at any capacity.
+const BUNDLE_FIELD_COUNT: usize = 11;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -290,90 +295,46 @@ impl IdentityBundle {
     /// deterministic: encoding twice produces identical bytes, and any
     /// conformant RFC 8949 §4.2.1 encoder produces the same output.
     pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, BundleError> {
-        // Build the 11 entries; they will be sorted bytewise by canonical
-        // key encoding before serialisation. The order in this `vec!` is
-        // therefore not load-bearing — the sort step is.
-        let entries = SecretEntries::new(vec![
-            (
-                Value::Text(KEY_USER_UUID.into()),
-                Value::Bytes(self.user_uuid.to_vec()),
-            ),
-            (
-                Value::Text(KEY_DISPLAY_NAME.into()),
-                Value::Text(self.display_name.clone()),
-            ),
-            (
-                Value::Text(KEY_X25519_SK.into()),
-                Value::Bytes(self.x25519_sk.expose().to_vec()),
-            ),
-            (
-                Value::Text(KEY_X25519_PK.into()),
-                Value::Bytes(self.x25519_pk.to_vec()),
-            ),
-            (
-                Value::Text(KEY_ML_KEM_768_SK.into()),
-                Value::Bytes(self.ml_kem_768_sk.expose().clone()),
-            ),
-            (
-                Value::Text(KEY_ML_KEM_768_PK.into()),
-                Value::Bytes(self.ml_kem_768_pk.clone()),
-            ),
-            (
-                Value::Text(KEY_ED25519_SK.into()),
-                Value::Bytes(self.ed25519_sk.expose().to_vec()),
-            ),
-            (
-                Value::Text(KEY_ED25519_PK.into()),
-                Value::Bytes(self.ed25519_pk.to_vec()),
-            ),
-            (
-                Value::Text(KEY_ML_DSA_65_SK.into()),
-                Value::Bytes(self.ml_dsa_65_sk.expose().clone()),
-            ),
-            (
-                Value::Text(KEY_ML_DSA_65_PK.into()),
-                Value::Bytes(self.ml_dsa_65_pk.clone()),
-            ),
-            (
-                Value::Text(KEY_CREATED_AT.into()),
-                Value::Integer(self.created_at_ms.into()),
-            ),
-        ]);
-        // `entries` holds a cleartext clone of all four long-term secret keys.
-        // `SecretEntries::drop` wipes them at the end of this expression, on
-        // the error path as well as the success path (#542) — the shared
-        // type `crate::cbor::secret_tree` also uses for the record/block
-        // decode paths (#547) and this file's own read side (#548, see
-        // `from_canonical_cbor` below). This file no longer owns a private
-        // copy of the wrapper.
+        // Every value BORROWS. The four long-term secret keys — X25519,
+        // ML-KEM-768 (2400 B), Ed25519 and ML-DSA-65 — used to be cloned out
+        // of their `Sensitive` wrappers into owned `Value::Bytes` on EVERY
+        // encode, then wiped by `SecretEntries::drop`. Wiping is the fallback
+        // mechanism; a copy that never exists needs no wipe and cannot be
+        // missed by a future caller (#569). `SecretEntries` remains on the
+        // DECODE side below, where ciborium's parser owns the allocation and
+        // elimination is not available.
         //
-        // One deliberate behaviour difference from the retired
-        // `ZeroizingEntries`: `SecretEntries::wipe` also zeroizes
-        // `Value::Text`, which `ZeroizingEntries` did not. The bundle's only
-        // text value is `display_name`, which `IdentityBundle` itself holds
-        // as an unwrapped `String` — wiping the CLONE here is neither
-        // harmful nor load-bearing, just a side effect of using the shared
-        // type instead of a bundle-specific one.
-        //
-        // On `main`, before #547/#548 shared this call with `record.rs` /
-        // `block.rs` / `manifest.rs`, this file's own `encode_map` took the
-        // WRAPPER (`&ZeroizingEntries`), not `&[(Value, Value)]` — the
-        // comment there said plainly: "passing the inner slice made the
-        // wrapper optional at its only call site, so reverting this line to
-        // a bare `vec![…]` compiled and passed the whole suite. The
-        // signature is what makes the invariant hold." `encode_canonical_map`
-        // is the shared helper `record.rs`/`block.rs`/`manifest.rs` also
-        // call, and its signature is `&[(Value, Value)]` — it cannot take
-        // `&SecretEntries` without forcing every OTHER caller through the
-        // same wrapper, several of which build entries with no secret
-        // content at all. Sharing the mechanism therefore traded that
-        // type-level guarantee for a test-level one: nothing stops a future
-        // edit here from reverting to a bare `vec![…]` and still
-        // compiling — [`to_canonical_cbor_wipes_its_entry_list`] is what
-        // would catch it, by asserting the production encode path actually
-        // wipes via `crate::cbor::wipe_calls()`, not by construction.
-        crate::vault::canonical::encode_canonical_map(entries.as_slice())
-            .map_err(canonical_error_to_bundle_error)
+        // Push order is irrelevant: `CanonicalMap`'s `Serialize` imposes the
+        // RFC 8949 4.2.1 order at serialise time.
+        let mut map = CanonicalMap::with_capacity(BUNDLE_FIELD_COUNT);
+        map.push(KEY_USER_UUID, CanonicalValue::Bytes(&self.user_uuid));
+        map.push(KEY_DISPLAY_NAME, CanonicalValue::Text(&self.display_name));
+        map.push(
+            KEY_X25519_SK,
+            CanonicalValue::Bytes(self.x25519_sk.expose()),
+        );
+        map.push(KEY_X25519_PK, CanonicalValue::Bytes(&self.x25519_pk));
+        map.push(
+            KEY_ML_KEM_768_SK,
+            CanonicalValue::Bytes(self.ml_kem_768_sk.expose()),
+        );
+        map.push(
+            KEY_ML_KEM_768_PK,
+            CanonicalValue::Bytes(&self.ml_kem_768_pk),
+        );
+        map.push(
+            KEY_ED25519_SK,
+            CanonicalValue::Bytes(self.ed25519_sk.expose()),
+        );
+        map.push(KEY_ED25519_PK, CanonicalValue::Bytes(&self.ed25519_pk));
+        map.push(
+            KEY_ML_DSA_65_SK,
+            CanonicalValue::Bytes(self.ml_dsa_65_sk.expose()),
+        );
+        map.push(KEY_ML_DSA_65_PK, CanonicalValue::Bytes(&self.ml_dsa_65_pk));
+        map.push(KEY_CREATED_AT, CanonicalValue::Uint(self.created_at_ms));
+
+        to_canonical_vec(&map).map_err(canonical_error_to_bundle_error)
     }
 
     /// Inverse of [`Self::to_canonical_cbor`]. Validates that every required field
@@ -639,13 +600,16 @@ impl IdentityBundle {
 /// already had is the smaller surface change.
 ///
 /// `to_canonical_cbor`'s only call into the shared module is
-/// [`crate::vault::canonical::encode_canonical_map`], which never itself
+/// [`crate::vault::canonical::to_canonical_vec`] (#569 — previously
+/// [`crate::vault::canonical::encode_canonical_map`]), which never itself
 /// calls [`crate::vault::canonical::reject_floats_and_tags`] — so
 /// `FloatRejected` / `TagRejected` are structurally unreachable from this
-/// file's own call site today. They still need a match arm: `CanonicalError`
-/// is one type shared across every caller of the module, not scoped per
-/// function, so this `match` must stay exhaustive regardless of which arms
-/// THIS caller can actually trigger.
+/// file's own call site today (`CanonicalValue` has no arm that can carry a
+/// float, and `to_canonical_cbor` never uses `CanonicalValue::Borrowed`).
+/// They still need a match arm: `CanonicalError` is one type shared across
+/// every caller of the module, not scoped per function, so this `match`
+/// must stay exhaustive regardless of which arms THIS caller can actually
+/// trigger.
 fn canonical_error_to_bundle_error(e: CanonicalError) -> BundleError {
     match e {
         CanonicalError::CborEncode(fault) => BundleError::CborFault(fault),
@@ -1088,19 +1052,52 @@ mod tests {
         );
     }
 
+    /// Migrating the bundle encode path to the borrowing `CanonicalMap`
+    /// mirror (#569) must not move a single on-disk byte. The four secret
+    /// keys stop being copied out of their `Sensitive` wrappers; the wire
+    /// form is identical.
+    ///
+    /// This test replaces the retired `to_canonical_cbor_wipes_its_entry_list`:
+    /// that test asserted `to_canonical_cbor` incremented
+    /// `crate::cbor::wipe_calls()`, which was true only because the old
+    /// implementation built a `SecretEntries` and wiped it on drop. #569
+    /// removes that allocation entirely — elimination, not wiping — so
+    /// `to_canonical_cbor` no longer touches the wipe counter at all, and
+    /// the old assertion would now fail by construction. Byte-stability is
+    /// the property that matters post-migration; this test proves it.
     #[test]
-    fn to_canonical_cbor_wipes_its_entry_list() {
-        // The end-to-end version of the above: the production encode path must
-        // wipe, without any test calling `wipe` itself.
-        let mut rng = ChaCha20Rng::from_seed([11u8; 32]);
-        let b = generate("wipe-check", 1_714_060_800_000, &mut rng);
-        let before = crate::cbor::wipe_calls();
-        let _bytes = b.to_canonical_cbor().expect("encode");
+    fn canonical_encoding_is_unchanged_by_the_borrowing_mirror() {
+        let mut rng = ChaCha20Rng::from_seed([61u8; 32]);
+        let bundle = generate("residue-test", 1_700_000_000_000, &mut rng);
+
+        let encoded = bundle.to_canonical_cbor().expect("encode");
+        let round_tripped =
+            IdentityBundle::from_canonical_cbor(encoded.as_slice()).expect("decode");
+        let re_encoded = round_tripped.to_canonical_cbor().expect("re-encode");
         assert_eq!(
-            crate::cbor::wipe_calls(),
-            before + 1,
-            "to_canonical_cbor left its entry list unwiped"
+            encoded, re_encoded,
+            "encode -> decode -> encode must be byte-stable"
         );
+
+        // The map's keys must come out in RFC 8949 4.2.1 order. Rather than
+        // asserting a hardcoded key name, re-derive the expected order from
+        // the decoded bytes and compare: this stays correct if a key is
+        // ever added, and it fails loudly if the comparator regresses.
+        let Value::Map(entries) =
+            ciborium::de::from_reader::<Value, _>(encoded.as_slice()).expect("parse")
+        else {
+            panic!("bundle CBOR must be a map");
+        };
+        let keys: Vec<&str> = entries
+            .iter()
+            .map(|(k, _)| match k {
+                Value::Text(s) => s.as_str(),
+                other => panic!("non-text key: {other:?}"),
+            })
+            .collect();
+        let mut expected = keys.clone();
+        expected.sort_by_key(|k| (k.len(), *k));
+        assert_eq!(keys, expected, "keys must be in (byte length, bytes) order");
     }
 
     /// #548 — the C-4 read side, and the audit's own FIRST-named sub-item.
