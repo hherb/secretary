@@ -66,8 +66,30 @@ use zeroize::Zeroize;
 /// Deliberately equal to `ciborium`'s own default (`de/mod.rs:829`). A
 /// different value would be sound but would change how payloads are
 /// chunked, and this module's whole claim is that routing through it
-/// changes no parsing behaviour.
+/// changes no parsing behaviour. That equality is pinned by the `const _`
+/// assertion immediately below, not merely asserted in prose — a bare doc
+/// comment does not stop a future edit from changing this value while
+/// every existing test stays green (mutation-proven: setting it to `64`
+/// during review left all three `cbor::scratch` tests passing).
 pub(crate) const CBOR_SCRATCH_LEN: usize = 4096;
+
+// Pins `CBOR_SCRATCH_LEN` to `ciborium`'s own hardcoded default
+// (`de/mod.rs:829`), which is the fact this whole module's
+// behaviour-identical claim rests on. Nothing else enforces this: no test
+// here fails if the two values diverge, since a smaller or larger scratch
+// buffer still parses every fixture correctly (it only changes how a
+// payload larger than the buffer gets chunked internally by `ciborium`,
+// which is invisible to `Value`-level equality assertions). A version pin
+// on `ciborium` (`=0.2.2` in `core/Cargo.toml`) is what would need
+// re-verifying against `de/mod.rs:829` on any future bump; this assertion
+// only guards against an edit to the constant on *this* side drifting from
+// that pinned value.
+const _: () = assert!(
+    CBOR_SCRATCH_LEN == 4096,
+    "must equal ciborium 0.2.2's own de/mod.rs default scratch length (4096) — \
+     changing this constant changes ciborium's internal chunking behaviour, \
+     which this module's doc claims does not happen"
+);
 
 /// A parser scratch buffer that is zeroized when it drops.
 ///
@@ -75,6 +97,38 @@ pub(crate) const CBOR_SCRATCH_LEN: usize = 4096;
 /// the only code that can hand the buffer to `ciborium` is
 /// [`from_secret_reader`] below.
 struct CborScratch([u8; CBOR_SCRATCH_LEN]);
+
+impl CborScratch {
+    /// Wipe now, without waiting for the drop. Test-only: production code
+    /// relies on `Drop` precisely because it cannot be skipped. Same name
+    /// and shape as `secret_tree::SecretValueTree::wipe_for_test` /
+    /// `SecretEntries::wipe_for_test` — see [`Self::wipe`]'s doc for why
+    /// the split exists.
+    #[cfg(test)]
+    fn wipe_for_test(&mut self) {
+        self.wipe();
+    }
+
+    /// The actual wipe, shared by [`Drop::drop`] and, in tests,
+    /// [`Self::wipe_for_test`].
+    ///
+    /// Split out rather than inlined into `Drop::drop`, mirroring
+    /// `secret_tree`'s `SecretValueTree` / `SecretEntries` (`6ac4cfed`
+    /// finding I3): a counter bump alone proves only that *some* code ran
+    /// on drop, not that the bump is coupled to the zeroize it claims to
+    /// accompany — a mutation that deletes `self.0.zeroize()` leaves a
+    /// counter-only test green (confirmed by mutation on this exact type;
+    /// see task-1-report.md). `scratch_wipe_is_not_vacuous` below calls
+    /// this method directly, bypassing `Drop` entirely, so it isolates the
+    /// wipe's *effect* (bytes actually cleared) from the fact that `Drop`
+    /// *invokes* something (`scratch_is_wiped_on_the_success_path` /
+    /// `..._on_the_error_path` above cover that half).
+    fn wipe(&mut self) {
+        #[cfg(test)]
+        super::secret_tree::note_wipe();
+        self.0.zeroize();
+    }
+}
 
 impl Drop for CborScratch {
     /// Hand-written rather than `#[derive(ZeroizeOnDrop)]`, deliberately.
@@ -85,9 +139,7 @@ impl Drop for CborScratch {
     /// mechanisms that shipped that way. Writing `Drop` by hand lets this
     /// one be pinned by test from the moment it lands.
     fn drop(&mut self) {
-        #[cfg(test)]
-        super::secret_tree::note_wipe();
-        self.0.zeroize();
+        self.wipe();
     }
 }
 
@@ -99,10 +151,19 @@ impl Drop for CborScratch {
 /// `?`, or an unwinding panic — rather than left intact in `ciborium`'s
 /// frame.
 ///
-/// This is the sanctioned entry point for every secret-bearing parse in the
-/// crate. `grep -rn "ciborium::de::from_reader" core/src` shows the
-/// remaining plain-`from_reader` sites; each carries a comment saying why
-/// it provably holds no secret.
+/// This is **intended** to become the sanctioned entry point for every
+/// secret-bearing parse in the crate, but as of this commit it has **zero**
+/// production callers — this task (#561 Task 1) only adds the mechanism.
+/// `grep -rn "ciborium::de::from_reader" core/src` shows today's state: 8
+/// production call sites (`identity/card.rs`, `sync/state.rs`,
+/// `unlock/bundle.rs`, `vault/manifest.rs` x2, `vault/block.rs`,
+/// `vault/record.rs` x2), none yet carrying a comment either way. Task 2
+/// routes the six secret-bearing ones (`bundle.rs`, `manifest.rs` x2,
+/// `block.rs`, `record.rs` x2) here; the other two (`card.rs`,
+/// `sync/state.rs`) are expected to stay on plain `from_reader`, each
+/// gaining a comment saying why its input provably holds no secret. Neither
+/// half of that is true yet — do not read this doc comment as a coverage
+/// claim about the current tree.
 ///
 /// Takes an already-materialized `&[u8]` rather than a generic
 /// `ciborium_io::Read` — see the module doc's "Why `&[u8]`" section — and
@@ -151,6 +212,61 @@ mod tests {
             wipe_calls(),
             before + 1,
             "the scratch wipe must fire on the `?` path too"
+        );
+    }
+
+    /// Proves the wipe is not vacuous. The two tests above prove `Drop`
+    /// *runs* on both exit paths (via the counter); they do NOT prove the
+    /// buffer's bytes are actually cleared — a mutation deleting
+    /// `self.0.zeroize()` from [`CborScratch::wipe`] leaves both counter
+    /// tests green, confirmed by mutation during review (see
+    /// task-1-report.md). This test closes that gap directly: it parses a
+    /// distinctive marker payload short enough that `ciborium`
+    /// `read_exact`s it straight into the scratch buffer (see the module
+    /// doc), confirms the marker actually landed there (so the "before"
+    /// state isn't vacuously already-zero), calls `wipe_for_test` —
+    /// bypassing `Drop` so this test isolates the wipe's EFFECT from the
+    /// fact that something invokes it — and confirms the marker is gone
+    /// afterward. Mirrors `secret_tree::tests::wipe_is_not_vacuous` /
+    /// `secret_entries_wipe_reaches_every_entry_including_keys`: same
+    /// structure, same `wipe`/`wipe_for_test` split, same naming.
+    #[test]
+    fn scratch_wipe_is_not_vacuous() {
+        const MARKER: &[u8] = b"amex-cvv-4111111111111111-marker";
+        assert!(
+            MARKER.len() <= CBOR_SCRATCH_LEN,
+            "fixture setup: marker must fit in one scratch-buffered read"
+        );
+
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&Value::Bytes(MARKER.to_vec()), &mut encoded).expect("encode");
+
+        // Construct the scratch buffer directly and hand it to
+        // `from_reader_with_buffer` ourselves, rather than going through
+        // `from_secret_reader` — that call's `CborScratch` would already
+        // have dropped (and wiped) by the time control returns here, so
+        // there would be nothing left to inspect.
+        let mut scratch = CborScratch([0u8; CBOR_SCRATCH_LEN]);
+        let parsed: Value =
+            ciborium::de::from_reader_with_buffer(encoded.as_slice(), &mut scratch.0)
+                .expect("parse");
+        assert_eq!(parsed, Value::Bytes(MARKER.to_vec()), "fixture setup");
+        assert!(
+            scratch
+                .0
+                .windows(MARKER.len())
+                .any(|window| window == MARKER),
+            "fixture setup: marker did not land in the scratch buffer"
+        );
+
+        scratch.wipe_for_test();
+
+        assert!(
+            !scratch
+                .0
+                .windows(MARKER.len())
+                .any(|window| window == MARKER),
+            "marker still present after wipe — the wipe is a no-op"
         );
     }
 
