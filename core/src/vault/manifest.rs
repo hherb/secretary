@@ -155,9 +155,14 @@ pub enum ManifestError {
     #[error("manifest map keys must be text strings")]
     NonTextKey,
 
-    /// A CBOR map key appeared more than once. RFC 8949 §5.4 leaves this
-    /// to the application; every other decoder in this crate rejects, and
-    /// silent last-wins is the wrong direction.
+    /// A CBOR map key appeared more than once in the top-level manifest
+    /// map. RFC 8949 §5.4 leaves this to the application; `record.rs` and
+    /// `block.rs` reject a duplicate key at *every* nesting level, and
+    /// silent last-wins was the wrong direction here too — for this one
+    /// level. This variant does not close the gap at every level:
+    /// `parse_vector_clock_entry`, `parse_block_entry`,
+    /// `parse_trash_entry` and `parse_kdf_params` still silently last-win
+    /// on their own nested maps (#573).
     ///
     /// Payload is data-free by construction (#474): `field` is a
     /// compile-time map-level hint, `index` the entry's ordinal. The
@@ -774,6 +779,10 @@ fn unknown_value_inner(u: &UnknownValue) -> Result<Value, ManifestError> {
 /// 9. `blocks` has no duplicate `block_uuid`.
 /// 10. `trash` has no duplicate `block_uuid` (§7 tracks the most-recent
 ///     tombstone per block only).
+/// 11. The top-level map itself has no duplicate key (RFC 8949 §5.4).
+///     Scoped to this one level only: `parse_vector_clock_entry`,
+///     `parse_block_entry`, `parse_trash_entry` and `parse_kdf_params`
+///     have no equivalent check of their own nested maps (#573).
 ///
 /// Forward-compat unknown keys are preserved into the relevant `unknown`
 /// bag verbatim.

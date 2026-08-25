@@ -195,16 +195,22 @@ impl Serialize for CanonicalMap<'_> {
         // is no key buffer here to worry about being secret-bearing (see
         // the module doc): nothing is copied out of the key to begin with.
         //
+        // The general equivalence claim in the paragraph above — ordering
+        // on `(byte length, bytes)` matches ordering on the full CBOR
+        // encoding, for any pair of strings — is pinned by the proptest
+        // `len_then_bytes_matches_full_cbor_encoding_order`, in this
+        // file's own test module below (#567).
+        //
         // `.len()` on `&str` is BYTE length, not char count — load-bearing:
         // a multi-byte UTF-8 key (e.g. 3-byte "日") must sort by its 3 CBOR
         // payload bytes, not by its 1 char, or the order would diverge from
-        // the real CBOR head. `map_key_sort_crosses_head_length_boundary_
-        // and_uses_byte_not_char_length`, in this file's own test module
-        // below, pins this with a key pair that would sort the other way
-        // under a char-count comparator. (That citation read
-        // `core/tests/canonical_value_equivalence.rs` until the #560
-        // review — a file this branch DELETED when the proof moved in here;
-        // the test survived the move, only its home changed.)
+        // the real CBOR head. `map_key_sort_crosses_head_length_boundary_and_uses_byte_not_char_length`,
+        // in this file's own test module below, pins this with a key pair
+        // that would sort the other way under a char-count comparator.
+        // (That citation read `core/tests/canonical_value_equivalence.rs`
+        // until the #560 review — a file this branch DELETED when the
+        // proof moved in here; the test survived the move, only its home
+        // changed.)
         let mut order: Vec<usize> = (0..self.0.len()).collect();
         order.sort_by(|&a, &b| {
             let (ka, kb) = (self.0[a].0, self.0[b].0);
@@ -610,22 +616,6 @@ mod tests {
         assert_eq!(enc(&unk), enc(&CanonicalValue::Borrowed(&unk)));
     }
 
-    /// The `(byte length, bytes)` comparator `CanonicalMap::serialize`
-    /// uses must be *exactly* RFC 8949 §4.2.1 order — i.e. identical to
-    /// ordering on each key's full CBOR encoding.
-    ///
-    /// This is the property that lets the sort read straight through the
-    /// borrowed `&str`s and materialise no key buffer, which is the whole
-    /// security point: record field names are decrypted plaintext. If it
-    /// ever breaks, the on-disk format moves silently.
-    ///
-    /// It has been checked twice by exhaustive sweep (184,041 pairwise
-    /// comparisons; 400,000 in an independent reproduction) and neither
-    /// sweep was committed — both lived in prose (#567). This makes it
-    /// permanent. `golden_vault_001` cannot cover it: every key there is
-    /// ASCII, so a byte-length -> char-count regression yields
-    /// byte-identical output for that vault (#562).
-    ///
     /// `enc_text` is written locally on purpose. Reusing the production
     /// encoder would make the test circular.
     fn enc_text(s: &str) -> Vec<u8> {
@@ -657,6 +647,22 @@ mod tests {
     }
 
     proptest::proptest! {
+        /// The `(byte length, bytes)` comparator `CanonicalMap::serialize`
+        /// uses must be *exactly* RFC 8949 §4.2.1 order — i.e. identical to
+        /// ordering on each key's full CBOR encoding.
+        ///
+        /// This is the property that lets the sort read straight through
+        /// the borrowed `&str`s and materialise no key buffer, which is
+        /// the whole security point: record field names are decrypted
+        /// plaintext. If it ever breaks, the on-disk format moves
+        /// silently.
+        ///
+        /// It has been checked twice by exhaustive sweep (184,041 pairwise
+        /// comparisons; 400,000 in an independent reproduction) and
+        /// neither sweep was committed — both lived in prose (#567). This
+        /// makes it permanent. `golden_vault_001` cannot cover it: every
+        /// key there is ASCII, so a byte-length -> char-count regression
+        /// yields byte-identical output for that vault (#562).
         #[test]
         fn len_then_bytes_matches_full_cbor_encoding_order(a: String, b: String) {
             let by_parts = (a.len(), a.as_bytes()).cmp(&(b.len(), b.as_bytes()));
@@ -695,11 +701,11 @@ mod tests {
         // above, which is test-local — places "ab" before "日". Without
         // this, a regression in the production comparator alone (leaving
         // `enc_text` untouched) would not fail this test, only the
-        // pre-existing `map_key_sort_crosses_head_length_boundary_and_
-        // uses_byte_not_char_length` below; mutation-checked (#567 task
-        // brief step 3) against a `chars().count()` regression in
-        // `CanonicalMap::serialize` to confirm this assertion, not that
-        // sibling test, is what catches it.
+        // pre-existing `map_key_sort_crosses_head_length_boundary_and_uses_byte_not_char_length`
+        // above; mutation-checked (#567 task brief step 3) against a
+        // `chars().count()` regression in `CanonicalMap::serialize` to
+        // confirm this assertion, not that sibling test, is what catches
+        // it.
         let mut m = CanonicalMap::with_capacity(2);
         m.push("日", CanonicalValue::Uint(1));
         m.push("ab", CanonicalValue::Uint(0));
