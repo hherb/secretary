@@ -295,6 +295,24 @@ impl IdentityBundle {
     /// Canonical CBOR encoding of the §5 plaintext map. Output is
     /// deterministic: encoding twice produces identical bytes, and any
     /// conformant RFC 8949 §4.2.1 encoder produces the same output.
+    ///
+    /// **Returns a bare `Vec<u8>`, unlike its three siblings** —
+    /// `record::encode`, `block::encode_plaintext` and `encode_manifest`
+    /// all return `SecretBytes` so the wrap cannot be deleted without a
+    /// compile error (#558, #565). This output is the highest-value
+    /// plaintext buffer in the crate (cleartext CBOR of the X25519 secret
+    /// key, the 2400-byte ML-KEM-768 decapsulation key, the Ed25519 secret
+    /// key and the ML-DSA-65 seed), and its production caller
+    /// `unlock::create_vault_unchecked` applies exactly the deletable
+    /// `SecretBytes::new(f()?)` shape those three were changed to
+    /// eliminate.
+    ///
+    /// Tracked as **#571**, deliberately deferred for slice size — NOT
+    /// because anything blocks it. The handoff for the slice that changed
+    /// the other three recorded the reason as "T5's tests depend on it";
+    /// the #575 review found that misleading, since the two affected tests
+    /// need the same one-word `.as_slice()` -> `.expose()` edit that ~35
+    /// other tests in that slice already took.
     pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, BundleError> {
         // Every value BORROWS. The four long-term secret keys — X25519,
         // ML-KEM-768 (2400 B), Ed25519 and ML-DSA-65 — used to be cloned out
@@ -655,15 +673,30 @@ pub(super) fn canonical_key_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
 
 /// Write `v` into `slot`, rejecting a second write for the same key.
 ///
-/// `T: Zeroize` is load-bearing, not decoration. `v` is fully evaluated by
-/// the caller — `take_text(v)?` has already produced an owned `String`,
-/// `take_uuid(v)?` a `[u8; 16]` — so on the duplicate path that decoded
-/// copy is live and would otherwise be dropped unwiped (#566). The
-/// `Sensitive`-returning helpers are covered by their own `Drop`; the
-/// plain `String` / `Vec<u8>` / `[u8; N]` returns are what this closes.
+/// `v` is fully evaluated by the caller — `take_text(v)?` has already
+/// produced an owned `String`, `take_uuid(v)?` a `[u8; 16]` — so on the
+/// duplicate path that decoded copy is live and would otherwise be
+/// dropped unwiped (#566).
 ///
-/// The bound is on the signature rather than applied at each of the 11
-/// call sites deliberately: a future call site cannot forget it.
+/// **What this closes today is nothing secret, and the #575 review
+/// corrected an earlier version of this comment that implied otherwise.**
+/// Reading all 11 call sites: the four secret-bearing arms arrive as
+/// `Sensitive<…>`, already `ZeroizeOnDrop`, so the explicit call there is
+/// a redundant (harmless, idempotent) second wipe. The arms where
+/// `set_once` is the ONLY wipe are `display_name` (`String`), `user_uuid`
+/// (`[u8; 16]`), the three public keys and `created_at_ms` (`u64`) — all
+/// public or non-secret. `display_name` in particular is not "handled" by
+/// this: the ACCEPTED copy moves into `IdentityBundle::display_name`, a
+/// deliberately non-zeroize-typed field, and lives unwiped for the
+/// bundle's whole lifetime by pre-existing design.
+///
+/// So this is defence in depth for a FUTURE secret-bearing plain-typed
+/// field, not a closed live window — and that is what makes the bound
+/// worth having. `T: Zeroize` on the signature rather than a `.zeroize()`
+/// at each of the 11 call sites means such a field cannot be added
+/// without the wipe coming with it. Note the bound is also the only one
+/// that compiles: `ZeroizeOnDrop` is a marker trait with no methods, so
+/// `v.zeroize()` would not typecheck under it.
 fn set_once<T: Zeroize>(
     slot: &mut Option<T>,
     mut v: T,
@@ -1206,6 +1239,47 @@ mod tests {
              plus SecretEntries::drop carrying the not-yet-consumed \
              ed25519_sk entry) — the early-return path did not wipe the \
              remainder (#548, #561)"
+        );
+    }
+
+    /// `from_canonical_cbor` must parse through `cbor::from_secret_reader`
+    /// on the HAPPY path (#561). Its scratch buffer stages the X25519
+    /// secret key, the 2400-byte ML-KEM-768 decapsulation key, the Ed25519
+    /// secret key and the ML-DSA-65 seed — every long-term secret key the
+    /// identity bundle holds, and the highest-value input of the six sites
+    /// this slice migrated.
+    ///
+    /// Added in the #575 review, which found this the ONLY one of the six
+    /// without a dedicated test: `record.rs`, `block.rs` and `manifest.rs`
+    /// each got one, while the bundle site survived on three pre-existing
+    /// early-return tests whose expected counts were merely bumped `+1`
+    /// (`an_early_return_inside_the_field_loop_still_wipes` above,
+    /// `non_string_map_key_wipes_its_value`, `unknown_field_wipes_its_value`).
+    /// Every one of those is an ERROR-path test, so relaxing any of them —
+    /// the exact relaxation this branch's own review caught and fixed twice
+    /// in `record.rs` / `manifest.rs` — would have silently unpinned this
+    /// site's composition.
+    #[test]
+    fn from_canonical_cbor_wipes_the_parser_scratch_buffer() {
+        let mut rng = ChaCha20Rng::from_seed([63u8; 32]);
+        let bundle = generate("scratch-check", 1_700_000_000_002, &mut rng);
+        let encoded = bundle.to_canonical_cbor().expect("encode");
+
+        let before = crate::cbor::wipe_calls();
+        let decoded = IdentityBundle::from_canonical_cbor(&encoded).expect("decode");
+        let after = crate::cbor::wipe_calls();
+
+        assert_eq!(decoded.user_uuid, bundle.user_uuid);
+        // Two wipes: `from_secret_reader`'s own `CborScratch::drop` (fires
+        // unconditionally at the end of that call), and `SecretEntries::drop`
+        // at the end of `from_canonical_cbor`. The bundle carries no
+        // forward-compat unknown keys, and no field decode re-parses, so
+        // there is no third wipe on this path.
+        assert_eq!(
+            after - before,
+            2,
+            "expected exactly 2 wipes on the from_canonical_cbor happy path \
+             (from_secret_reader's scratch wipe + SecretEntries::drop)"
         );
     }
 

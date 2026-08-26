@@ -202,8 +202,9 @@ pub(crate) fn wipe_leaked_value(value: &mut Value) {
 ///   4 KiB, not an edge case.** The general reallocation clause above
 ///   already names this class; the threshold is the part a reader needs.
 ///   `ciborium`'s `deserialize_byte_buf` / `deserialize_string` build the
-///   final payload with `Vec::new()` / `String::new()` plus per-chunk
-///   `extend_from_slice`, so a payload larger than the parser's scratch
+///   final payload with `Vec::new()` / `String::new()` plus a per-chunk
+///   grow-and-copy (`extend_from_slice` and `push_str` respectively), so a
+///   payload larger than the parser's scratch
 ///   buffer still grows by doubling and frees an unwiped prefix at each
 ///   step — measured, by execution (`Vec<u8>::extend_from_slice` in
 ///   4096-byte chunks to 100,000 bytes total), at 6 allocation events and

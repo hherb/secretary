@@ -3,9 +3,15 @@
 //! parse entry point for CBOR that may hold decrypted plaintext.
 //!
 //! `ciborium::de::from_reader` allocates `[0u8; 4096]` in its own stack
-//! frame and `read_exact`s **every** byte-string and text payload of that
-//! size or smaller straight into it before the visitor copies out; larger
-//! payloads stream through it 4 KiB at a time. That buffer therefore holds
+//! frame and `read_exact`s **every definite-length** byte-string and text
+//! payload of that size or smaller straight into it before the visitor
+//! copies out; larger payloads — and INDEFINITE-length items of any size,
+//! which take `deserialize_byte_buf` / `deserialize_string` rather than the
+//! `read_exact` fast path — stream through it 4 KiB at a time. Either way
+//! the payload transits this buffer, so the claim below is unaffected; the
+//! word read a bare "**every**" until the #575 review, and the
+//! indefinite-length path is reachable because this input is untrusted and
+//! parsed BEFORE any canonicality check. That buffer therefore holds
 //! decrypted record fields, block plaintext, `block_name`s and the identity
 //! bundle's four long-term secret keys, and it is left intact when the
 //! parser returns.
@@ -51,7 +57,11 @@
 //!
 //! This closes the parser's *scratch* buffer only. `ciborium`'s
 //! `deserialize_byte_buf` / `deserialize_string` build the final payload
-//! with `Vec::new()` / `String::new()` plus per-chunk `extend_from_slice`,
+//! with `Vec::new()` / `String::new()` plus a per-chunk grow-and-copy
+//! (`extend_from_slice` and `push_str` respectively — this named only the
+//! former for both until the #575 review; `push_str` delegates to
+//! `extend_from_slice` internally, so the growth behaviour is the same, but
+//! this comment asserts it was verified against the vendored source),
 //! so a payload larger than [`CBOR_SCRATCH_LEN`] still grows by doubling
 //! and frees an unwiped prefix at each reallocation — routinely, for any
 //! attachment, long note or stored key file. That happens inside the
@@ -70,7 +80,9 @@ use zeroize::Zeroize;
 /// assertion immediately below, not merely asserted in prose — a bare doc
 /// comment does not stop a future edit from changing this value while
 /// every existing test stays green (mutation-proven: setting it to `64`
-/// during review left all three `cbor::scratch` tests passing).
+/// during review left all four `cbor::scratch` tests passing — the
+/// count read "three" until the #575 review, having been written in the
+/// same commit that added the fourth).
 pub(crate) const CBOR_SCRATCH_LEN: usize = 4096;
 
 // Pins `CBOR_SCRATCH_LEN` to `ciborium`'s own hardcoded default
@@ -93,9 +105,25 @@ const _: () = assert!(
 
 /// A parser scratch buffer that is zeroized when it drops.
 ///
-/// The field is module-private and no `&mut` accessor escapes this file:
-/// the only code that can hand the buffer to `ciborium` is
-/// [`from_secret_reader`] below.
+/// The field is module-private, and the only PRODUCTION code that can hand
+/// the buffer to `ciborium` is [`from_secret_reader`] below. Two boundaries
+/// on that, both narrower than the unqualified "no `&mut` accessor escapes
+/// this file" this said until the #575 review:
+///
+/// - `scratch_wipe_is_not_vacuous` in this file's own test module does pass
+///   `&mut scratch.0` to `from_reader_with_buffer` directly. That is the
+///   point of the test — it inspects the buffer after a parse, which going
+///   through `from_secret_reader` cannot do.
+/// - Rust privacy is module-SUBTREE scoped, not file-scoped, so a `mod
+///   ext;` declared HERE would inherit access to `self.0` from an
+///   unreviewed file (the same property #515 added guard rule E6 for, on
+///   the bridge's `Detail`). No guard covers this one, deliberately: the
+///   severity is not comparable. Minting a `Detail` forges a claim of
+///   gatedness that 27 error payloads and two platforms rely on; reaching
+///   `&mut CborScratch.0` yields a byte array whose owner still wipes it on
+///   drop. What WOULD make the wipe vacuous — `mem::swap`/`take`/`forget`,
+///   `ManuallyDrop` — is already denied tree-wide by
+///   `scripts/check-secret-slot-hygiene.sh` (#521).
 struct CborScratch([u8; CBOR_SCRATCH_LEN]);
 
 impl CborScratch {
@@ -118,7 +146,11 @@ impl CborScratch {
     /// on drop, not that the bump is coupled to the zeroize it claims to
     /// accompany — a mutation that deletes `self.0.zeroize()` leaves a
     /// counter-only test green (confirmed by mutation on this exact type;
-    /// see task-1-report.md). `scratch_wipe_is_not_vacuous` below calls
+    /// the conclusion is inlined here rather than pointed at, because the
+    /// per-task SDD reports live under a gitignored `.superpowers/` and
+    /// are not in the repo — this cited `task-1-report.md` until the #575
+    /// review, the same dangling-citation class #560 fixed in four
+    /// sibling sites). `scratch_wipe_is_not_vacuous` below calls
     /// this method directly, bypassing `Drop` entirely, so it isolates the
     /// wipe's *effect* (bytes actually cleared) from the fact that `Drop`
     /// *invokes* something (`scratch_is_wiped_on_the_success_path` /
@@ -218,7 +250,9 @@ mod tests {
     /// buffer's bytes are actually cleared — a mutation deleting
     /// `self.0.zeroize()` from [`CborScratch::wipe`] leaves both counter
     /// tests green, confirmed by mutation during review (see
-    /// task-1-report.md). This test closes that gap directly: it parses a
+    /// the conclusion is inlined rather than cited — see
+    /// [`CborScratch::wipe`] for why there is no report to point at).
+    /// This test closes that gap directly: it parses a
     /// distinctive marker payload short enough that `ciborium`
     /// `read_exact`s it straight into the scratch buffer (see the module
     /// doc), confirms the marker actually landed there (so the "before"
@@ -230,42 +264,53 @@ mod tests {
     /// structure, same `wipe`/`wipe_for_test` split, same naming.
     #[test]
     fn scratch_wipe_is_not_vacuous() {
-        const MARKER: &[u8] = b"amex-cvv-4111111111111111-marker";
+        const MARKER: &str = "amex-cvv-4111111111111111-marker";
         assert!(
             MARKER.len() <= CBOR_SCRATCH_LEN,
             "fixture setup: marker must fit in one scratch-buffered read"
         );
 
-        let mut encoded = Vec::new();
-        ciborium::ser::into_writer(&Value::Bytes(MARKER.to_vec()), &mut encoded).expect("encode");
+        // BOTH payload arms, not just `Value::Bytes` (#575 review). The
+        // module doc above names "decrypted record fields, block
+        // plaintext, `block_name`s" as what this buffer holds, and those
+        // are CBOR TEXT — `ciborium`'s `deserialize_string` is a separate
+        // code path from `deserialize_byte_buf`, so a `Bytes`-only fixture
+        // does not travel the route the threat actually takes.
+        for (label, item) in [
+            ("bytes", Value::Bytes(MARKER.as_bytes().to_vec())),
+            ("text", Value::Text(MARKER.to_string())),
+        ] {
+            let mut encoded = Vec::new();
+            ciborium::ser::into_writer(&item, &mut encoded).expect("encode");
 
-        // Construct the scratch buffer directly and hand it to
-        // `from_reader_with_buffer` ourselves, rather than going through
-        // `from_secret_reader` — that call's `CborScratch` would already
-        // have dropped (and wiped) by the time control returns here, so
-        // there would be nothing left to inspect.
-        let mut scratch = CborScratch([0u8; CBOR_SCRATCH_LEN]);
-        let parsed: Value =
-            ciborium::de::from_reader_with_buffer(encoded.as_slice(), &mut scratch.0)
-                .expect("parse");
-        assert_eq!(parsed, Value::Bytes(MARKER.to_vec()), "fixture setup");
-        assert!(
-            scratch
-                .0
-                .windows(MARKER.len())
-                .any(|window| window == MARKER),
-            "fixture setup: marker did not land in the scratch buffer"
-        );
+            // Construct the scratch buffer directly and hand it to
+            // `from_reader_with_buffer` ourselves, rather than going through
+            // `from_secret_reader` — that call's `CborScratch` would already
+            // have dropped (and wiped) by the time control returns here, so
+            // there would be nothing left to inspect.
+            let mut scratch = CborScratch([0u8; CBOR_SCRATCH_LEN]);
+            let parsed: Value =
+                ciborium::de::from_reader_with_buffer(encoded.as_slice(), &mut scratch.0)
+                    .expect("parse");
+            assert_eq!(parsed, item, "fixture setup ({label})");
+            assert!(
+                scratch
+                    .0
+                    .windows(MARKER.len())
+                    .any(|window| window == MARKER.as_bytes()),
+                "fixture setup: {label} marker did not land in the scratch buffer"
+            );
 
-        scratch.wipe_for_test();
+            scratch.wipe_for_test();
 
-        assert!(
-            !scratch
-                .0
-                .windows(MARKER.len())
-                .any(|window| window == MARKER),
-            "marker still present after wipe — the wipe is a no-op"
-        );
+            assert!(
+                !scratch
+                    .0
+                    .windows(MARKER.len())
+                    .any(|window| window == MARKER.as_bytes()),
+                "{label} marker still present after wipe — the wipe is a no-op"
+            );
+        }
     }
 
     /// `from_secret_reader` must agree with `ciborium::de::from_reader`
@@ -273,8 +318,26 @@ mod tests {
     /// `from_reader_with_buffer(r, &mut [0; 4096])` with the same
     /// `recurse: 256`, so any disagreement means this wrapper changed
     /// parsing behaviour, which it must not.
+    /// Widened in the #575 review. The first version tested `Value::Bytes`
+    /// at six lengths and `.expect()`ed BOTH sides, which made it
+    /// structurally incapable of comparing REJECTION behaviour — a
+    /// divergence in *which* inputs fail, or in the recursion limit, could
+    /// not have been expressed by it. This version compares at `Result`
+    /// level over text, nesting and malformed input as well.
+    ///
+    /// This test is the tripwire for a future `ciborium` bump. The version
+    /// is pinned at `=0.2.2`, and the equality currently holds by
+    /// construction (`from_reader` delegates to `from_reader_with_buffer`
+    /// with the same `recurse: 256`) — but that is a property of the
+    /// pinned source, not of the API contract, so it is checked rather
+    /// than assumed.
     #[test]
     fn agrees_with_ciborium_from_reader_across_the_scratch_boundary() {
+        let mut fixtures: Vec<(String, Vec<u8>)> = Vec::new();
+
+        // Definite-length byte and text payloads across the scratch
+        // boundary. `deserialize_byte_buf` and `deserialize_string` are
+        // separate code paths in ciborium, so both are swept.
         for len in [
             0,
             1,
@@ -283,14 +346,63 @@ mod tests {
             CBOR_SCRATCH_LEN + 1,
             CBOR_SCRATCH_LEN * 3,
         ] {
-            let payload = vec![0xA5u8; len];
             let mut encoded = Vec::new();
-            ciborium::ser::into_writer(&Value::Bytes(payload.clone()), &mut encoded)
+            ciborium::ser::into_writer(&Value::Bytes(vec![0xA5u8; len]), &mut encoded)
                 .expect("encode");
+            fixtures.push((format!("bytes/{len}"), encoded));
 
-            let ours = from_secret_reader(encoded.as_slice()).expect("ours");
-            let theirs: Value = ciborium::de::from_reader(encoded.as_slice()).expect("ciborium");
-            assert_eq!(ours, theirs, "disagreement at payload length {len}");
+            let mut encoded = Vec::new();
+            ciborium::ser::into_writer(&Value::Text("a".repeat(len)), &mut encoded)
+                .expect("encode");
+            fixtures.push((format!("text/{len}"), encoded));
+        }
+
+        // A map whose KEYS straddle the boundary — record field names are
+        // decrypted plaintext, so this is the shape that matters most.
+        for key_len in [1, CBOR_SCRATCH_LEN - 1, CBOR_SCRATCH_LEN + 1] {
+            let mut encoded = Vec::new();
+            ciborium::ser::into_writer(
+                &Value::Map(vec![(
+                    Value::Text("k".repeat(key_len)),
+                    Value::Bytes(vec![0x11; 8]),
+                )]),
+                &mut encoded,
+            )
+            .expect("encode");
+            fixtures.push((format!("map-key/{key_len}"), encoded));
+        }
+
+        // Nesting either side of ciborium's `recurse: 256` limit. If the
+        // two entry points ever set different limits, these disagree.
+        for depth in [8usize, 255, 256, 257, 400] {
+            let mut encoded = vec![0x81u8; depth]; // `depth` nested 1-element arrays
+            encoded.push(0x00); // innermost: integer 0
+            fixtures.push((format!("nest/{depth}"), encoded));
+        }
+
+        // Malformed input: both entry points must REJECT identically.
+        // `.expect()` on both sides could never have covered this.
+        fixtures.push(("truncated-indefinite-array".into(), vec![0x9f]));
+        fixtures.push((
+            "overlong-bstr-header".into(),
+            vec![0x5a, 0xff, 0xff, 0xff, 0xff],
+        ));
+        fixtures.push(("invalid-utf8-tstr".into(), vec![0x62, 0xff, 0xfe]));
+        fixtures.push(("truncated-map".into(), vec![0xa1, 0x61, b'k']));
+        fixtures.push(("empty".into(), Vec::new()));
+
+        for (label, encoded) in fixtures {
+            let ours = from_secret_reader(encoded.as_slice());
+            let theirs: Result<Value, _> = ciborium::de::from_reader(encoded.as_slice());
+            match (&ours, &theirs) {
+                (Ok(o), Ok(t)) => assert_eq!(o, t, "value disagreement at {label}"),
+                (Err(_), Err(_)) => {}
+                _ => panic!(
+                    "accept/reject disagreement at {label}: ours={:?}, ciborium ok={}",
+                    ours.as_ref().err(),
+                    theirs.is_ok()
+                ),
+            }
         }
     }
 
