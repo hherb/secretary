@@ -1202,11 +1202,17 @@ fn take_records(v: &Value) -> Result<Vec<Record>, BlockError> {
 /// doubling and each realloc frees a partial copy of this forward-compat
 /// subtree unwiped. `v` here borrows from the block's `SecretValueTree`,
 /// i.e. decrypted block plaintext.
+/// `buf` is wrapped in [`SecretBytes`], not left a bare `Vec<u8>` (#575
+/// review) — see `manifest.rs`'s function of the same name for the full
+/// reasoning. Pre-reserving stops it REALLOCATING; it does nothing about
+/// the final buffer, which is a complete CBOR re-encoding of a decrypted
+/// block-level forward-compat subtree.
 fn value_to_unknown(v: &Value) -> Result<UnknownValue, BlockError> {
     let mut buf = Vec::with_capacity(cbor_size_bound(v));
     ciborium::ser::into_writer(v, &mut buf)
         .map_err(|e| BlockError::CborEncode(classify_ser(&e)))?;
-    let u = UnknownValue::from_canonical_cbor(&buf)?;
+    let buf = SecretBytes::new(buf);
+    let u = UnknownValue::from_canonical_cbor(buf.expose())?;
     Ok(u)
 }
 
@@ -3089,12 +3095,30 @@ mod tests {
         //    already-parsed subtree — and `encode_plaintext`'s
         //    re-encode-and-compare check re-encodes rather than
         //    re-parsing, so records contribute no further wipes here.
+        //
+        // The expectation is DERIVED from the fixture, not hardcoded as
+        // `5` (#575 review). The exactness is load-bearing — a `> before`
+        // form is satisfied by the unconditional scratch wipe alone, which
+        // is the vacuity this branch's own review caught twice — but the
+        // number itself was hostage to `random_block_plaintext` inserting
+        // exactly 3 unknowns. Adding a fourth for a reason having nothing
+        // to do with wiping would have redded a security test with
+        // "expected exactly 5 wipes". Deriving keeps both properties.
+        let expected = 2 + plaintext.unknown.len();
+        assert_eq!(
+            plaintext.unknown.len(),
+            3,
+            "fixture guard: random_block_plaintext is expected to insert 3 \
+             block-level unknowns; if that changed deliberately, `expected` \
+             below tracks it automatically and this guard is what tells you"
+        );
         assert_eq!(
             after - before,
-            5,
-            "expected exactly 5 wipes on the decode_plaintext path (1 top-level \
-             scratch wipe + 1 SecretValueTree::drop + 1 per block-level unknown \
-             value, of which random_block_plaintext always inserts 3)"
+            expected,
+            "expected exactly {expected} wipes on the decode_plaintext path \
+             (1 top-level scratch wipe + 1 SecretValueTree::drop + 1 per \
+             block-level unknown value, of which this fixture has {})",
+            plaintext.unknown.len()
         );
     }
 

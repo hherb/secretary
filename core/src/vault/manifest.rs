@@ -47,7 +47,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use ciborium::Value;
 
@@ -127,6 +127,17 @@ const SUITE_ID_V1: u16 = crate::version::SUITE_ID;
 // ---------------------------------------------------------------------------
 
 /// Errors emitted by the manifest CBOR encode and decode paths.
+///
+/// **Not `#[non_exhaustive]`, deliberately** — the same stance `BlockError`
+/// and `RecordError` take, recorded here in the #575 review because that
+/// PR added a variant ([`ManifestError::DuplicateKey`]) and the decision
+/// had never been written down for this enum. Adding a variant is
+/// therefore a real, compiler-checked surface change rather than a silent
+/// one. Nothing outside this file matches `ManifestError` exhaustively
+/// today — every bridge fold binds `VaultError::Manifest(_)` with a
+/// wildcard — but that is a property of the current fold shape, not a
+/// guarantee, so a `cargo build --release --workspace` is what confirms a
+/// new variant costs nothing downstream.
 #[derive(Debug, thiserror::Error)]
 pub enum ManifestError {
     /// `ciborium` returned an I/O or serialisation error during encode.
@@ -156,19 +167,36 @@ pub enum ManifestError {
     NonTextKey,
 
     /// A CBOR map key appeared more than once in the top-level manifest
-    /// map. RFC 8949 §5.4 leaves this to the application; `record.rs` and
-    /// `block.rs` reject a duplicate key at *every* nesting level, and
-    /// silent last-wins was the wrong direction here too — for this one
-    /// level. This variant does not close the gap at every level:
-    /// `parse_vector_clock_entry`, `parse_block_entry`,
-    /// `parse_trash_entry` and `parse_kdf_params` still silently last-win
-    /// on their own nested maps (#573).
+    /// map. RFC 8949 §5.4 leaves this to the application, and silent
+    /// last-wins was the wrong direction here.
     ///
-    /// Payload is data-free by construction (#474): `field` is a
-    /// compile-time map-level hint, `index` the entry's ordinal. The
-    /// repeated key itself is never carried — a forward-compat unknown key
-    /// is attacker-influenced text, and `RecordError::DuplicateKey` once
-    /// leaked exactly that class.
+    /// **What the neighbouring decoders actually do**, corrected in the
+    /// #575 review — this said `record.rs` and `block.rs` "reject a
+    /// duplicate key at *every* nesting level", which is false in two
+    /// ways, and it was the stated justification for scoping this fix to
+    /// one level:
+    ///
+    /// - They check only the levels they parse STRUCTURALLY. `record.rs`
+    ///   has three such levels (`<record>`, `fields`, `<field>`);
+    ///   `block.rs` has exactly one (`<block>`).
+    /// - NEITHER checks inside a forward-compat `unknown` subtree, which
+    ///   is an arbitrary-depth CBOR map stored verbatim. `UnknownValue`'s
+    ///   only validation is `reject_floats_and_tags`. The record-level
+    ///   re-encode-and-compare does not catch it either: duplicate keys
+    ///   sort adjacently and re-encode byte-identically.
+    ///
+    /// So the correct comparison makes **#573 larger, not smaller**. This
+    /// variant closes the top level only; `parse_vector_clock_entry`,
+    /// `parse_block_entry`, `parse_trash_entry` and `parse_kdf_params`
+    /// still silently last-win on their own nested maps, and no decoder
+    /// in the crate looks inside an `unknown` subtree.
+    ///
+    /// Payload is data-free by construction (#474). `field` is a
+    /// compile-time constant: the §4.2 `KEY_*` name for a known key, or
+    /// the literal `"<unknown>"` for a forward-compat one. `index` is the
+    /// entry's ordinal. The repeated key itself is never carried — a
+    /// forward-compat unknown key is attacker-influenced text, and
+    /// `RecordError::DuplicateKey` once leaked exactly that class.
     #[error("duplicate CBOR map key in {field} at entry {index}")]
     DuplicateKey { field: &'static str, index: usize },
 
@@ -458,6 +486,21 @@ pub struct Manifest {
 /// leaving each caller to apply one means the wrap cannot be deleted
 /// without a compile error, which is the difference between this and the
 /// deletable `SecretBytes::new(..)` call sites #558 and #565 record.
+///
+/// **That covers the OUTPUT only, and the input side is still open**
+/// (#575 review — worth stating here, because the paragraph above
+/// otherwise reads as if this whole path were covered).
+/// `manifest_to_entries` below (private, hence not linked — the #92
+/// rustdoc gate rejects an intra-doc link from a public item to a private
+/// one) builds an owned `Vec<(Value, Value)>`
+/// containing `Value::Text(entry.block_name.clone())` for every block —
+/// user-authored plaintext, the same field `BlockEntry::block_name`'s own
+/// doc flags, and the very field #547 Task 7b cited to justify wrapping
+/// the manifest DECODE side. That vector is dropped unwiped on every
+/// manifest write. It is **#569's path 2**, unrelated to and not closed
+/// by this return-type change; the fix is to migrate `manifest_to_entries`
+/// to the borrowing `CanonicalMap` mirror the way `bundle.rs` was
+/// migrated (path 1), since elimination is strictly stronger than a wrap.
 pub fn encode_manifest(manifest: &Manifest) -> Result<SecretBytes, ManifestError> {
     let entries = manifest_to_entries(manifest)?;
     Ok(SecretBytes::new(encode_canonical_map(&entries)?))
@@ -782,7 +825,10 @@ fn unknown_value_inner(u: &UnknownValue) -> Result<Value, ManifestError> {
 /// 11. The top-level map itself has no duplicate key (RFC 8949 §5.4).
 ///     Scoped to this one level only: `parse_vector_clock_entry`,
 ///     `parse_block_entry`, `parse_trash_entry` and `parse_kdf_params`
-///     have no equivalent check of their own nested maps (#573).
+///     have no equivalent check of their own nested maps, and no decoder
+///     in the crate looks inside a forward-compat `unknown` subtree at
+///     all (#573 — see [`ManifestError::DuplicateKey`]'s doc, which
+///     corrects what `record.rs` / `block.rs` actually cover).
 ///
 /// Forward-compat unknown keys are preserved into the relevant `unknown`
 /// bag verbatim.
@@ -855,51 +901,129 @@ fn parse_manifest_map(map: &[(Value, Value)]) -> Result<Manifest, ManifestError>
     let mut trash: Option<Vec<TrashEntry>> = None;
     let mut kdf_params: Option<KdfParamsRef> = None;
     let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
-    let mut seen_keys: BTreeSet<String> = BTreeSet::new();
 
+    // RFC 8949 §5.4: reject a repeated key rather than last-wins.
+    //
+    // Every known key already has an `Option` slot above and `unknown` is a
+    // `BTreeMap`, so both halves of the check are free: `slot.is_some()`
+    // for the nine known keys, and `BTreeMap::insert`'s own "previous
+    // value" return for the unknown bag. The first version of this check
+    // carried a separate `BTreeSet<String>` plus a `key.clone()` per entry
+    // — one extra unwiped heap allocation per key, in a slice whose whole
+    // subject is eliminating copies — and reported the constant placeholder
+    // `"<manifest>"` for every duplicate. This shape allocates nothing and
+    // names the key that was actually repeated (#575 review).
+    //
+    // Written out per arm rather than factored into a local `macro_rules!`
+    // — which is what the first draft of this fix did. Every hygiene guard
+    // in this repo reads TEXT, not expanded macros (CLAUDE.md says so of
+    // the payload guard explicitly), so an error CONSTRUCTION inside a
+    // macro body is invisible to any future rule that inspects one. Nine
+    // repetitions is a cheap price for staying greppable.
+    //
+    // `field` stays `&'static str` either way: for a known key it is the
+    // §4.2 `KEY_*` constant, and for an unknown key it is the literal
+    // `"<unknown>"` — never the repeated key itself, which is
+    // attacker-influenced text from inside the encrypted manifest and
+    // exactly the class `RecordError::DuplicateKey` once leaked (#474).
     for (index, (k, v)) in map.iter().enumerate() {
         let key = take_text_key(k)?;
-        // RFC 8949 §5.4: reject a repeated key rather than last-wins.
-        // `take_text_key` already clones, so `seen_keys` costs one further
-        // String per key. These are top-level manifest keys plus
-        // forward-compat unknown keys — structural, not user content;
-        // `block_name` is a VALUE inside the blocks array, not a key here.
-        if !seen_keys.insert(key.clone()) {
-            return Err(ManifestError::DuplicateKey {
-                field: "<manifest>",
-                index,
-            });
-        }
         match key.as_str() {
             KEY_MANIFEST_VERSION => {
+                if manifest_version.is_some() {
+                    return Err(ManifestError::DuplicateKey {
+                        field: KEY_MANIFEST_VERSION,
+                        index,
+                    });
+                }
                 manifest_version = Some(take_u8(v, KEY_MANIFEST_VERSION)?);
             }
             KEY_VAULT_UUID => {
+                if vault_uuid.is_some() {
+                    return Err(ManifestError::DuplicateKey {
+                        field: KEY_VAULT_UUID,
+                        index,
+                    });
+                }
                 vault_uuid = Some(take_fixed_bytes::<UUID_LEN>(v, KEY_VAULT_UUID)?);
             }
             KEY_FORMAT_VERSION => {
+                if format_version.is_some() {
+                    return Err(ManifestError::DuplicateKey {
+                        field: KEY_FORMAT_VERSION,
+                        index,
+                    });
+                }
                 format_version = Some(take_u16(v, KEY_FORMAT_VERSION)?);
             }
             KEY_SUITE_ID => {
+                if suite_id.is_some() {
+                    return Err(ManifestError::DuplicateKey {
+                        field: KEY_SUITE_ID,
+                        index,
+                    });
+                }
                 suite_id = Some(take_u16(v, KEY_SUITE_ID)?);
             }
             KEY_OWNER_USER_UUID => {
+                if owner_user_uuid.is_some() {
+                    return Err(ManifestError::DuplicateKey {
+                        field: KEY_OWNER_USER_UUID,
+                        index,
+                    });
+                }
                 owner_user_uuid = Some(take_fixed_bytes::<UUID_LEN>(v, KEY_OWNER_USER_UUID)?);
             }
             KEY_VECTOR_CLOCK => {
+                if vector_clock.is_some() {
+                    return Err(ManifestError::DuplicateKey {
+                        field: KEY_VECTOR_CLOCK,
+                        index,
+                    });
+                }
                 vector_clock = Some(parse_vector_clock(v, KEY_VECTOR_CLOCK)?);
             }
             KEY_BLOCKS => {
+                if blocks.is_some() {
+                    return Err(ManifestError::DuplicateKey {
+                        field: KEY_BLOCKS,
+                        index,
+                    });
+                }
                 blocks = Some(parse_blocks(v)?);
             }
             KEY_TRASH => {
+                if trash.is_some() {
+                    return Err(ManifestError::DuplicateKey {
+                        field: KEY_TRASH,
+                        index,
+                    });
+                }
                 trash = Some(parse_trash(v)?);
             }
             KEY_KDF_PARAMS => {
+                if kdf_params.is_some() {
+                    return Err(ManifestError::DuplicateKey {
+                        field: KEY_KDF_PARAMS,
+                        index,
+                    });
+                }
                 kdf_params = Some(parse_kdf_params(v)?);
             }
             _ => {
-                unknown.insert(key, value_to_unknown(v)?);
+                // Unlike the nine arms above, the duplicate is detected
+                // AFTER `value_to_unknown` has re-encoded and re-parsed the
+                // value — `BTreeMap::insert` is what reports it. That
+                // ordering difference is not observable: the returned error
+                // is the same, and `value_to_unknown`'s own failure would
+                // have to be raised before a duplicate could be reported by
+                // any ordering.
+                if unknown.insert(key, value_to_unknown(v)?).is_some() {
+                    return Err(ManifestError::DuplicateKey {
+                        field: "<unknown>",
+                        index,
+                    });
+                }
             }
         }
     }
@@ -1425,11 +1549,20 @@ fn take_integer_i128(v: &Value, field: &'static str) -> Result<i128, ManifestErr
 /// the wrap exists to protect. Reserving is what `to_canonical_vec` and
 /// `encode_canonical_map` already do; this site and its two siblings in
 /// `record.rs` / `block.rs` were missed by that pass.
+/// `buf` is wrapped in [`SecretBytes`], not left a bare `Vec<u8>` (#575
+/// review). Pre-reserving stops it REALLOCATING and freeing unwiped
+/// prefixes; it does nothing about the final buffer, which is a complete
+/// CBOR re-encoding of a decrypted forward-compat subtree and was dropped
+/// intact on both the success and error paths. `unknown_value_inner` —
+/// this function's encode-side twin, in this same file — already wrapped
+/// its equivalent buffer, so the two were treating the same content class
+/// oppositely.
 fn value_to_unknown(v: &Value) -> Result<UnknownValue, ManifestError> {
     let mut buf = Vec::with_capacity(cbor_size_bound(v));
     ciborium::ser::into_writer(v, &mut buf)
         .map_err(|e| ManifestError::CborEncode(classify_ser(&e)))?;
-    UnknownValue::from_canonical_cbor(&buf)
+    let buf = SecretBytes::new(buf);
+    UnknownValue::from_canonical_cbor(buf.expose())
         .map_err(|e| ManifestError::CborDecode(record_error_to_cbor_fault(e)))
 }
 
@@ -1998,7 +2131,24 @@ pub fn sign_manifest(
 
     // Step 2: AEAD-encrypt with header AAD.
     let ct_with_tag = encrypt_manifest_body(&header, &body_bytes, ibk, nonce)?;
-    debug_assert_eq!(ct_with_tag.len(), body_bytes.expose().len() + AEAD_TAG_LEN);
+
+    // Real runtime check, not `debug_assert!` — same reasoning
+    // `canonical::legacy::encode_canonical_map` states at its own length
+    // check: this crate's only `debug-assertions = true` is
+    // `core/fuzz/Cargo.toml`, which is `exclude`d from the workspace, so a
+    // `debug_assert!` here is a no-op in `cargo test --release`, in
+    // `cargo build --release`, and in every shipped artifact. This site
+    // carried one until the #575 review.
+    //
+    // Not defence against a plausible bug — `XChaCha20Poly1305::encrypt`
+    // returns `pt.len() + AEAD_TAG_LEN` by construction. It guards the
+    // SUBTRACTION on the next line: a short return would underflow
+    // `split_at` to a huge `usize` and panic on the slice index below,
+    // which is a worse failure mode than a typed error even though neither
+    // is reachable today.
+    if ct_with_tag.len() != body_bytes.expose().len() + AEAD_TAG_LEN {
+        return Err(ManifestError::AeadFailure);
+    }
 
     // Split (ct || tag) into aead_ct (variable) and aead_tag (16).
     let split_at = ct_with_tag.len() - AEAD_TAG_LEN;
@@ -2609,10 +2759,25 @@ mod tests {
         // comment documents what happens when it IS: one extra wipe per
         // unknown value. Do not copy this fixture's "2" onto a manifest
         // that carries any `unknown` entry without re-deriving the count.
+        //
+        // DERIVED from the fixture rather than hardcoded (#575 review) —
+        // same reasoning as `block::decode_plaintext_wipes_the_parser_
+        // scratch_buffer`. `populated_manifest()` carries no `unknown`
+        // entries at any of the three levels today; if one is ever added,
+        // `value_to_unknown` re-parses it and this count follows
+        // automatically instead of redding a security test for an
+        // unrelated fixture change.
+        let expected = 2 + m.unknown.len();
+        assert_eq!(
+            m.unknown.len(),
+            0,
+            "fixture guard: populated_manifest() is expected to carry no \
+             top-level unknowns; `expected` tracks it if that changes"
+        );
         assert_eq!(
             after - before,
-            2,
-            "expected exactly 2 wipes on the decode_manifest path"
+            expected,
+            "expected exactly {expected} wipes on the decode_manifest path"
         );
     }
 
@@ -2968,30 +3133,93 @@ mod tests {
         let m = populated_manifest();
         let bytes = encode_manifest(&m).expect("encode");
 
-        // Re-parse, duplicate the first entry, re-encode. Non-canonical by
-        // construction (irrelevant here — `decode_manifest` has no
-        // re-encode-and-compare canonicality check of its own, #572 — but
-        // the duplicate-key check must still be the thing that fires, not
-        // some other decode failure downstream).
+        let entries = match ciborium::de::from_reader::<Value, _>(bytes.expose()).expect("parse") {
+            Value::Map(m) => m,
+            other => panic!("expected a map, got {other:?}"),
+        };
+
+        // EVERY known key, not just whichever sorts first. The check is now
+        // per-`Option`-slot — nine independent `if slot.is_some()` arms
+        // rather than the single shared `BTreeSet` lookup the first version
+        // used — so a test that duplicates only `entries[0]` pins exactly
+        // one of the nine and leaves eight deletable with the suite green.
+        // That is the "nothing would notice if it were removed" failure this
+        // whole slice exists to close, so the sweep is the point (#575
+        // review). Mutation-verified: neutering any single arm reds this
+        // test.
+        assert_eq!(
+            entries.len(),
+            9,
+            "populated_manifest() is expected to emit all nine known keys              and no unknowns; the sweep below covers whatever it emits, but              a change here means the arm census moved"
+        );
+
+        for i in 0..entries.len() {
+            let repeated = match &entries[i].0 {
+                Value::Text(s) => s.clone(),
+                other => panic!("non-text manifest key: {other:?}"),
+            };
+
+            // Re-parse, duplicate entry `i`, re-encode. Non-canonical by
+            // construction (irrelevant here — `decode_manifest` has no
+            // re-encode-and-compare canonicality check of its own, #572 —
+            // but the duplicate-key check must still be the thing that
+            // fires, not some other decode failure downstream).
+            let mut doubled_entries = entries.clone();
+            doubled_entries.push(entries[i].clone());
+            let mut doubled = Vec::new();
+            ciborium::ser::into_writer(&Value::Map(doubled_entries), &mut doubled)
+                .expect("re-encode");
+
+            let err = decode_manifest(&doubled).expect_err("a repeated key must be rejected");
+            match err {
+                ManifestError::DuplicateKey { field, .. } => assert_eq!(
+                    field, repeated,
+                    "DuplicateKey must name the key that was actually repeated"
+                ),
+                other => panic!("expected DuplicateKey for {repeated}, got {other:?}"),
+            }
+        }
+    }
+
+    /// The unknown-key arm has its own duplicate check — `BTreeMap::insert`'s
+    /// previous-value return, not an `Option` slot — so it needs its own
+    /// test (#575 review). `field` is the literal `"<unknown>"`: the
+    /// repeated key here is attacker-influenced forward-compat text from
+    /// inside the encrypted manifest, and carrying it would be exactly the
+    /// #474 leak class.
+    #[test]
+    fn a_manifest_with_a_repeated_unknown_key_is_rejected() {
+        let mut m = populated_manifest();
+        m.unknown.insert(
+            "future_field".to_string(),
+            UnknownValue::from_canonical_cbor(&[0x01]).expect("UnknownValue"),
+        );
+        let bytes = encode_manifest(&m).expect("encode");
+
         let mut entries =
             match ciborium::de::from_reader::<Value, _>(bytes.expose()).expect("parse") {
                 Value::Map(m) => m,
                 other => panic!("expected a map, got {other:?}"),
             };
-        entries.push(entries[0].clone());
+        let unknown_entry = entries
+            .iter()
+            .find(|(k, _)| matches!(k, Value::Text(s) if s == "future_field"))
+            .expect("the unknown key must be on the wire")
+            .clone();
+        entries.push(unknown_entry);
         let mut doubled = Vec::new();
         ciborium::ser::into_writer(&Value::Map(entries), &mut doubled).expect("re-encode");
 
-        let err = decode_manifest(&doubled).expect_err("a repeated key must be rejected");
+        let err = decode_manifest(&doubled).expect_err("a repeated unknown key must be rejected");
         assert!(
             matches!(
                 err,
                 ManifestError::DuplicateKey {
-                    field: "<manifest>",
+                    field: "<unknown>",
                     index: _
                 }
             ),
-            "expected DuplicateKey, got {err:?}"
+            "expected DuplicateKey {{ field: \"<unknown>\" }}, got {err:?}"
         );
     }
 
