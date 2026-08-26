@@ -9,10 +9,21 @@ fuzz_target!(|data: &[u8]| {
     // here is defense-in-depth — if the internal canonicality gate is ever
     // weakened, this target catches the regression.
     if let Ok(parsed) = record::decode(data) {
+        // `record::encode` returns `SecretBytes`, not `Vec<u8>` (#558, #565) —
+        // its output is a canonical re-encoding of decrypted field values, so
+        // the wrapper is part of the return type rather than something each
+        // caller applies. `.expose()` reads through it for the comparison
+        // below; there is deliberately no `as_slice`.
+        //
+        // `core/fuzz` is `exclude`d from the workspace, so no `cargo
+        // build/clippy/test --workspace` run compiles this file and the
+        // signature change that landed in #575 broke it silently. If you
+        // change a `core` signature a fuzz target consumes, compile this
+        // crate explicitly (see core/fuzz/README.md).
         let reencoded =
             record::encode(&parsed).expect("encode after successful decode must not fail");
         assert_eq!(
-            reencoded.as_slice(),
+            reencoded.expose(),
             data,
             "record decode→encode roundtrip mismatch"
         );
