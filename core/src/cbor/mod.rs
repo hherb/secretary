@@ -47,6 +47,23 @@ mod secret_tree;
 
 pub(crate) use secret_tree::{SecretEntries, SecretValueTree};
 
+// Unconditional as of Task 2 (#561): `from_secret_reader` now has six
+// production call sites (`unlock::bundle`, `vault::block`, `vault::manifest`
+// x2, `vault::record` x2), so the `#[cfg(test)]` gate this comment used to
+// describe — and the `dead_code` / `unused_imports` failures it existed to
+// avoid — no longer apply. `from_secret_reader` stays `pub(crate)`: no
+// `pub` + `#[doc(hidden)]` workaround, matching what controller ruling R12
+// rejected the first time this situation came up in this file
+// (`mod secret_tree;` above). `CBOR_SCRATCH_LEN` is NOT re-exported here —
+// unlike `from_secret_reader`, no caller outside `scratch.rs` itself names
+// it (verified: `pub(crate) use scratch::{from_secret_reader,
+// CBOR_SCRATCH_LEN};`, the form an earlier draft of this task used, reds
+// `cargo clippy --release --workspace --tests -- -D warnings` with
+// `unused_imports` on `CBOR_SCRATCH_LEN` — confirmed by running it).
+mod scratch;
+
+pub(crate) use scratch::from_secret_reader;
+
 // `wipe_leaked_value` wipes a single, already-yielded `ciborium::Value` in
 // place — for a caller of `SecretEntries::take_next` (or similar) that
 // folds a yielded value into NOTHING (an early return that never examines

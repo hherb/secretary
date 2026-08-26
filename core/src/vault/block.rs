@@ -73,7 +73,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ciborium::Value;
 use rand_core::{CryptoRng, RngCore};
 
-use crate::cbor::{classify_de, classify_ser, CborFault, SecretValueTree};
+use crate::cbor::{classify_ser, CborFault, SecretValueTree};
 use crate::crypto::aead::{self, AeadError, AeadKey, AeadNonce, AEAD_TAG_LEN};
 use crate::crypto::kem::{self, HybridWrap, KemError, ML_KEM_768_CT_LEN, X25519_PK_LEN};
 use crate::crypto::secret::{SecretBytes, Sensitive};
@@ -929,8 +929,17 @@ fn read_array<const N: usize>(bytes: &[u8], pos: &mut usize) -> Result<[u8; N], 
 /// encoder's own CBOR-encode / capacity-bound checks, lifted to
 /// [`BlockError::CborEncode`] / [`BlockError::CanonicalSizeBoundExceeded`]
 /// by the `From<CanonicalError>` impl above.
-pub fn encode_plaintext(plaintext: &BlockPlaintext) -> Result<Vec<u8>, BlockError> {
-    Ok(to_canonical_vec(&plaintext_to_canonical(plaintext))?)
+///
+/// Returns [`SecretBytes`], not `Vec<u8>`: the output is the decrypted
+/// canonical form of a block — every record and field value it holds.
+/// Returning the wrapper rather than leaving each caller to apply one means
+/// the wrap cannot be deleted without a compile error, which is the
+/// difference between this and the deletable `SecretBytes::new(..)` call
+/// site #558 and #565 record.
+pub fn encode_plaintext(plaintext: &BlockPlaintext) -> Result<SecretBytes, BlockError> {
+    Ok(SecretBytes::new(to_canonical_vec(
+        &plaintext_to_canonical(plaintext),
+    )?))
 }
 
 /// Build the borrowed canonical map for a block plaintext (§6.3).
@@ -1028,8 +1037,9 @@ fn plaintext_to_canonical(plaintext: &BlockPlaintext) -> CanonicalMap<'_> {
 /// (§6.4 step 9) is the *caller's* responsibility — see
 /// [`BlockError::BlockUuidMismatch`].
 pub fn decode_plaintext(bytes: &[u8]) -> Result<BlockPlaintext, BlockError> {
-    let parsed: Value =
-        ciborium::de::from_reader(bytes).map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
+    // `from_secret_reader`, not `from_reader` (#561): this input is the
+    // entire decrypted block plaintext, including every record it holds.
+    let parsed: Value = crate::cbor::from_secret_reader(bytes).map_err(BlockError::CborDecode)?;
     // Owns a copy of every record's decrypted plaintext, plus every
     // block-level forward-compat unknown. See `record::decode`'s matching
     // comment: wrapping means `Drop` wipes it on every exit from this
@@ -1055,8 +1065,15 @@ pub fn decode_plaintext(bytes: &[u8]) -> Result<BlockPlaintext, BlockError> {
     // `record::decode`'s own per-record byte check (#547 Task 6): see
     // `a_non_canonical_nested_record_is_still_rejected` in the test module,
     // which proves this whole-plaintext check subsumes it.
+    //
+    // `re_encoded` is a full re-encoding of the decrypted block plaintext —
+    // every record and field value it holds — and was previously freed
+    // intact on every successful open (#565). `encode_plaintext` now
+    // returns `SecretBytes`, so this buffer is wrapped BY CONSTRUCTION —
+    // there is no separate `SecretBytes::new` call here for a future edit
+    // to drop.
     let re_encoded = encode_plaintext(&plaintext)?;
-    if re_encoded.as_slice() != bytes {
+    if re_encoded.expose() != bytes {
         return Err(BlockError::NonCanonicalEncoding);
     }
 
@@ -1185,11 +1202,17 @@ fn take_records(v: &Value) -> Result<Vec<Record>, BlockError> {
 /// doubling and each realloc frees a partial copy of this forward-compat
 /// subtree unwiped. `v` here borrows from the block's `SecretValueTree`,
 /// i.e. decrypted block plaintext.
+/// `buf` is wrapped in [`SecretBytes`], not left a bare `Vec<u8>` (#575
+/// review) — see `manifest.rs`'s function of the same name for the full
+/// reasoning. Pre-reserving stops it REALLOCATING; it does nothing about
+/// the final buffer, which is a complete CBOR re-encoding of a decrypted
+/// block-level forward-compat subtree.
 fn value_to_unknown(v: &Value) -> Result<UnknownValue, BlockError> {
     let mut buf = Vec::with_capacity(cbor_size_bound(v));
     ciborium::ser::into_writer(v, &mut buf)
         .map_err(|e| BlockError::CborEncode(classify_ser(&e)))?;
-    let u = UnknownValue::from_canonical_cbor(&buf)?;
+    let buf = SecretBytes::new(buf);
+    let u = UnknownValue::from_canonical_cbor(buf.expose())?;
     Ok(u)
 }
 
@@ -1779,13 +1802,16 @@ pub fn encrypt_block<R: RngCore + CryptoRng>(
 
     // Step 5: canonical-CBOR plaintext. `pt_bytes` is a cleartext CBOR copy
     // of every record in the block — every password, note and TOTP seed —
-    // so it is wrapped in `SecretBytes` immediately rather than left as a
-    // bare `Vec<u8>` until a trailing `.zeroize()` at the end of the
-    // function. `SecretBytes`'s `ZeroizeOnDrop` then wipes it on every exit
-    // path (normal return, an early `?`, or an unwinding panic), matching
-    // the `bundle_plaintext` pattern in `unlock::create_vault_unchecked`
-    // (#513, #357).
-    let pt_bytes = SecretBytes::new(encode_plaintext(plaintext)?);
+    // so it must be wiped on every exit path (normal return, an early `?`,
+    // or an unwinding panic), the same PROPERTY the `bundle_plaintext`
+    // pattern in `unlock::create_vault_unchecked` establishes (#513, #357)
+    // — but no longer the same MECHANISM. `bundle_plaintext` is still a
+    // caller-side `SecretBytes::new(identity.to_canonical_cbor()?)`.
+    // `encode_plaintext` now returns `SecretBytes` directly (#558, #565):
+    // the wrap is structural, part of the function's return type, rather
+    // than a separate `SecretBytes::new(..)` call here that a future edit
+    // could silently drop.
+    let pt_bytes = encode_plaintext(plaintext)?;
 
     // Step 6: AAD = bytes magic..end_of_recipient_entries; AEAD-encrypt.
     let aad = build_body_aad(header, &wraps)?;
@@ -1935,6 +1961,19 @@ pub fn decrypt_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `classify_de` has no production caller left in THIS file after
+    // Task 2 (#561) routed `decode_plaintext` through
+    // `crate::cbor::from_secret_reader`, which classifies internally. It
+    // still has real production callers elsewhere in the crate (per ruling
+    // R11, not enumerated here — read the callers directly rather than
+    // trusting a list). The production `use crate::cbor::{...}` above
+    // deliberately no longer names it, so a plain `cargo build --release
+    // --workspace` (no `#[cfg(test)]` code compiled) does not warn
+    // `unused_imports`. Test code still needs it: the two pre-#547-Task-5
+    // oracle helpers below call it directly. Mirrors the identical
+    // `encode_canonical_map` treatment just below and `record.rs`'s
+    // `#547` Task 4 comment.
+    use crate::cbor::classify_de;
     use crate::vault::record::{RecordField, RecordFieldValue};
     // `encode_canonical_map` has no production caller left in THIS file
     // after #547 Task 5, but still has real production callers elsewhere
@@ -1962,7 +2001,16 @@ mod tests {
     // proves nothing. (Reviewer note: diff this block against
     // `git show b5208d9b:core/src/vault/block.rs`'s `plaintext_to_entries`
     // / `records_to_value` / `unknown_to_value` / `encode_plaintext` to
-    // confirm it has not drifted.)
+    // confirm it has not drifted. That diff is NOT expected to be empty as
+    // of the cbor-residue-closeout follow-up slice: `record::encode`'s
+    // return type changed from `Vec<u8>` to `SecretBytes` (#558, #565),
+    // which forces `records_to_value_for_test` below to read
+    // `bytes.expose()` where `b5208d9b` had `bytes.as_slice()`. That is a
+    // type-forced adaptation to keep this oracle compiling, not a drift in
+    // what it checks — the byte-identity claim it exists to pin is
+    // unchanged. `unknown_to_value_for_test`'s `bytes.as_slice()` is
+    // untouched: `UnknownValue::to_canonical_cbor` still returns a bare
+    // `Vec<u8>`.)
 
     /// A verbatim copy of the pre-#547-Task-5 `records_to_value`. See the
     /// note above.
@@ -1970,7 +2018,7 @@ mod tests {
         let mut items: Vec<Value> = Vec::with_capacity(records.len());
         for r in records {
             let bytes = record::encode(r)?;
-            let val: Value = ciborium::de::from_reader(bytes.as_slice())
+            let val: Value = ciborium::de::from_reader(bytes.expose())
                 .map_err(|e| BlockError::CborDecode(classify_de(&e)))?;
             items.push(val);
         }
@@ -2191,11 +2239,37 @@ mod tests {
                 encode_plaintext_via_round_trip_for_test(&plaintext).expect("round-trip encode");
 
             assert_eq!(
-                direct, via_round_trip,
+                direct.expose(),
+                via_round_trip.as_slice(),
                 "inlining records changed the block bytes — the on-disk \
                  format moved (n={n})"
             );
         }
+    }
+
+    /// `encode_plaintext` returns a `SecretBytes`, not a `Vec<u8>`, so the
+    /// wrap at the AEAD call site cannot be deleted without a compile error
+    /// (#558) and `decode_plaintext`'s `re_encoded` buffer is wrapped by
+    /// construction (#565). This test pins the OBSERVABLE half — that the
+    /// bytes are unchanged BY THE ROUND-TRIP (encode, decode, re-encode,
+    /// compare) and that encoding stays deterministic; the type itself is
+    /// pinned by the compiler. There is no frozen byte anchor here —
+    /// byte-identity against the pre-#558/#565 encoding is what
+    /// `golden_vault_001_pinned` covers, not this test.
+    #[test]
+    fn encode_plaintext_returns_wrapped_bytes_identical_to_the_canonical_form() {
+        use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+        let mut rng = ChaCha20Rng::from_seed([31u8; 32]);
+        let plaintext = random_block_plaintext(&mut rng, 2);
+        let wrapped = encode_plaintext(&plaintext).expect("encode");
+        let decoded = decode_plaintext(wrapped.expose()).expect("round-trip");
+        assert_eq!(decoded.block_uuid, plaintext.block_uuid);
+        assert_eq!(
+            wrapped.expose(),
+            encode_plaintext(&decoded).expect("re-encode").expose(),
+            "encoding must be deterministic and unchanged by the wrapper"
+        );
     }
 
     /// Encode a list of `(key, value)` entries as a definite-length CBOR
@@ -2366,11 +2440,18 @@ mod tests {
         let mut rng = rand_core::OsRng;
         let plaintext = random_block_plaintext(&mut rng, 1);
         let good = encode_plaintext(&plaintext).expect("encode");
-        assert!(decode_plaintext(&good).is_ok(), "fixture must decode clean");
+        assert!(
+            decode_plaintext(good.expose()).is_ok(),
+            "fixture must decode clean"
+        );
 
         // (a) Out-of-order keys inside the nested record map.
-        let tampered = reorder_first_nested_record_keys_for_test(&good);
-        assert_ne!(tampered, good, "tamper helper did not change the bytes");
+        let tampered = reorder_first_nested_record_keys_for_test(good.expose());
+        assert_ne!(
+            tampered.as_slice(),
+            good.expose(),
+            "tamper helper did not change the bytes"
+        );
         assert!(
             matches!(
                 decode_plaintext(&tampered),
@@ -2380,8 +2461,12 @@ mod tests {
         );
 
         // (b) An indefinite-length nested record map.
-        let tampered = indefinite_length_in_first_record_for_test(&good);
-        assert_ne!(tampered, good, "tamper helper did not change the bytes");
+        let tampered = indefinite_length_in_first_record_for_test(good.expose());
+        assert_ne!(
+            tampered.as_slice(),
+            good.expose(),
+            "tamper helper did not change the bytes"
+        );
         assert!(
             matches!(
                 decode_plaintext(&tampered),
@@ -2469,7 +2554,8 @@ mod tests {
             unknown: BTreeMap::new(),
         };
         let plaintext_bytes = encode_plaintext(&plaintext).expect("encode_plaintext");
-        let decoded_plaintext = decode_plaintext(&plaintext_bytes).expect("decode_plaintext");
+        let decoded_plaintext =
+            decode_plaintext(plaintext_bytes.expose()).expect("decode_plaintext");
         assert_eq!(decoded_plaintext, plaintext);
 
         // ---- Cross-check --------------------------------------------
@@ -2925,6 +3011,16 @@ mod tests {
     /// lives in `cbor::secret_tree::tests` (`wipe_reaches_every_depth_and_
     /// every_container_arm`), which is where the recursive walk is pinned
     /// for all three of its entry points.
+    ///
+    /// **Updated to `before + 2` by Task 2 (#561).** `decode_plaintext` now
+    /// parses through `crate::cbor::from_secret_reader` instead of plain
+    /// `ciborium::de::from_reader`; that call's own `CborScratch` wipes
+    /// unconditionally when it drops at the end of `from_secret_reader`,
+    /// before `parse_plaintext_map` even runs — the duplicate `block_name`
+    /// is a semantic failure the CBOR parse itself does not hit, so the
+    /// scratch wipe fires on every call to this function regardless of
+    /// this test's own error path. The `SecretValueTree::drop` this test
+    /// was written to pin is the SECOND of the two.
     #[test]
     fn decode_plaintext_wipes_its_parsed_tree_on_an_early_return() {
         let entries: Vec<(Value, Value)> = vec![
@@ -2947,10 +3043,82 @@ mod tests {
         );
         assert_eq!(
             crate::cbor::wipe_calls(),
-            before + 1,
-            "expected exactly 1 wipe (SecretValueTree::drop on the early \
-             return out of parse_plaintext_map) — decode_plaintext's wrap is \
-             gone, or no longer covers this path (#557)"
+            before + 2,
+            "expected exactly 2 wipes (from_secret_reader's scratch wipe, \
+             plus SecretValueTree::drop on the early return out of \
+             parse_plaintext_map) — decode_plaintext's wrap is gone, or no \
+             longer covers this path (#557, #561)"
+        );
+    }
+
+    /// `decode_plaintext` must parse through `cbor::from_secret_reader`,
+    /// whose scratch buffer holds a copy of every record's decrypted
+    /// plaintext in the input (#561). Pinning the COMPOSITION on the
+    /// HAPPY path, complementing the early-return test above: `scratch.rs`'s
+    /// own tests prove the wipe fires, this one proves this path uses it.
+    #[test]
+    fn decode_plaintext_wipes_the_parser_scratch_buffer() {
+        use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+        let mut rng = ChaCha20Rng::from_seed([42u8; 32]);
+        let plaintext = random_block_plaintext(&mut rng, 2);
+        let bytes = encode_plaintext(&plaintext).expect("encode");
+
+        let before = crate::cbor::wipe_calls();
+        let decoded = decode_plaintext(bytes.expose()).expect("decode");
+        let after = crate::cbor::wipe_calls();
+
+        assert_eq!(decoded.block_uuid, plaintext.block_uuid);
+        // Five wipes on the happy path — NOT the 2 a first guess (one
+        // scratch wipe + one `SecretValueTree::drop`) would predict; this
+        // was measured by running the test, not assumed, and the extra 3
+        // are a real architectural difference from `record::decode`, worth
+        // recording rather than normalising away:
+        //
+        // 1. `from_secret_reader`'s own `CborScratch::drop`, fires
+        //    unconditionally at the end of that call.
+        // 2. `SecretValueTree::drop` at the end of `decode_plaintext`.
+        // 3-5. ONE PER BLOCK-LEVEL UNKNOWN VALUE. `random_block_plaintext`
+        //    unconditionally inserts exactly 3 block-level unknown entries
+        //    ("ab", "日", "r"-repeat-24) regardless of `n`. Unlike
+        //    `record.rs`, which folds an unknown field straight into
+        //    `UnknownValue(v.clone())` (record.rs:770, :895 — a clone of
+        //    the already-parsed `Value`, no re-parse), `block.rs`'s
+        //    `value_to_unknown` (used by `parse_plaintext_map` for every
+        //    block-level unknown key) re-ENCODES the subtree back to bytes
+        //    and calls `UnknownValue::from_canonical_cbor` on it — which,
+        //    after this task, is itself routed through
+        //    `from_secret_reader`. So each block-level unknown value gets
+        //    its own independent scratch-buffer wipe, on top of the two
+        //    above. `record::decode_value` (called per-record via
+        //    `take_records`) does not re-parse — it decodes an
+        //    already-parsed subtree — and `encode_plaintext`'s
+        //    re-encode-and-compare check re-encodes rather than
+        //    re-parsing, so records contribute no further wipes here.
+        //
+        // The expectation is DERIVED from the fixture, not hardcoded as
+        // `5` (#575 review). The exactness is load-bearing — a `> before`
+        // form is satisfied by the unconditional scratch wipe alone, which
+        // is the vacuity this branch's own review caught twice — but the
+        // number itself was hostage to `random_block_plaintext` inserting
+        // exactly 3 unknowns. Adding a fourth for a reason having nothing
+        // to do with wiping would have redded a security test with
+        // "expected exactly 5 wipes". Deriving keeps both properties.
+        let expected = 2 + plaintext.unknown.len();
+        assert_eq!(
+            plaintext.unknown.len(),
+            3,
+            "fixture guard: random_block_plaintext is expected to insert 3 \
+             block-level unknowns; if that changed deliberately, `expected` \
+             below tracks it automatically and this guard is what tells you"
+        );
+        assert_eq!(
+            after - before,
+            expected,
+            "expected exactly {expected} wipes on the decode_plaintext path \
+             (1 top-level scratch wipe + 1 SecretValueTree::drop + 1 per \
+             block-level unknown value, of which this fixture has {})",
+            plaintext.unknown.len()
         );
     }
 

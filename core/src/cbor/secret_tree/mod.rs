@@ -62,6 +62,21 @@ thread_local! {
     static WIPE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// Bump the shared wipe counter from a sibling module in `cbor`.
+///
+/// `WIPE_CALLS` is private to this module, but `scratch::CborScratch`
+/// (#561) needs to record its own wipe against the same counter so a
+/// caller's test can pin it through `crate::cbor::wipe_calls()`. Exposing
+/// one `pub(super)` bump function is a smaller change than relocating the
+/// counter into `cbor/mod.rs`, which would touch all three existing
+/// bump sites — frozen-adjacent code this task has no reason to churn.
+///
+/// `#[cfg(test)]`-gated like every other bump site: zero production cost.
+#[cfg(test)]
+pub(super) fn note_wipe() {
+    WIPE_CALLS.with(|c| c.set(c.get() + 1));
+}
+
 /// Number of wipes performed so far on this thread. Test-only.
 #[cfg(test)]
 pub(crate) fn wipe_calls() -> usize {
@@ -173,6 +188,32 @@ pub(crate) fn wipe_leaked_value(value: &mut Value) {
 /// `Vec::drop` runs — again correct behaviour, not a residual, because a
 /// spine holds pointers and lengths, not secret bytes.
 ///
+/// Two more gaps in the same "not covered" family, named explicitly rather
+/// than left inside the general reallocation clause above:
+///
+/// - **The parser's scratch buffer.** `ciborium::de::from_reader` stages
+///   every payload of 4096 bytes or fewer through a `[0u8; 4096]` in its
+///   own stack frame. That buffer is not part of the tree this type
+///   wraps, so `Drop` here never reached it. As of #561 the secret-bearing
+///   decode paths do not use `from_reader` at all — they route through
+///   [`crate::cbor::from_secret_reader`], which owns that buffer and wipes
+///   it. See `super::scratch`'s module doc for the mechanism.
+/// - **Reallocation inside the parser's visitor, which is ROUTINE above
+///   4 KiB, not an edge case.** The general reallocation clause above
+///   already names this class; the threshold is the part a reader needs.
+///   `ciborium`'s `deserialize_byte_buf` / `deserialize_string` build the
+///   final payload with `Vec::new()` / `String::new()` plus a per-chunk
+///   grow-and-copy (`extend_from_slice` and `push_str` respectively), so a
+///   payload larger than the parser's scratch
+///   buffer still grows by doubling and frees an unwiped prefix at each
+///   step — measured, by execution (`Vec<u8>::extend_from_slice` in
+///   4096-byte chunks to 100,000 bytes total), at 6 allocation events and
+///   5 reallocations, final capacity 131072 grown from 0. For an
+///   attachment, a long note or a stored key file that is the normal case,
+///   not the exception. This happens inside the parser's visitor, before
+///   any wrapper here sees the value, and there is no public hook for it.
+///   Tracked as **#570**.
+///
 /// # Why there is no `&mut` or consuming accessor
 ///
 /// There is deliberately no way to get the inner `Value` out by value or by
@@ -280,7 +321,16 @@ impl SecretEntries {
         self.0.is_empty()
     }
 
-    /// Read-only view of every entry currently held.
+    /// Read-only view of every entry currently held. Test-only as of #569:
+    /// `unlock::bundle::to_canonical_cbor` was this method's only production
+    /// caller (it fed `entries.as_slice()` into
+    /// `crate::vault::canonical::encode_canonical_map`), and #569 replaced
+    /// that whole encode path with the borrowing `CanonicalMap` mirror,
+    /// which never constructs a `SecretEntries` at all. `tests.rs` still
+    /// exercises this directly, so — same reasoning as [`Self::len`] above —
+    /// it is `#[cfg(test)]`-gated rather than left to trip `dead_code` under
+    /// `-D warnings` (verified by execution).
+    #[cfg(test)]
     pub(crate) fn as_slice(&self) -> &[(Value, Value)] {
         &self.0
     }

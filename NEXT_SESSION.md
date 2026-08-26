@@ -1,1 +1,1 @@
-docs/handoffs/2026-08-24-canonical-cbor-plaintext-residue-shipped.md
+docs/handoffs/2026-08-25-cbor-residue-closeout-shipped.md

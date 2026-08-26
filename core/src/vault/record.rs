@@ -71,7 +71,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ciborium::Value;
 
-use crate::cbor::{classify_de, classify_ser, CborFault, SecretValueTree};
+use crate::cbor::{classify_ser, CborFault, SecretValueTree};
 use crate::crypto::secret::{SecretBytes, SecretString};
 
 use super::canonical::{
@@ -164,8 +164,19 @@ pub enum RecordError {
     IntegerOverflow { field: &'static str },
 
     /// A duplicate map key appeared. RFC 8949 §5.4 forbids duplicates in
-    /// canonical input; the codebase enforces this on every CBOR map we
-    /// parse.
+    /// canonical input.
+    ///
+    /// This said the codebase "enforces this on every CBOR map we parse"
+    /// until the #575 review, which is false in two ways. Enforcement
+    /// covers the levels a decoder parses STRUCTURALLY — three here
+    /// (`<record>`, `fields`, `<field>`), one in `block.rs`, and, as of
+    /// #568, the manifest's top level — while four nested manifest
+    /// parsers still silently last-win (#573). And NO decoder looks
+    /// inside a forward-compat `unknown` subtree, which is an
+    /// arbitrary-depth CBOR map stored verbatim: `UnknownValue`'s only
+    /// validation is `reject_floats_and_tags`, and the record-level
+    /// re-encode-and-compare cannot see it either, because duplicate keys
+    /// sort adjacently and re-encode byte-identically.
     ///
     /// Carries the map LEVEL and the offending entry's ordinal, never the
     /// key itself: at the `"fields"` level the key is a decrypted user field
@@ -296,9 +307,30 @@ impl UnknownValue {
     /// individual unknown values constructed in isolation are validated
     /// only for the no-float / no-tag rules.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, RecordError> {
-        let parsed: Value = ciborium::de::from_reader(bytes)
-            .map_err(|e| RecordError::CborDecode(classify_de(&e)))?;
-        reject_floats_and_tags(&parsed, "<unknown>")?;
+        // `from_secret_reader`, not `from_reader` (#561): this input is a
+        // forward-compat unknown subtree carried inside a decrypted record —
+        // plaintext this version cannot interpret but must still not leave
+        // staged in `ciborium`'s own frame.
+        let mut parsed: Value =
+            crate::cbor::from_secret_reader(bytes).map_err(RecordError::CborDecode)?;
+        // The `reject_floats_and_tags` REJECT path drops `parsed` — a full
+        // parsed tree of this decrypted subtree — and `UnknownValue` has no
+        // `Zeroize` impl of its own, so an ordinary drop leaves every
+        // `Bytes` / `Text` payload in it intact (#575 review). Every sibling
+        // decode wraps its tree in `SecretValueTree` for exactly this
+        // reason; this function cannot, because on the ACCEPT path the tree
+        // is the return value. `wipe_leaked_value` is the tool the parent
+        // module exports for precisely this shape — a caller that folds a
+        // value into NOTHING on an early return.
+        //
+        // In-crate this path is unreachable (`block`/`manifest` pre-check
+        // floats and tags tree-wide before any unknown is built), but
+        // `from_canonical_cbor` is `pub`: an FFI client or a fuzz target can
+        // hand in a float- or tag-bearing subtree directly.
+        if let Err(e) = reject_floats_and_tags(&parsed, "<unknown>") {
+            crate::cbor::wipe_leaked_value(&mut parsed);
+            return Err(e.into());
+        }
         Ok(UnknownValue(parsed))
     }
 
@@ -479,8 +511,24 @@ pub struct Record {
 /// encoder's own CBOR-encode / capacity-bound checks, lifted to
 /// [`RecordError::CborEncode`] / [`RecordError::CanonicalSizeBoundExceeded`]
 /// by the `From<CanonicalError>` impl above.
-pub fn encode(record: &Record) -> Result<Vec<u8>, RecordError> {
-    Ok(to_canonical_vec(&record_to_canonical(record))?)
+///
+/// Returns [`SecretBytes`], not `Vec<u8>`: the output is the decrypted
+/// canonical form of a record — every field value it holds. Returning the
+/// wrapper rather than leaving a caller to apply one means the wrap
+/// cannot be deleted without a compile error — a stronger guarantee than a
+/// caller-side `SecretBytes::new(..)` call, which is deletable with the
+/// whole suite still green (verified by execution, #558/#565). That
+/// contrast describes `block.rs`'s `encrypt_block` and `manifest.rs`'s
+/// `sign_manifest`, which used to apply exactly that caller-side wrap;
+/// this function never had one to begin with — `re_encoded`'s comparison
+/// (below) was the only call site, and it never wrapped the result either.
+/// The property this signature buys is the same regardless of which
+/// pre-state a given call site came from: nothing calling `encode` can
+/// forget to wrap its output, because there is no unwrapped form to forget.
+pub fn encode(record: &Record) -> Result<SecretBytes, RecordError> {
+    Ok(SecretBytes::new(to_canonical_vec(&record_to_canonical(
+        record,
+    ))?))
 }
 
 /// Build the borrowed canonical map for a record (§6.3).
@@ -603,8 +651,9 @@ fn field_to_canonical(field: &RecordField) -> CanonicalMap<'_> {
 /// Forward-compat unknown keys are preserved into [`Record::unknown`]
 /// and [`RecordField::unknown`] verbatim.
 pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
-    let parsed: Value =
-        ciborium::de::from_reader(bytes).map_err(|e| RecordError::CborDecode(classify_de(&e)))?;
+    // `from_secret_reader`, not `from_reader` (#561): this input is
+    // decrypted record field plaintext.
+    let parsed: Value = crate::cbor::from_secret_reader(bytes).map_err(RecordError::CborDecode)?;
     // The parsed tree owns a copy of every decrypted field value in
     // `bytes`. Wrapping it means `Drop` wipes that copy on every exit from
     // this function — including the `?` early returns below and an
@@ -626,8 +675,14 @@ pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
     // indefinite-length items (which `ciborium::Value` reads but
     // normalises on re-emit), non-canonical map key order, and non-
     // shortest length prefixes.
+    //
+    // `re_encoded` is a full re-encoding of the decrypted content and was
+    // previously freed intact on every successful open (#565). `encode`
+    // now returns `SecretBytes`, so this buffer is wrapped BY CONSTRUCTION
+    // — there is no separate `SecretBytes::new` call here for a future edit
+    // to drop.
     let re_encoded = encode(&record)?;
-    if re_encoded.as_slice() != bytes {
+    if re_encoded.expose() != bytes {
         return Err(RecordError::NonCanonicalEncoding);
     }
 
@@ -1326,8 +1381,11 @@ mod tests {
     /// under a coupled fixture the two conditions are always equal, so the
     /// swap is byte-invisible. The differential test below loops over
     /// every `(tags_present, tombstone_state)` combination for exactly
-    /// this reason; see its own doc and the mutation check recorded in
-    /// `task-4-report.md`'s fix-round-1 section.
+    /// this reason; see its own doc, whose inlined note records the
+    /// mutation check. (That read "see the mutation check recorded in
+    /// `task-4-report.md`'s fix-round-1 section" until the #575 review —
+    /// the per-task SDD reports live under a gitignored `.superpowers/`
+    /// and are not in the repo, so the pointer could not be followed.)
     ///
     /// Random rather than literal per the repo's test convention: hardcoded
     /// crypto-shaped byte arrays trip CodeQL. Uses `rand_core::OsRng` (a
@@ -1538,10 +1596,13 @@ mod tests {
     /// 0` are always equal, so swapping which one gates the `tombstone`
     /// wire-emission is byte-invisible. `TombstoneState::Resurrected`
     /// (`tombstone == false`, `tombstoned_at_ms != 0`) is what makes that
-    /// swap visible; see the mutation check recorded in
-    /// `task-4-report.md`'s fix-round-1 section, which planted exactly
-    /// this cross-wiring bug and confirmed this loop catches it where the
-    /// single-flag version could not have.
+    /// swap visible. That was confirmed by mutation during review: the
+    /// cross-wiring bug was planted deliberately and this loop caught it
+    /// where the single-flag version could not have. (The conclusion is
+    /// inlined rather than cited — this pointed at
+    /// `task-4-report.md`'s fix-round-1 section until the #575 review, and
+    /// the per-task SDD reports live under a gitignored `.superpowers/`,
+    /// so they are not in the repo to be read.)
     ///
     /// Uses a runtime-random record (see `random_record`) rather than a
     /// pasted literal expectation, so this test does not itself become
@@ -1568,7 +1629,8 @@ mod tests {
                 let via_owned = encode_canonical_map(&owned_entries).expect("owned encode");
 
                 assert_eq!(
-                    via_canonical, via_owned,
+                    via_canonical.expose(),
+                    via_owned.as_slice(),
                     "the borrowing encoder changed the bytes — the on-disk \
                      format moved (tags_present={tags_present}, \
                      tombstone_state={tombstone_state:?})"
@@ -1583,7 +1645,7 @@ mod tests {
     fn smoke_encode_decode_roundtrip() {
         let r = sample_record();
         let bytes = encode(&r).expect("encode");
-        let parsed = decode(&bytes).expect("decode");
+        let parsed = decode(bytes.expose()).expect("decode");
         assert_eq!(parsed, r);
         let bytes_again = encode(&parsed).expect("re-encode");
         assert_eq!(bytes, bytes_again, "encode is deterministic");
@@ -1623,7 +1685,7 @@ mod tests {
         };
 
         let bytes = encode(&record).expect("encode full record");
-        let parsed = decode(&bytes).expect("decode full record");
+        let parsed = decode(bytes.expose()).expect("decode full record");
         assert_eq!(parsed, record);
         let bytes_again = encode(&parsed).expect("re-encode");
         assert_eq!(bytes, bytes_again, "round-trip is bit-identical");
@@ -1634,7 +1696,7 @@ mod tests {
         // Empty fields, empty tags, tombstone = false.
         let r = dummy_record();
         let bytes = encode(&r).expect("encode minimal");
-        let parsed = decode(&bytes).expect("decode minimal");
+        let parsed = decode(bytes.expose()).expect("decode minimal");
         assert_eq!(parsed, r);
         let bytes_again = encode(&parsed).expect("re-encode minimal");
         assert_eq!(
@@ -1648,7 +1710,7 @@ mod tests {
         let mut r = dummy_record();
         r.record_type = "weird_future_type".to_string();
         let bytes = encode(&r).expect("encode custom type");
-        let parsed = decode(&bytes).expect("decode custom type");
+        let parsed = decode(bytes.expose()).expect("decode custom type");
         assert_eq!(parsed, r);
         let bytes_again = encode(&parsed).expect("re-encode");
         assert_eq!(bytes, bytes_again);
@@ -1667,7 +1729,7 @@ mod tests {
         r.fields = fields;
 
         let bytes = encode(&r).expect("encode bytes value");
-        let parsed = decode(&bytes).expect("decode bytes value");
+        let parsed = decode(bytes.expose()).expect("decode bytes value");
         assert_eq!(parsed, r);
         match parsed
             .fields
@@ -1696,7 +1758,7 @@ mod tests {
         r.fields = fields;
 
         let bytes = encode(&r).expect("encode unicode");
-        let parsed = decode(&bytes).expect("decode unicode");
+        let parsed = decode(bytes.expose()).expect("decode unicode");
         assert_eq!(parsed, r);
         match parsed
             .fields
@@ -1721,7 +1783,7 @@ mod tests {
         let r = dummy_record();
         assert!(!r.tombstone);
         let bytes = encode(&r).expect("encode");
-        let parsed = decode(&bytes).expect("decode");
+        let parsed = decode(bytes.expose()).expect("decode");
         assert!(
             !parsed.tombstone,
             "absent tombstone key on the wire decodes to false"
@@ -1739,7 +1801,7 @@ mod tests {
         // Re-parse via ciborium directly (bypassing decode()) so we can
         // inspect the raw map keys without depending on Record's view.
         let value: Value =
-            ciborium::de::from_reader(&bytes[..]).expect("ciborium parse of canonical record");
+            ciborium::de::from_reader(bytes.expose()).expect("ciborium parse of canonical record");
         let entries = match value {
             Value::Map(e) => e,
             _ => panic!("encoded record is not a CBOR map"),
@@ -1761,7 +1823,7 @@ mod tests {
         let r = dummy_record();
         assert_eq!(r.tombstoned_at_ms, 0);
         let bytes = encode(&r).expect("encode");
-        let parsed = decode(&bytes).expect("decode");
+        let parsed = decode(bytes.expose()).expect("decode");
         assert_eq!(
             parsed.tombstoned_at_ms, 0,
             "absent tombstoned_at_ms key on the wire decodes to 0"
@@ -1776,7 +1838,7 @@ mod tests {
         assert_eq!(r.tombstoned_at_ms, 0);
         let bytes = encode(&r).expect("encode");
         let value: Value =
-            ciborium::de::from_reader(&bytes[..]).expect("ciborium parse of canonical record");
+            ciborium::de::from_reader(bytes.expose()).expect("ciborium parse of canonical record");
         let entries = match value {
             Value::Map(e) => e,
             _ => panic!("encoded record is not a CBOR map"),
@@ -1800,7 +1862,7 @@ mod tests {
         r.last_mod_ms = 1_714_060_800_500;
         r.tombstoned_at_ms = 1_714_060_800_500;
         let bytes = encode(&r).expect("encode");
-        let parsed = decode(&bytes).expect("decode");
+        let parsed = decode(bytes.expose()).expect("decode");
         assert!(parsed.tombstone);
         assert_eq!(parsed.tombstoned_at_ms, 1_714_060_800_500);
         // Re-encode is bit-identical (canonical-CBOR round-trip invariant).
@@ -1816,7 +1878,7 @@ mod tests {
         let r = dummy_record();
         assert!(r.tags.is_empty());
         let bytes = encode(&r).expect("encode");
-        let parsed = decode(&bytes).expect("decode");
+        let parsed = decode(bytes.expose()).expect("decode");
         assert!(parsed.tags.is_empty(), "absent tags key decodes to empty");
     }
 
@@ -1826,7 +1888,7 @@ mod tests {
         assert!(r.tags.is_empty());
         let bytes = encode(&r).expect("encode");
 
-        let value: Value = ciborium::de::from_reader(&bytes[..]).expect("ciborium parse");
+        let value: Value = ciborium::de::from_reader(bytes.expose()).expect("ciborium parse");
         let entries = match value {
             Value::Map(e) => e,
             _ => panic!("encoded record is not a CBOR map"),
@@ -1863,7 +1925,8 @@ mod tests {
 
         let bytes_again = encode(&parsed).expect("re-encode with preserved unknown");
         assert_eq!(
-            bytes, bytes_again,
+            bytes.as_slice(),
+            bytes_again.expose(),
             "unknown record-level key round-trips bit-identically"
         );
     }
@@ -1920,7 +1983,8 @@ mod tests {
 
         let bytes_again = encode(&parsed).expect("re-encode preserves unknown field key");
         assert_eq!(
-            bytes, bytes_again,
+            bytes.as_slice(),
+            bytes_again.expose(),
             "unknown field-level key round-trips bit-identically"
         );
     }
@@ -1975,7 +2039,7 @@ mod tests {
         assert!(username.unknown.contains_key("future_attr"));
 
         let bytes_again = encode(&parsed).expect("re-encode");
-        assert_eq!(bytes, bytes_again);
+        assert_eq!(bytes.as_slice(), bytes_again.expose());
     }
 
     #[test]
@@ -2006,7 +2070,8 @@ mod tests {
         assert!(parsed.unknown.contains_key("future_struct"));
         let bytes_again = encode(&parsed).expect("re-encode nested unknown");
         assert_eq!(
-            bytes, bytes_again,
+            bytes.as_slice(),
+            bytes_again.expose(),
             "nested-map unknown value round-trips bit-identically"
         );
     }
@@ -2087,6 +2152,7 @@ mod tests {
                         // strip the leading map-header byte, and append before our 0xFF.
         let r = dummy_record();
         let canonical = encode(&r).expect("baseline encode");
+        let canonical = canonical.expose();
         // The first byte of the canonical map is 0xa0 + n (n entries
         // since dummy_record encodes 5 keys: record_uuid, record_type,
         // fields, created_at_ms, last_mod_ms). Sanity-check then strip.
@@ -2111,6 +2177,7 @@ mod tests {
         let mut r = dummy_record();
         r.tags = vec!["work".into()];
         let canonical = encode(&r).expect("baseline encode");
+        let canonical = canonical.expose();
 
         // ciborium parses the canonical bytes back to a Value tree, then
         // we substitute the tags array with a hand-crafted indefinite
@@ -2132,8 +2199,7 @@ mod tests {
         // ciborium, then re-emit the map header followed by the entries,
         // substituting the tags entry's value with raw indefinite-array
         // bytes.
-        let value: Value =
-            ciborium::de::from_reader(&canonical[..]).expect("parse canonical record");
+        let value: Value = ciborium::de::from_reader(canonical).expect("parse canonical record");
         let entries = match value {
             Value::Map(e) => e,
             _ => panic!("not a map"),
@@ -2216,6 +2282,7 @@ mod tests {
         // payload.
         let r = dummy_record();
         let canonical = encode(&r).expect("baseline encode");
+        let canonical = canonical.expose();
 
         // Locate the byte sequence: 0x65 'l' 'o' 'g' 'i' 'n'
         let needle: [u8; 6] = [0x65, b'l', b'o', b'g', b'i', b'n'];
@@ -2289,6 +2356,23 @@ mod tests {
     /// so this drives the same early-`?` path `reject_duplicate_keys` pins
     /// the error variant for, and additionally asserts the parsed tree was
     /// wiped.
+    ///
+    /// **Updated to `before + 2` by Task 2 (#561), and re-tightened to an
+    /// exact count in review.** `decode` now parses through
+    /// `crate::cbor::from_secret_reader` instead of plain
+    /// `ciborium::de::from_reader`; that call's own `CborScratch` wipes
+    /// unconditionally when it drops at the end of `from_secret_reader`,
+    /// before `parse_record_map` even runs — so a first pass at this
+    /// update left the assertion as `> before`, which the added scratch
+    /// wipe alone satisfies regardless of whether the early-return path
+    /// wipes anything. Proven by mutation: wrapping
+    /// `SecretValueTree::new(parsed)` in `ManuallyDrop` inside `decode`
+    /// (killing that `Drop`) left the `> before` form of this test
+    /// PASSING — only the happy-path exact-count test below failed.
+    /// `before + 2` is exact: 1 scratch wipe (`from_secret_reader`,
+    /// unconditional) + 1 `SecretValueTree::drop` on the early return this
+    /// test exists to pin — the second of the two is what the mutation
+    /// above proved this assertion was no longer covering.
     #[test]
     fn decode_wipes_its_parsed_tree_on_an_early_return() {
         let r = dummy_record();
@@ -2305,9 +2389,45 @@ mod tests {
             matches!(err, RecordError::DuplicateKey { .. }),
             "expected DuplicateKey, got {err:?}"
         );
-        assert!(
-            crate::cbor::wipe_calls() > before,
-            "decode's early return did not wipe its parsed SecretValueTree"
+        assert_eq!(
+            crate::cbor::wipe_calls(),
+            before + 2,
+            "expected exactly 2 wipes (from_secret_reader's scratch wipe, \
+             plus SecretValueTree::drop on the early return out of \
+             parse_record_map) — decode's wrap is gone, or no longer \
+             covers this path (#561)"
+        );
+    }
+
+    /// `decode` must parse through `cbor::from_secret_reader`, whose scratch
+    /// buffer holds a copy of every decrypted field value in the input
+    /// (#561). Pinning the COMPOSITION, not just the mechanism: `scratch.rs`'s
+    /// own tests prove the wipe fires, this one proves this path uses it.
+    #[test]
+    fn decode_wipes_the_parser_scratch_buffer() {
+        use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
+
+        let mut rng = ChaCha20Rng::from_seed([41u8; 32]);
+        let record = random_record(&mut rng, true, TombstoneState::Live);
+        let bytes = encode(&record).expect("encode");
+
+        let before = crate::cbor::wipe_calls();
+        let decoded = decode(bytes.expose()).expect("decode");
+        let after = crate::cbor::wipe_calls();
+
+        assert_eq!(decoded.record_uuid, record.record_uuid);
+        // Two wipes on the happy path: one scratch wipe from
+        // `from_secret_reader`'s own `CborScratch::drop` (fires
+        // unconditionally at the end of that call, success or not), and one
+        // tree wipe from `SecretValueTree::drop` at the end of `decode`.
+        // `decode` does not re-parse its input anywhere on the success
+        // path — the canonical-form check re-ENCODES `parsed` and compares
+        // bytes, it does not decode a second time — so there is no third
+        // wipe to account for here.
+        assert_eq!(
+            after - before,
+            2,
+            "expected exactly 2 wipes on the decode path"
         );
     }
 
@@ -2522,6 +2642,85 @@ mod tests {
         assert_eq!(
             bytes, bytes_again,
             "UnknownValue round-trip is bit-identical for canonical input"
+        );
+    }
+
+    /// `UnknownValue::from_canonical_cbor` must parse through
+    /// `cbor::from_secret_reader`, whose scratch buffer holds a copy of
+    /// this forward-compat unknown subtree — plaintext this version cannot
+    /// interpret but must still not leave staged in `ciborium`'s own frame
+    /// (#561).
+    #[test]
+    fn unknown_value_from_canonical_cbor_wipes_the_parser_scratch_buffer() {
+        let entries = vec![
+            (Value::Text("a".into()), Value::Integer(1u64.into())),
+            (Value::Text("b".into()), Value::Text("two".into())),
+        ];
+        let sorted = canonical_sort_entries(&entries).expect("sort");
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(sorted), &mut bytes).expect("encode test map");
+
+        let before = crate::cbor::wipe_calls();
+        let _uv = UnknownValue::from_canonical_cbor(&bytes)
+            .expect("from_canonical_cbor accepts canonical map");
+        let after = crate::cbor::wipe_calls();
+
+        // One wipe: `from_secret_reader`'s own `CborScratch::drop`.
+        // `UnknownValue` wraps its parsed `Value` directly — `Ok(UnknownValue(
+        // parsed))` — with no `SecretValueTree` wrap around it (see the
+        // module-level note that `UnknownValue` has no `Zeroize` impl of its
+        // own), so there is no second, tree-level wipe on this path the way
+        // `decode` has.
+        assert_eq!(
+            after - before,
+            1,
+            "expected exactly 1 wipe on the UnknownValue::from_canonical_cbor path"
+        );
+    }
+
+    /// The REJECT path must wipe the parsed tree too (#575 review). The
+    /// test above covers only the success path, where the tree becomes the
+    /// return value; on a float/tag rejection the tree is dropped instead,
+    /// and `UnknownValue` has no `Zeroize` impl, so an ordinary drop leaves
+    /// every payload intact.
+    ///
+    /// Exact count, and the exactness is the point: `before + 1` (the
+    /// unconditional `CborScratch` wipe alone) is what this test asserted
+    /// before the fix, so a `> before` form — or a `+ 1` — would pass with
+    /// the `wipe_leaked_value` call deleted. Verified by mutation: removing
+    /// that call from `from_canonical_cbor` makes this test fail with
+    /// `2 != 1` while `unknown_value_from_canonical_cbor_wipes_the_parser_
+    /// scratch_buffer` above stays green.
+    #[test]
+    fn unknown_value_from_canonical_cbor_wipes_its_tree_on_the_reject_path() {
+        // A map carrying a secret-looking byte payload beside the float that
+        // triggers the rejection, so the tree being dropped is not empty.
+        let entries = vec![
+            (
+                Value::Text("a".into()),
+                Value::Bytes(b"amex-cvv-4111111111111111".to_vec()),
+            ),
+            (Value::Text("b".into()), Value::Float(1.5)),
+        ];
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut bytes).expect("encode test map");
+
+        let before = crate::cbor::wipe_calls();
+        let err = UnknownValue::from_canonical_cbor(&bytes)
+            .expect_err("a float must be rejected by from_canonical_cbor");
+        let after = crate::cbor::wipe_calls();
+
+        assert!(
+            matches!(err, RecordError::FloatRejected { .. }),
+            "expected FloatRejected, got {err:?}"
+        );
+        // Two wipes: `from_secret_reader`'s own `CborScratch::drop`, plus the
+        // `wipe_leaked_value` on the tree the rejection discards.
+        assert_eq!(
+            after - before,
+            2,
+            "expected exactly 2 wipes on the reject path (scratch + the \
+             discarded tree) — the reject path dropped its parsed tree unwiped"
         );
     }
 

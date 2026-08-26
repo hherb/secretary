@@ -798,7 +798,7 @@ mod vault {
         #[test]
         fn record_canonical_cbor_bit_identical(r in record_strategy()) {
             let bytes_1 = record::encode(&r).expect("encode r");
-            let parsed = record::decode(&bytes_1).expect("decode r");
+            let parsed = record::decode(bytes_1.expose()).expect("decode r");
             prop_assert_eq!(&parsed, &r, "decode(encode(r)) != r");
             let bytes_2 = record::encode(&parsed).expect("re-encode");
             prop_assert_eq!(&bytes_1, &bytes_2, "encode→decode→encode not bit-identical");
@@ -1561,7 +1561,7 @@ mod manifest_props {
         #[test]
         fn manifest_roundtrip(m in manifest_strategy()) {
             let bytes = encode_manifest(&m).expect("encode_manifest");
-            let parsed = decode_manifest(&bytes).expect("decode_manifest");
+            let parsed = decode_manifest(bytes.expose()).expect("decode_manifest");
 
             // Sort `m`'s arrays in canonical order to match the decoded form.
             let mut m_sorted = m.clone();

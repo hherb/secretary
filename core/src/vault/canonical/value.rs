@@ -52,6 +52,17 @@
 //! calls neither `record::encode` nor `legacy::encode_canonical_map` any
 //! more.
 //!
+//! A THIRD consumer joined later, on a separate slice: the
+//! cbor-residue-closeout follow-up (#569) migrated
+//! `unlock::bundle::IdentityBundle::to_canonical_cbor` onto `CanonicalMap`
+//! directly (not through `record_to_canonical` — the bundle's fields don't
+//! share a `Record`'s shape), eliminating four long-term secret-key copies
+//! per encode. Which files call this module is deliberately not tracked as
+//! a running list past this point, for the reason `canonical/mod.rs`'s own
+//! module doc gives for not enumerating them at all: read the callers
+//! directly (`grep -rn "CanonicalMap::with_capacity" core/src`) rather than
+//! trusting a count that has already needed correcting twice.
+//!
 //! [`CanonicalMap`] / [`CanonicalValue`] are `pub(crate)`, matching the
 //! `canonical` module they live in — and as of the #560 review that is
 //! true of the DECLARATIONS, not merely of the effective visibility. Both
@@ -195,16 +206,22 @@ impl Serialize for CanonicalMap<'_> {
         // is no key buffer here to worry about being secret-bearing (see
         // the module doc): nothing is copied out of the key to begin with.
         //
+        // The general equivalence claim in the paragraph above — ordering
+        // on `(byte length, bytes)` matches ordering on the full CBOR
+        // encoding, for any pair of strings — is pinned by the proptest
+        // `len_then_bytes_matches_full_cbor_encoding_order`, in this
+        // file's own test module below (#567).
+        //
         // `.len()` on `&str` is BYTE length, not char count — load-bearing:
         // a multi-byte UTF-8 key (e.g. 3-byte "日") must sort by its 3 CBOR
         // payload bytes, not by its 1 char, or the order would diverge from
-        // the real CBOR head. `map_key_sort_crosses_head_length_boundary_
-        // and_uses_byte_not_char_length`, in this file's own test module
-        // below, pins this with a key pair that would sort the other way
-        // under a char-count comparator. (That citation read
-        // `core/tests/canonical_value_equivalence.rs` until the #560
-        // review — a file this branch DELETED when the proof moved in here;
-        // the test survived the move, only its home changed.)
+        // the real CBOR head. `map_key_sort_crosses_head_length_boundary_and_uses_byte_not_char_length`,
+        // in this file's own test module below, pins this with a key pair
+        // that would sort the other way under a char-count comparator.
+        // (That citation read `core/tests/canonical_value_equivalence.rs`
+        // until the #560 review — a file this branch DELETED when the
+        // proof moved in here; the test survived the move, only its home
+        // changed.)
         let mut order: Vec<usize> = (0..self.0.len()).collect();
         order.sort_by(|&a, &b| {
             let (ka, kb) = (self.0[a].0, self.0[b].0);
@@ -608,5 +625,148 @@ mod tests {
     fn borrowed_unknown_passes_through_verbatim() {
         let unk = Value::Array(vec![Value::Text("x".into()), Value::Bytes(vec![1, 2, 3])]);
         assert_eq!(enc(&unk), enc(&CanonicalValue::Borrowed(&unk)));
+    }
+
+    /// `enc_text` is written locally on purpose. Reusing the production
+    /// encoder would make the test circular.
+    fn enc_text(s: &str) -> Vec<u8> {
+        let n = s.len();
+        let mut out = Vec::with_capacity(n + 9);
+        // RFC 8949 §3: major type 3 (text string) is 0b011_xxxxx.
+        const MAJOR_TEXT: u8 = 0x60;
+        match n {
+            0..=23 => out.push(MAJOR_TEXT | n as u8),
+            24..=0xFF => {
+                out.push(MAJOR_TEXT | 24);
+                out.push(n as u8);
+            }
+            0x100..=0xFFFF => {
+                out.push(MAJOR_TEXT | 25);
+                out.extend_from_slice(&(n as u16).to_be_bytes());
+            }
+            0x1_0000..=0xFFFF_FFFF => {
+                out.push(MAJOR_TEXT | 26);
+                out.extend_from_slice(&(n as u32).to_be_bytes());
+            }
+            _ => {
+                out.push(MAJOR_TEXT | 27);
+                out.extend_from_slice(&(n as u64).to_be_bytes());
+            }
+        }
+        out.extend_from_slice(s.as_bytes());
+        out
+    }
+
+    proptest::proptest! {
+        /// The `(byte length, bytes)` comparator `CanonicalMap::serialize`
+        /// uses must be *exactly* RFC 8949 §4.2.1 order — i.e. identical to
+        /// ordering on each key's full CBOR encoding.
+        ///
+        /// This is the property that lets the sort read straight through
+        /// the borrowed `&str`s and materialise no key buffer, which is
+        /// the whole security point: record field names are decrypted
+        /// plaintext. If it ever breaks, the on-disk format moves
+        /// silently.
+        ///
+        /// It has been checked twice by exhaustive sweep (184,041 pairwise
+        /// comparisons; 400,000 in an independent reproduction) and
+        /// neither sweep was committed — both lived in prose (#567). This
+        /// makes it permanent. `golden_vault_001` cannot cover it: every
+        /// key there is ASCII, so a byte-length -> char-count regression
+        /// yields byte-identical output for that vault (#562).
+        ///
+        /// **It drives `CanonicalMap::serialize`, and the first version of
+        /// it did not** (#575 review). That version compared
+        /// `(a.len(), a.as_bytes()).cmp(..)` — an expression written in
+        /// this test — against `enc_text`, so it proved a mathematical
+        /// fact about RFC 8949 and touched no production code: mutating
+        /// the real comparator to `chars().count()` left it GREEN. The
+        /// second half below closes that by pushing both keys into a real
+        /// `CanonicalMap` and asserting the SERIALIZED key order, which is
+        /// the only thing that makes this a pin rather than a proof.
+        /// Verified by mutation in both directions.
+        #[test]
+        fn len_then_bytes_matches_full_cbor_encoding_order(a: String, b: String) {
+            let by_parts = (a.len(), a.as_bytes()).cmp(&(b.len(), b.as_bytes()));
+            let by_encoding = enc_text(&a).cmp(&enc_text(&b));
+            proptest::prop_assert_eq!(
+                by_parts,
+                by_encoding,
+                "comparator diverged from RFC 8949 4.2.1 for {:?} vs {:?}",
+                a,
+                b
+            );
+
+            // ...and the PRODUCTION comparator must agree with that same
+            // ordering. Two distinct keys only: `CanonicalMap` does not
+            // deduplicate, and a duplicate key would make "which came
+            // first" meaningless rather than wrong.
+            if a != b {
+                let mut m = CanonicalMap::with_capacity(2);
+                // Pushed in the order the comparator must REVERSE whenever
+                // `b` sorts first, so a comparator that ignored its input
+                // entirely (e.g. a stable no-op sort) would fail half the
+                // generated cases rather than passing by luck.
+                m.push(&a, CanonicalValue::Uint(0));
+                m.push(&b, CanonicalValue::Uint(1));
+
+                let expected_first = if by_encoding == std::cmp::Ordering::Less { &a } else { &b };
+                let owned_first = Value::Text(expected_first.clone());
+
+                let parsed: Value = ciborium::de::from_reader(enc(&m).as_slice())
+                    .expect("CanonicalMap must serialize to parseable CBOR");
+                let Value::Map(entries) = parsed else {
+                    return Err(proptest::test_runner::TestCaseError::fail(
+                        "CanonicalMap must serialize to a CBOR map",
+                    ));
+                };
+                proptest::prop_assert_eq!(
+                    &entries[0].0,
+                    &owned_first,
+                    "CanonicalMap::serialize emitted the wrong key first for {:?} vs {:?}",
+                    a,
+                    b
+                );
+            }
+        }
+    }
+
+    /// `proptest`'s default `String` strategy is heavily ASCII-weighted,
+    /// so the property above would rarely exercise the multi-byte case
+    /// that a char-count regression breaks. Pin it explicitly.
+    #[test]
+    fn byte_length_not_char_count_decides_order() {
+        // "日" is 1 char but 3 UTF-8 bytes; "ab" is 2 chars and 2 bytes.
+        // Under (byte length, bytes) "ab" sorts first. Under a char count
+        // it would not — that is the regression this pins.
+        assert_eq!(
+            ("ab".len(), "ab".as_bytes()).cmp(&("日".len(), "日".as_bytes())),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            enc_text("ab").cmp(&enc_text("日")),
+            std::cmp::Ordering::Less
+        );
+        assert!("ab".chars().count() > "日".chars().count());
+
+        // Direct production-path check: push both keys into a real
+        // CanonicalMap (pushed out of canonical order) and confirm
+        // `CanonicalMap::serialize`'s own comparator — not just `enc_text`
+        // above, which is test-local — places "ab" before "日". Without
+        // this, a regression in the production comparator alone (leaving
+        // `enc_text` untouched) would not fail this test, only the
+        // pre-existing `map_key_sort_crosses_head_length_boundary_and_uses_byte_not_char_length`
+        // above; mutation-checked (#567 task brief step 3) against a
+        // `chars().count()` regression in `CanonicalMap::serialize` to
+        // confirm this assertion, not that sibling test, is what catches
+        // it.
+        let mut m = CanonicalMap::with_capacity(2);
+        m.push("日", CanonicalValue::Uint(1));
+        m.push("ab", CanonicalValue::Uint(0));
+        let owned = Value::Map(vec![
+            (Value::Text("ab".into()), Value::Integer(0u64.into())),
+            (Value::Text("日".into()), Value::Integer(1u64.into())),
+        ]);
+        assert_eq!(enc(&owned), enc(&m));
     }
 }

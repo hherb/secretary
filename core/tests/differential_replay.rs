@@ -58,13 +58,35 @@ fn corpus_dirs(target: &str) -> Vec<PathBuf> {
     dirs
 }
 
-fn rust_decode(target: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
+/// Re-encode one fuzz-corpus input through the Rust decoder for that target.
+///
+/// Returns [`SecretBytes`](secretary_core::crypto::secret::SecretBytes), not
+/// `Vec<u8>`. The `"record"` arm's output is a canonical re-encoding of a
+/// decrypted record — every field value it holds — and `record::encode`
+/// returns `SecretBytes` by construction as of #558/#565 precisely so that
+/// no caller can hold it unwrapped. Unwrapping here with
+/// `.expose().to_vec()` to satisfy the old `Vec<u8>` signature would
+/// reintroduce exactly the buffer that change eliminates, in a harness whose
+/// whole job is replaying a corpus of decoded records — so the wrapper is
+/// threaded through the signature instead.
+///
+/// The other five arms wrap too. Their outputs are not decrypted plaintext
+/// (a `ContactCard` is the artifact handed to other users; the three `*_file`
+/// encoders emit on-disk forms whose bodies are already AEAD ciphertext), so
+/// wrapping them buys nothing directly — but a uniform return type keeps the
+/// one arm that *does* matter from being the odd one out, which is how it
+/// came to be unwrapped in the first place.
+fn rust_decode(
+    target: &str,
+    bytes: &[u8],
+) -> Result<secretary_core::crypto::secret::SecretBytes, String> {
+    use secretary_core::crypto::secret::SecretBytes;
     use secretary_core::*;
     match target {
         "vault_toml" => {
             let s = std::str::from_utf8(bytes).map_err(|e| format!("utf8: {}", e))?;
             unlock::vault_toml::decode(s)
-                .map(|_| Vec::new()) // crash-only target; no roundtrip compare
+                .map(|_| SecretBytes::new(Vec::new())) // crash-only target; no roundtrip compare
                 .map_err(|e| format!("{:?}", e))
         }
         "record" => vault::record::decode(bytes)
@@ -72,15 +94,18 @@ fn rust_decode(target: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
             .map_err(|e| format!("{:?}", e)),
         "contact_card" => identity::card::ContactCard::from_canonical_cbor(bytes)
             .and_then(|c| c.to_canonical_cbor())
+            .map(SecretBytes::new)
             .map_err(|e| format!("{:?}", e)),
         "bundle_file" => unlock::bundle_file::decode(bytes)
-            .map(|f| unlock::bundle_file::encode(&f))
+            .map(|f| SecretBytes::new(unlock::bundle_file::encode(&f)))
             .map_err(|e| format!("{:?}", e)),
         "manifest_file" => vault::manifest::decode_manifest_file(bytes)
             .and_then(|f| vault::manifest::encode_manifest_file(&f))
+            .map(SecretBytes::new)
             .map_err(|e| format!("{:?}", e)),
         "block_file" => vault::block::decode_block_file(bytes)
             .and_then(|f| vault::block::encode_block_file(&f))
+            .map(SecretBytes::new)
             .map_err(|e| format!("{:?}", e)),
         _ => panic!("unknown target {}", target),
     }
@@ -204,7 +229,10 @@ fn differential_replay_full_corpus() {
                         if *target == "vault_toml" {
                             true
                         } else {
-                            r_bytes == p_bytes
+                            // `.expose()` reads through the wrapper for the
+                            // comparison; it does not materialise a second
+                            // copy the way `.to_vec()` would.
+                            r_bytes.expose() == p_bytes.as_slice()
                         }
                     }
                     // Mismatch: one accepted, one rejected.

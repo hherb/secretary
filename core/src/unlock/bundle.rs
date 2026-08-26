@@ -48,8 +48,9 @@ use core::fmt;
 
 use ciborium::Value;
 use rand_core::{CryptoRng, RngCore};
+use zeroize::Zeroize;
 
-use crate::cbor::{classify_de, CborFault, SecretEntries};
+use crate::cbor::{CborFault, SecretEntries};
 use crate::crypto::kem::{
     generate_ml_kem_768, generate_x25519, ML_KEM_768_PK_LEN, ML_KEM_768_SK_LEN, X25519_PK_LEN,
     X25519_SK_LEN,
@@ -59,7 +60,7 @@ use crate::crypto::sig::{
     generate_ed25519, generate_ml_dsa_65, ED25519_PK_LEN, ED25519_SK_LEN, ML_DSA_65_PK_LEN,
     ML_DSA_65_SEED_LEN,
 };
-use crate::vault::canonical::CanonicalError;
+use crate::vault::canonical::{to_canonical_vec, CanonicalError, CanonicalMap, CanonicalValue};
 
 // ---------------------------------------------------------------------------
 // Constants (§14)
@@ -91,6 +92,11 @@ const KEY_ED25519_PK: &str = "ed25519_pk";
 const KEY_ML_DSA_65_SK: &str = "ml_dsa_65_sk";
 const KEY_ML_DSA_65_PK: &str = "ml_dsa_65_pk";
 const KEY_CREATED_AT: &str = "created_at";
+
+/// Number of entries in the §5 identity-bundle CBOR map. A capacity hint
+/// for `CanonicalMap::with_capacity`, not an invariant — `push` is correct
+/// at any capacity.
+const BUNDLE_FIELD_COUNT: usize = 11;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -289,91 +295,65 @@ impl IdentityBundle {
     /// Canonical CBOR encoding of the §5 plaintext map. Output is
     /// deterministic: encoding twice produces identical bytes, and any
     /// conformant RFC 8949 §4.2.1 encoder produces the same output.
+    ///
+    /// **Returns a bare `Vec<u8>`, unlike its three siblings** —
+    /// `record::encode`, `block::encode_plaintext` and `encode_manifest`
+    /// all return `SecretBytes` so the wrap cannot be deleted without a
+    /// compile error (#558, #565). This output is the highest-value
+    /// plaintext buffer in the crate (cleartext CBOR of the X25519 secret
+    /// key, the 2400-byte ML-KEM-768 decapsulation key, the Ed25519 secret
+    /// key and the ML-DSA-65 seed), and its production caller
+    /// `unlock::create_vault_unchecked` applies exactly the deletable
+    /// `SecretBytes::new(f()?)` shape those three were changed to
+    /// eliminate.
+    ///
+    /// Tracked as **#571**, deliberately deferred for slice size — NOT
+    /// because anything blocks it. The handoff for the slice that changed
+    /// the other three recorded the reason as "T5's tests depend on it";
+    /// the #575 review found that misleading, since the two affected tests
+    /// need the same one-word `.as_slice()` -> `.expose()` edit that ~35
+    /// other tests in that slice already took.
     pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, BundleError> {
-        // Build the 11 entries; they will be sorted bytewise by canonical
-        // key encoding before serialisation. The order in this `vec!` is
-        // therefore not load-bearing — the sort step is.
-        let entries = SecretEntries::new(vec![
-            (
-                Value::Text(KEY_USER_UUID.into()),
-                Value::Bytes(self.user_uuid.to_vec()),
-            ),
-            (
-                Value::Text(KEY_DISPLAY_NAME.into()),
-                Value::Text(self.display_name.clone()),
-            ),
-            (
-                Value::Text(KEY_X25519_SK.into()),
-                Value::Bytes(self.x25519_sk.expose().to_vec()),
-            ),
-            (
-                Value::Text(KEY_X25519_PK.into()),
-                Value::Bytes(self.x25519_pk.to_vec()),
-            ),
-            (
-                Value::Text(KEY_ML_KEM_768_SK.into()),
-                Value::Bytes(self.ml_kem_768_sk.expose().clone()),
-            ),
-            (
-                Value::Text(KEY_ML_KEM_768_PK.into()),
-                Value::Bytes(self.ml_kem_768_pk.clone()),
-            ),
-            (
-                Value::Text(KEY_ED25519_SK.into()),
-                Value::Bytes(self.ed25519_sk.expose().to_vec()),
-            ),
-            (
-                Value::Text(KEY_ED25519_PK.into()),
-                Value::Bytes(self.ed25519_pk.to_vec()),
-            ),
-            (
-                Value::Text(KEY_ML_DSA_65_SK.into()),
-                Value::Bytes(self.ml_dsa_65_sk.expose().clone()),
-            ),
-            (
-                Value::Text(KEY_ML_DSA_65_PK.into()),
-                Value::Bytes(self.ml_dsa_65_pk.clone()),
-            ),
-            (
-                Value::Text(KEY_CREATED_AT.into()),
-                Value::Integer(self.created_at_ms.into()),
-            ),
-        ]);
-        // `entries` holds a cleartext clone of all four long-term secret keys.
-        // `SecretEntries::drop` wipes them at the end of this expression, on
-        // the error path as well as the success path (#542) — the shared
-        // type `crate::cbor::secret_tree` also uses for the record/block
-        // decode paths (#547) and this file's own read side (#548, see
-        // `from_canonical_cbor` below). This file no longer owns a private
-        // copy of the wrapper.
+        // Every value BORROWS. The four long-term secret keys — X25519,
+        // ML-KEM-768 (2400 B), Ed25519 and ML-DSA-65 — used to be cloned out
+        // of their `Sensitive` wrappers into owned `Value::Bytes` on EVERY
+        // encode, then wiped by `SecretEntries::drop`. Wiping is the fallback
+        // mechanism; a copy that never exists needs no wipe and cannot be
+        // missed by a future caller (#569). `SecretEntries` remains on the
+        // DECODE side below, where ciborium's parser owns the allocation and
+        // elimination is not available.
         //
-        // One deliberate behaviour difference from the retired
-        // `ZeroizingEntries`: `SecretEntries::wipe` also zeroizes
-        // `Value::Text`, which `ZeroizingEntries` did not. The bundle's only
-        // text value is `display_name`, which `IdentityBundle` itself holds
-        // as an unwrapped `String` — wiping the CLONE here is neither
-        // harmful nor load-bearing, just a side effect of using the shared
-        // type instead of a bundle-specific one.
-        //
-        // On `main`, before #547/#548 shared this call with `record.rs` /
-        // `block.rs` / `manifest.rs`, this file's own `encode_map` took the
-        // WRAPPER (`&ZeroizingEntries`), not `&[(Value, Value)]` — the
-        // comment there said plainly: "passing the inner slice made the
-        // wrapper optional at its only call site, so reverting this line to
-        // a bare `vec![…]` compiled and passed the whole suite. The
-        // signature is what makes the invariant hold." `encode_canonical_map`
-        // is the shared helper `record.rs`/`block.rs`/`manifest.rs` also
-        // call, and its signature is `&[(Value, Value)]` — it cannot take
-        // `&SecretEntries` without forcing every OTHER caller through the
-        // same wrapper, several of which build entries with no secret
-        // content at all. Sharing the mechanism therefore traded that
-        // type-level guarantee for a test-level one: nothing stops a future
-        // edit here from reverting to a bare `vec![…]` and still
-        // compiling — [`to_canonical_cbor_wipes_its_entry_list`] is what
-        // would catch it, by asserting the production encode path actually
-        // wipes via `crate::cbor::wipe_calls()`, not by construction.
-        crate::vault::canonical::encode_canonical_map(entries.as_slice())
-            .map_err(canonical_error_to_bundle_error)
+        // Push order is irrelevant: `CanonicalMap`'s `Serialize` imposes the
+        // RFC 8949 4.2.1 order at serialise time.
+        let mut map = CanonicalMap::with_capacity(BUNDLE_FIELD_COUNT);
+        map.push(KEY_USER_UUID, CanonicalValue::Bytes(&self.user_uuid));
+        map.push(KEY_DISPLAY_NAME, CanonicalValue::Text(&self.display_name));
+        map.push(
+            KEY_X25519_SK,
+            CanonicalValue::Bytes(self.x25519_sk.expose()),
+        );
+        map.push(KEY_X25519_PK, CanonicalValue::Bytes(&self.x25519_pk));
+        map.push(
+            KEY_ML_KEM_768_SK,
+            CanonicalValue::Bytes(self.ml_kem_768_sk.expose()),
+        );
+        map.push(
+            KEY_ML_KEM_768_PK,
+            CanonicalValue::Bytes(&self.ml_kem_768_pk),
+        );
+        map.push(
+            KEY_ED25519_SK,
+            CanonicalValue::Bytes(self.ed25519_sk.expose()),
+        );
+        map.push(KEY_ED25519_PK, CanonicalValue::Bytes(&self.ed25519_pk));
+        map.push(
+            KEY_ML_DSA_65_SK,
+            CanonicalValue::Bytes(self.ml_dsa_65_sk.expose()),
+        );
+        map.push(KEY_ML_DSA_65_PK, CanonicalValue::Bytes(&self.ml_dsa_65_pk));
+        map.push(KEY_CREATED_AT, CanonicalValue::Uint(self.created_at_ms));
+
+        to_canonical_vec(&map).map_err(canonical_error_to_bundle_error)
     }
 
     /// Inverse of [`Self::to_canonical_cbor`]. Validates that every required field
@@ -385,8 +365,12 @@ impl IdentityBundle {
     /// reader must recognise v1 inputs only, so a future v2 writer (or a
     /// tampered file) is rejected loudly rather than silently accepted.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, BundleError> {
-        let value: Value = ciborium::de::from_reader(bytes)
-            .map_err(|e| BundleError::CborFault(classify_de(&e)))?;
+        // `from_secret_reader`, not `from_reader` (#561): this input's
+        // payloads include the X25519 secret key, the 2400-byte ML-KEM-768
+        // decapsulation key, the Ed25519 secret key and the ML-DSA-65 seed —
+        // every long-term secret key the identity bundle holds.
+        let value: Value =
+            crate::cbor::from_secret_reader(bytes).map_err(BundleError::CborFault)?;
         let Value::Map(m) = value else {
             return Err(BundleError::Malformed("expected top-level CBOR map"));
         };
@@ -635,13 +619,16 @@ impl IdentityBundle {
 /// already had is the smaller surface change.
 ///
 /// `to_canonical_cbor`'s only call into the shared module is
-/// [`crate::vault::canonical::encode_canonical_map`], which never itself
+/// [`crate::vault::canonical::to_canonical_vec`] (#569 — previously
+/// [`crate::vault::canonical::encode_canonical_map`]), which never itself
 /// calls [`crate::vault::canonical::reject_floats_and_tags`] — so
 /// `FloatRejected` / `TagRejected` are structurally unreachable from this
-/// file's own call site today. They still need a match arm: `CanonicalError`
-/// is one type shared across every caller of the module, not scoped per
-/// function, so this `match` must stay exhaustive regardless of which arms
-/// THIS caller can actually trigger.
+/// file's own call site today (`CanonicalValue` has no arm that can carry a
+/// float, and `to_canonical_cbor` never uses `CanonicalValue::Borrowed`).
+/// They still need a match arm: `CanonicalError` is one type shared across
+/// every caller of the module, not scoped per function, so this `match`
+/// must stay exhaustive regardless of which arms THIS caller can actually
+/// trigger.
 fn canonical_error_to_bundle_error(e: CanonicalError) -> BundleError {
     match e {
         CanonicalError::CborEncode(fault) => BundleError::CborFault(fault),
@@ -667,9 +654,14 @@ fn canonical_error_to_bundle_error(e: CanonicalError) -> BundleError {
 /// Compute the canonical CBOR sort order for two map keys. Test-only: lets
 /// the test module build deliberately non-canonical maps that are then
 /// sorted (or deliberately not sorted) to exercise the strict-decoder
-/// branches. Production encode does the sorting itself inside
-/// [`crate::vault::canonical::encode_canonical_map`] against materialised
-/// key bytes.
+/// branches. Production encode (#569) does the sorting itself inside
+/// [`CanonicalMap`](crate::vault::canonical::CanonicalMap)'s `Serialize`
+/// impl, and — unlike this test-only comparator, which fully encodes both
+/// keys and compares the resulting bytes — that impl materialises no key
+/// bytes at all: it orders on `(byte length, bytes)` read straight through
+/// the borrowed `&str` keys, which RFC 8949 §4.2.1 canonical order reduces
+/// to for text keys. See `vault::canonical::value`'s module doc and
+/// `CanonicalMap`'s own `Serialize` impl for why the two orderings agree.
 #[cfg(test)]
 pub(super) fn canonical_key_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
     let mut a_buf = Vec::new();
@@ -679,8 +671,39 @@ pub(super) fn canonical_key_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
     a_buf.cmp(&b_buf)
 }
 
-fn set_once<T>(slot: &mut Option<T>, v: T, key: &'static str) -> Result<(), BundleError> {
+/// Write `v` into `slot`, rejecting a second write for the same key.
+///
+/// `v` is fully evaluated by the caller — `take_text(v)?` has already
+/// produced an owned `String`, `take_uuid(v)?` a `[u8; 16]` — so on the
+/// duplicate path that decoded copy is live and would otherwise be
+/// dropped unwiped (#566).
+///
+/// **What this closes today is nothing secret, and the #575 review
+/// corrected an earlier version of this comment that implied otherwise.**
+/// Reading all 11 call sites: the four secret-bearing arms arrive as
+/// `Sensitive<…>`, already `ZeroizeOnDrop`, so the explicit call there is
+/// a redundant (harmless, idempotent) second wipe. The arms where
+/// `set_once` is the ONLY wipe are `display_name` (`String`), `user_uuid`
+/// (`[u8; 16]`), the three public keys and `created_at_ms` (`u64`) — all
+/// public or non-secret. `display_name` in particular is not "handled" by
+/// this: the ACCEPTED copy moves into `IdentityBundle::display_name`, a
+/// deliberately non-zeroize-typed field, and lives unwiped for the
+/// bundle's whole lifetime by pre-existing design.
+///
+/// So this is defence in depth for a FUTURE secret-bearing plain-typed
+/// field, not a closed live window — and that is what makes the bound
+/// worth having. `T: Zeroize` on the signature rather than a `.zeroize()`
+/// at each of the 11 call sites means such a field cannot be added
+/// without the wipe coming with it. Note the bound is also the only one
+/// that compiles: `ZeroizeOnDrop` is a marker trait with no methods, so
+/// `v.zeroize()` would not typecheck under it.
+fn set_once<T: Zeroize>(
+    slot: &mut Option<T>,
+    mut v: T,
+    key: &'static str,
+) -> Result<(), BundleError> {
     if slot.is_some() {
+        v.zeroize();
         return Err(BundleError::DuplicateField(key));
     }
     *slot = Some(v);
@@ -1084,18 +1107,84 @@ mod tests {
         );
     }
 
+    /// Migrating the bundle encode path to the borrowing `CanonicalMap`
+    /// mirror (#569) must not move a single on-disk byte. The four secret
+    /// keys stop being copied out of their `Sensitive` wrappers; the wire
+    /// form is identical.
+    ///
+    /// This test replaces the retired `to_canonical_cbor_wipes_its_entry_list`:
+    /// that test asserted `to_canonical_cbor` incremented
+    /// `crate::cbor::wipe_calls()`, which was true only because the old
+    /// implementation built a `SecretEntries` and wiped it on drop. #569
+    /// removes that allocation entirely — elimination, not wiping — so
+    /// `to_canonical_cbor` no longer touches the wipe counter at all, and
+    /// the old assertion would now fail by construction. Byte-stability is
+    /// the property that matters post-migration; this test proves it.
     #[test]
-    fn to_canonical_cbor_wipes_its_entry_list() {
-        // The end-to-end version of the above: the production encode path must
-        // wipe, without any test calling `wipe` itself.
-        let mut rng = ChaCha20Rng::from_seed([11u8; 32]);
-        let b = generate("wipe-check", 1_714_060_800_000, &mut rng);
+    fn canonical_encoding_is_unchanged_by_the_borrowing_mirror() {
+        let mut rng = ChaCha20Rng::from_seed([61u8; 32]);
+        let bundle = generate("residue-test", 1_700_000_000_000, &mut rng);
+
+        let encoded = bundle.to_canonical_cbor().expect("encode");
+        let round_tripped =
+            IdentityBundle::from_canonical_cbor(encoded.as_slice()).expect("decode");
+        let re_encoded = round_tripped.to_canonical_cbor().expect("re-encode");
+        assert_eq!(
+            encoded, re_encoded,
+            "encode -> decode -> encode must be byte-stable"
+        );
+
+        // The map's keys must come out in RFC 8949 4.2.1 order. Rather than
+        // asserting a hardcoded key name, re-derive the expected order from
+        // the decoded bytes and compare: this stays correct if a key is
+        // ever added, and it fails loudly if the comparator regresses.
+        let Value::Map(entries) =
+            ciborium::de::from_reader::<Value, _>(encoded.as_slice()).expect("parse")
+        else {
+            panic!("bundle CBOR must be a map");
+        };
+        let keys: Vec<&str> = entries
+            .iter()
+            .map(|(k, _)| match k {
+                Value::Text(s) => s.as_str(),
+                other => panic!("non-text key: {other:?}"),
+            })
+            .collect();
+        let mut expected = keys.clone();
+        expected.sort_by_key(|k| (k.len(), *k));
+        assert_eq!(keys, expected, "keys must be in (byte length, bytes) order");
+    }
+
+    /// #569's whole point, pinned directly: encode no longer WIPES because
+    /// it no longer COPIES. Neither of the two assertions in
+    /// [`canonical_encoding_is_unchanged_by_the_borrowing_mirror`] above
+    /// distinguishes the new borrowing body from the old
+    /// `SecretEntries`-wrapping one — byte-stability and key order both
+    /// held under the old implementation too (that is what made it safe to
+    /// migrate). Without this test, a future revert of `to_canonical_cbor`
+    /// back to `SecretEntries::new(vec![...])` + `encode_canonical_map`
+    /// leaves the entire suite green, `golden_vault_001_pinned` included —
+    /// exactly the "the mechanism is right, but nothing would notice if it
+    /// were removed" failure #557/#558 exist to close. This is the one
+    /// assertion a revert actually trips: `crate::cbor::wipe_calls()` is the
+    /// same counter [`secret_entries_drop_runs_wipe`] and
+    /// [`an_early_return_inside_the_field_loop_still_wipes`] use to prove
+    /// *decode* wipes; here it proves the opposite for *encode* — that the
+    /// counter does not move at all, because no `SecretEntries` (or any
+    /// other wipe-on-drop wrapper) is ever constructed on this path.
+    #[test]
+    fn to_canonical_cbor_touches_no_wipe_counter() {
+        let mut rng = ChaCha20Rng::from_seed([62u8; 32]);
+        let bundle = generate("no-copy-check", 1_700_000_000_001, &mut rng);
+
         let before = crate::cbor::wipe_calls();
-        let _bytes = b.to_canonical_cbor().expect("encode");
+        let _encoded = bundle.to_canonical_cbor().expect("encode");
         assert_eq!(
             crate::cbor::wipe_calls(),
-            before + 1,
-            "to_canonical_cbor left its entry list unwiped"
+            before,
+            "to_canonical_cbor invoked a wipe — it must construct no \
+             SecretEntries/SecretValueTree at all, since every value it \
+             encodes borrows directly out of the bundle's own fields (#569)"
         );
     }
 
@@ -1122,6 +1211,16 @@ mod tests {
     /// carrying the untouched `ed25519_sk` entry — and no other wipe runs on
     /// this path, since the duplicate fires before any `wipe_leaked_value`
     /// arm is reachable.
+    ///
+    /// **Updated to `before + 2` by Task 2 (#561).** `from_canonical_cbor`
+    /// now parses through `crate::cbor::from_secret_reader` instead of
+    /// plain `ciborium::de::from_reader`; that call's own `CborScratch`
+    /// wipes unconditionally when it drops at the end of
+    /// `from_secret_reader`, before the field loop that raises
+    /// `DuplicateField` even starts — so the scratch wipe fires on every
+    /// call to this function regardless of this test's own error path. The
+    /// `SecretEntries::drop` this test was written to pin is the SECOND of
+    /// the two.
     #[test]
     fn an_early_return_inside_the_field_loop_still_wipes() {
         let bytes = duplicate_field_bundle_cbor_for_test();
@@ -1135,10 +1234,52 @@ mod tests {
         );
         assert_eq!(
             crate::cbor::wipe_calls(),
-            before + 1,
-            "expected exactly 1 wipe (SecretEntries::drop, carrying the \
-             not-yet-consumed ed25519_sk entry) — the early-return path did \
-             not wipe the remainder (#548)"
+            before + 2,
+            "expected exactly 2 wipes (from_secret_reader's scratch wipe, \
+             plus SecretEntries::drop carrying the not-yet-consumed \
+             ed25519_sk entry) — the early-return path did not wipe the \
+             remainder (#548, #561)"
+        );
+    }
+
+    /// `from_canonical_cbor` must parse through `cbor::from_secret_reader`
+    /// on the HAPPY path (#561). Its scratch buffer stages the X25519
+    /// secret key, the 2400-byte ML-KEM-768 decapsulation key, the Ed25519
+    /// secret key and the ML-DSA-65 seed — every long-term secret key the
+    /// identity bundle holds, and the highest-value input of the six sites
+    /// this slice migrated.
+    ///
+    /// Added in the #575 review, which found this the ONLY one of the six
+    /// without a dedicated test: `record.rs`, `block.rs` and `manifest.rs`
+    /// each got one, while the bundle site survived on three pre-existing
+    /// early-return tests whose expected counts were merely bumped `+1`
+    /// (`an_early_return_inside_the_field_loop_still_wipes` above,
+    /// `non_string_map_key_wipes_its_value`, `unknown_field_wipes_its_value`).
+    /// Every one of those is an ERROR-path test, so relaxing any of them —
+    /// the exact relaxation this branch's own review caught and fixed twice
+    /// in `record.rs` / `manifest.rs` — would have silently unpinned this
+    /// site's composition.
+    #[test]
+    fn from_canonical_cbor_wipes_the_parser_scratch_buffer() {
+        let mut rng = ChaCha20Rng::from_seed([63u8; 32]);
+        let bundle = generate("scratch-check", 1_700_000_000_002, &mut rng);
+        let encoded = bundle.to_canonical_cbor().expect("encode");
+
+        let before = crate::cbor::wipe_calls();
+        let decoded = IdentityBundle::from_canonical_cbor(&encoded).expect("decode");
+        let after = crate::cbor::wipe_calls();
+
+        assert_eq!(decoded.user_uuid, bundle.user_uuid);
+        // Two wipes: `from_secret_reader`'s own `CborScratch::drop` (fires
+        // unconditionally at the end of that call), and `SecretEntries::drop`
+        // at the end of `from_canonical_cbor`. The bundle carries no
+        // forward-compat unknown keys, and no field decode re-parses, so
+        // there is no third wipe on this path.
+        assert_eq!(
+            after - before,
+            2,
+            "expected exactly 2 wipes on the from_canonical_cbor happy path \
+             (from_secret_reader's scratch wipe + SecretEntries::drop)"
         );
     }
 
@@ -1213,6 +1354,15 @@ mod tests {
     /// half is `cbor::secret_tree::tests::wipe_leaked_value_overwrites_
     /// every_payload_it_is_given`, which is effect-based. Neither test
     /// alone pins the property; together they do.
+    ///
+    /// **Updated to `before + 4` by Task 2 (#561).** `from_canonical_cbor`
+    /// now parses through `crate::cbor::from_secret_reader` instead of
+    /// plain `ciborium::de::from_reader`; that call's own `CborScratch`
+    /// wipes unconditionally when it drops at the end of
+    /// `from_secret_reader`, before the field loop that rejects the
+    /// non-string key even starts — so the scratch wipe fires on every call
+    /// to this function regardless of this test's own error path, on top of
+    /// the 3 the G1 fix itself accounts for.
     #[test]
     fn non_string_map_key_wipes_its_value() {
         let mut rng = ChaCha20Rng::from_seed([88u8; 32]);
@@ -1237,12 +1387,14 @@ mod tests {
         );
         assert_eq!(
             crate::cbor::wipe_calls(),
-            before + 3,
-            "expected 3 wipes (SecretEntries::drop on the now-empty map, plus \
+            before + 4,
+            "expected 4 wipes (from_secret_reader's scratch wipe, plus \
+             SecretEntries::drop on the now-empty map, plus \
              wipe_leaked_value on BOTH `k` and `v`) — the non-string-key early \
              return must wipe the key as well as the value, since the check it \
              just failed guarantees `k` is some non-text Value and Value::Bytes \
-             is in that set (#548 fix-round-1 G1, key half added in review)"
+             is in that set (#548 fix-round-1 G1, key half added in review; \
+             #561)"
         );
     }
 
@@ -1257,6 +1409,13 @@ mod tests {
     ///
     /// Exact-count assertion for the same reason as the non-string-key test
     /// above — see that test's doc for why `> before` does not pin this.
+    ///
+    /// **Updated to `before + 3` by Task 2 (#561).** Same reasoning as the
+    /// non-string-key test above: `from_canonical_cbor` now parses through
+    /// `crate::cbor::from_secret_reader`, whose `CborScratch` wipes
+    /// unconditionally on drop, before the field loop that rejects the
+    /// unknown field even starts — one further wipe on top of the 2 the G1
+    /// fix itself accounts for.
     #[test]
     fn unknown_field_wipes_its_value() {
         let mut rng = ChaCha20Rng::from_seed([99u8; 32]);
@@ -1279,10 +1438,11 @@ mod tests {
         );
         assert_eq!(
             crate::cbor::wipe_calls(),
-            before + 2,
-            "expected 2 wipes (SecretEntries::drop on the now-empty map, plus \
+            before + 3,
+            "expected 3 wipes (from_secret_reader's scratch wipe, plus \
+             SecretEntries::drop on the now-empty map, plus \
              wipe_leaked_value on `v`) — the UnknownField early return did \
-             not wipe its value (#548 fix-round-1 G1)"
+             not wipe its value (#548 fix-round-1 G1, #561)"
         );
     }
 
@@ -1290,10 +1450,11 @@ mod tests {
     //
     // Zero coverage before this section: three of its four arms are
     // structurally unreachable from `to_canonical_cbor`'s own call into
-    // `encode_canonical_map` (see that function's doc), so swapping any of
-    // the `FloatRejected` / `TagRejected` / `CapacityBoundExceeded` message
-    // literals, or mis-mapping one to the wrong `BundleError` variant, left
-    // every test in the workspace green. Modelled on
+    // `to_canonical_vec` (#569 — previously `encode_canonical_map`; see that
+    // function's doc), so swapping any of the `FloatRejected` / `TagRejected`
+    // / `CapacityBoundExceeded` message literals, or mis-mapping one to the
+    // wrong `BundleError` variant, left every test in the workspace green.
+    // Modelled on
     // `identity::card::canonical_error_capacity_bound_exceeded_maps_to_card_error`
     // — construct each `CanonicalError` arm directly rather than driving it
     // through the shared encoder, since three of the four cannot be reached
@@ -1740,6 +1901,103 @@ mod tests {
         assert!(
             matches!(err, BundleError::NonCanonicalCbor),
             "unexpected error: {err:?}"
+        );
+    }
+
+    // --- set_once (#566) -----------------------------------------------
+
+    /// A duplicate field must not drop its already-decoded value unwiped
+    /// (#566). `set_once`'s `v` argument is fully evaluated before the
+    /// duplicate check runs, so the rejected copy is live at that point.
+    ///
+    /// This pins the REJECTION and that the first value stands. It does
+    /// NOT by itself pin the wipe: this exact assertion set passes
+    /// unchanged with the `v.zeroize()` call deleted from `set_once`
+    /// (verified by mutation). `set_once_wipes_the_rejected_value_not_the_first`
+    /// below is the test that catches that deletion.
+    #[test]
+    fn a_duplicate_field_is_rejected_and_the_first_value_stands() {
+        let mut slot: Option<String> = Some("first".to_string());
+        let err = set_once(&mut slot, "second".to_string(), KEY_DISPLAY_NAME)
+            .expect_err("second write must be rejected");
+        assert!(matches!(err, BundleError::DuplicateField(KEY_DISPLAY_NAME)));
+        assert_eq!(slot.as_deref(), Some("first"), "the first value must stand");
+    }
+
+    /// Test-only `Zeroize` conformer that records, through a flag that
+    /// outlives the value itself, whether `zeroize()` was called on it.
+    ///
+    /// Needed because `set_once` consumes its rejected `v` by value and
+    /// drops it before returning: there is no way to inspect the moved-in
+    /// value afterwards from the caller, only a side channel that survives
+    /// the drop. `Rc<Cell<bool>>` is that channel — cloning it before the
+    /// move gives the test a handle into the value `set_once` goes on to
+    /// wipe and drop.
+    struct WipeRecorder(std::rc::Rc<std::cell::Cell<bool>>);
+
+    impl Zeroize for WipeRecorder {
+        fn zeroize(&mut self) {
+            self.0.set(true);
+        }
+    }
+
+    /// Pins the wipe CALL itself, not just the rejection-and-first-value-
+    /// stands behavior the test above covers.
+    ///
+    /// `crate::cbor::wipe_calls()` cannot be used here: it is bumped only
+    /// from `SecretEntries`/`SecretValueTree::drop`, and `set_once`'s bare
+    /// `Zeroize::zeroize()` call touches neither.
+    ///
+    /// Verified by mutation: deleting the `v.zeroize()` line in `set_once`
+    /// makes `second_wiped.get()` read `false` and this test fail, while
+    /// the test above keeps passing unchanged — proving that one does not,
+    /// by itself, pin the wipe.
+    #[test]
+    fn set_once_wipes_the_rejected_value_not_the_first() {
+        let first_wiped = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mut slot: Option<WipeRecorder> = Some(WipeRecorder(first_wiped.clone()));
+
+        let second_wiped = std::rc::Rc::new(std::cell::Cell::new(false));
+        let v = WipeRecorder(second_wiped.clone());
+        let err =
+            set_once(&mut slot, v, KEY_DISPLAY_NAME).expect_err("second write must be rejected");
+
+        assert!(matches!(err, BundleError::DuplicateField(KEY_DISPLAY_NAME)));
+        assert!(
+            second_wiped.get(),
+            "the REJECTED (second) value's zeroize() must have been called"
+        );
+        assert!(
+            !first_wiped.get(),
+            "the value that STANDS must not be wiped"
+        );
+    }
+
+    /// End-to-end: a bundle whose CBOR carries a repeated key is rejected.
+    #[test]
+    fn a_bundle_with_a_repeated_key_is_rejected() {
+        let mut rng = ChaCha20Rng::from_seed([62u8; 32]);
+        let bundle = generate("dup-test", 1_700_000_000_000, &mut rng);
+        let encoded = bundle.to_canonical_cbor().expect("encode");
+
+        // Parse, duplicate the first entry, re-encode. Non-canonical by
+        // construction, which is fine: `set_once` must reject it BEFORE
+        // the canonicality comparison, so the error must be
+        // `DuplicateField`.
+        let Value::Map(mut entries) =
+            ciborium::de::from_reader::<Value, _>(encoded.as_slice()).expect("parse")
+        else {
+            panic!("bundle CBOR must be a map");
+        };
+        entries.push(entries[0].clone());
+        let mut doubled = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut doubled).expect("re-encode");
+
+        let err = IdentityBundle::from_canonical_cbor(&doubled)
+            .expect_err("a repeated key must be rejected");
+        assert!(
+            matches!(err, BundleError::DuplicateField(_)),
+            "expected DuplicateField, got {err:?}"
         );
     }
 }
