@@ -674,6 +674,17 @@ mod tests {
         /// makes it permanent. `golden_vault_001` cannot cover it: every
         /// key there is ASCII, so a byte-length -> char-count regression
         /// yields byte-identical output for that vault (#562).
+        ///
+        /// **It drives `CanonicalMap::serialize`, and the first version of
+        /// it did not** (#575 review). That version compared
+        /// `(a.len(), a.as_bytes()).cmp(..)` — an expression written in
+        /// this test — against `enc_text`, so it proved a mathematical
+        /// fact about RFC 8949 and touched no production code: mutating
+        /// the real comparator to `chars().count()` left it GREEN. The
+        /// second half below closes that by pushing both keys into a real
+        /// `CanonicalMap` and asserting the SERIALIZED key order, which is
+        /// the only thing that makes this a pin rather than a proof.
+        /// Verified by mutation in both directions.
         #[test]
         fn len_then_bytes_matches_full_cbor_encoding_order(a: String, b: String) {
             let by_parts = (a.len(), a.as_bytes()).cmp(&(b.len(), b.as_bytes()));
@@ -685,6 +696,38 @@ mod tests {
                 a,
                 b
             );
+
+            // ...and the PRODUCTION comparator must agree with that same
+            // ordering. Two distinct keys only: `CanonicalMap` does not
+            // deduplicate, and a duplicate key would make "which came
+            // first" meaningless rather than wrong.
+            if a != b {
+                let mut m = CanonicalMap::with_capacity(2);
+                // Pushed in the order the comparator must REVERSE whenever
+                // `b` sorts first, so a comparator that ignored its input
+                // entirely (e.g. a stable no-op sort) would fail half the
+                // generated cases rather than passing by luck.
+                m.push(&a, CanonicalValue::Uint(0));
+                m.push(&b, CanonicalValue::Uint(1));
+
+                let expected_first = if by_encoding == std::cmp::Ordering::Less { &a } else { &b };
+                let owned_first = Value::Text(expected_first.clone());
+
+                let parsed: Value = ciborium::de::from_reader(enc(&m).as_slice())
+                    .expect("CanonicalMap must serialize to parseable CBOR");
+                let Value::Map(entries) = parsed else {
+                    return Err(proptest::test_runner::TestCaseError::fail(
+                        "CanonicalMap must serialize to a CBOR map",
+                    ));
+                };
+                proptest::prop_assert_eq!(
+                    &entries[0].0,
+                    &owned_first,
+                    "CanonicalMap::serialize emitted the wrong key first for {:?} vs {:?}",
+                    a,
+                    b
+                );
+            }
         }
     }
 
