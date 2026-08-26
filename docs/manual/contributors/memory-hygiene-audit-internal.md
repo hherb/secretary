@@ -1211,11 +1211,30 @@ either census.
   section, below, already tracks two OTHER unwiped clones of, upstream in
   `canonical_sort_entries`).
 
-Both are now wrapped at construction — `SecretBytes::new(encode_plaintext
+~~Both are now wrapped at construction — `SecretBytes::new(encode_plaintext
 (plaintext)?)` / `SecretBytes::new(encode_manifest(body)?)` — with
 `.expose()` passed to `aead::encrypt`, matching the `bundle_plaintext`
-pattern in `unlock::create_vault_unchecked` (#513, #357): `ZeroizeOnDrop`
-then covers every exit path (normal return, an early `?`, an unwinding
+pattern in `unlock::create_vault_unchecked` (#513, #357).~~
+
+**CORRECTED (#575 review). Neither call shape exists any more, and the
+`bundle_plaintext` comparison is now wrong too.** The later
+cbor-residue-closeout slice (#558, #565) moved the wrapper into the
+encoders' RETURN TYPE, so `block.rs`'s `encrypt_block` reads
+`let pt_bytes = encode_plaintext(plaintext)?;` and `manifest.rs`'s
+`sign_manifest` reads `let body_bytes = encode_manifest(body)?;` — there is
+no `SecretBytes::new(..)` at either site to find. `bundle_plaintext` in
+`unlock::create_vault_unchecked` is now the ONLY remaining member of the
+old pattern (tracked as #571), so it is a contrast, not a match; the
+in-code comment at `manifest.rs`'s step 1 states this as "the same
+PROPERTY … but no longer the same MECHANISM". See "The canonical encoders
+return the wrapper, instead of a caller applying one (#558, #565)" below
+for the current state.
+
+This section was left uncorrected when that slice landed, while three
+other passages in this same file were struck and corrected — which is why
+an auditor grepping for `SecretBytes::new(encode_plaintext` finds nothing.
+The property below is unchanged and still holds: `ZeroizeOnDrop`
+covers every exit path (normal return, an early `?`, an unwinding
 panic), not just the happy path a trailing `.zeroize()` would have covered.
 Byte-identity is unaffected — `SecretBytes::new` takes ownership of the same
 `Vec` and `.expose()` returns `&[u8]` over the same allocation, so this is a
@@ -1514,9 +1533,13 @@ x25519_sk.expose())` and its three siblings — borrows, not clones. A copy
 that never exists needs no wipe and cannot be missed by a future caller;
 `to_canonical_cbor_touches_no_wipe_counter` pins this by asserting the
 shared wipe counter does not move across an encode call. The decode side
-(`from_canonical_cbor`) is unchanged and still wraps its parsed entries in
-`SecretEntries` — `ciborium`'s parser owns that allocation, so elimination
-is not available there. #569 also named `manifest.rs`'s user-visible
+(`from_canonical_cbor`) still wraps its parsed entries in `SecretEntries`
+— `ciborium`'s parser owns that allocation, so elimination is not
+available there. ("unchanged" until the #575 review, which is too strong
+for an audit handoff: the same slice moved that function onto
+`cbor::from_secret_reader` (#561) and gave `set_once` a `T: Zeroize` bound
+plus a wipe of the value it rejects (#566). What is unchanged is the
+elimination-vs-wrap posture, not the function.) #569 also named `manifest.rs`'s user-visible
 block-name clone and `card.rs`'s public-key-only encode; neither carries the four
 long-term secret keys #569 was filed over, and neither is touched by this
 slice — #569 stays open for those two, closed only for `bundle.rs`.
@@ -1526,7 +1549,9 @@ slice — #569 stays open for those two, closed only for `bundle.rs`.
 `record::encode`, `block::encode_plaintext` and `encode_manifest` used to
 return a bare `Vec<u8>`, relying on each caller to wrap it —
 `SecretBytes::new(encode(&record)?)` and the like. `record.rs` never grew
-that caller-side wrap at all (see the correction below); `block.rs`'s
+that caller-side wrap at all (see the correction at "Four production …
+roots, not three" ABOVE — this read "see the correction below" until the
+#575 review, and the passage it means is ~450 lines earlier); `block.rs`'s
 `encrypt_block` and `manifest.rs`'s `sign_manifest` did, and a `SecretBytes::
 new(..)` call at a call site is *deletable with the whole test suite still
 green* — verified by execution — because a derived `Zeroize`/`ZeroizeOnDrop`

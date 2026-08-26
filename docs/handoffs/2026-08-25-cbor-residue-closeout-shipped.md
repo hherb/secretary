@@ -57,11 +57,29 @@ T4 turned `Value::Integer(created_at_ms.into())` into `CanonicalValue::Uint(crea
 
 ## (2) What's next — concrete acceptance criteria
 
-**Nothing on this branch is unfinished.** CI has never run on it; check that first.
+**Amended after the #575 review** — the two sentences that stood here were
+*"Nothing on this branch is unfinished. CI has never run on it; check that
+first."* Both needed correcting:
+
+- **CI HAS run**, on `f22525f7`. 24 of 26 checks pass; the two failures
+  (`cargo test (ubuntu-latest)`, CodeQL `Analyze (rust)`) are one transient
+  GitHub Actions DNS outage during "Set up job" — both died before
+  checking anything out. They need a re-run, nothing more.
+- **Two things WERE unfinished, and neither was in any gate.** The
+  `Vec<u8>` -> `SecretBytes` sweep was scoped to `--workspace`, and the two
+  in-repo trees that are not workspace members both stopped compiling:
+  `core/tests/differential_replay.rs` (feature-gated, so `clippy --tests`
+  never builds it) and `core/fuzz/fuzz_targets/record.rs` (`exclude`d from
+  the workspace). Both are fixed on this branch. **When you change a
+  `core` signature, `cargo check --features differential-replay --tests`
+  and a `core/fuzz` build are not optional** — no CI job covers either.
+- **#569 was closed for one of its three paths, not all three.** See the
+  entry below.
 
 - **#573 — the highest-value follow-up, and sharper than it looks.** `manifest.rs`'s four **nested** map parsers (`parse_vector_clock_entry`, `parse_block_entry`, `parse_trash_entry`, `parse_kdf_params`) still silently last-win on a duplicate key; `block.rs`/`record.rs` check at every level. **What makes this sharper than the top-level gap #568 closed:** implementing #568 established by execution that `decode_manifest` has **no re-encode-and-compare canonicality check** (#572) — so the nested layer has no second backstop either. Acceptance: mirror `parse_manifest_map`'s shape in all four; the `ManifestError::DuplicateKey` variant already exists and is data-free.
 - **#572** — add the missing canonicality re-check to `decode_manifest`, so it matches `record::decode` and `block::decode_plaintext`. Acceptance: a non-canonical manifest body is rejected; `golden_vault_001_pinned` stays green.
-- **#571** — `unlock/mod.rs:211` is the last deletable `SecretBytes::new(<encoder>()?)` of the #558 class in `core`, holding cleartext CBOR of all four long-term secret keys. This slice deliberately left `bundle::to_canonical_cbor`'s `Vec<u8>` return alone (T5's tests depend on it). Acceptance: make it return `SecretBytes` like its three siblings, or record why not.
+- **#569 — still open for TWO of its three paths, which this handoff originally omitted.** The issue names three encode paths still copying secrets into an owned `ciborium::Value`; this slice migrated only path 1 (`bundle.rs`). **Path 2 is live and fires on every manifest write**: `manifest_to_entries` -> `block_entry_to_value` builds `Value::Text(entry.block_name.clone())` into a bare `Vec<(Value, Value)>`, dropped unwiped, reached by all four production `sign_manifest` sites. It is strictly worse than the state #569 was filed against for the bundle, which at least had `SecretEntries` wiping on drop — here there is no wrapper at all. Making `encode_manifest` return `SecretBytes` (#558/#565) covered its OUTPUT while leaving an equivalent copy of the same plaintext on the input side. Path 3 (`card.rs`) is genuinely low-value — a contact card holds no secret-typed field — but should be closed or explicitly dropped from #569's scope rather than left unmentioned. Acceptance: migrate `manifest_to_entries` to `CanonicalMap` (every arm it needs exists; `golden_vault_001_pinned` backstops byte-identity exactly as it did for the bundle).
+- **#571** — `unlock/mod.rs:211` is the last deletable `SecretBytes::new(<encoder>()?)` of the #558 class in `core`, holding cleartext CBOR of all four long-term secret keys. This slice deliberately left `bundle::to_canonical_cbor`'s `Vec<u8>` return alone. ~~(T5's tests depend on it.)~~ **That reason was misleading** (#575 review): the two affected tests need the same one-word `.as_slice()` -> `.expose()` edit that ~35 other tests in this slice already took. The honest reason is slice size. A pointer to #571 now sits on `to_canonical_cbor` itself, which previously gave a reader no signal that the most secret of the four encoders was the one still returning `Vec<u8>`. Acceptance: make it return `SecretBytes` like its three siblings, or record why not.
 - **#570** — `ciborium`'s decode side grows payload buffers from capacity 0, so any field over 4 KiB reallocates repeatedly and frees unwiped prefixes. **Routine, not an edge case** — an attachment, a long note, a stored key file. No public hook; needs upstream or an accepted-and-documented decision. This slice documented it precisely (including the corrected count: 6 allocation events / 5 reallocations for a 100 kB `bstr`, final capacity 131072) but did not close it.
 - **#519** — see §1. Re-shaped, not advanced. The honest next step is an upstream uniffi issue for a zeroize-aware lowering hook, which is the only thing that can reach copy 2.
 - **#574** — `spec_test_name_freshness.py` exits 1 with 88 unresolved citations, all pre-existing in `memory-hygiene-audit-internal.md`. Not wired into CI. Filed rather than silently ignored.

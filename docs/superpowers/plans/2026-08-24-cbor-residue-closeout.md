@@ -1185,7 +1185,22 @@ MSG
 - `block.rs:1087-1099` — `seen_keys` → `BlockError::DuplicateKey { field, index }`
 - `unlock/bundle.rs` — `set_once` → `BundleError::DuplicateField`
 
-Silent acceptance is the wrong direction. This is defence-in-depth, not a live hole: the manifest body is covered by the hybrid signature (Ed25519 **AND** ML-DSA-65), and `decode_manifest`'s re-encode-and-compare would reject the resulting non-canonical bytes anyway. It is fixed because "the signature covers it" stops being true after an unrelated refactor.
+
+> **CORRECTION (#575 review) — applies to every mention of a
+> `decode_manifest` canonicality re-check in Task 6 below.** This plan was
+> written from a design spec that asserted `decode_manifest` has a
+> re-encode-and-compare canonicality check backstopping the duplicate-key
+> gap. **It does not** — `record::decode` and `block::decode_plaintext` do;
+> `decode_manifest` does not, which is filed as **#572**. The spec was
+> struck and corrected in `0c03b337`, but this plan was not, so four
+> copies of the false claim survived here — including one inside a
+> prescribed `git commit -F -` heredoc, which is how it would have reached
+> git history. The claim's direction matters: the missing backstop makes
+> #568 **more** justified, not less, because the hybrid signature is then
+> the *only* decoder-level defence a duplicate key runs into. Struck in
+> place below rather than deleted, so the propagation hop stays legible.
+
+Silent acceptance is the wrong direction. This is defence-in-depth, not a live hole: the manifest body is covered by the hybrid signature (Ed25519 **AND** ML-DSA-65), ~~and `decode_manifest`'s re-encode-and-compare would reject the resulting non-canonical bytes anyway~~ (**false — see the correction above; `decode_manifest` has no such check, #572**). It is fixed because "the signature covers it" stops being true after an unrelated refactor.
 
 **The payload must be data-free by construction (#474):** a `&'static str` map-level hint plus an ordinal, never the key itself. `scripts/check-error-payload-hygiene.py`'s E1 rule enforces this, and a `String` field would fail it.
 
@@ -1194,18 +1209,22 @@ Silent acceptance is the wrong direction. This is defence-in-depth, not a live h
 ```rust
 /// `parse_manifest_map` is the last of four decoders without a
 /// duplicate-key check; the other three reject and this one silently
-/// last-wins (#568). Defence in depth — the hybrid signature and the
-/// canonicality re-check both already cover the body — but "the signature
-/// covers it" stops being true after an unrelated refactor.
+/// last-wins (#568). Defence in depth — the hybrid signature covers the
+/// body — but "the signature covers it" stops being true after an
+/// unrelated refactor. (This prescribed "the hybrid signature and the
+/// canonicality re-check both already cover the body"; there is no
+/// canonicality re-check on this path — #572, correction above.)
 #[test]
 fn a_manifest_with_a_repeated_key_is_rejected() {
     let m = populated_manifest();
     let bytes = encode_manifest(&m).expect("encode");
 
     // Re-parse, duplicate the first entry, re-encode. Non-canonical by
-    // construction, which is fine: the duplicate check must fire BEFORE
-    // the canonicality comparison, so the error must be DuplicateKey and
-    // not NonCanonicalEncoding.
+    // construction, which is irrelevant here: `decode_manifest` has no
+    // canonicality comparison to race (#572), and `ManifestError` has no
+    // `NonCanonicalEncoding` variant at all — this prescription invented
+    // one. The duplicate-key check must simply be the thing that fires,
+    // rather than some other decode failure downstream.
     // `encode_manifest` returns `SecretBytes` as of Task 3, hence `.expose()`.
     let mut entries = match ciborium::de::from_reader::<Value, _>(bytes.expose())
         .expect("parse")
@@ -1322,11 +1341,15 @@ and the only one that silently last-wins. record.rs, block.rs and
 unlock/bundle.rs all reject.
 
 Defence in depth rather than a live hole: the manifest body is covered by
-the hybrid signature (Ed25519 AND ML-DSA-65), and decode_manifest's
-re-encode-and-compare canonicality check would reject the resulting
-non-canonical bytes anyway. Fixed because "the signature covers it" stops
-being true after an unrelated refactor, and because silent acceptance is
-the wrong direction for a decoder.
+the hybrid signature (Ed25519 AND ML-DSA-65). Fixed because "the signature
+covers it" stops being true after an unrelated refactor, and because
+silent acceptance is the wrong direction for a decoder.
+
+[#575 review: this prescribed message also claimed decode_manifest has a
+re-encode-and-compare canonicality check. It does not (#572) — the
+hybrid signature is the ONLY decoder-level defence here, which makes the
+fix more justified, not less. The shipped commit 110bc7ed does not carry
+the false claim; this heredoc would have put it into git history.]
 
 Payload is data-free by construction (#474): a &'static str map-level
 hint plus an ordinal, never the repeated key — a forward-compat unknown
