@@ -164,8 +164,19 @@ pub enum RecordError {
     IntegerOverflow { field: &'static str },
 
     /// A duplicate map key appeared. RFC 8949 §5.4 forbids duplicates in
-    /// canonical input; the codebase enforces this on every CBOR map we
-    /// parse.
+    /// canonical input.
+    ///
+    /// This said the codebase "enforces this on every CBOR map we parse"
+    /// until the #575 review, which is false in two ways. Enforcement
+    /// covers the levels a decoder parses STRUCTURALLY — three here
+    /// (`<record>`, `fields`, `<field>`), one in `block.rs`, and, as of
+    /// #568, the manifest's top level — while four nested manifest
+    /// parsers still silently last-win (#573). And NO decoder looks
+    /// inside a forward-compat `unknown` subtree, which is an
+    /// arbitrary-depth CBOR map stored verbatim: `UnknownValue`'s only
+    /// validation is `reject_floats_and_tags`, and the record-level
+    /// re-encode-and-compare cannot see it either, because duplicate keys
+    /// sort adjacently and re-encode byte-identically.
     ///
     /// Carries the map LEVEL and the offending entry's ordinal, never the
     /// key itself: at the `"fields"` level the key is a decrypted user field
@@ -300,9 +311,26 @@ impl UnknownValue {
         // forward-compat unknown subtree carried inside a decrypted record —
         // plaintext this version cannot interpret but must still not leave
         // staged in `ciborium`'s own frame.
-        let parsed: Value =
+        let mut parsed: Value =
             crate::cbor::from_secret_reader(bytes).map_err(RecordError::CborDecode)?;
-        reject_floats_and_tags(&parsed, "<unknown>")?;
+        // The `reject_floats_and_tags` REJECT path drops `parsed` — a full
+        // parsed tree of this decrypted subtree — and `UnknownValue` has no
+        // `Zeroize` impl of its own, so an ordinary drop leaves every
+        // `Bytes` / `Text` payload in it intact (#575 review). Every sibling
+        // decode wraps its tree in `SecretValueTree` for exactly this
+        // reason; this function cannot, because on the ACCEPT path the tree
+        // is the return value. `wipe_leaked_value` is the tool the parent
+        // module exports for precisely this shape — a caller that folds a
+        // value into NOTHING on an early return.
+        //
+        // In-crate this path is unreachable (`block`/`manifest` pre-check
+        // floats and tags tree-wide before any unknown is built), but
+        // `from_canonical_cbor` is `pub`: an FFI client or a fuzz target can
+        // hand in a float- or tag-bearing subtree directly.
+        if let Err(e) = reject_floats_and_tags(&parsed, "<unknown>") {
+            crate::cbor::wipe_leaked_value(&mut parsed);
+            return Err(e.into());
+        }
         Ok(UnknownValue(parsed))
     }
 
@@ -1353,8 +1381,11 @@ mod tests {
     /// under a coupled fixture the two conditions are always equal, so the
     /// swap is byte-invisible. The differential test below loops over
     /// every `(tags_present, tombstone_state)` combination for exactly
-    /// this reason; see its own doc and the mutation check recorded in
-    /// `task-4-report.md`'s fix-round-1 section.
+    /// this reason; see its own doc, whose inlined note records the
+    /// mutation check. (That read "see the mutation check recorded in
+    /// `task-4-report.md`'s fix-round-1 section" until the #575 review —
+    /// the per-task SDD reports live under a gitignored `.superpowers/`
+    /// and are not in the repo, so the pointer could not be followed.)
     ///
     /// Random rather than literal per the repo's test convention: hardcoded
     /// crypto-shaped byte arrays trip CodeQL. Uses `rand_core::OsRng` (a
@@ -1565,10 +1596,13 @@ mod tests {
     /// 0` are always equal, so swapping which one gates the `tombstone`
     /// wire-emission is byte-invisible. `TombstoneState::Resurrected`
     /// (`tombstone == false`, `tombstoned_at_ms != 0`) is what makes that
-    /// swap visible; see the mutation check recorded in
-    /// `task-4-report.md`'s fix-round-1 section, which planted exactly
-    /// this cross-wiring bug and confirmed this loop catches it where the
-    /// single-flag version could not have.
+    /// swap visible. That was confirmed by mutation during review: the
+    /// cross-wiring bug was planted deliberately and this loop caught it
+    /// where the single-flag version could not have. (The conclusion is
+    /// inlined rather than cited — this pointed at
+    /// `task-4-report.md`'s fix-round-1 section until the #575 review, and
+    /// the per-task SDD reports live under a gitignored `.superpowers/`,
+    /// so they are not in the repo to be read.)
     ///
     /// Uses a runtime-random record (see `random_record`) rather than a
     /// pasted literal expectation, so this test does not itself become
@@ -2641,6 +2675,52 @@ mod tests {
             after - before,
             1,
             "expected exactly 1 wipe on the UnknownValue::from_canonical_cbor path"
+        );
+    }
+
+    /// The REJECT path must wipe the parsed tree too (#575 review). The
+    /// test above covers only the success path, where the tree becomes the
+    /// return value; on a float/tag rejection the tree is dropped instead,
+    /// and `UnknownValue` has no `Zeroize` impl, so an ordinary drop leaves
+    /// every payload intact.
+    ///
+    /// Exact count, and the exactness is the point: `before + 1` (the
+    /// unconditional `CborScratch` wipe alone) is what this test asserted
+    /// before the fix, so a `> before` form — or a `+ 1` — would pass with
+    /// the `wipe_leaked_value` call deleted. Verified by mutation: removing
+    /// that call from `from_canonical_cbor` makes this test fail with
+    /// `2 != 1` while `unknown_value_from_canonical_cbor_wipes_the_parser_
+    /// scratch_buffer` above stays green.
+    #[test]
+    fn unknown_value_from_canonical_cbor_wipes_its_tree_on_the_reject_path() {
+        // A map carrying a secret-looking byte payload beside the float that
+        // triggers the rejection, so the tree being dropped is not empty.
+        let entries = vec![
+            (
+                Value::Text("a".into()),
+                Value::Bytes(b"amex-cvv-4111111111111111".to_vec()),
+            ),
+            (Value::Text("b".into()), Value::Float(1.5)),
+        ];
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut bytes).expect("encode test map");
+
+        let before = crate::cbor::wipe_calls();
+        let err = UnknownValue::from_canonical_cbor(&bytes)
+            .expect_err("a float must be rejected by from_canonical_cbor");
+        let after = crate::cbor::wipe_calls();
+
+        assert!(
+            matches!(err, RecordError::FloatRejected { .. }),
+            "expected FloatRejected, got {err:?}"
+        );
+        // Two wipes: `from_secret_reader`'s own `CborScratch::drop`, plus the
+        // `wipe_leaked_value` on the tree the rejection discards.
+        assert_eq!(
+            after - before,
+            2,
+            "expected exactly 2 wipes on the reject path (scratch + the \
+             discarded tree) — the reject path dropped its parsed tree unwiped"
         );
     }
 
