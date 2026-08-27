@@ -64,8 +64,8 @@ pub enum ManifestError {
     /// - They check only the levels they parse STRUCTURALLY. `record.rs`
     ///   has three such levels (`<record>`, `fields`, `<field>`);
     ///   `block.rs` has exactly one (`<block>`).
-    /// - NEITHER checks inside a forward-compat `unknown` subtree, which
-    ///   is an arbitrary-depth CBOR map stored verbatim. `UnknownValue`'s
+    /// - NEITHER checks for a duplicate key inside a forward-compat
+    ///   `unknown` subtree, which is an arbitrary-depth CBOR map whose
     ///   only validation is `reject_floats_and_tags`. The record-level
     ///   re-encode-and-compare does not catch it either: duplicate keys
     ///   sort adjacently and re-encode byte-identically.
@@ -73,12 +73,20 @@ pub enum ManifestError {
     /// So the correct comparison made **#573 larger, not smaller** — the
     /// top-level check (#568) covered one level; #573 closed the
     /// remaining four nested parsers the same way. **What is still true
-    /// after both**: neither this check nor the record-level
-    /// re-encode-and-compare looks inside a forward-compat `unknown`
-    /// subtree. Those round-trip verbatim, so a duplicate key inside one
-    /// is invisible to both — `UnknownValue`'s only validation remains
-    /// `reject_floats_and_tags`. Do not read either fix as "manifest
-    /// duplicate keys are handled" without that residual attached.
+    /// after all three** — #568, #573, and the manifest layer's own
+    /// re-encode-and-compare, which #572 added afterwards
+    /// ([`Self::NonCanonicalEncoding`]): none of them rejects a
+    /// DUPLICATE KEY inside a forward-compat `unknown` subtree. A
+    /// duplicate key is one of exactly two things that survive
+    /// `ciborium`'s parse of the body (the other is map key ORDER),
+    /// because `ciborium::Value::Map` is an ordered `Vec` of pairs — so
+    /// it re-encodes byte-identically and the comparison passes. Do not
+    /// generalise that to "unknown subtrees round-trip verbatim": they
+    /// do not, and
+    /// [`Self::NonCanonicalEncoding`]'s doc gives the measured list of
+    /// what inside one IS rejected. Do not read any of these fixes as
+    /// "manifest duplicate keys are handled" without this residual
+    /// attached.
     ///
     /// Payload is data-free by construction (#474). `field` is a
     /// compile-time constant: the §4.2 `KEY_*` name for a known key
@@ -155,6 +163,70 @@ pub enum ManifestError {
     /// the shared `crate::vault::canonical` helpers.
     #[error("canonical CBOR violation: {0}")]
     Canonical(#[from] CanonicalError),
+
+    /// The decoded manifest body was not in canonical form: re-encoding
+    /// the parsed [`Manifest`] did not reproduce the input bytes. The
+    /// same check `record::decode` and `block::decode_plaintext` have
+    /// applied since the format was frozen, and which this decoder simply
+    /// did not have (#572).
+    ///
+    /// Same set of root causes as [`RecordError::NonCanonicalEncoding`]
+    /// and [`BlockError::NonCanonicalEncoding`] — indefinite-length
+    /// items (which `ciborium`'s `Value` reader normalises on parse, so
+    /// the re-encode diverging is the only signal), map keys out of RFC
+    /// 8949 §4.2.1 order, non-shortest-form integer or length prefixes —
+    /// **plus one this layer adds**: §4.2's array sort disciplines.
+    /// `encode_manifest` sorts `vector_clock`, every
+    /// `vector_clock_summary`, `blocks`, `trash` and every block's
+    /// `recipients` on output, so an input whose arrays arrive in any
+    /// other order re-encodes differently and lands here. That is a
+    /// stronger rejection than "not canonical CBOR" in the RFC 8949
+    /// sense, and it is deliberate: vault-format §4.2 ("Array element
+    /// order is normative") fixes those five orders, and the manifest
+    /// body sits inside vault-format §4.1's hybrid-signature envelope,
+    /// where crypto-design §6.2's deterministic encoding profile
+    /// applies.
+    /// (That §4.2 paragraph was added by #572's review — the sort
+    /// disciplines had been in the encoder since the first manifest
+    /// commit `6e53b49d` and stated in its module doc, but were never
+    /// written into `docs/`, so a clean-room implementer reading the
+    /// spec alone would have emitted unsorted arrays and been rejected
+    /// here.)
+    ///
+    /// **What it does NOT catch, stated exactly** — the wider claim is
+    /// false and stood in this doc for one commit: **a duplicate key,
+    /// and map key ORDER, inside a forward-compat `unknown` subtree.**
+    /// Nothing else. The cause is `ciborium`'s `Value` reader, which
+    /// collapses indefinite lengths and non-shortest-form heads **on
+    /// parse** — the same mechanism
+    /// [`RecordError::NonCanonicalEncoding`]'s doc names. Every subtree
+    /// is therefore already normalised before anything examines it, so
+    /// the re-encode diverges; only what `ciborium::Value` can still
+    /// represent survives, and `Value::Map` is an ordered `Vec` of
+    /// pairs. An indefinite-length map, array, text string or byte
+    /// string, or a non-shortest-form integer or length prefix, ANYWHERE
+    /// inside an unknown subtree therefore **is** caught (verified by
+    /// execution, #572 review rounds 1-2) — a real constraint on future
+    /// format extensions: such a subtree makes the vault unopenable by a
+    /// v1 client. See [`Self::DuplicateKey`]'s doc for the residual that
+    /// genuinely remains.
+    ///
+    /// **Not** attributable to `extract::value_to_unknown`'s
+    /// re-serialise/re-parse hop, which an earlier version of this doc
+    /// blamed: that hop is an identity on an already-parsed `Value`, and
+    /// `record::decode` — which has no such hop, storing
+    /// `UnknownValue(v.clone())` directly — behaves identically on every
+    /// one of these shapes.
+    ///
+    /// [`RecordError::NonCanonicalEncoding`]: crate::vault::record::RecordError::NonCanonicalEncoding
+    /// [`BlockError::NonCanonicalEncoding`]: crate::vault::block::BlockError::NonCanonicalEncoding
+    /// [`Manifest`]: crate::vault::manifest::Manifest
+    #[error(
+        "non-canonical CBOR encoding in manifest body (e.g. indefinite-length \
+         item, key disorder, non-shortest length, or an array not in its \
+         §4.2 sort order)"
+    )]
+    NonCanonicalEncoding,
 
     /// Manifest binary header (§4.1) `magic` field did not match
     /// [`crate::version::MAGIC`] (`"SECR"` big-endian). The `expected`

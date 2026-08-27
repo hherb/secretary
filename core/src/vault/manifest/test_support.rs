@@ -10,14 +10,16 @@
 //! at that point was the `pub(super)` prefix each fixture needed once its
 //! callers moved into sibling modules.
 //!
-//! **Two additions since, both from #569 path 2** (recorded so "moved
-//! verbatim" is not read as still describing the whole file):
+//! **Three additions since** (recorded so "moved verbatim" is not read as
+//! still describing the whole file). Two are from #569 path 2:
 //! [`dummy_kdf_params_value`], which replaced six inline
 //! `kdf_params_to_value(&dummy_kdf_params())` call sites when that encode
 //! helper stopped producing an owned `Value`; and this module's own
 //! `#[cfg(test)] mod tests`, which pins that fixture's key order to the
 //! bytes the deleted helper emitted. A fixture module with a test of its
-//! own is unusual — the justification is in that test's doc comment.
+//! own is unusual — the justification is in that test's doc comment. The
+//! third is [`UNKNOWN_MAP_NONCANONICAL`], which #572 moved here from
+//! `encode/tests.rs` on acquiring a second consumer in `decode/tests.rs`.
 
 use std::collections::BTreeMap;
 
@@ -176,6 +178,35 @@ pub(super) fn populated_manifest() -> Manifest {
         unknown: BTreeMap::new(),
     }
 }
+
+/// A forward-compat unknown subtree that can DETECT a re-ordering: a
+/// 2-key CBOR map whose keys are in NON-canonical order.
+///
+/// ```text
+/// A2                 map(2)
+///   62 7A 7A  01     "zz" => 1     <- 2-byte key FIRST
+///   61 61     02     "a"  => 2     <- 1-byte key SECOND
+/// ```
+///
+/// RFC 8949 §4.2.1 orders text keys by `(byte length, bytes)`, so the
+/// canonical order is `"a"` then `"zz"` and these bytes are deliberately
+/// the other way round. That asymmetry is the whole point: until #569
+/// path 2 the only forward-compat fixture in the encode tests was the
+/// 3-byte array `[1, 2]` (`0x82 0x01 0x02`), which has no key order to
+/// preserve and therefore could not tell "emitted verbatim" apart from
+/// "re-sorted on the way out".
+///
+/// `UnknownValue::from_canonical_cbor` accepts this despite its name: it
+/// validates only the no-float / no-tag rules, never key order (see its
+/// own doc comment, which says so outright).
+///
+/// **Moved here from `encode/tests.rs` by #572**, which needed the same
+/// asymmetry on the DECODE side: `decode_manifest`'s new
+/// re-encode-and-compare must not reject a forward-compat subtree whose
+/// key order this version would not itself have chosen. Two test modules,
+/// one fixture — the reason this module exists.
+pub(super) const UNKNOWN_MAP_NONCANONICAL: &[u8] =
+    &[0xA2, 0x62, b'z', b'z', 0x01, 0x61, b'a', 0x02];
 
 /// Re-parse encoded bytes to a `ciborium::Value` map for raw
 /// inspection of array order.

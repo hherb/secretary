@@ -249,6 +249,96 @@ Signature details (per crypto-design §8 with role `"manifest"`):
 }
 ```
 
+**Array element order is normative.** The deterministic CBOR profile
+(crypto-design §6.2) fixes *map key* order and says nothing about array
+elements; RFC 8949 never reorders them. The manifest body sits inside the §4.1
+signature envelope and must be byte-reproducible from its parsed form (§4.3
+step 4), which is impossible if two conformant writers may order these arrays
+differently. Each array above therefore carries an explicit sort discipline.
+Writers MUST emit these orders; readers MUST reject a manifest that does not.
+
+| array | sorted ascending by |
+|---|---|
+| `vector_clock` | `device_uuid`, 16-byte bytewise compare |
+| `blocks` | `block_uuid`, 16-byte bytewise compare |
+| each block's `vector_clock_summary` | `device_uuid`, 16-byte bytewise compare |
+| each block's `recipients` | the `contact_uuid` value itself, 16-byte bytewise compare |
+| `trash` | `block_uuid`, 16-byte bytewise compare |
+
+Repeated values are forbidden in four of the five, and a reader rejects them:
+`device_uuid` within `vector_clock` or within any `vector_clock_summary` (a
+vector clock is per-device, so a repeat is nonsensical), `block_uuid` within
+`blocks`, and `block_uuid` within `trash` (§7 tracks only the most-recent
+tombstone per block). `recipients` is the exception — a repeated
+`contact_uuid` is accepted and round-trips, since it denotes no additional
+grant.
+
+The two rules above — element order, and no repeated values — apply to the
+five named arrays only. They say nothing about arrays that appear *inside* a
+forward-compat unknown key's value (the unknown-keys pattern, §6.3.2), whose
+shape this version does not interpret.
+
+**The version that introduces an extension is bound by the deterministic
+profile inside its own subtrees.** Crypto-design §6.2 rules 1–5 apply to every
+byte of the manifest body, because the body as a whole is `canonical_cbor(...)`
+under a signature, and §0's "preferred map key sorting wherever a signature
+covers the encoding" is not qualified for subtrees. There is no forward-compat
+licence to relax them for material it authors.
+
+A client that merely **re-emits** an unknown subtree it received is a separate
+case and is conformant: it reproduces what arrived, byte for byte, because that
+is the only thing it can do without understanding the content. Faithful
+re-emission of someone else's non-conformant subtree is not itself a violation
+— the fault stays with whoever originated it.
+
+**A reader enforces only part of that profile inside a subtree**, and the
+difference is a gap in enforcement, not a grant to writers:
+
+| crypto-design §6.2 rule | enforced by a reader inside an unknown subtree? |
+|---|---|
+| 1. map keys sorted | **no** — a subtree's own key order is accepted as it arrives |
+| 2. definite-length encoding | **yes** (via the §4.3 step 4 re-encode) |
+| 3. shortest-form integer / length prefixes | **yes** (same) |
+| 4. no tags, no floats | **yes** — the reader walks the whole body, subtrees included |
+| 5. no duplicate map keys | **no** — a repeat is accepted as it arrives |
+
+The "no" rows are not discretionary. A reader treating the subtree as unknown
+**MUST** accept both, because it cannot otherwise reproduce the input bytes at
+§4.3 step 4 — see the preservation requirement below. They are what makes
+re-emission possible at all.
+
+**Do not read them as permission to author such a subtree.** A version that
+*originates* a disordered or duplicate-keyed subtree violates crypto-design
+§6.2 rules 1 and 5 for the material it authors, and any client that later
+*understands* that extension — the version that introduced it, or a successor —
+parses it as interpreted material and rejects it on those rules. The tolerance
+is extended to material a reader cannot interpret, not to material it can; it
+is not a relaxation of the format.
+
+The "yes" rows are the constraint that matters for a future version extending
+this map, and it is hard rather than advisory: a subtree containing an
+indefinite-length item, a non-shortest-form prefix, a tag or a float makes the
+**whole vault unopenable** by a client speaking only this version — it is not
+ignored as an unknown extension.
+
+**A reader MUST preserve an unknown subtree's entry order and any repeated
+entries.** This follows from §4.3 step 4: the re-encode must reproduce the input
+bytes, and a subtree that arrived disordered or with a repeated key reproduces
+only if both survive intact.
+
+The requirement is behavioural — reproduce the bytes — and an implementation may
+meet it however it likes, including by retaining the subtree's raw input bytes
+and re-emitting them. What it must not do is round-trip the subtree through a
+representation that cannot hold two entries with the same key: the second
+overwrites the first and the original value is gone, so no subsequent encoding
+choice can recover it. Python's `dict`, Rust's `HashMap`/`BTreeMap` and every
+JSON-object-shaped type have this property. An ordered list of key/value pairs
+does not, and is the straightforward choice. (Key *order* is a weaker trap: an
+insertion-ordered map such as a Python `dict` preserves it, and only a
+canonicalising encoder — `cbor2.dumps(..., canonical=True)`, the idiom this
+format's own conformance harness uses elsewhere — re-sorts it away. The
+duplicate case is the one that loses data outright.)
+
 `kdf_params` is duplicated here (also in `vault.toml`) so the manifest signature attests to them. A modified `vault.toml` cannot trick a reader into deriving a wrong `master_kek` without also producing an invalid manifest signature.
 
 ### 4.3 Reading the manifest
@@ -258,6 +348,9 @@ Signature details (per crypto-design §8 with role `"manifest"`):
 2. Parse the file-level header (§4.1).
 3. AEAD-decrypt aead_ct under identity_block_key with aad = bytes 0..42.
 4. Parse the resulting plaintext as canonical CBOR (§4.2). Reject on parse failure.
+   Then re-encode the parsed body and reject unless it reproduces the plaintext
+   byte for byte — this is what enforces §4.2's map-key order, definite lengths,
+   shortest-form prefixes and array sort disciplines in one step.
 5. Verify manifest_body.vault_uuid == header.vault_uuid (cross-check).
 6. Verify manifest_body.kdf_params == vault_toml.kdf (cross-check).
 7. Look up author_fingerprint:
@@ -405,7 +498,9 @@ A field's `value` is `tstr` for human-readable values and `bstr` for binary valu
 
 Decoders preserve unknown record types and unknown field names on round-trip. A v1 client that receives a v2 record (some new record_type) stores the record verbatim and renders it as a generic record list; on save, the v2 record is re-emitted unchanged.
 
-This applies to any CBOR field in the block body: unknown keys at any level are preserved verbatim. Canonical-CBOR-on-write means that a v1 client re-saving a v2 record produces *bit-identical* bytes for the unchanged portions, so the v2 client's signature on the original block is preserved if no semantic change was made.
+This applies to any CBOR field in the block body: unknown keys at any level are preserved, and a v1 client re-saving a v2 record reproduces the unchanged portions *bit-identically*, so the v2 client's signature on the original block is preserved if no semantic change was made.
+
+**"Preserved" is preservation of the parsed value, not of the input bytes**, and the distinction is load-bearing for anyone extending the format. A reader parses the whole body before it can tell known keys from unknown ones, and that parse normalises the encoding: an indefinite-length item or a non-shortest-form integer or length prefix inside an unknown subtree is silently rewritten to its canonical form, so the re-encode no longer matches the input and the whole record or manifest is rejected as non-canonical. What genuinely survives a round trip is the subtree's *structure* — its entry order and any repeated keys included. Whatever a reader holds it in must be able to carry both: a representation that cannot hold two entries with the same key loses data outright at that point, the second overwriting the first with no later encoding choice able to recover it. An ordered list of key/value pairs can carry it, and so can the retained input bytes; a `dict`, a `HashMap`/`BTreeMap` or any JSON-object-shaped type cannot. See §4.2, which states the requirement behaviourally for the manifest — reproduce the bytes, by whatever means — rather than mandating a data structure. A future version extending any of these maps MUST therefore emit its own subtrees in the crypto-design §6.2 deterministic profile like the rest of the body; a subtree that departs from it makes the file unreadable by earlier clients rather than being ignored by them.
 
 (Note: any change *requiring* re-signing — adding/removing a recipient, modifying records — will rewrite the block under the v1 client's signature, possibly downgrading any v2-only metadata. v2 features that need v1-survival must be designed to tolerate this.)
 

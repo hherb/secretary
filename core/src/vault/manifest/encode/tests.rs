@@ -7,6 +7,7 @@ use ciborium::Value;
 
 use crate::vault::manifest::test_support::{
     entry_bytes_field, find_array, minimal_manifest, parse_to_value_map, populated_manifest,
+    UNKNOWN_MAP_NONCANONICAL,
 };
 use crate::vault::manifest::{decode_manifest, BLOCK_FINGERPRINT_LEN};
 use crate::vault::record::UnknownValue;
@@ -220,28 +221,6 @@ fn encoding_sorts_arrays_on_output() {
 //
 // Also covers `decode`'s unknown-key capture: the encoder splices the
 // unknown bag back in, the decoder is what put it there.
-
-/// A forward-compat unknown subtree that can DETECT a re-ordering: a
-/// 2-key CBOR map whose keys are in NON-canonical order.
-///
-/// ```text
-/// A2                 map(2)
-///   62 7A 7A  01     "zz" => 1     <- 2-byte key FIRST
-///   61 61     02     "a"  => 2     <- 1-byte key SECOND
-/// ```
-///
-/// RFC 8949 §4.2.1 orders text keys by `(byte length, bytes)`, so the
-/// canonical order is `"a"` then `"zz"` and these bytes are deliberately
-/// the other way round. That asymmetry is the whole point: until #569
-/// path 2 the only forward-compat fixture in this file was the 3-byte
-/// array `[1, 2]` (`0x82 0x01 0x02`), which has no key order to preserve
-/// and therefore could not tell "emitted verbatim" apart from "re-sorted
-/// on the way out".
-///
-/// `UnknownValue::from_canonical_cbor` accepts this despite its name: it
-/// validates only the no-float / no-tag rules, never key order (see its
-/// own doc comment, which says so outright).
-const UNKNOWN_MAP_NONCANONICAL: &[u8] = &[0xA2, 0x62, b'z', b'z', 0x01, 0x61, b'a', 0x02];
 
 /// A v1 client re-encoding a v2 manifest must emit each unknown subtree
 /// BYTE-VERBATIM, including a key order this version would not itself

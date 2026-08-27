@@ -25,6 +25,7 @@ use crate::vault::record::UnknownValue;
 
 use self::entries::{parse_blocks, parse_kdf_params, parse_trash, parse_vector_clock};
 use self::extract::{take_fixed_bytes, take_text_key, take_u16, take_u8, value_to_unknown};
+use super::encode::encode_manifest;
 use super::{
     BlockEntry, KdfParamsRef, Manifest, ManifestError, TrashEntry, VectorClockEntry,
     FORMAT_VERSION_V1, KEY_BLOCKS, KEY_FORMAT_VERSION, KEY_KDF_PARAMS, KEY_MANIFEST_VERSION,
@@ -57,19 +58,34 @@ use super::{
 ///     nested per-entry maps — `parse_vector_clock_entry`,
 ///     `parse_block_entry`, `parse_trash_entry`, `parse_kdf_params`
 ///     (#573) — reject their own repeated key rather than silently
-///     last-winning. **Residual, not closed by either fix**: no decoder
-///     in the crate looks inside a forward-compat `unknown` subtree, at
-///     any level. Those subtrees round-trip verbatim (`UnknownValue`'s
-///     only validation is `reject_floats_and_tags`), so a duplicate key
-///     inside one is invisible both to this check and to the
-///     record-level re-encode-and-compare backstop the manifest layer
-///     doesn't otherwise have (#572). See
+///     last-winning. **Residual, not closed by any of the fixes here**:
+///     no DUPLICATE-KEY check looks inside a forward-compat `unknown`
+///     subtree, at any level. Scope that precisely — other checks DO
+///     walk in: this function's own tree-wide `reject_floats_and_tags`
+///     call below covers every unknown subtree for floats and tags, and
+///     item 12 catches encoding-level non-canonicality inside one (see
+///     the check site). What survives is a duplicate key, and map key
+///     ORDER, inside such a subtree. See
 ///     [`ManifestError::DuplicateKey`]'s doc for the full account,
 ///     including what a prior version of both this item and that variant's
 ///     doc got wrong about `record.rs` / `block.rs`'s own coverage.
+/// 12. The input is canonical: re-encoding the parsed [`Manifest`]
+///     reproduces `bytes` exactly (#572). Same backstop `record::decode`
+///     and `block::decode_plaintext` have applied since the format was
+///     frozen, and it is what enforces vault-format §4.2's map-key
+///     order, definite lengths, shortest-form prefixes and array sort
+///     disciplines (§4.3 step 4). Runs LAST, after every check above, so
+///     a precise typed error always wins over the generic
+///     [`ManifestError::NonCanonicalEncoding`] — see the check site for
+///     what that ordering buys and for the exact, narrow set it does not
+///     catch.
 ///
-/// Forward-compat unknown keys are preserved into the relevant `unknown`
-/// bag verbatim.
+/// Forward-compat unknown KEYS are preserved into the relevant `unknown`
+/// bag. Their VALUES are preserved up to CBOR-encoding normalisation, not
+/// byte-verbatim: `ciborium`'s `Value` reader normalises the whole body
+/// on parse, so a subtree's entry order and repeated keys survive while
+/// its indefinite-length and non-shortest-form encodings do not (and, as
+/// of item 12, are rejected outright).
 pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
     // `from_secret_reader`, not `from_reader` (#561): the parser stages
     // every payload through a 4 KiB scratch buffer, and this input's
@@ -101,7 +117,88 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
         return Err(ManifestError::NotAMap);
     };
 
-    parse_manifest_map(entries)
+    let manifest = parse_manifest_map(entries)?;
+
+    // Strict canonical-input check: re-encode the parsed representation
+    // and require a byte-identical match (#572). Exactly what
+    // `record::decode` and `block::decode_plaintext` do; this decoder
+    // was the odd one out, and #575's design spec asserted otherwise.
+    //
+    // `parsed` is still alive here — `entries` borrows out of it and
+    // `manifest` is fully owned — so its `SecretValueTree::drop` still
+    // covers the whole tree past this point, on all THREE exits below:
+    // the `?` on `encode_manifest`, the `NonCanonicalEncoding` return,
+    // and the `Ok`.
+    //
+    // Catches: indefinite-length items (which `ciborium`'s `Value`
+    // reader normalises on parse, so a diverging re-encode is the only
+    // signal), map keys out of RFC 8949 §4.2.1 order, non-shortest-form
+    // integer and length prefixes, and — specific to this layer — any
+    // array that did not arrive in the sort order vault-format §4.2
+    // ("Array element order is normative") fixes for it, because
+    // `encode_manifest` sorts all five on output.
+    //
+    // What this does NOT catch, stated exactly, because the obvious
+    // wider claim is FALSE: **duplicate keys and map key ORDER** inside
+    // a forward-compat `unknown` subtree. Nothing else. An earlier
+    // version of this comment said "a duplicate key — or any other
+    // non-canonical shape — … the comparison is equal no matter what is
+    // inside them", which is wrong, and wrong in the direction that
+    // matters (it promises a v2 author more latitude than they have).
+    //
+    // The reason is the `from_secret_reader` call at the TOP of this
+    // function, not anything the unknown-key path does. `ciborium`'s
+    // `Value` reader collapses indefinite lengths and non-shortest-form
+    // heads on parse, so by the time any subtree is examined it is
+    // ALREADY the normalisation of the wire bytes; re-encoding emits
+    // that normalisation and the comparison diverges. Only properties
+    // `ciborium::Value` can still represent survive — and `Value::Map`
+    // is an ordered `Vec` of pairs, so entry order and repeats do, while
+    // encoding-level choices do not.
+    //
+    // Do NOT attribute this to `extract::value_to_unknown`'s
+    // re-serialise/re-parse hop, as an earlier version of this comment
+    // did. That hop is an IDENTITY on an already-parsed `Value`:
+    // measured, `value_to_unknown(v).as_value() == &v` for all eight
+    // shapes below. Two further measurements pin the real cause —
+    // `ciborium` parse-then-serialise alone changes the bytes for every
+    // encoding-level shape and for neither order-carrying one, and
+    // `record.rs`, which has NO such hop (it stores
+    // `UnknownValue(v.clone())` directly), gives identical results on
+    // all eight. `RecordError::NonCanonicalEncoding`'s own
+    // doc has said this correctly all along: "`ciborium`'s `Value`
+    // reader normalises these to definite-length **on parse**".
+    //
+    // Measured, not argued (#572 review rounds 1-2): splicing a subtree
+    // into an otherwise-valid manifest, `BF..FF` (indefinite map),
+    // `18 01` (non-shortest int), `7F..FF` (indefinite text), `5F..FF`
+    // (indefinite bytes), `9F..FF` (indefinite array) and `B8 01`
+    // (non-shortest map length) each yield `NonCanonicalEncoding`; only
+    // a duplicate key and a disordered key pair still decode `Ok`.
+    //
+    // **Forward-compat consequence, which is a real constraint on future
+    // format extensions**: a v2 client that writes ANY indefinite-length
+    // or non-shortest-form item inside an unknown subtree produces a
+    // vault a v1 client cannot open at all. Unknown subtrees must stay
+    // inside the deterministic profile (crypto-design §6.2), exactly
+    // like the rest of the body. What is genuinely unpoliced is narrow:
+    // a duplicate key or a disordered key pair inside one.
+    // `UnknownValue`'s only validation is `reject_floats_and_tags`
+    // (which DOES walk inside — as does this function's own tree-wide
+    // `reject_floats_and_tags` call above; the residual is that no
+    // DUPLICATE-KEY check does, #573's residual, not that nothing walks
+    // in at all).
+    //
+    // `encode_manifest` returns `SecretBytes`, so this full re-encoding
+    // of the decrypted manifest body — every `block_name` included — is
+    // wrapped BY CONSTRUCTION; there is no separate `SecretBytes::new`
+    // call here for a future edit to drop (#558, #565).
+    let re_encoded = encode_manifest(&manifest)?;
+    if re_encoded.expose() != bytes {
+        return Err(ManifestError::NonCanonicalEncoding);
+    }
+
+    Ok(manifest)
 }
 
 /// Takes `&[(Value, Value)]` rather than owning the entry list:
