@@ -301,3 +301,6 @@ pub(super) fn unknown_value_inner(u: &UnknownValue) -> Result<Value, ManifestErr
         crate::cbor::from_secret_reader(bytes.expose()).map_err(ManifestError::CborDecode)?;
     Ok(v)
 }
+
+#[cfg(test)]
+mod tests;

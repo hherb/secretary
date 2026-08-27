@@ -347,3 +347,6 @@ pub fn decode_manifest_file(bytes: &[u8]) -> Result<ManifestFile, ManifestError>
         sig_pq,
     })
 }
+
+#[cfg(test)]
+mod tests;

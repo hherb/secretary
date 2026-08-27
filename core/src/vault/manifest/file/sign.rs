@@ -8,12 +8,12 @@ use crate::crypto::sig::{
 };
 use crate::identity::fingerprint::Fingerprint;
 
-use super::signed_message_bytes;
-use super::ManifestFile;
 use crate::vault::manifest::{
     encode_manifest, encrypt_manifest_body, Manifest, ManifestError, ManifestHeader,
     VectorClockEntry,
 };
+
+use super::{signed_message_bytes, ManifestFile};
 
 /// Build a complete on-disk [`ManifestFile`] from `header`, plaintext
 /// `body`, and signing keys. Steps mirror §4.1 / §8 step 6:
@@ -196,3 +196,6 @@ pub fn is_rollback(local: &[VectorClockEntry], incoming: &[VectorClockEntry]) ->
 
     any_strictly_less && !any_strictly_more
 }
+
+#[cfg(test)]
+mod tests;

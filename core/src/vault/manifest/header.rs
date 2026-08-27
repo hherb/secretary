@@ -200,3 +200,6 @@ pub fn decrypt_manifest_body(
         aead::decrypt(ibk, nonce, &aad, ct_with_tag).map_err(|_| ManifestError::AeadFailure)?;
     decode_manifest(plaintext.expose())
 }
+
+#[cfg(test)]
+mod tests;

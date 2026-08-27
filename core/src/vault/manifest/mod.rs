@@ -56,7 +56,7 @@ mod header;
 mod types;
 
 #[cfg(test)]
-mod tests;
+mod test_support;
 
 pub use decode::decode_manifest;
 pub use encode::encode_manifest;

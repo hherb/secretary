@@ -4,7 +4,7 @@
 mod entries;
 mod extract;
 
-pub(in crate::vault::manifest) use extract::record_error_to_cbor_fault;
+pub(super) use extract::record_error_to_cbor_fault;
 
 use std::collections::BTreeMap;
 
@@ -289,3 +289,6 @@ fn parse_manifest_map(map: &[(Value, Value)]) -> Result<Manifest, ManifestError>
         unknown,
     })
 }
+
+#[cfg(test)]
+mod tests;

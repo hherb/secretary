@@ -211,3 +211,6 @@ pub(in crate::vault::manifest) fn record_error_to_cbor_fault(e: RecordError) -> 
         },
     }
 }
+
+#[cfg(test)]
+mod tests;

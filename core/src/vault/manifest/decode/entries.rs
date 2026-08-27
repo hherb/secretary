@@ -7,9 +7,6 @@ use ciborium::Value;
 
 use crate::vault::record::UnknownValue;
 
-use super::extract::{
-    take_fixed_bytes, take_text, take_text_key, take_u16, take_u32, take_u64, value_to_unknown,
-};
 use crate::vault::manifest::{
     BlockEntry, KdfParamsRef, ManifestError, TrashEntry, VectorClockEntry, BLOCK_FINGERPRINT_LEN,
     KEY_BLOCKS, KEY_BLOCK_NAME, KEY_BLOCK_UUID, KEY_COUNTER, KEY_CREATED_AT_MS, KEY_DEVICE_UUID,
@@ -17,6 +14,10 @@ use crate::vault::manifest::{
     KEY_PARALLELISM, KEY_PURGED_AT_MS, KEY_RECIPIENTS, KEY_SALT, KEY_SUITE_ID,
     KEY_TOMBSTONED_AT_MS, KEY_TOMBSTONED_BY, KEY_TRASH, KEY_VECTOR_CLOCK, KEY_VECTOR_CLOCK_SUMMARY,
     SALT_LEN, UUID_LEN,
+};
+
+use super::extract::{
+    take_fixed_bytes, take_text, take_text_key, take_u16, take_u32, take_u64, value_to_unknown,
 };
 
 pub(super) fn parse_vector_clock(
@@ -359,3 +360,6 @@ pub(super) fn parse_kdf_params(v: &Value) -> Result<KdfParamsRef, ManifestError>
         salt: salt.ok_or(ManifestError::MissingField { field: KEY_SALT })?,
     })
 }
+
+#[cfg(test)]
+mod tests;
