@@ -192,7 +192,7 @@ pub(super) fn value_to_unknown(v: &Value) -> Result<UnknownValue, ManifestError>
 /// should answer once rather than a default that answers itself. Nothing
 /// here reads a variant's fields, so this is a diagnostics-accuracy gate,
 /// not a leak gate.
-pub(in crate::vault::manifest) fn record_error_to_cbor_fault(e: RecordError) -> CborFault {
+fn record_error_to_cbor_fault(e: RecordError) -> CborFault {
     match e {
         RecordError::CborEncode(fault) | RecordError::CborDecode(fault) => fault,
         RecordError::NotAMap

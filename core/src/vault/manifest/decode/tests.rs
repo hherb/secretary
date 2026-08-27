@@ -8,17 +8,22 @@
 //! typed-extract helper live in [`extract`](super::extract)'s.
 
 use crate::vault::canonical::{encode_canonical_map, CanonicalError};
-use crate::vault::manifest::encode::{encode_manifest, kdf_params_to_value, manifest_to_entries};
+use crate::vault::manifest::encode::encode_manifest;
 use crate::vault::manifest::test_support::{
-    build_manifest_map_with_overrides, dummy_kdf_params, populated_manifest,
+    build_manifest_map_with_overrides, dummy_kdf_params_value, parse_to_value_map,
+    populated_manifest,
 };
 
 use super::*;
 
 // ---- Decode wipes its parsed tree (#547 Task 7b) ----------------------
 //
-// Both also drive `encode` to build their input (`manifest_to_entries` /
-// `encode_manifest`); the wipe counts they assert are `decode_manifest`'s.
+// Both also drive `encode_manifest` to build their input; the wipe
+// counts they assert are `decode_manifest`'s. `encode_manifest` runs
+// BEFORE each test's `wipe_calls()` baseline is taken, so it does not
+// enter either delta — which is why deleting `unknown_value_inner` (a
+// `from_secret_reader` call on the encode side, #569 path 2) left both
+// counts at 2. Re-derived, not assumed: see each assertion's comment.
 
 /// THE test #547 Task 7b's brief asks for: drive an early-return path
 /// through `decode_manifest` and prove `SecretValueTree::drop` actually
@@ -34,14 +39,32 @@ use super::*;
 /// The block test was written during the #560 review; the claim is true
 /// now because the code changed, not because the wording softened.
 ///
-/// `manifest_version` — the FIRST entry `manifest_to_entries` emits —
-/// is corrupted to the wrong CBOR type, so `parse_manifest_map`'s very
-/// first `take_u8(KEY_MANIFEST_VERSION)` call fails and the `?`
-/// propagates all the way back to `decode_manifest` before the
-/// `blocks` array entry — carrying a structurally valid `block_name`
-/// ("logins"), the user-visible plaintext this whole task exists to
-/// cover — is ever examined. Wiping here proves not-yet-examined
-/// content is covered too, not just already-consumed content.
+/// `manifest_version` is corrupted to the wrong CBOR type and placed
+/// FIRST in the map, so `parse_manifest_map`'s very first
+/// `take_u8(KEY_MANIFEST_VERSION)` call fails and the `?` propagates
+/// all the way back to `decode_manifest` before the `blocks` array
+/// entry — carrying a structurally valid `block_name` ("logins"), the
+/// user-visible plaintext this whole task exists to cover — is ever
+/// examined. `parse_manifest_map` dispatches in map ORDER, so the
+/// position is what makes that claim true; wiping here proves
+/// not-yet-examined content is covered too, not just already-consumed
+/// content.
+///
+/// **The reorder is explicit as of #569 path 2**, and the change is
+/// worth naming rather than absorbing. This test used to serialise the
+/// raw, UNSORTED `Vec<(Value, Value)>` that the deleted
+/// `manifest_to_entries` returned, where `manifest_version` happened to
+/// be the entry pushed first. Its replacement `manifest_to_canonical`
+/// returns a borrowing `CanonicalMap` with no mutable entry list to
+/// corrupt, so the input is now built by re-parsing `encode_manifest`'s
+/// canonical output — and under RFC 8949 §4.2.1 key order
+/// ("(length, bytes)") `manifest_version` (16 bytes) sorts LAST and
+/// `blocks` (6) second. Leaving it there would have silently inverted
+/// the property above: `blocks` would be parsed BEFORE the early
+/// return, and the test would no longer pin what its name and doc say
+/// it pins. Rotating the corrupted entry to the front restores it.
+/// The resulting map is deliberately NON-canonical in key order, which
+/// `decode_manifest` does not check (#572).
 ///
 /// **Updated to `before + 2` by Task 2 (#561), and re-tightened to an
 /// exact count in review.** `decode_manifest` now parses through
@@ -62,12 +85,17 @@ use super::*;
 #[test]
 fn decode_manifest_wipes_its_parsed_tree_on_an_early_return() {
     let m = populated_manifest();
-    let mut entries = manifest_to_entries(&m).expect("encode entries");
+    let encoded = encode_manifest(&m).expect("encode");
+    let mut entries = parse_to_value_map(encoded.expose());
     let version_idx = entries
         .iter()
         .position(|(k, _)| matches!(k, Value::Text(s) if s == KEY_MANIFEST_VERSION))
         .expect("manifest_version entry present");
     entries[version_idx].1 = Value::Text("not-a-u8".to_string());
+    // Front-load it — see this test's doc comment for why the position
+    // is load-bearing and why it is now set explicitly.
+    let corrupted = entries.remove(version_idx);
+    entries.insert(0, corrupted);
 
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&Value::Map(entries), &mut bytes).expect("serialize");
@@ -204,10 +232,7 @@ fn rejects_float_in_unknown_value() {
         ),
         (Value::Text(KEY_BLOCKS.into()), Value::Array(Vec::new())),
         (Value::Text(KEY_TRASH.into()), Value::Array(Vec::new())),
-        (
-            Value::Text(KEY_KDF_PARAMS.into()),
-            kdf_params_to_value(&dummy_kdf_params()).expect("kdf_params"),
-        ),
+        (Value::Text(KEY_KDF_PARAMS.into()), dummy_kdf_params_value()),
         // Float lives inside an unknown forward-compat key.
         (Value::Text("future_floaty".into()), Value::Float(1.5)),
     ];

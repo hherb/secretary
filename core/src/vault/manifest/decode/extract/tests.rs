@@ -8,8 +8,7 @@
 //! the test to break — is the extract helper its doc comment names.
 
 use crate::vault::canonical::encode_canonical_map;
-use crate::vault::manifest::encode::kdf_params_to_value;
-use crate::vault::manifest::test_support::dummy_kdf_params;
+use crate::vault::manifest::test_support::dummy_kdf_params_value;
 use crate::vault::manifest::{
     decode_manifest, FORMAT_VERSION_V1, KEY_BLOCKS, KEY_FORMAT_VERSION, KEY_KDF_PARAMS,
     KEY_MANIFEST_VERSION, KEY_OWNER_USER_UUID, KEY_SUITE_ID, KEY_TRASH, KEY_VAULT_UUID,
@@ -62,10 +61,7 @@ fn rejects_non_text_map_key() {
         ),
         (Value::Text(KEY_BLOCKS.into()), Value::Array(Vec::new())),
         (Value::Text(KEY_TRASH.into()), Value::Array(Vec::new())),
-        (
-            Value::Text(KEY_KDF_PARAMS.into()),
-            kdf_params_to_value(&dummy_kdf_params()).expect("kdf_params"),
-        ),
+        (Value::Text(KEY_KDF_PARAMS.into()), dummy_kdf_params_value()),
         // Integer key — illegal under §4.2 ("all map keys are tstr").
         (Value::Integer(0u64.into()), Value::Integer(0u64.into())),
     ];
@@ -112,10 +108,7 @@ fn rejects_wrong_type_for_vault_uuid() {
         ),
         (Value::Text(KEY_BLOCKS.into()), Value::Array(Vec::new())),
         (Value::Text(KEY_TRASH.into()), Value::Array(Vec::new())),
-        (
-            Value::Text(KEY_KDF_PARAMS.into()),
-            kdf_params_to_value(&dummy_kdf_params()).expect("kdf_params"),
-        ),
+        (Value::Text(KEY_KDF_PARAMS.into()), dummy_kdf_params_value()),
     ];
     let bytes = encode_canonical_map(&entries).expect("encode_canonical_map");
 
@@ -167,10 +160,7 @@ fn rejects_invalid_byte_length_for_vault_uuid() {
         ),
         (Value::Text(KEY_BLOCKS.into()), Value::Array(Vec::new())),
         (Value::Text(KEY_TRASH.into()), Value::Array(Vec::new())),
-        (
-            Value::Text(KEY_KDF_PARAMS.into()),
-            kdf_params_to_value(&dummy_kdf_params()).expect("kdf_params"),
-        ),
+        (Value::Text(KEY_KDF_PARAMS.into()), dummy_kdf_params_value()),
     ];
     let bytes = encode_canonical_map(&entries).expect("encode_canonical_map");
 
@@ -224,10 +214,7 @@ fn rejects_integer_out_of_range_for_manifest_version() {
         ),
         (Value::Text(KEY_BLOCKS.into()), Value::Array(Vec::new())),
         (Value::Text(KEY_TRASH.into()), Value::Array(Vec::new())),
-        (
-            Value::Text(KEY_KDF_PARAMS.into()),
-            kdf_params_to_value(&dummy_kdf_params()).expect("kdf_params"),
-        ),
+        (Value::Text(KEY_KDF_PARAMS.into()), dummy_kdf_params_value()),
     ];
     let bytes = encode_canonical_map(&entries).expect("encode_canonical_map");
 

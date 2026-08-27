@@ -1,12 +1,8 @@
 //! Canonical CBOR encode path for the manifest body (`docs/vault-format.md` §4.2).
 
-use ciborium::Value;
-
 use crate::crypto::secret::SecretBytes;
-use crate::vault::canonical::{canonical_sort_entries, encode_canonical_map};
-use crate::vault::record::UnknownValue;
+use crate::vault::canonical::{to_canonical_vec, CanonicalMap, CanonicalValue};
 
-use super::decode::record_error_to_cbor_fault;
 use super::{
     BlockEntry, KdfParamsRef, Manifest, ManifestError, TrashEntry, VectorClockEntry, KEY_BLOCKS,
     KEY_BLOCK_NAME, KEY_BLOCK_UUID, KEY_COUNTER, KEY_CREATED_AT_MS, KEY_DEVICE_UUID,
@@ -27,7 +23,11 @@ use super::{
 /// All arrays (`vector_clock`, every `vector_clock_summary`, `blocks`,
 /// `trash`, every block's `recipients`) are sorted on output per the
 /// §4.2 sort disciplines. Forward-compat unknown keys are spliced in
-/// alongside known keys at the canonical-sort step.
+/// alongside known keys; `CanonicalMap`'s own `Serialize` imposes the
+/// RFC 8949 §4.2.1 key order, recursively, at serialise time. (Plain
+/// backticks, not an intra-doc link: `CanonicalMap` is `pub(crate)` while
+/// this item is `pub`, and the #92 rustdoc gate rejects a public item
+/// linking to a private one.)
 ///
 /// Returns [`SecretBytes`], not `Vec<u8>`: the output is the decrypted
 /// canonical form of a manifest body. Returning the wrapper rather than
@@ -35,271 +35,302 @@ use super::{
 /// without a compile error, which is the difference between this and the
 /// deletable `SecretBytes::new(..)` call sites #558 and #565 record.
 ///
-/// **That covers the OUTPUT only, and the input side is still open**
-/// (#575 review — worth stating here, because the paragraph above
-/// otherwise reads as if this whole path were covered).
-/// `manifest_to_entries` below (private, hence not linked — the #92
-/// rustdoc gate rejects an intra-doc link from a public item to a private
-/// one) builds an owned `Vec<(Value, Value)>`
-/// containing `Value::Text(entry.block_name.clone())` for every block —
-/// user-authored plaintext, the same field `BlockEntry::block_name`'s own
-/// doc flags, and the very field #547 Task 7b cited to justify wrapping
-/// the manifest DECODE side. That vector is dropped unwiped on every
-/// manifest write. It is **#569's path 2**, unrelated to and not closed
-/// by this return-type change; the fix is to migrate `manifest_to_entries`
-/// to the borrowing `CanonicalMap` mirror the way `bundle.rs` was
-/// migrated (path 1), since elimination is strictly stronger than a wrap.
+/// **The input side is now covered too (#569 path 2).** The paragraph
+/// that stood here through #575 recorded the gap: `manifest_to_entries`
+/// built an owned `Vec<(Value, Value)>` holding
+/// `Value::Text(entry.block_name.clone())` for every block — user-authored
+/// plaintext, the field [`BlockEntry::block_name`]'s own doc flags as
+/// such — and `canonical_sort_entries` then `pair.clone()`d the whole
+/// entry list, so a manifest save dropped *two* unwiped copies of every
+/// block name. `manifest_to_canonical` replaces it: every value BORROWS
+/// out of the [`Manifest`], so neither copy is made at all. Elimination
+/// rather than a wrap, which is strictly stronger — there is no buffer
+/// left for a future caller to forget to wipe. Same migration
+/// `record::record_to_canonical` (#547) and
+/// `unlock::bundle::IdentityBundle::to_canonical_cbor` (#569 path 1)
+/// already made.
 pub fn encode_manifest(manifest: &Manifest) -> Result<SecretBytes, ManifestError> {
-    let entries = manifest_to_entries(manifest)?;
-    Ok(SecretBytes::new(encode_canonical_map(&entries)?))
+    Ok(SecretBytes::new(to_canonical_vec(&manifest_to_canonical(
+        manifest,
+    ))?))
 }
 
-pub(super) fn manifest_to_entries(m: &Manifest) -> Result<Vec<(Value, Value)>, ManifestError> {
-    let mut entries: Vec<(Value, Value)> = vec![
-        (
-            Value::Text(KEY_MANIFEST_VERSION.into()),
-            Value::Integer(u64::from(m.manifest_version).into()),
-        ),
-        (
-            Value::Text(KEY_VAULT_UUID.into()),
-            Value::Bytes(m.vault_uuid.to_vec()),
-        ),
-        (
-            Value::Text(KEY_FORMAT_VERSION.into()),
-            Value::Integer(u64::from(m.format_version).into()),
-        ),
-        (
-            Value::Text(KEY_SUITE_ID.into()),
-            Value::Integer(u64::from(m.suite_id).into()),
-        ),
-        (
-            Value::Text(KEY_OWNER_USER_UUID.into()),
-            Value::Bytes(m.owner_user_uuid.to_vec()),
-        ),
-        (
-            Value::Text(KEY_VECTOR_CLOCK.into()),
-            vector_clock_to_value(&m.vector_clock)?,
-        ),
-        (Value::Text(KEY_BLOCKS.into()), blocks_to_value(&m.blocks)?),
-        (Value::Text(KEY_TRASH.into()), trash_to_value(&m.trash)?),
-        (
-            Value::Text(KEY_KDF_PARAMS.into()),
-            kdf_params_to_value(&m.kdf_params)?,
-        ),
-    ];
+/// Build the borrowed canonical map for a manifest body (§4.2).
+///
+/// **Infallible.** Every fallible step the owned encoder had came from one
+/// of the two constructs #569 path 2 removed: `canonical_sort_entries`
+/// (which could fail encoding a key, and no longer runs — [`CanonicalMap`]
+/// sorts through the borrowed `&str`s without encoding one) and
+/// `unknown_value_inner` (which re-encoded and re-parsed each unknown
+/// subtree, and is deleted — [`CanonicalValue::Borrowed`] emits it
+/// verbatim). What is left cannot fail, so no helper below returns a
+/// `Result`; [`encode_manifest`]'s only error source is the shared
+/// canonical encoder's own CBOR-encode / capacity-bound checks, lifted by
+/// `ManifestError`'s `From<CanonicalError>` impl.
+///
+/// **Push order is irrelevant** — [`CanonicalMap`]'s `Serialize` imposes
+/// RFC 8949 §4.2.1 order recursively at serialise time. The *array* sort
+/// disciplines are NOT irrelevant and are preserved exactly; each helper
+/// below states the one it applies.
+///
+/// # Integer equivalence (`Value::Integer` → [`CanonicalValue::Uint`])
+///
+/// The owned encoder emitted every numeric field as
+/// `Value::Integer(x.into())`, whose `Serialize` impl covers CBOR major
+/// types 0 and 1 plus `ciborium`'s bignum tag arms.
+/// [`CanonicalValue::Uint`] calls `serialize_u64`, i.e. major type 0 in
+/// shortest form and nothing else. The substitution is therefore only
+/// sound where the source value is unsigned AND fits `u64` **over its
+/// whole declared domain** — not merely for the fixtures the tests
+/// happen to use. Justified per field by its declared type
+/// (`manifest/types.rs`, and `block::VectorClockEntry` for `counter`):
+///
+/// | Field | Declared type | Conversion |
+/// |---|---|---|
+/// | `manifest_version` | `u8` | `Uint(u64::from(..))` |
+/// | `format_version` | `u16` | `Uint(u64::from(..))` |
+/// | `suite_id` (manifest + block entry) | `u16` | `Uint(u64::from(..))` |
+/// | `counter` (vector-clock entry) | `u64` | `Uint(..)` |
+/// | `created_at_ms`, `last_mod_ms` (block entry) | `u64` | `Uint(..)` |
+/// | `tombstoned_at_ms` (trash entry) | `u64` | `Uint(..)` |
+/// | `purged_at_ms` (trash entry) | `Option<u64>` | conditional push, `Uint` inside |
+/// | `memory_kib`, `iterations`, `parallelism` | `u32` | `Uint(u64::from(..))` |
+///
+/// Eight rows, covering **12 production `CanonicalValue::Uint` sites**
+/// over **11 distinct field names** (`suite_id` appears at both manifest
+/// and block-entry level; three rows group same-typed siblings). The row
+/// count is stated because a bare number here has already been written
+/// wrong once — count the `CanonicalValue::Uint` occurrences in the body
+/// below, not the rows above, if you need the site figure.
+///
+/// Every one is an unsigned integer type no wider than `u64`, so the
+/// negative arm and both bignum arms of `Value::Integer` are
+/// structurally unreachable and the two encodings agree over the entire
+/// domain of each field — not just where a test exercises them. The
+/// `u64::from` conversions are widening and infallible; there is no
+/// `as` cast anywhere on this path.
+///
+/// **Unreachability is necessary but NOT sufficient, and the missing link
+/// is worth spelling out** — the argument above stops one step short of
+/// the one `unlock::bundle` had to make. `ciborium` does not send a
+/// `Value::Integer` straight to `serialize_u64`: `value/ser.rs:34-58`
+/// (ciborium 0.2.2, the exact pin in `core/Cargo.toml`'s lockfile) is a
+/// TRY-LADDER — `u8`, `i8`, `u16`, `i16`, `u32`, `i32`, `u64`, `i64`,
+/// `u128`, `i128` — so most values in this table select `serialize_u8` /
+/// `u16` / `u32`, not `serialize_u64` at all. Byte identity therefore
+/// needs those to agree with `serialize_u64`, and they do:
+/// `ser/mod.rs:104-121` defines `serialize_u8`/`u16`/`u32` as
+/// `self.serialize_u64(v.into())`, and `serialize_u64` as the single
+/// `Header::Positive(v)` push — the same head [`CanonicalValue::Uint`]
+/// reaches directly. The signed rungs are unreachable for this table's
+/// domain anyway (each `uN` is tried before the `iN` of the same width,
+/// and every non-negative value that fits `iN` fits `uN`), but even if
+/// one were taken the conclusion holds: `ser/mod.rs:55-69` forwards
+/// `serialize_i8`/`i16`/`i32` to `serialize_i64`, which emits
+/// `Header::Positive(v as u64)` for non-negative input.
+///
+/// The execution half of this already exists and is cited rather than
+/// duplicated: `canonical::value`'s
+/// `uint_is_byte_identical_across_every_head_boundary`
+/// (`core/src/vault/canonical/value.rs:374`) encodes
+/// `Value::Integer(u.into())` and `CanonicalValue::Uint(u)` at all 11
+/// CBOR head boundaries through `u64::MAX` and asserts the bytes are
+/// equal. It runs on every `cargo test`.
+pub(super) fn manifest_to_canonical(m: &Manifest) -> CanonicalMap<'_> {
+    // 9 known top-level keys + one slot per forward-compat unknown. A size
+    // hint only — `push` is correct either way.
+    let mut map = CanonicalMap::with_capacity(9 + m.unknown.len());
 
+    map.push(
+        KEY_MANIFEST_VERSION,
+        CanonicalValue::Uint(u64::from(m.manifest_version)),
+    );
+    map.push(KEY_VAULT_UUID, CanonicalValue::Bytes(&m.vault_uuid));
+    map.push(
+        KEY_FORMAT_VERSION,
+        CanonicalValue::Uint(u64::from(m.format_version)),
+    );
+    map.push(KEY_SUITE_ID, CanonicalValue::Uint(u64::from(m.suite_id)));
+    map.push(
+        KEY_OWNER_USER_UUID,
+        CanonicalValue::Bytes(&m.owner_user_uuid),
+    );
+    map.push(KEY_VECTOR_CLOCK, vector_clock_to_canonical(&m.vector_clock));
+    map.push(KEY_BLOCKS, blocks_to_canonical(&m.blocks));
+    map.push(KEY_TRASH, trash_to_canonical(&m.trash));
+    map.push(
+        KEY_KDF_PARAMS,
+        CanonicalValue::Map(kdf_params_to_canonical(&m.kdf_params)),
+    );
+
+    // Forward-compat: splice unknowns alongside known keys, emitted
+    // verbatim as a BORROW. The deleted `unknown_value_inner` re-encoded
+    // each subtree to CBOR and re-parsed it — an allocation, a
+    // `SecretBytes` and a `from_secret_reader` call per unknown per
+    // manifest write, all of a v2 client's content a v1 client cannot
+    // interpret and must not copy. `UnknownValue::as_value` is
+    // `pub(crate)` for exactly this, and `record.rs`'s encoder already
+    // borrows through it.
     for (k, v) in &m.unknown {
-        entries.push((Value::Text(k.clone()), unknown_value_inner(v)?));
+        map.push(k, CanonicalValue::Borrowed(v.as_value()));
     }
 
-    Ok(entries)
+    map
 }
 
 /// Encode a vector clock array sorted ascending by `device_uuid`.
-fn vector_clock_to_value(vc: &[VectorClockEntry]) -> Result<Value, ManifestError> {
+///
+/// The sort is over a `Vec<&VectorClockEntry>` — borrows, not owned
+/// copies — so reordering moves 8-byte pointers, never entry contents.
+fn vector_clock_to_canonical(vc: &[VectorClockEntry]) -> CanonicalValue<'_> {
     let mut sorted: Vec<&VectorClockEntry> = vc.iter().collect();
     sorted.sort_by_key(|e| e.device_uuid);
 
-    let items: Result<Vec<Value>, ManifestError> = sorted
-        .into_iter()
-        .map(|entry| {
-            let inner = vec![
-                (
-                    Value::Text(KEY_DEVICE_UUID.into()),
-                    Value::Bytes(entry.device_uuid.to_vec()),
-                ),
-                (
-                    Value::Text(KEY_COUNTER.into()),
-                    Value::Integer(entry.counter.into()),
-                ),
-            ];
-            let sorted_inner = canonical_sort_entries(&inner)?;
-            Ok(Value::Map(sorted_inner))
-        })
-        .collect();
-    Ok(Value::Array(items?))
+    CanonicalValue::Array(
+        sorted
+            .into_iter()
+            .map(|entry| {
+                let mut inner = CanonicalMap::with_capacity(2);
+                inner.push(KEY_DEVICE_UUID, CanonicalValue::Bytes(&entry.device_uuid));
+                inner.push(KEY_COUNTER, CanonicalValue::Uint(entry.counter));
+                CanonicalValue::Map(inner)
+            })
+            .collect(),
+    )
 }
 
-fn blocks_to_value(blocks: &[BlockEntry]) -> Result<Value, ManifestError> {
+/// Encode the `blocks` array sorted ascending by `block_uuid`.
+fn blocks_to_canonical(blocks: &[BlockEntry]) -> CanonicalValue<'_> {
     let mut sorted: Vec<&BlockEntry> = blocks.iter().collect();
     sorted.sort_by_key(|e| e.block_uuid);
 
-    let items: Result<Vec<Value>, ManifestError> =
-        sorted.into_iter().map(block_entry_to_value).collect();
-    Ok(Value::Array(items?))
+    CanonicalValue::Array(
+        sorted
+            .into_iter()
+            .map(|e| CanonicalValue::Map(block_entry_to_canonical(e)))
+            .collect(),
+    )
 }
 
-fn block_entry_to_value(entry: &BlockEntry) -> Result<Value, ManifestError> {
-    // Recipients sorted ascending by 16-byte lex compare.
+/// One `blocks` entry.
+///
+/// `block_name` is the field #569 path 2 exists for: user-authored
+/// plaintext living inside the encrypted manifest (see
+/// [`BlockEntry::block_name`]'s own doc). It is BORROWED here — the owned
+/// encoder cloned it into a `Value::Text` and `canonical_sort_entries`
+/// cloned that again, two unwiped copies per manifest save on a path all
+/// four production `sign_manifest` sites reach.
+fn block_entry_to_canonical(entry: &BlockEntry) -> CanonicalMap<'_> {
+    // 8 known keys + one slot per forward-compat unknown.
+    let mut map = CanonicalMap::with_capacity(8 + entry.unknown.len());
+
+    map.push(KEY_BLOCK_UUID, CanonicalValue::Bytes(&entry.block_uuid));
+    map.push(KEY_BLOCK_NAME, CanonicalValue::Text(&entry.block_name));
+    map.push(KEY_FINGERPRINT, CanonicalValue::Bytes(&entry.fingerprint));
+
+    // Recipients sorted ascending by 16-byte bytewise compare, over
+    // borrows of the uuid arrays rather than copies of them.
     let mut recipients: Vec<&[u8; UUID_LEN]> = entry.recipients.iter().collect();
     recipients.sort_by(|a, b| a.as_slice().cmp(b.as_slice()));
-    let recipients_value = Value::Array(
-        recipients
-            .into_iter()
-            .map(|r| Value::Bytes(r.to_vec()))
-            .collect(),
+    map.push(
+        KEY_RECIPIENTS,
+        CanonicalValue::Array(
+            recipients
+                .into_iter()
+                .map(|r| CanonicalValue::Bytes(r))
+                .collect(),
+        ),
     );
 
-    let mut inner: Vec<(Value, Value)> = vec![
-        (
-            Value::Text(KEY_BLOCK_UUID.into()),
-            Value::Bytes(entry.block_uuid.to_vec()),
-        ),
-        (
-            Value::Text(KEY_BLOCK_NAME.into()),
-            Value::Text(entry.block_name.clone()),
-        ),
-        (
-            Value::Text(KEY_FINGERPRINT.into()),
-            Value::Bytes(entry.fingerprint.to_vec()),
-        ),
-        (Value::Text(KEY_RECIPIENTS.into()), recipients_value),
-        (
-            Value::Text(KEY_VECTOR_CLOCK_SUMMARY.into()),
-            vector_clock_to_value(&entry.vector_clock_summary)?,
-        ),
-        (
-            Value::Text(KEY_SUITE_ID.into()),
-            Value::Integer(u64::from(entry.suite_id).into()),
-        ),
-        (
-            Value::Text(KEY_CREATED_AT_MS.into()),
-            Value::Integer(entry.created_at_ms.into()),
-        ),
-        (
-            Value::Text(KEY_LAST_MOD_MS.into()),
-            Value::Integer(entry.last_mod_ms.into()),
-        ),
-    ];
+    map.push(
+        KEY_VECTOR_CLOCK_SUMMARY,
+        vector_clock_to_canonical(&entry.vector_clock_summary),
+    );
+    map.push(
+        KEY_SUITE_ID,
+        CanonicalValue::Uint(u64::from(entry.suite_id)),
+    );
+    map.push(KEY_CREATED_AT_MS, CanonicalValue::Uint(entry.created_at_ms));
+    map.push(KEY_LAST_MOD_MS, CanonicalValue::Uint(entry.last_mod_ms));
+
     for (k, v) in &entry.unknown {
-        inner.push((Value::Text(k.clone()), unknown_value_inner(v)?));
+        map.push(k, CanonicalValue::Borrowed(v.as_value()));
     }
-    let sorted = canonical_sort_entries(&inner)?;
-    Ok(Value::Map(sorted))
+
+    map
 }
 
-fn trash_to_value(trash: &[TrashEntry]) -> Result<Value, ManifestError> {
+/// Encode the `trash` array sorted ascending by `block_uuid`.
+fn trash_to_canonical(trash: &[TrashEntry]) -> CanonicalValue<'_> {
     let mut sorted: Vec<&TrashEntry> = trash.iter().collect();
     sorted.sort_by_key(|e| e.block_uuid);
 
-    let items: Result<Vec<Value>, ManifestError> =
-        sorted.into_iter().map(trash_entry_to_value).collect();
-    Ok(Value::Array(items?))
+    CanonicalValue::Array(
+        sorted
+            .into_iter()
+            .map(|e| CanonicalValue::Map(trash_entry_to_canonical(e)))
+            .collect(),
+    )
 }
 
-pub(super) fn trash_entry_to_value(entry: &TrashEntry) -> Result<Value, ManifestError> {
-    let mut inner: Vec<(Value, Value)> = vec![
-        (
-            Value::Text(KEY_BLOCK_UUID.into()),
-            Value::Bytes(entry.block_uuid.to_vec()),
-        ),
-        (
-            Value::Text(KEY_TOMBSTONED_AT_MS.into()),
-            Value::Integer(entry.tombstoned_at_ms.into()),
-        ),
-        (
-            Value::Text(KEY_TOMBSTONED_BY.into()),
-            Value::Bytes(entry.tombstoned_by.to_vec()),
-        ),
-    ];
+/// One `trash` entry.
+///
+/// Both optional fields keep their ABSENT-on-the-wire semantics exactly:
+/// a `None` pushes no key at all (not an explicit CBOR null), so a
+/// legacy-shaped entry stays byte-identical and neither field needed a
+/// format bump. `trash_entry_purged_at_ms_none_roundtrips_byte_identical`
+/// and `trash_entry_fingerprint_none_omits_key` pin this.
+pub(super) fn trash_entry_to_canonical(entry: &TrashEntry) -> CanonicalMap<'_> {
+    // 3 always-pushed keys + up to 2 conditional ones (`fingerprint`,
+    // `purged_at_ms`) + one slot per forward-compat unknown.
+    let mut map = CanonicalMap::with_capacity(5 + entry.unknown.len());
+
+    map.push(KEY_BLOCK_UUID, CanonicalValue::Bytes(&entry.block_uuid));
+    map.push(
+        KEY_TOMBSTONED_AT_MS,
+        CanonicalValue::Uint(entry.tombstoned_at_ms),
+    );
+    map.push(
+        KEY_TOMBSTONED_BY,
+        CanonicalValue::Bytes(&entry.tombstoned_by),
+    );
+
     // #293: optional content commitment. Reuses the "fingerprint" key
     // (separate map from BlockEntry, so no collision). Omitted when None so
     // legacy-shaped entries stay byte-identical (no format bump).
-    if let Some(fp) = entry.fingerprint {
-        inner.push((
-            Value::Text(KEY_FINGERPRINT.into()),
-            Value::Bytes(fp.to_vec()),
-        ));
+    if let Some(fp) = &entry.fingerprint {
+        map.push(KEY_FINGERPRINT, CanonicalValue::Bytes(fp));
     }
     // #399: optional purge commitment. Omitted when None so legacy-shaped
     // (still-restorable) entries stay byte-identical (no format bump).
     if let Some(purged_at_ms) = entry.purged_at_ms {
-        inner.push((
-            Value::Text(KEY_PURGED_AT_MS.into()),
-            Value::Integer(purged_at_ms.into()),
-        ));
+        map.push(KEY_PURGED_AT_MS, CanonicalValue::Uint(purged_at_ms));
     }
+
     for (k, v) in &entry.unknown {
-        inner.push((Value::Text(k.clone()), unknown_value_inner(v)?));
+        map.push(k, CanonicalValue::Borrowed(v.as_value()));
     }
-    let sorted = canonical_sort_entries(&inner)?;
-    Ok(Value::Map(sorted))
+
+    map
 }
 
-pub(super) fn kdf_params_to_value(k: &KdfParamsRef) -> Result<Value, ManifestError> {
-    let inner = vec![
-        (
-            Value::Text(KEY_MEMORY_KIB.into()),
-            Value::Integer(u64::from(k.memory_kib).into()),
-        ),
-        (
-            Value::Text(KEY_ITERATIONS.into()),
-            Value::Integer(u64::from(k.iterations).into()),
-        ),
-        (
-            Value::Text(KEY_PARALLELISM.into()),
-            Value::Integer(u64::from(k.parallelism).into()),
-        ),
-        (Value::Text(KEY_SALT.into()), Value::Bytes(k.salt.to_vec())),
-    ];
-    let sorted = canonical_sort_entries(&inner)?;
-    Ok(Value::Map(sorted))
-}
-
-/// Extract the underlying CBOR `Value` from an [`UnknownValue`] for
-/// splicing into a parent map. We round-trip via canonical CBOR bytes so
-/// the call site does not need access to `UnknownValue`'s inner field.
-///
-/// `from_reader` here is a production parse of forward-compat plaintext
-/// (#547 Task 7b, the second `from_reader` site the task's brief names
-/// alongside `decode_manifest`'s own): the caller is the ENCODE path,
-/// re-materialising an already-decrypted `UnknownValue` for splicing into
-/// the manifest body about to be serialised.
-///
-/// This function has TWO intermediate plaintext copies, not the one an
-/// earlier version of this comment named (#547 Task 8 review — corrected
-/// here rather than silently reworded, per this doc's own discipline):
-/// `bytes`, the `to_canonical_cbor` serialisation, and `v`, the
-/// freshly-parsed tree. **`bytes` is the one that is covered**, and the
-/// #560 review is what swapped them round, because Task 7b had it exactly
-/// backwards:
-///
-/// - `bytes` has a genuine early-return window — the `?` on the
-///   `from_reader` line below sits between its fill and the end of the
-///   function — so wrapping it in [`SecretBytes`] makes `Drop` cover an
-///   exit that a trailing statement would miss. That is the whole
-///   justification for a wrapper, and it applies here.
-/// - `v` has **no** such window. Nothing fallible or panicking sits
-///   between the parse and the return, so a [`SecretValueTree`] wrap
-///   covered no exit that was not already covered. Task 7b wrapped it
-///   anyway, and because that type deliberately has no consuming accessor,
-///   the wrap FORCED a `.clone()` — a full deep copy of the forward-compat
-///   subtree — to get the value back out. The residue was unchanged (one
-///   unwiped `Value` escaped into the caller's plain, non-zeroizing
-///   `Vec<(Value, Value)>` either way), so the wrap bought nothing and
-///   cost a deep clone of decrypted content per unknown per manifest
-///   encode. It is removed; `v` moves straight into the return value as it
-///   did before Task 7b.
-///
-/// The `SecretBytes` wrap on `bytes` is not observable from a test — it
-/// does not tick `cbor::wipe_calls()`, which only `secret_tree`'s three
-/// entry points do — so reverting it would leave the suite green. That is
-/// the class **#558** already tracks for the AEAD plaintext buffers, and
-/// this site now joins it rather than pretending to a coverage it lacks.
-/// The counter-based test Task 7b wrote for the removed `SecretValueTree`
-/// wrap is retired with the wrap it pinned.
-pub(super) fn unknown_value_inner(u: &UnknownValue) -> Result<Value, ManifestError> {
-    let bytes = SecretBytes::new(
-        u.to_canonical_cbor()
-            .map_err(|e| ManifestError::CborEncode(record_error_to_cbor_fault(e)))?,
+/// The `kdf_params` sub-map mirrored from `vault.toml` (§4.2 line 205).
+fn kdf_params_to_canonical(k: &KdfParamsRef) -> CanonicalMap<'_> {
+    let mut map = CanonicalMap::with_capacity(4);
+    map.push(
+        KEY_MEMORY_KIB,
+        CanonicalValue::Uint(u64::from(k.memory_kib)),
     );
-    // `from_secret_reader`, not `from_reader` (#561): `bytes` is a
-    // re-encode of a forward-compat unknown subtree from inside the
-    // encrypted manifest — plaintext this version cannot interpret but
-    // must still not leave staged in `ciborium`'s own frame.
-    let v: Value =
-        crate::cbor::from_secret_reader(bytes.expose()).map_err(ManifestError::CborDecode)?;
-    Ok(v)
+    map.push(
+        KEY_ITERATIONS,
+        CanonicalValue::Uint(u64::from(k.iterations)),
+    );
+    map.push(
+        KEY_PARALLELISM,
+        CanonicalValue::Uint(u64::from(k.parallelism)),
+    );
+    map.push(KEY_SALT, CanonicalValue::Bytes(&k.salt));
+    map
 }
 
 #[cfg(test)]

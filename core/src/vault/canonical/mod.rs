@@ -33,17 +33,54 @@
 //! value side (only keys are materialised, to sort on) and
 //! [`reject_floats_and_tags`] clones nothing (it only ever reads through
 //! `&Value`) — [`canonical_sort_entries`] is the one holdout: it still
-//! `pair.clone()`s every entry, unchanged from before the split. Task 4
-//! removed its plaintext-bearing caller in `record.rs`, but that was not
-//! its *last* one: `manifest.rs` still calls it (several sites, one per
-//! manifest sub-structure), and one of those callers —
-//! `block_entry_to_value`'s `block_name` field — is genuinely user-visible
-//! plaintext within the encrypted manifest, cloned once into the entry
-//! list and again by this function's own `pair.clone()`: two clones of a
-//! block name per manifest save, deliberately left unmigrated by this
-//! slice's own scope decision — see
-//! `docs/manual/contributors/memory-hygiene-audit-internal.md`. This clone
-//! is therefore still live, not merely unchanged-for-now scaffolding.
+//! `pair.clone()`s every entry, unchanged from before the split.
+//!
+//! **What that clone still costs, corrected (#569 path 2).** This
+//! paragraph used to end by naming the manifest encoder as the live
+//! plaintext-bearing caller: `manifest.rs` called
+//! [`canonical_sort_entries`] once per manifest sub-structure, and one of
+//! those callers — `block_entry_to_value`'s `block_name` field, genuinely
+//! user-visible plaintext within the encrypted manifest — was cloned once
+//! into the owned entry list and again by this function's own
+//! `pair.clone()`, two clones of every block name per manifest save. It
+//! was recorded as "deliberately left unmigrated by this slice's own scope
+//! decision". **That is now false, and the history is kept rather than
+//! deleted so the claim can be checked against the code**: #569 path 2
+//! migrated the manifest encode path onto the borrowing
+//! [`CanonicalMap`] (`manifest::encode::manifest_to_canonical`), so
+//! neither clone is made at all: **no PRODUCTION `manifest.rs` call into
+//! [`canonical_sort_entries`] or [`encode_canonical_map`] survives.**
+//!
+//! Scope that sentence to production and to the encoder, because the
+//! manifest module still reaches both from `#[cfg(test)]` code and an
+//! earlier draft of this paragraph said "in production or in test code",
+//! which the very commit that wrote it falsified. The surviving
+//! manifest-module test callers, enumerated so the claim is checkable:
+//! `manifest::test_support::dummy_kdf_params_value` is pinned against
+//! [`canonical_sort_entries`] by
+//! `dummy_kdf_params_value_is_in_canonical_key_order` — that fixture
+//! replaced the deleted `encode::kdf_params_to_value`, whose sorted
+//! output six decode-negative tests depended on, and the pin is what
+//! keeps their input bytes unchanged; and six hand-built decode
+//! negatives call [`encode_canonical_map`]
+//! (`test_support.rs`'s `build_manifest_map_with_overrides`,
+//! `decode::tests::rejects_float_in_unknown_value`, and four in
+//! `decode::extract::tests`). Those are ORACLES and FIXTURES, not the
+//! encode path.
+//!
+//! [`canonical_sort_entries`] is **not** thereby dead, and saying so
+//! would be the overclaim this paragraph just corrected. One production
+//! caller remains: `sync::state::SyncState::to_canonical_cbor`
+//! (`core/src/sync/state.rs`), which sorts a two-key
+//! `(device_uuid, counter)` vector-clock entry map on the way to
+//! OS-keystore persistence. That is sync metadata, not decrypted vault
+//! content — a different exposure class from `block_name`, and one this
+//! slice did not assess. [`encode_canonical_map`] likewise keeps two
+//! production callers, `sync::state` and `identity::card`. Both functions
+//! also remain in use from `record.rs`'s and `block.rs`'s `#[cfg(test)]`
+//! byte-identity oracles, which deliberately keep the pre-migration owned
+//! path alive to prove the borrowing one emits identical bytes.
+//!
 //! [`size`]
 //! holds [`cbor_size_bound`], the pre-reservation helper
 //! `encode_canonical_map` uses so its output buffer is sized to avoid

@@ -7,8 +7,17 @@
 //! and nothing outside it can.
 //!
 //! Moved verbatim out of the pre-split `manifest/tests.rs`; the only edit
-//! is the `pub(super)` prefix each fixture needed once its callers moved
-//! into sibling modules.
+//! at that point was the `pub(super)` prefix each fixture needed once its
+//! callers moved into sibling modules.
+//!
+//! **Two additions since, both from #569 path 2** (recorded so "moved
+//! verbatim" is not read as still describing the whole file):
+//! [`dummy_kdf_params_value`], which replaced six inline
+//! `kdf_params_to_value(&dummy_kdf_params())` call sites when that encode
+//! helper stopped producing an owned `Value`; and this module's own
+//! `#[cfg(test)] mod tests`, which pins that fixture's key order to the
+//! bytes the deleted helper emitted. A fixture module with a test of its
+//! own is unusual — the justification is in that test's doc comment.
 
 use std::collections::BTreeMap;
 
@@ -18,7 +27,6 @@ use crate::crypto::aead::{AeadKey, AeadNonce};
 use crate::crypto::secret::Sensitive;
 use crate::vault::canonical::encode_canonical_map;
 
-use super::encode::kdf_params_to_value;
 use super::*;
 
 pub(super) fn dummy_kdf_params() -> KdfParamsRef {
@@ -28,6 +36,52 @@ pub(super) fn dummy_kdf_params() -> KdfParamsRef {
         parallelism: 1,
         salt: [0x11; SALT_LEN],
     }
+}
+
+/// The `kdf_params` sub-map as an OWNED [`Value`], for the hand-built
+/// non-canonical entry lists the decode negatives need.
+///
+/// Deliberately NOT `encode::kdf_params_to_canonical`. That helper returns
+/// a borrowing `CanonicalMap`, and #569 path 2 is precisely the change that
+/// stopped the encode path materialising an owned `Value` tree at all — so
+/// there is no longer a production function whose output these tests could
+/// reuse. Their whole purpose is to construct owned, deliberately
+/// NON-canonical `Vec<(Value, Value)>` trees (a wrong-typed field, an
+/// integer map key, a spliced float) and assert what `decode_manifest`
+/// does with them; routing that through the borrowing encoder would defeat
+/// the tests rather than serve them.
+///
+/// One shared copy, not six: this exact expression stood inline at six
+/// call sites (this file plus `decode::tests` and four in
+/// `decode::extract::tests`) as `kdf_params_to_value(&dummy_kdf_params())`.
+pub(super) fn dummy_kdf_params_value() -> Value {
+    let k = dummy_kdf_params();
+    // Emitted in RFC 8949 §4.2.1 key order — sorted by (byte length,
+    // bytes): "salt"(4), "iterations"(10), "memory_kib"(10),
+    // "parallelism"(11). Written out rather than sorted, because the
+    // deleted `kdf_params_to_value` reached the same order through a
+    // `canonical_sort_entries` call, and these fixtures must feed the
+    // decoder byte-identical input to what they fed it before #569 path 2.
+    // A nested `Value::Map` is emitted by `ciborium` in ITERATION order —
+    // `encode_canonical_map` sorts only the top level — so push order here
+    // is on the wire, unlike in the borrowing encoder where `CanonicalMap`
+    // sorts recursively at serialise time. `dummy_kdf_params_value_is_in_
+    // canonical_key_order` below pins it.
+    Value::Map(vec![
+        (Value::Text(KEY_SALT.into()), Value::Bytes(k.salt.to_vec())),
+        (
+            Value::Text(KEY_ITERATIONS.into()),
+            Value::Integer(u64::from(k.iterations).into()),
+        ),
+        (
+            Value::Text(KEY_MEMORY_KIB.into()),
+            Value::Integer(u64::from(k.memory_kib).into()),
+        ),
+        (
+            Value::Text(KEY_PARALLELISM.into()),
+            Value::Integer(u64::from(k.parallelism).into()),
+        ),
+    ])
 }
 
 pub(super) fn minimal_manifest() -> Manifest {
@@ -202,10 +256,7 @@ pub(super) fn build_manifest_map_with_overrides(
     ));
     entries.push((Value::Text(KEY_BLOCKS.into()), Value::Array(Vec::new())));
     entries.push((Value::Text(KEY_TRASH.into()), Value::Array(Vec::new())));
-    entries.push((
-        Value::Text(KEY_KDF_PARAMS.into()),
-        kdf_params_to_value(&dummy_kdf_params()).expect("kdf_params"),
-    ));
+    entries.push((Value::Text(KEY_KDF_PARAMS.into()), dummy_kdf_params_value()));
     encode_canonical_map(&entries).expect("encode_canonical_map")
 }
 
@@ -234,5 +285,61 @@ pub(super) fn fixed_manifest_header() -> ManifestHeader {
         vault_uuid: [0x42; UUID_LEN],
         created_at_ms: 1_714_060_800_000,
         last_mod_ms: 1_714_060_900_000,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vault::canonical::canonical_sort_entries;
+
+    /// [`dummy_kdf_params_value`] must emit its keys in RFC 8949 §4.2.1
+    /// order, hand-written rather than sorted.
+    ///
+    /// This is a fixture, not production code, and it would be easy to
+    /// treat the order as cosmetic — it is not. Six decode-negative tests
+    /// splice this sub-map into a hand-built top-level entry list and hand
+    /// the result to `decode_manifest`; a nested `Value::Map` reaches the
+    /// wire in ITERATION order (`encode_canonical_map` sorts only the top
+    /// level), so the push order below IS the input those negatives feed
+    /// the decoder. Until #569 path 2 they got it from `encode`'s
+    /// `kdf_params_to_value`, which sorted via `canonical_sort_entries`.
+    /// The oracle here is that same function, so the fixture is pinned to
+    /// the bytes it produced rather than to a re-derivation of the rule.
+    #[test]
+    fn dummy_kdf_params_value_is_in_canonical_key_order() {
+        let k = dummy_kdf_params();
+        // The pre-#569 `kdf_params_to_value` body, verbatim apart from the
+        // sort call being spelled out here.
+        let unsorted: Vec<(Value, Value)> = vec![
+            (
+                Value::Text(KEY_MEMORY_KIB.into()),
+                Value::Integer(u64::from(k.memory_kib).into()),
+            ),
+            (
+                Value::Text(KEY_ITERATIONS.into()),
+                Value::Integer(u64::from(k.iterations).into()),
+            ),
+            (
+                Value::Text(KEY_PARALLELISM.into()),
+                Value::Integer(u64::from(k.parallelism).into()),
+            ),
+            (Value::Text(KEY_SALT.into()), Value::Bytes(k.salt.to_vec())),
+        ];
+        let expected = Value::Map(canonical_sort_entries(&unsorted).expect("sort"));
+
+        assert_eq!(
+            dummy_kdf_params_value(),
+            expected,
+            "fixture must match what the deleted kdf_params_to_value emitted"
+        );
+
+        // And byte-identically, which is the property the six negatives
+        // actually depend on.
+        let mut mine = Vec::new();
+        ciborium::ser::into_writer(&dummy_kdf_params_value(), &mut mine).expect("encode mine");
+        let mut theirs = Vec::new();
+        ciborium::ser::into_writer(&expected, &mut theirs).expect("encode expected");
+        assert_eq!(mine, theirs, "fixture bytes must be unchanged by #569");
     }
 }

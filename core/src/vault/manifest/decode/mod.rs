@@ -4,7 +4,16 @@
 mod entries;
 mod extract;
 
-pub(super) use extract::record_error_to_cbor_fault;
+// `pub(super) use extract::record_error_to_cbor_fault;` stood here from the
+// #564 split until #569 path 2. It existed for exactly one cross-boundary
+// caller — `encode::unknown_value_inner`, which re-encoded a forward-compat
+// unknown subtree through `UnknownValue::to_canonical_cbor` and had to
+// classify the resulting `RecordError`. That function is deleted (the encode
+// path borrows the subtree instead), so the re-export had no users left and
+// the helper is now file-private to `extract.rs`, its one remaining caller
+// (`value_to_unknown`) being in that same file. Task 1's own report
+// anticipated this: the widening to `pub(in crate::vault::manifest)` was
+// recorded there as existing solely for `encode.rs`.
 
 use std::collections::BTreeMap;
 
