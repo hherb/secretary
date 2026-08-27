@@ -36,7 +36,11 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
+# Anchored to the repo root, and deliberately: git sets core.ignorecase=true
+# on macOS, so an unanchored `MANIFEST` also ignored the Rust directory
+# module `core/src/vault/manifest/` (#564). setuptools only ever writes
+# this file at the root anyway.
+/MANIFEST
 
 # PyInstaller
 #   Usually these files are written by a python script from a template
