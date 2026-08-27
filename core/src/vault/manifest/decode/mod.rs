@@ -52,13 +52,21 @@ use super::{
 /// 9. `blocks` has no duplicate `block_uuid`.
 /// 10. `trash` has no duplicate `block_uuid` (§7 tracks the most-recent
 ///     tombstone per block only).
-/// 11. The top-level map itself has no duplicate key (RFC 8949 §5.4).
-///     Scoped to this one level only: `parse_vector_clock_entry`,
-///     `parse_block_entry`, `parse_trash_entry` and `parse_kdf_params`
-///     have no equivalent check of their own nested maps, and no decoder
-///     in the crate looks inside a forward-compat `unknown` subtree at
-///     all (#573 — see [`ManifestError::DuplicateKey`]'s doc, which
-///     corrects what `record.rs` / `block.rs` actually cover).
+/// 11. No CBOR map anywhere in the manifest body has a duplicate key
+///     (RFC 8949 §5.4): the top-level map (#568) AND each of the four
+///     nested per-entry maps — `parse_vector_clock_entry`,
+///     `parse_block_entry`, `parse_trash_entry`, `parse_kdf_params`
+///     (#573) — reject their own repeated key rather than silently
+///     last-winning. **Residual, not closed by either fix**: no decoder
+///     in the crate looks inside a forward-compat `unknown` subtree, at
+///     any level. Those subtrees round-trip verbatim (`UnknownValue`'s
+///     only validation is `reject_floats_and_tags`), so a duplicate key
+///     inside one is invisible both to this check and to the
+///     record-level re-encode-and-compare backstop the manifest layer
+///     doesn't otherwise have (#572). See
+///     [`ManifestError::DuplicateKey`]'s doc for the full account,
+///     including what a prior version of both this item and that variant's
+///     doc got wrong about `record.rs` / `block.rs`'s own coverage.
 ///
 /// Forward-compat unknown keys are preserved into the relevant `unknown`
 /// bag verbatim.

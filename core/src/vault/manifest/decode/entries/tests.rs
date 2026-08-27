@@ -123,3 +123,298 @@ fn rejects_duplicate_trash_uuid() {
         "expected DuplicateTrashUuid, got {err:?}"
     );
 }
+
+// ---- #573: duplicate keys WITHIN one entry's own map ------------------
+//
+// The three tests above (`rejects_duplicate_device_uuid_in_vector_clock`,
+// `rejects_duplicate_block_uuid`, `rejects_duplicate_trash_uuid`) are a
+// DIFFERENT property: two distinct ARRAY ENTRIES sharing a value
+// (`device_uuid`, `block_uuid`) in their otherwise-valid maps. What
+// follows is a repeated MAP KEY inside a single entry's own map —
+// `device_uuid` appearing twice inside one `vector_clock` entry, not two
+// `vector_clock` entries sharing a `device_uuid`. Do not conflate the
+// two; they exercise different code paths (`parse_vector_clock` /
+// `parse_blocks` / `parse_trash`'s post-loop duplicate-VALUE sweep vs.
+// each single-entry parser's own per-key loop).
+//
+// `build_manifest_map_with_overrides` (test_support.rs) cannot express
+// this: it always emits empty `vector_clock`/`blocks`/`trash` arrays, so
+// there is no entry map to inject a duplicate key into. These builders
+// hand-construct one entry's `Value::Map` directly, the same way #568's
+// `a_manifest_with_a_repeated_key_is_rejected` /
+// `a_manifest_with_a_repeated_unknown_key_is_rejected`
+// (`decode/tests.rs`) hand-construct the top-level map.
+
+/// A valid `vector_clock` entry map with `repeated`'s key/value pair
+/// appended a second time.
+fn vector_clock_entry_value_with_duplicate(repeated: &'static str) -> Value {
+    let mut entries: Vec<(Value, Value)> = vec![
+        (
+            Value::Text(KEY_DEVICE_UUID.into()),
+            Value::Bytes([0x33; UUID_LEN].to_vec()),
+        ),
+        (Value::Text(KEY_COUNTER.into()), Value::Integer(7u64.into())),
+    ];
+    let dup = entries
+        .iter()
+        .find(|(k, _)| matches!(k, Value::Text(s) if s == repeated))
+        .expect("repeated must be one of this entry's own keys")
+        .clone();
+    entries.push(dup);
+    Value::Map(entries)
+}
+
+/// A valid `kdf_params` map with `repeated`'s key/value pair appended a
+/// second time.
+fn kdf_params_value_with_duplicate(repeated: &'static str) -> Value {
+    let k = dummy_kdf_params();
+    let mut entries: Vec<(Value, Value)> = vec![
+        (
+            Value::Text(KEY_MEMORY_KIB.into()),
+            Value::Integer(u64::from(k.memory_kib).into()),
+        ),
+        (
+            Value::Text(KEY_ITERATIONS.into()),
+            Value::Integer(u64::from(k.iterations).into()),
+        ),
+        (
+            Value::Text(KEY_PARALLELISM.into()),
+            Value::Integer(u64::from(k.parallelism).into()),
+        ),
+        (Value::Text(KEY_SALT.into()), Value::Bytes(k.salt.to_vec())),
+    ];
+    let dup = entries
+        .iter()
+        .find(|(kk, _)| matches!(kk, Value::Text(s) if s == repeated))
+        .expect("repeated must be one of this entry's own keys")
+        .clone();
+    entries.push(dup);
+    Value::Map(entries)
+}
+
+/// A valid `blocks` entry map's eight known-key entries, in no particular
+/// order — `parse_block_entry` dispatches by key text, not position.
+fn block_entry_base_entries() -> Vec<(Value, Value)> {
+    vec![
+        (
+            Value::Text(KEY_BLOCK_UUID.into()),
+            Value::Bytes([0xb1; UUID_LEN].to_vec()),
+        ),
+        (
+            Value::Text(KEY_BLOCK_NAME.into()),
+            Value::Text("logins".to_string()),
+        ),
+        (
+            Value::Text(KEY_FINGERPRINT.into()),
+            Value::Bytes([0xff; BLOCK_FINGERPRINT_LEN].to_vec()),
+        ),
+        (Value::Text(KEY_RECIPIENTS.into()), Value::Array(Vec::new())),
+        (
+            Value::Text(KEY_VECTOR_CLOCK_SUMMARY.into()),
+            Value::Array(Vec::new()),
+        ),
+        (
+            Value::Text(KEY_SUITE_ID.into()),
+            Value::Integer(u64::from(SUITE_ID_V1).into()),
+        ),
+        (
+            Value::Text(KEY_CREATED_AT_MS.into()),
+            Value::Integer(1u64.into()),
+        ),
+        (
+            Value::Text(KEY_LAST_MOD_MS.into()),
+            Value::Integer(2u64.into()),
+        ),
+    ]
+}
+
+fn block_entry_value_with_duplicate(repeated: &'static str) -> Value {
+    let mut entries = block_entry_base_entries();
+    let dup = entries
+        .iter()
+        .find(|(k, _)| matches!(k, Value::Text(s) if s == repeated))
+        .expect("repeated must be one of this entry's own keys")
+        .clone();
+    entries.push(dup);
+    Value::Map(entries)
+}
+
+/// A valid `blocks` entry map with `unknown_key` (a forward-compat key
+/// outside the fixed §4.2 shape) present twice.
+fn block_entry_value_with_duplicate_unknown(unknown_key: &str) -> Value {
+    let mut entries = block_entry_base_entries();
+    entries.push((
+        Value::Text(unknown_key.to_string()),
+        Value::Integer(1u64.into()),
+    ));
+    entries.push((
+        Value::Text(unknown_key.to_string()),
+        Value::Integer(2u64.into()),
+    ));
+    Value::Map(entries)
+}
+
+/// A valid `trash` entry map's five known-key entries.
+fn trash_entry_base_entries() -> Vec<(Value, Value)> {
+    vec![
+        (
+            Value::Text(KEY_BLOCK_UUID.into()),
+            Value::Bytes([0xde; UUID_LEN].to_vec()),
+        ),
+        (
+            Value::Text(KEY_TOMBSTONED_AT_MS.into()),
+            Value::Integer(1u64.into()),
+        ),
+        (
+            Value::Text(KEY_TOMBSTONED_BY.into()),
+            Value::Bytes([0xaa; UUID_LEN].to_vec()),
+        ),
+        (
+            Value::Text(KEY_FINGERPRINT.into()),
+            Value::Bytes([0xcd; BLOCK_FINGERPRINT_LEN].to_vec()),
+        ),
+        (
+            Value::Text(KEY_PURGED_AT_MS.into()),
+            Value::Integer(3u64.into()),
+        ),
+    ]
+}
+
+fn trash_entry_value_with_duplicate(repeated: &'static str) -> Value {
+    let mut entries = trash_entry_base_entries();
+    let dup = entries
+        .iter()
+        .find(|(k, _)| matches!(k, Value::Text(s) if s == repeated))
+        .expect("repeated must be one of this entry's own keys")
+        .clone();
+    entries.push(dup);
+    Value::Map(entries)
+}
+
+/// A valid `trash` entry map with `unknown_key` present twice.
+fn trash_entry_value_with_duplicate_unknown(unknown_key: &str) -> Value {
+    let mut entries = trash_entry_base_entries();
+    entries.push((
+        Value::Text(unknown_key.to_string()),
+        Value::Integer(1u64.into()),
+    ));
+    entries.push((
+        Value::Text(unknown_key.to_string()),
+        Value::Integer(2u64.into()),
+    ));
+    Value::Map(entries)
+}
+
+/// #573: every nested manifest map rejects a repeated key. The top level
+/// has done this since #568; these four had no check at all and silently
+/// last-won.
+///
+/// `field` names the SPECIFIC repeated key, not the container — a
+/// compile-time `KEY_*` constant either way, so the #474 data-free
+/// guarantee is unchanged.
+#[test]
+fn vector_clock_entry_rejects_every_duplicate_key() {
+    for repeated in [KEY_DEVICE_UUID, KEY_COUNTER] {
+        let v = vector_clock_entry_value_with_duplicate(repeated);
+        match parse_vector_clock_entry(&v) {
+            Err(ManifestError::DuplicateKey { field, .. }) => assert_eq!(
+                field, repeated,
+                "DuplicateKey must name the key that was actually repeated"
+            ),
+            other => panic!("expected DuplicateKey for {repeated}, got {other:?}"),
+        }
+    }
+}
+
+/// Same property as above, for `parse_kdf_params`'s fixed four-key shape.
+#[test]
+fn kdf_params_rejects_every_duplicate_key() {
+    for repeated in [KEY_MEMORY_KIB, KEY_ITERATIONS, KEY_PARALLELISM, KEY_SALT] {
+        let v = kdf_params_value_with_duplicate(repeated);
+        match parse_kdf_params(&v) {
+            Err(ManifestError::DuplicateKey { field, .. }) => assert_eq!(
+                field, repeated,
+                "DuplicateKey must name the key that was actually repeated"
+            ),
+            other => panic!("expected DuplicateKey for {repeated}, got {other:?}"),
+        }
+    }
+}
+
+/// Same property, for `parse_block_entry`'s eight known keys.
+#[test]
+fn block_entry_rejects_every_duplicate_key() {
+    for repeated in [
+        KEY_BLOCK_UUID,
+        KEY_BLOCK_NAME,
+        KEY_FINGERPRINT,
+        KEY_RECIPIENTS,
+        KEY_VECTOR_CLOCK_SUMMARY,
+        KEY_SUITE_ID,
+        KEY_CREATED_AT_MS,
+        KEY_LAST_MOD_MS,
+    ] {
+        let v = block_entry_value_with_duplicate(repeated);
+        match parse_block_entry(&v) {
+            Err(ManifestError::DuplicateKey { field, .. }) => assert_eq!(
+                field, repeated,
+                "DuplicateKey must name the key that was actually repeated"
+            ),
+            other => panic!("expected DuplicateKey for {repeated}, got {other:?}"),
+        }
+    }
+}
+
+/// Same property, for `parse_trash_entry`'s five known keys.
+#[test]
+fn trash_entry_rejects_every_duplicate_key() {
+    for repeated in [
+        KEY_BLOCK_UUID,
+        KEY_TOMBSTONED_AT_MS,
+        KEY_TOMBSTONED_BY,
+        KEY_FINGERPRINT,
+        KEY_PURGED_AT_MS,
+    ] {
+        let v = trash_entry_value_with_duplicate(repeated);
+        match parse_trash_entry(&v) {
+            Err(ManifestError::DuplicateKey { field, .. }) => assert_eq!(
+                field, repeated,
+                "DuplicateKey must name the key that was actually repeated"
+            ),
+            other => panic!("expected DuplicateKey for {repeated}, got {other:?}"),
+        }
+    }
+}
+
+/// A repeated forward-compat UNKNOWN key must be rejected with the
+/// literal "<unknown>". The repeated key's own text is
+/// attacker-influenced content from inside the encrypted manifest and
+/// must never reach an error payload (#474).
+#[test]
+fn block_entry_rejects_duplicate_unknown_key_without_naming_it() {
+    let v = block_entry_value_with_duplicate_unknown("v2_extension_field");
+    let err = parse_block_entry(&v).expect_err("must reject");
+    match &err {
+        ManifestError::DuplicateKey { field, .. } => assert_eq!(*field, "<unknown>"),
+        other => panic!("expected DuplicateKey, got {other:?}"),
+    }
+    assert!(
+        !format!("{err}").contains("v2_extension_field"),
+        "the repeated key's text must never reach the error payload"
+    );
+}
+
+/// Same property, for `parse_trash_entry`'s unknown bag.
+#[test]
+fn trash_entry_rejects_duplicate_unknown_key_without_naming_it() {
+    let v = trash_entry_value_with_duplicate_unknown("v3_extension_field");
+    let err = parse_trash_entry(&v).expect_err("must reject");
+    match &err {
+        ManifestError::DuplicateKey { field, .. } => assert_eq!(*field, "<unknown>"),
+        other => panic!("expected DuplicateKey, got {other:?}"),
+    }
+    assert!(
+        !format!("{err}").contains("v3_extension_field"),
+        "the repeated key's text must never reach the error payload"
+    );
+}

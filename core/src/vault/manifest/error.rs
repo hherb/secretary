@@ -49,8 +49,11 @@ pub enum ManifestError {
     NonTextKey,
 
     /// A CBOR map key appeared more than once in the top-level manifest
-    /// map. RFC 8949 §5.4 leaves this to the application, and silent
-    /// last-wins was the wrong direction here.
+    /// map, or inside one of the four nested per-entry maps
+    /// (`parse_vector_clock_entry`, `parse_block_entry`,
+    /// `parse_trash_entry`, `parse_kdf_params`). RFC 8949 §5.4 leaves
+    /// this to the application, and silent last-wins was the wrong
+    /// direction here.
     ///
     /// **What the neighbouring decoders actually do**, corrected in the
     /// #575 review — this said `record.rs` and `block.rs` "reject a
@@ -67,17 +70,25 @@ pub enum ManifestError {
     ///   re-encode-and-compare does not catch it either: duplicate keys
     ///   sort adjacently and re-encode byte-identically.
     ///
-    /// So the correct comparison makes **#573 larger, not smaller**. This
-    /// variant closes the top level only; `parse_vector_clock_entry`,
-    /// `parse_block_entry`, `parse_trash_entry` and `parse_kdf_params`
-    /// still silently last-win on their own nested maps, and no decoder
-    /// in the crate looks inside an `unknown` subtree.
+    /// So the correct comparison made **#573 larger, not smaller** — the
+    /// top-level check (#568) covered one level; #573 closed the
+    /// remaining four nested parsers the same way. **What is still true
+    /// after both**: neither this check nor the record-level
+    /// re-encode-and-compare looks inside a forward-compat `unknown`
+    /// subtree. Those round-trip verbatim, so a duplicate key inside one
+    /// is invisible to both — `UnknownValue`'s only validation remains
+    /// `reject_floats_and_tags`. Do not read either fix as "manifest
+    /// duplicate keys are handled" without that residual attached.
     ///
     /// Payload is data-free by construction (#474). `field` is a
-    /// compile-time constant: the §4.2 `KEY_*` name for a known key, or
-    /// the literal `"<unknown>"` for a forward-compat one. `index` is the
-    /// entry's ordinal. The repeated key itself is never carried — a
-    /// forward-compat unknown key is attacker-influenced text, and
+    /// compile-time constant: the §4.2 `KEY_*` name for a known key
+    /// (naming the specific nested key that was repeated, not its
+    /// container — a repeated `device_uuid` inside a `vector_clock`
+    /// entry reports `field: KEY_DEVICE_UUID`, not `KEY_VECTOR_CLOCK`),
+    /// or the literal `"<unknown>"` for a forward-compat one. `index` is
+    /// the entry's ordinal within whichever map the duplicate was found
+    /// in. The repeated key itself is never carried — a forward-compat
+    /// unknown key is attacker-influenced text, and
     /// `RecordError::DuplicateKey` once leaked exactly that class.
     #[error("duplicate CBOR map key in {field} at entry {index}")]
     DuplicateKey { field: &'static str, index: usize },
