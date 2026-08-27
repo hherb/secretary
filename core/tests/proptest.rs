@@ -344,7 +344,7 @@ mod unlock {
             let bytes_1 = b.to_canonical_cbor().unwrap();
             let bytes_2 = b.to_canonical_cbor().unwrap();
             prop_assert_eq!(&bytes_1, &bytes_2, "encoding non-deterministic");
-            let parsed = bundle::IdentityBundle::from_canonical_cbor(&bytes_1).unwrap();
+            let parsed = bundle::IdentityBundle::from_canonical_cbor(bytes_1.expose()).unwrap();
             prop_assert_eq!(parsed.user_uuid, b.user_uuid);
             prop_assert_eq!(parsed.x25519_pk, b.x25519_pk);
         }
