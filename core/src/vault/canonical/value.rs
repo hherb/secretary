@@ -685,6 +685,13 @@ mod tests {
         /// `CanonicalMap` and asserting the SERIALIZED key order, which is
         /// the only thing that makes this a pin rather than a proof.
         /// Verified by mutation in both directions.
+        ///
+        /// Counterexamples from this test ARE committed — the one exception to
+        /// the project's "do not commit proptest regressions" policy, carved out
+        /// in `.gitignore` (#577). The reason is the paragraph above: this is a
+        /// format-freezing property whose only other anchors are ASCII-only
+        /// fixtures (#562), so a CI failure here must yield a replayable seed
+        /// rather than a message.
         #[test]
         fn len_then_bytes_matches_full_cbor_encoding_order(a: String, b: String) {
             let by_parts = (a.len(), a.as_bytes()).cmp(&(b.len(), b.as_bytes()));
