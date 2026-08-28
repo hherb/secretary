@@ -1297,9 +1297,14 @@ mod vault {
 // empty for the same reason they are left empty in `record_strategy` and
 // `record_field_strategy`: modelling forward-compat unknowns adds
 // significant strategy complexity and is the deferred enhancement noted in
-// secretary_next_session.md Item 7. The fixed KATs in `core/src/vault/manifest.rs`
-// `mod tests` and the integration tests in `core/tests/vault.rs` cover the
-// unknown-key round-trip path.
+// secretary_next_session.md Item 7. The fixed KATs in the
+// `core/src/vault/manifest/` module's own `mod tests` (distributed across
+// the module's files by #564) and the integration tests in
+// `core/tests/vault.rs` cover the unknown-key round-trip path.
+//
+// Tracked as #578: because this strategy leaves those three bags empty,
+// Property F below never exercises the forward-compat `unknown` round trip
+// that #572's re-encode-and-compare check relies on for v2 soundness.
 
 mod manifest_props {
     use std::collections::BTreeMap;
@@ -1541,8 +1546,9 @@ mod manifest_props {
     proptest! {
         /// Property F. `decode_manifest(encode_manifest(m)) == m` for any
         /// well-formed [`Manifest`]. Catches encoder/decoder asymmetry that
-        /// the fixed KATs in `core/src/vault/manifest.rs::tests` cannot
-        /// catch by construction (they only pin pre-chosen inputs).
+        /// the fixed KATs in the `core/src/vault/manifest/` module's own
+        /// `mod tests` cannot catch by construction (they only pin
+        /// pre-chosen inputs).
         ///
         /// All sort-discipline arrays (`vector_clock`, per-block
         /// `vector_clock_summary`, `blocks`, `trash`, per-block

@@ -61,12 +61,17 @@
 //! `dummy_kdf_params_value_is_in_canonical_key_order` — that fixture
 //! replaced the deleted `encode::kdf_params_to_value`, whose sorted
 //! output six decode-negative tests depended on, and the pin is what
-//! keeps their input bytes unchanged; and six hand-built decode
+//! keeps their input bytes unchanged; and SEVEN hand-built decode
 //! negatives call [`encode_canonical_map`]
 //! (`test_support.rs`'s `build_manifest_map_with_overrides`,
-//! `decode::tests::rejects_float_in_unknown_value`, and four in
-//! `decode::extract::tests`). Those are ORACLES and FIXTURES, not the
-//! encode path.
+//! `decode::tests::rejects_float_in_unknown_value`,
+//! `decode::tests::manifest_bytes_with_duplicate_nested_key`, and four
+//! in `decode::extract::tests`). Those are ORACLES and FIXTURES, not the
+//! encode path. (This said SIX until the whole-branch review: the count
+//! was correct at `0f1a8384`, where this paragraph was written, and #572
+//! added the `manifest_bytes_with_duplicate_nested_key` builder two
+//! commits later — a census stated as checkable, then falsified by a
+//! later commit in its own branch.)
 //!
 //! [`canonical_sort_entries`] is **not** thereby dead, and saying so
 //! would be the overclaim this paragraph just corrected. One production

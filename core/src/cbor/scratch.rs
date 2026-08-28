@@ -186,9 +186,13 @@ impl Drop for CborScratch {
 /// This is the sanctioned entry point for every secret-bearing parse in the
 /// crate. As of Task 1 (#561) it had **zero** production callers; Task 2
 /// wired in the first ones. `grep -rn "cbor::from_secret_reader(" core/src`
-/// now shows six production call sites routed through this function
-/// (`unlock/bundle.rs`, `vault/block.rs`, `vault/manifest.rs` x2,
-/// `vault/record.rs` x2) — note that's a grep for the NEW call, not the old
+/// now shows five production call sites routed through this function
+/// (`unlock/bundle.rs`, `vault/block.rs`, `vault/manifest/decode/mod.rs`,
+/// `vault/record.rs` x2) — the grep itself returns six rows, the sixth
+/// being this very doc comment, so count call sites rather than rows. It
+/// was SIX production sites until #569 path 2 deleted
+/// `manifest::encode::unknown_value_inner`, whose encode-side re-parse was
+/// the manifest module's second — note that's a grep for the NEW call, not the old
 /// `ciborium::de::from_reader` one: none of the six spell that anymore, so
 /// that grep now shows only the two sites that deliberately stay on plain
 /// `from_reader`, each carrying a comment saying why its input provably

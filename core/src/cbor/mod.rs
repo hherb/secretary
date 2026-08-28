@@ -47,9 +47,11 @@ mod secret_tree;
 
 pub(crate) use secret_tree::{SecretEntries, SecretValueTree};
 
-// Unconditional as of Task 2 (#561): `from_secret_reader` now has six
-// production call sites (`unlock::bundle`, `vault::block`, `vault::manifest`
-// x2, `vault::record` x2), so the `#[cfg(test)]` gate this comment used to
+// Unconditional as of Task 2 (#561): `from_secret_reader` now has five
+// production call sites (`unlock::bundle`, `vault::block`,
+// `vault::manifest::decode`, `vault::record` x2) — six until #569 path 2
+// deleted `manifest::encode::unknown_value_inner`, which held the manifest
+// module's second — so the `#[cfg(test)]` gate this comment used to
 // describe — and the `dead_code` / `unused_imports` failures it existed to
 // avoid — no longer apply. `from_secret_reader` stays `pub(crate)`: no
 // `pub` + `#[doc(hidden)]` workaround, matching what controller ruling R12

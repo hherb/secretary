@@ -3892,7 +3892,10 @@ def py_decode_trash_entry(data: bytes) -> dict:
 def py_encode_trash_entry(entry: dict) -> bytes:
     """Re-encode a parsed `TrashEntry` dict to canonical CBOR.
 
-    Mirrors manifest.rs::trash_entry_to_value: `fingerprint` and
+    Mirrors `vault/manifest/encode.rs::trash_entry_to_canonical`
+    (named `manifest.rs::trash_entry_to_value` until #564 split the file
+    and #569 path 2 moved the encoder onto borrowed `CanonicalMap`s):
+    `fingerprint` and
     `purged_at_ms` are each omitted entirely when absent/`None` -- never
     encoded as an explicit CBOR null. This is the byte-identical
     forward-compat property §7.2 / §6.3.2 rely on: a `TrashEntry` that has

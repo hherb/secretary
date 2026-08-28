@@ -394,8 +394,15 @@ fn forward_compat_unknown_block_entry_key_round_trips() {
 /// routed back through `encode_canonical_map` so the LIB still compiled —
 /// that isolation is the point, since a naive signature-only revert reds
 /// the lib itself and so proves nothing about what THIS test adds.
-/// Measured on the current tree, with this test commented out so the
-/// lib-test target could link:
+/// Measured **at commit `0f1a8384`** (the commit that added this test),
+/// with the test commented out so the lib-test target could link. The
+/// figures are deliberately NOT refreshed to the current tree: they are
+/// evidence about the revert experiment as it was run, and re-stating
+/// them against a later tree would claim a re-run that did not happen.
+/// This block read "measured on the current tree" until the whole-branch
+/// review, which silently extended the green claim over the 12 tests
+/// #573 and #572 added afterwards (`--lib vault::manifest::` is 74 and
+/// the workspace 1997 at branch tip):
 ///
 /// - `cargo build --release -p secretary-core` — clean
 /// - `cargo test --release -p secretary-core --test golden_vault_001` —
