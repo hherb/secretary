@@ -114,7 +114,9 @@ pub fn encode_manifest(manifest: &Manifest) -> Result<SecretBytes, ManifestError
 /// is worth spelling out** — the argument above stops one step short of
 /// the one `unlock::bundle` had to make. `ciborium` does not send a
 /// `Value::Integer` straight to `serialize_u64`: `value/ser.rs:34-58`
-/// (ciborium 0.2.2, the exact pin in `core/Cargo.toml`'s lockfile) is a
+/// (ciborium 0.2.2, exact-pinned as `ciborium = "=0.2.2"` in
+/// `core/Cargo.toml` — the manifest itself; there is no `core/Cargo.lock`,
+/// the workspace lockfile being at the repo root) is a
 /// TRY-LADDER — `u8`, `i8`, `u16`, `i16`, `u32`, `i32`, `u64`, `i64`,
 /// `u128`, `i128` — so most values in this table select `serialize_u8` /
 /// `u16` / `u32`, not `serialize_u64` at all. Byte identity therefore
@@ -136,7 +138,7 @@ pub fn encode_manifest(manifest: &Manifest) -> Result<SecretBytes, ManifestError
 /// `Value::Integer(u.into())` and `CanonicalValue::Uint(u)` at all 11
 /// CBOR head boundaries through `u64::MAX` and asserts the bytes are
 /// equal. It runs on every `cargo test`.
-pub(super) fn manifest_to_canonical(m: &Manifest) -> CanonicalMap<'_> {
+fn manifest_to_canonical(m: &Manifest) -> CanonicalMap<'_> {
     // 9 known top-level keys + one slot per forward-compat unknown. A size
     // hint only — `push` is correct either way.
     let mut map = CanonicalMap::with_capacity(9 + m.unknown.len());
@@ -280,7 +282,7 @@ fn trash_to_canonical(trash: &[TrashEntry]) -> CanonicalValue<'_> {
 /// legacy-shaped entry stays byte-identical and neither field needed a
 /// format bump. `trash_entry_purged_at_ms_none_roundtrips_byte_identical`
 /// and `trash_entry_fingerprint_none_omits_key` pin this.
-pub(super) fn trash_entry_to_canonical(entry: &TrashEntry) -> CanonicalMap<'_> {
+fn trash_entry_to_canonical(entry: &TrashEntry) -> CanonicalMap<'_> {
     // 3 always-pushed keys + up to 2 conditional ones (`fingerprint`,
     // `purged_at_ms`) + one slot per forward-compat unknown.
     let mut map = CanonicalMap::with_capacity(5 + entry.unknown.len());

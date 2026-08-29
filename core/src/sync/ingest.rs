@@ -118,10 +118,19 @@ pub(crate) fn authenticate_manifest_envelope(
         match decrypt_manifest_body(&envelope.header, &ct_with_tag, ibk, &envelope.aead_nonce) {
             Ok(b) => b,
             Err(err) => {
+                // NOT only AEAD: `decrypt_manifest_body` calls
+                // `decode_manifest`, so as of #572/#573 this arm also fires
+                // for `NonCanonicalEncoding`, `DuplicateKey`,
+                // `VectorClockDuplicateDevice`, `WrongType` and
+                // `MissingField` — a peer whose encoder emits an array out
+                // of its §4.2 sort order lands here, not on a key problem.
+                // The message named AEAD alone until the #584 review, which
+                // would send an operator after key/nonce corruption for an
+                // encoder bug. The specific cause is in `error`.
                 tracing::debug!(
                     path = %candidate_source_path.display(),
                     error = %err,
-                    "conflict-copy rejected: AEAD decrypt failed"
+                    "conflict-copy rejected: manifest body decrypt or decode failed"
                 );
                 return None;
             }
