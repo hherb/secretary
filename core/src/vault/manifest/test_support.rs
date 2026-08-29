@@ -208,6 +208,26 @@ pub(super) fn populated_manifest() -> Manifest {
 pub(super) const UNKNOWN_MAP_NONCANONICAL: &[u8] =
     &[0xA2, 0x62, b'z', b'z', 0x01, 0x61, b'a', 0x02];
 
+/// Two more of the same shape, differing only in their VALUES, so each is a
+/// distinct byte run.
+///
+/// `forward_compat_unknown_keys_survive_the_canonicality_check` splices an
+/// unknown subtree at all three levels that have a bag and then scans the
+/// encoded bytes for it. With one shared constant that scan is an `any()`
+/// over three identical needles: a level-specific regression — the block or
+/// trash splice re-sorting its subtree while the top-level one still emits
+/// verbatim — leaves the needle present and the test green. The decode call
+/// cannot catch it either, because the fixture is built BY the encoder, so
+/// #572's re-encode compares the same (sorted) bytes on both sides. Distinct
+/// needles make each level's verbatim emission independently pinned (#584
+/// review).
+pub(super) const UNKNOWN_MAP_NONCANONICAL_BLOCK: &[u8] =
+    &[0xA2, 0x62, b'z', b'z', 0x03, 0x61, b'a', 0x04];
+
+/// See [`UNKNOWN_MAP_NONCANONICAL_BLOCK`].
+pub(super) const UNKNOWN_MAP_NONCANONICAL_TRASH: &[u8] =
+    &[0xA2, 0x62, b'z', b'z', 0x05, 0x61, b'a', 0x06];
+
 /// Re-parse encoded bytes to a `ciborium::Value` map for raw
 /// inspection of array order.
 pub(super) fn parse_to_value_map(bytes: &[u8]) -> Vec<(Value, Value)> {

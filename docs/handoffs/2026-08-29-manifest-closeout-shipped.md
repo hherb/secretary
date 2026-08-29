@@ -80,11 +80,36 @@ State this explicitly wherever #569 is discussed. **Path 2 went unmentioned in t
 
 ### Filed this slice (five)
 
-- **#578** — manifest Property F never generates forward-compat `unknown` bags, so the randomized suite has never covered the round-trip #572's v2 soundness rests on. Widened twice; now requires subtrees on **both** sides of the canonicality boundary, and carries the Python-side half.
+- **#578** — manifest Property F never generates forward-compat `unknown` bags, so the randomized suite has never covered the round-trip #572's v2 soundness rests on. Widened twice; now requires subtrees on **both** sides of the canonicality boundary. ~~and carries the Python-side half.~~ **CORRECTED in the #584 review:** it does not. #578's body is entirely about `core/tests/proptest.rs`'s three strategies and never mentions `conformance.py`; the clean-room half is now **#585**, filed separately. This is a ninth instance of the slice's own recurring defect — a claim about coverage that the cited artefact does not carry.
 - **#579** — `record.rs`'s `verbatim` / `bit-identical` doc overclaim, with a measured eight-row table.
 - **#580** — crypto-design §11.1/§11.2 resolve an unknown-map collision by "the lex-larger canonical-CBOR-encoded value bytes", which **do not exist** for a subtree that is legitimately disordered or duplicate-keyed. Two conformant clients could diverge on merge outcome — a CRDT convergence failure. Not broken today and unreachable pre-v2.
 - **#581** — executed-plan-archive citation rot (see §3).
 - **#582** — `decode/entries.rs` at 523 lines (above).
+
+### Filed by the #584 review (seven)
+
+Raised while reviewing this branch, all verified against the code before filing, none fixed here.
+
+- **#585** — §4.3 step 4 is now a normative reader MUST with no clean-room coverage: `conformance.py` has no `py_decode_manifest` at all, only the §4.1 envelope. The gate that exists to prove `docs/` implementable cannot see the rule this slice wrote into the spec.
+- **#586** — `CanonicalMap` does not reject duplicate keys, so a `Manifest` whose `unknown` bag holds a known key name yields a *signed*, ambiguous manifest. Availability only (owner-signed, unreachable via decode), but the encoder should not be able to emit a document its own decoder rejects.
+- **#587** — `encode_manifest` validates no v1 sentinel, so `sign_manifest` can sign a body no v1 client can open. Second instance of the same class as #586.
+- **#588** — `to_canonical_vec` / `encode_canonical_map` fill a plain `Vec<u8>`; both error paths drop a fully-written cleartext buffer unwiped. Latent (neither path is reachable today) — this is the code half of the "option (a) built in full" correction made to the memory-hygiene memo in this same round.
+- **#589** — the #573 duplicate-key rejection is 21 hand-copied runtime guards, not a type invariant. #572 backstops the *rejection* for any structurally parsed map, so a fifth parser that forgot would degrade the diagnostic rather than accept the input — but the backstop lives in `decode_manifest`, not in the parsers.
+- **#590** — `NonCanonicalEncoding` collapses five causes with no locator, on the every-open path, right after this slice narrowed the accepted set.
+- **#591** — `value_to_unknown` and `UnknownValue::to_canonical_cbor` pre-reserve without the `CapacityBoundExceeded` tripwire their two siblings carry. Pre-existing; relocated, not introduced, by #564.
+
+### Fixed in the #584 review round
+
+Committed on this branch after the review, all doc-accuracy or test-pin work — **two production-code changes only**, both one-liners:
+
+- **The `bundle_plaintext` contrast that #571 falsified**, asserted in three places: `manifest/file/sign.rs`, `block.rs` (a file this slice never touched) and this memo's own §1248 paragraph — which the slice *edited* for an unrelated path repoint while leaving the falsified neighbour standing. All four encoder sites now match by the same mechanism; the comments say so.
+- **Four more dangling/stale claims:** `extract.rs` describing the deleted `unknown_value_inner` as "in this same file"; `record_error_to_cbor_fault`'s "those two calls" (one remains); `scratch.rs`'s "none of the six" orphaned by the six→five correction three lines above it; and the claim in `canonical/mod.rs` + `CLAUDE.md` that `block.rs` keeps `canonical_sort_entries` alive — it calls it nowhere, and `encode_canonical_map` does not reach it either.
+- **Smaller rot:** `proptest.rs` citing `core/tests/vault.rs` for unknown-key coverage (that file has zero `UnknownValue`); `encode.rs` citing a `core/Cargo.lock` that does not exist; `record.rs` citing `manifest.rs`; `entries.rs` carrying a "treat as missing-field by ignoring" clause above code that rejects; `manifest/mod.rs` claiming *every* CBOR-mapped struct carries an `unknown` bag (`KdfParamsRef` and `VectorClockEntry` do not, and reject unknown keys outright).
+- **Two scoping tightenings:** "Nothing else" in `decode/mod.rs` and `error.rs` is true of the decoder, not of the byte comparison alone — a tag or float escapes the comparison too and is caught by the earlier `reject_floats_and_tags` walk.
+- **Production:** the `sync/ingest.rs` conflict-copy log said "AEAD decrypt failed" for what is now also every #572/#573 rejection class; and `manifest_to_canonical` / `trash_entry_to_canonical` dropped from `pub(super)` to private (no caller outside `encode.rs`).
+- **Two new test pins, each mutation-verified.** `every_array_sort_discipline_is_rejected_out_of_order_on_decode` covers the four disciplines that had no *decode-side* rejection test (only `vector_clock` did); deleting the `recipients` sort reds it. And the forward-compat fixture now splices a **distinct** subtree per level, so the byte scan can tell the three apart — re-emitting the trash-level subtree through a sorting `CanonicalMap` reds it, where before the top-level needle satisfied the `.any()`. Separately, `DuplicateKey`'s `index` had **zero** assertions anywhere; all six duplicate tests now assert the ordinal, and reporting a hardcoded `0` reds them.
+
+Note for whoever picks this up: the encode-side sorts were *already* pinned by `manifest_props::manifest_roundtrip` (deleting the `recipients` or `trash` sort reds it — verified by mutation during the review). The gap was only ever the reader-side claim, which is the one the spec now states normatively.
 
 ### Still open, untouched by this slice
 

@@ -305,6 +305,21 @@ fn trash_entry_value_with_duplicate_unknown(unknown_key: &str) -> Value {
     Value::Map(entries)
 }
 
+/// The four `*_value_with_duplicate` builders above all APPEND the repeated
+/// pair, so the duplicate always sits at the last index of the entry list.
+/// Deriving the expectation from the built value rather than hardcoding it
+/// keeps these assertions correct if a builder gains a key.
+///
+/// `DuplicateKey`'s `index` had no assertion anywhere in the tree until the
+/// #584 review — every test matched it as `..`. A producer reporting a
+/// hardcoded `0`, an outer loop's variable, or an off-by-one was undetectable.
+fn last_index_of(v: &Value) -> usize {
+    match v {
+        Value::Map(entries) => entries.len() - 1,
+        other => panic!("expected a map, got {other:?}"),
+    }
+}
+
 /// #573: every nested manifest map rejects a repeated key. The top level
 /// has done this since #568; these four had no check at all and silently
 /// last-won.
@@ -316,11 +331,18 @@ fn trash_entry_value_with_duplicate_unknown(unknown_key: &str) -> Value {
 fn vector_clock_entry_rejects_every_duplicate_key() {
     for repeated in [KEY_DEVICE_UUID, KEY_COUNTER] {
         let v = vector_clock_entry_value_with_duplicate(repeated);
+        let expected_index = last_index_of(&v);
         match parse_vector_clock_entry(&v) {
-            Err(ManifestError::DuplicateKey { field, .. }) => assert_eq!(
-                field, repeated,
-                "DuplicateKey must name the key that was actually repeated"
-            ),
+            Err(ManifestError::DuplicateKey { field, index }) => {
+                assert_eq!(
+                    field, repeated,
+                    "DuplicateKey must name the key that was actually repeated"
+                );
+                assert_eq!(
+                    index, expected_index,
+                    "DuplicateKey must report the ordinal of the repeat"
+                );
+            }
             other => panic!("expected DuplicateKey for {repeated}, got {other:?}"),
         }
     }
@@ -331,11 +353,18 @@ fn vector_clock_entry_rejects_every_duplicate_key() {
 fn kdf_params_rejects_every_duplicate_key() {
     for repeated in [KEY_MEMORY_KIB, KEY_ITERATIONS, KEY_PARALLELISM, KEY_SALT] {
         let v = kdf_params_value_with_duplicate(repeated);
+        let expected_index = last_index_of(&v);
         match parse_kdf_params(&v) {
-            Err(ManifestError::DuplicateKey { field, .. }) => assert_eq!(
-                field, repeated,
-                "DuplicateKey must name the key that was actually repeated"
-            ),
+            Err(ManifestError::DuplicateKey { field, index }) => {
+                assert_eq!(
+                    field, repeated,
+                    "DuplicateKey must name the key that was actually repeated"
+                );
+                assert_eq!(
+                    index, expected_index,
+                    "DuplicateKey must report the ordinal of the repeat"
+                );
+            }
             other => panic!("expected DuplicateKey for {repeated}, got {other:?}"),
         }
     }
@@ -355,11 +384,18 @@ fn block_entry_rejects_every_duplicate_key() {
         KEY_LAST_MOD_MS,
     ] {
         let v = block_entry_value_with_duplicate(repeated);
+        let expected_index = last_index_of(&v);
         match parse_block_entry(&v) {
-            Err(ManifestError::DuplicateKey { field, .. }) => assert_eq!(
-                field, repeated,
-                "DuplicateKey must name the key that was actually repeated"
-            ),
+            Err(ManifestError::DuplicateKey { field, index }) => {
+                assert_eq!(
+                    field, repeated,
+                    "DuplicateKey must name the key that was actually repeated"
+                );
+                assert_eq!(
+                    index, expected_index,
+                    "DuplicateKey must report the ordinal of the repeat"
+                );
+            }
             other => panic!("expected DuplicateKey for {repeated}, got {other:?}"),
         }
     }
@@ -376,11 +412,18 @@ fn trash_entry_rejects_every_duplicate_key() {
         KEY_PURGED_AT_MS,
     ] {
         let v = trash_entry_value_with_duplicate(repeated);
+        let expected_index = last_index_of(&v);
         match parse_trash_entry(&v) {
-            Err(ManifestError::DuplicateKey { field, .. }) => assert_eq!(
-                field, repeated,
-                "DuplicateKey must name the key that was actually repeated"
-            ),
+            Err(ManifestError::DuplicateKey { field, index }) => {
+                assert_eq!(
+                    field, repeated,
+                    "DuplicateKey must name the key that was actually repeated"
+                );
+                assert_eq!(
+                    index, expected_index,
+                    "DuplicateKey must report the ordinal of the repeat"
+                );
+            }
             other => panic!("expected DuplicateKey for {repeated}, got {other:?}"),
         }
     }
@@ -393,9 +436,16 @@ fn trash_entry_rejects_every_duplicate_key() {
 #[test]
 fn block_entry_rejects_duplicate_unknown_key_without_naming_it() {
     let v = block_entry_value_with_duplicate_unknown("v2_extension_field");
+    let expected_index = last_index_of(&v);
     let err = parse_block_entry(&v).expect_err("must reject");
     match &err {
-        ManifestError::DuplicateKey { field, .. } => assert_eq!(*field, "<unknown>"),
+        ManifestError::DuplicateKey { field, index } => {
+            assert_eq!(*field, "<unknown>");
+            assert_eq!(
+                *index, expected_index,
+                "the ordinal is data-free and must still be the repeat's own"
+            );
+        }
         other => panic!("expected DuplicateKey, got {other:?}"),
     }
     assert!(
@@ -408,9 +458,16 @@ fn block_entry_rejects_duplicate_unknown_key_without_naming_it() {
 #[test]
 fn trash_entry_rejects_duplicate_unknown_key_without_naming_it() {
     let v = trash_entry_value_with_duplicate_unknown("v3_extension_field");
+    let expected_index = last_index_of(&v);
     let err = parse_trash_entry(&v).expect_err("must reject");
     match &err {
-        ManifestError::DuplicateKey { field, .. } => assert_eq!(*field, "<unknown>"),
+        ManifestError::DuplicateKey { field, index } => {
+            assert_eq!(*field, "<unknown>");
+            assert_eq!(
+                *index, expected_index,
+                "the ordinal is data-free and must still be the repeat's own"
+            );
+        }
         other => panic!("expected DuplicateKey, got {other:?}"),
     }
     assert!(

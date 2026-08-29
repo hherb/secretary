@@ -16,8 +16,11 @@ use crate::vault::manifest::encode::encode_manifest;
 use crate::vault::manifest::test_support::{
     build_manifest_map_with_overrides, dummy_kdf_params_value, minimal_manifest,
     parse_to_value_map, populated_manifest, UNKNOWN_MAP_NONCANONICAL,
+    UNKNOWN_MAP_NONCANONICAL_BLOCK, UNKNOWN_MAP_NONCANONICAL_TRASH,
 };
-use crate::vault::manifest::{KEY_COUNTER, KEY_DEVICE_UUID};
+use crate::vault::manifest::{
+    KEY_COUNTER, KEY_DEVICE_UUID, KEY_RECIPIENTS, KEY_VECTOR_CLOCK_SUMMARY,
+};
 
 use super::*;
 
@@ -579,15 +582,20 @@ fn manifest_bytes_with_unknowns_at_top_level_block_and_trash() -> Vec<u8> {
         "fixture guard: populated_manifest() must carry at least one block \
          and one trash entry for this fixture to reach all three levels"
     );
-    let unknown =
-        || UnknownValue::from_canonical_cbor(UNKNOWN_MAP_NONCANONICAL).expect("UnknownValue");
-    m.unknown.insert("future_field".into(), unknown());
-    m.blocks[0]
-        .unknown
-        .insert("future_block_field".into(), unknown());
-    m.trash[0]
-        .unknown
-        .insert("future_trash_field".into(), unknown());
+    // A DISTINCT subtree per level — see `UNKNOWN_MAP_NONCANONICAL_BLOCK`'s
+    // doc for why one shared constant made the byte scan below unable to
+    // distinguish the three levels.
+    let unknown = |bytes: &[u8]| UnknownValue::from_canonical_cbor(bytes).expect("UnknownValue");
+    m.unknown
+        .insert("future_field".into(), unknown(UNKNOWN_MAP_NONCANONICAL));
+    m.blocks[0].unknown.insert(
+        "future_block_field".into(),
+        unknown(UNKNOWN_MAP_NONCANONICAL_BLOCK),
+    );
+    m.trash[0].unknown.insert(
+        "future_trash_field".into(),
+        unknown(UNKNOWN_MAP_NONCANONICAL_TRASH),
+    );
     encode_manifest(&m)
         .expect("encode with unknowns")
         .expose()
@@ -622,15 +630,24 @@ fn forward_compat_unknown_keys_survive_the_canonicality_check() {
         m.trash.iter().any(|t| !t.unknown.is_empty()),
         "trash-entry unknown preserved"
     );
-    // The subtree reached the wire in its own non-canonical key order and
-    // came back unchanged — the property the check had to tolerate.
-    assert!(
-        bytes
-            .windows(UNKNOWN_MAP_NONCANONICAL.len())
-            .any(|w| w == UNKNOWN_MAP_NONCANONICAL),
-        "the fixture must actually carry a non-canonically-ordered subtree, \
-         or this test does not exercise the tolerance it claims to"
-    );
+    // Each subtree reached the wire in its own non-canonical key order and
+    // came back unchanged — the property the check had to tolerate. Scanned
+    // PER LEVEL: a single shared needle would be satisfied by any one of the
+    // three, so a block- or trash-level splice that re-sorted its subtree
+    // would pass. The `decode_manifest` call above cannot catch that either
+    // — `bytes` is the encoder's own output, so #572's re-encode compares
+    // like with like whatever the encoder did (#584 review).
+    for (label, needle) in [
+        ("top-level", UNKNOWN_MAP_NONCANONICAL),
+        ("block-entry", UNKNOWN_MAP_NONCANONICAL_BLOCK),
+        ("trash-entry", UNKNOWN_MAP_NONCANONICAL_TRASH),
+    ] {
+        assert!(
+            bytes.windows(needle.len()).any(|w| w == needle),
+            "{label} subtree must reach the wire in its own non-canonical key \
+             order, or this test does not exercise the tolerance it claims to"
+        );
+    }
 }
 
 /// Three of the FOUR shapes [`ManifestError::NonCanonicalEncoding`]'s doc
@@ -732,6 +749,108 @@ fn non_canonical_shapes_are_each_rejected() {
         Err(ManifestError::NonCanonicalEncoding) => {}
         other => panic!("unsorted vector_clock: expected NonCanonicalEncoding, got {other:?}"),
     }
+}
+
+/// vault-format §4.2 makes all FIVE array sort disciplines a reader MUST,
+/// and #572's re-encode-and-compare is the entire mechanism: `encode_manifest`
+/// sorts all five on output, so an array that arrived in any other order
+/// re-encodes to different bytes and is rejected.
+///
+/// [`non_canonical_shapes_are_each_rejected`] above drives that for
+/// `vector_clock`. The other four had **no decode-side test at all** until
+/// the #584 review. Be precise about what was already covered, because the
+/// two claims are easy to conflate: the ENCODER's five sorts are pinned by
+/// `manifest_props::manifest_roundtrip` in `core/tests/proptest.rs`, whose
+/// strategies generate genuinely unsorted arrays — deleting the `recipients`
+/// sort or the `trash` sort fails it, verified by mutation. "The reader
+/// REJECTS an unsorted input" is a different claim, it is the one the spec
+/// now states normatively, and it is what this test pins.
+///
+/// `trash` needs a second entry to have an order at all, so it perturbs a
+/// locally-extended manifest rather than `populated_manifest()` itself —
+/// changing the shared fixture would re-derive the `entries.len() == 9` and
+/// `items.len() == 2` guards several tests above depend on.
+#[test]
+fn every_array_sort_discipline_is_rejected_out_of_order_on_decode() {
+    fn reserialize(entries: Vec<(Value, Value)>) -> Vec<u8> {
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut out).expect("serialize");
+        out
+    }
+
+    fn array_at<'a>(map: &'a mut [(Value, Value)], key: &str) -> &'a mut Vec<Value> {
+        let slot = map
+            .iter_mut()
+            .find(|(k, _)| matches!(k, Value::Text(s) if s == key))
+            .unwrap_or_else(|| panic!("{key} must be present"));
+        match &mut slot.1 {
+            Value::Array(items) => items,
+            other => panic!("{key} is not an array: {other:?}"),
+        }
+    }
+
+    fn expect_rejected(label: &str, canonical: &[u8], perturbed: &[u8]) {
+        assert_ne!(
+            perturbed, canonical,
+            "{label}: reversing must actually change the bytes, or the case is vacuous"
+        );
+        match decode_manifest(perturbed) {
+            Err(ManifestError::NonCanonicalEncoding) => {}
+            other => panic!("{label}: expected NonCanonicalEncoding, got {other:?}"),
+        }
+    }
+
+    let canonical = encode_manifest(&populated_manifest()).expect("encode");
+    let canonical = canonical.expose().to_vec();
+
+    // (1) `blocks`, ascending by block_uuid.
+    let mut entries = parse_to_value_map(&canonical);
+    let blocks = array_at(&mut entries, KEY_BLOCKS);
+    assert_eq!(
+        blocks.len(),
+        2,
+        "fixture guard: two blocks, or reversing is a no-op"
+    );
+    blocks.reverse();
+    expect_rejected("blocks", &canonical, &reserialize(entries));
+
+    // (2) each block's `recipients`, and (3) each block's
+    //     `vector_clock_summary` — both reversed inside block 0 only, so
+    //     each case perturbs exactly one array.
+    for (label, key) in [
+        ("recipients", KEY_RECIPIENTS),
+        ("vector_clock_summary", KEY_VECTOR_CLOCK_SUMMARY),
+    ] {
+        let mut entries = parse_to_value_map(&canonical);
+        let blocks = array_at(&mut entries, KEY_BLOCKS);
+        let Value::Map(block) = &mut blocks[0] else {
+            panic!("block entry is not a map");
+        };
+        let inner = array_at(block, key);
+        assert_eq!(
+            inner.len(),
+            2,
+            "fixture guard: block 0 must carry two {label}, or reversing is a no-op"
+        );
+        inner.reverse();
+        expect_rejected(label, &canonical, &reserialize(entries));
+    }
+
+    // (4) `trash`, ascending by block_uuid. `populated_manifest()` has one
+    //     entry, so extend a local copy rather than the shared fixture.
+    let mut m = populated_manifest();
+    let mut second = m.trash[0].clone();
+    second.block_uuid = [0x11; UUID_LEN];
+    second.fingerprint = None;
+    m.trash.push(second);
+    let two_trash = encode_manifest(&m).expect("encode two-trash manifest");
+    let two_trash = two_trash.expose().to_vec();
+    decode_manifest(&two_trash).expect("the two-trash fixture must itself be valid");
+    let mut entries = parse_to_value_map(&two_trash);
+    let trash = array_at(&mut entries, KEY_TRASH);
+    assert_eq!(trash.len(), 2, "fixture guard: two trash entries");
+    trash.reverse();
+    expect_rejected("trash", &two_trash, &reserialize(entries));
 }
 
 /// What is and is NOT tolerated inside a forward-compat `unknown`
