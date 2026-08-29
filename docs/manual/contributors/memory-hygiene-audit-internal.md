@@ -1246,10 +1246,15 @@ encoders' RETURN TYPE, so `block.rs`'s `encrypt_block` reads
 `let pt_bytes = encode_plaintext(plaintext)?;` and `manifest/file/sign.rs`'s
 `sign_manifest` reads `let body_bytes = encode_manifest(body)?;` — there is
 no `SecretBytes::new(..)` at either site to find. `bundle_plaintext` in
-`unlock::create_vault_unchecked` is now the ONLY remaining member of the
-old pattern (tracked as #571), so it is a contrast, not a match; the
-in-code comment at `manifest/file/sign.rs`'s step 1 states this as "the same
-PROPERTY … but no longer the same MECHANISM". See "The canonical encoders
+`unlock::create_vault_unchecked` was at that point the ONLY remaining
+member of the old pattern, tracked as #571 — **and #571 has since landed**,
+so it is no longer a contrast either: `unlock/mod.rs` now reads
+`let bundle_plaintext = identity.to_canonical_cbor()?;`, that encoder
+returning `SecretBytes` like the other three. All four sites now match, by
+the same mechanism. (The in-code comments at `manifest/file/sign.rs`'s
+step 1 and `block.rs`'s step 5 stated the contrast until the same slice
+corrected them; this paragraph asserted it one slice longer than it was
+true, which is why it says so explicitly here.) See "The canonical encoders
 return the wrapper, instead of a caller applying one (#558, #565)" below
 for the current state.
 
@@ -1777,8 +1782,15 @@ because one is strictly stronger than the other.
   encode side is closed; the decode side is not, and no issue tracks it
   yet — it is named here so the "eliminated" verdict is not read across
   the whole path.
-- **The block name is the only plaintext this covers.** Everything else in
-  the manifest body is UUIDs, counters, timestamps and fingerprints. The
+- **The block name is the only *known-field* plaintext this covers.** Every
+  other known field in the manifest body is UUIDs, counters, timestamps and
+  fingerprints — but the body also carries three
+  `BTreeMap<String, UnknownValue>` bags (`Manifest`, `BlockEntry`,
+  `TrashEntry`), which hold a v2 client's content verbatim and which #569
+  path 2 also stopped materialising: the deleted `unknown_value_inner`
+  re-encoded and re-parsed each one, per unknown, per write. This bullet
+  said "the only plaintext" until the #584 review, understating its own
+  result. The
   elimination is real but its plaintext surface is one field.
 
 ### Verification discipline: the cargo mtime trap
@@ -1913,8 +1925,18 @@ INTO the encoder, out of the caller. `encrypt_block` and `sign_manifest`
 no longer wrap anything: they call `encode_plaintext(plaintext)?` /
 `encode_manifest(body)?` and get an already-wrapped `SecretBytes` back.
 Option (a) as written above — a borrowing CBOR encoder that writes
-directly to a zeroize-typed output buffer — is now built in full, not
-just its input half; see "Resolved: cbor-residue-closeout follow-up"
+directly to a zeroize-typed output buffer — is built on its INPUT side and
+at each encoder's RETURN BOUNDARY, which is not the same as its output
+buffer and this paragraph said "in full" until the #584 review.
+`canonical::to_canonical_vec` (and `legacy::encode_canonical_map`) still
+fill a plain `Vec<u8>` and the wrapper is applied one frame up, so on the
+`?` from ciborium's serialise call and on the `CapacityBoundExceeded`
+return that buffer — fully written, and on the bundle path a cleartext copy
+of all four long-term secret keys — drops unwiped. Both paths are
+unreachable today (serialising into a `Vec` writer is structurally
+infallible, and the bound check is a tripwire for a future
+`ciborium::Value` variant), so this
+is latent rather than live; see "Resolved: cbor-residue-closeout follow-up"
 below for why a structural return-type wrap is a stronger claim than a
 caller-side one, and "Resolved: canonical-CBOR codec-boundary residue
 (#547, #548)" above for the state this paragraph was originally

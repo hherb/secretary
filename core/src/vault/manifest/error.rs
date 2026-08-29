@@ -196,7 +196,15 @@ pub enum ManifestError {
     /// **What it does NOT catch, stated exactly** — the wider claim is
     /// false and stood in this doc for one commit: **a duplicate key,
     /// and map key ORDER, inside a forward-compat `unknown` subtree.**
-    /// Nothing else. The cause is `ciborium`'s `Value` reader, which
+    /// Nothing else — of what still REACHES this check. A tag or a float
+    /// inside such a subtree escapes the re-encode comparison too (a
+    /// normalising parse preserves both and re-encodes them identically),
+    /// but neither reaches it: `decode_manifest` runs
+    /// `reject_floats_and_tags` over the whole body, subtrees included,
+    /// first. So the residual is the DECODER's, which is the claim that
+    /// matters — but do not read "nothing else" as a property of this
+    /// byte comparison in isolation. The cause is `ciborium`'s `Value`
+    /// reader, which
     /// collapses indefinite lengths and non-shortest-form heads **on
     /// parse** — the same mechanism
     /// [`RecordError::NonCanonicalEncoding`]'s doc names. Every subtree

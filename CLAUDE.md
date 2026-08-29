@@ -335,8 +335,12 @@ encoder is no longer it. #569 path 2 moved the manifest encode path onto the
 borrowing `CanonicalMap`, but `sync::state::SyncState::to_canonical_cbor`
 (`core/src/sync/state.rs:107`) still sorts a two-key vector-clock entry map on
 the way to OS-keystore persistence. `encode_canonical_map` likewise keeps
-`sync::state` and `identity::card`. Both also remain in use from `record.rs`'s,
-`block.rs`'s and the manifest module's `#[cfg(test)]` oracles and fixtures.
+`sync::state` and `identity::card`. Both also remain in use from `#[cfg(test)]`
+oracles and fixtures — but not the same files, so do not flatten the two:
+`canonical_sort_entries` is called from `record.rs` and the manifest module's
+`test_support.rs`; `encode_canonical_map` from `record.rs`, `block.rs` and three
+manifest test files. `block.rs` calls `canonical_sort_entries` nowhere, and
+`encode_canonical_map` does not reach it either (it has its own inline sort).
 Do not delete either as dead.
 
 ### Atomic-write contract

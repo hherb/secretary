@@ -1805,12 +1805,15 @@ pub fn encrypt_block<R: RngCore + CryptoRng>(
     // so it must be wiped on every exit path (normal return, an early `?`,
     // or an unwinding panic), the same PROPERTY the `bundle_plaintext`
     // pattern in `unlock::create_vault_unchecked` establishes (#513, #357)
-    // — but no longer the same MECHANISM. `bundle_plaintext` is still a
-    // caller-side `SecretBytes::new(identity.to_canonical_cbor()?)`.
-    // `encode_plaintext` now returns `SecretBytes` directly (#558, #565):
-    // the wrap is structural, part of the function's return type, rather
-    // than a separate `SecretBytes::new(..)` call here that a future edit
-    // could silently drop.
+    // — and, as of #571, by the same MECHANISM. `encode_plaintext` returns
+    // `SecretBytes` directly (#558, #565): the wrap is structural, part of
+    // the function's return type, rather than a separate
+    // `SecretBytes::new(..)` call here that a future edit could silently
+    // drop. Until #571 this comment contrasted the two, `bundle_plaintext`
+    // then being the last caller-side
+    // `SecretBytes::new(identity.to_canonical_cbor()?)` of the #558 class;
+    // `bundle::to_canonical_cbor` has since made the same move, so the
+    // sites now match rather than contrast.
     let pt_bytes = encode_plaintext(plaintext)?;
 
     // Step 6: AAD = bytes magic..end_of_recipient_entries; AEAD-encrypt.
@@ -2160,7 +2163,10 @@ mod tests {
     /// one was NOT re-run in that review — it is reported as the
     /// point-in-time finding it is.) At the BLOCK level the two paths
     /// genuinely diverge: the oracle sorts unknowns via
-    /// `canonical_sort_entries`, production via `CanonicalMap::serialize`
+    /// `encode_canonical_map`'s own inline key sort (this said
+    /// `canonical_sort_entries` until the #584 review — a function this
+    /// file never calls, and one `encode_canonical_map` does not call
+    /// either), production via `CanonicalMap::serialize`
     /// — DIFFERENT implementations — so a multi-byte block-level unknown
     /// key is what actually exercises this test's ability to catch a
     /// comparator regression; a purely-ASCII block-level key set (this

@@ -44,13 +44,15 @@ pub fn sign_manifest(
     // cleartext copy of every user-authored `block_name` in the vault, so it
     // must be wiped on every exit path (normal return, an early `?`, or an
     // unwinding panic), the same PROPERTY the `bundle_plaintext` pattern in
-    // `unlock::create_vault_unchecked` establishes (#513, #357) — but no
-    // longer the same MECHANISM. `bundle_plaintext` is still a caller-side
-    // `SecretBytes::new(identity.to_canonical_cbor()?)`. `encode_manifest`
-    // now returns `SecretBytes` directly (#558, #565): the wrap is
-    // structural, part of the function's return type, rather than a
-    // separate `SecretBytes::new(..)` call here that a future edit could
-    // silently drop.
+    // `unlock::create_vault_unchecked` establishes (#513, #357) — and, as of
+    // #571, by the same MECHANISM. `encode_manifest` returns `SecretBytes`
+    // directly (#558, #565): the wrap is structural, part of the function's
+    // return type, rather than a separate `SecretBytes::new(..)` call here
+    // that a future edit could silently drop. Until #571 this comment
+    // contrasted the two, `bundle_plaintext` then being the last
+    // caller-side `SecretBytes::new(identity.to_canonical_cbor()?)` of the
+    // #558 class; `bundle::to_canonical_cbor` has since made the same move,
+    // so the sites now match rather than contrast.
     let body_bytes = encode_manifest(body)?;
 
     // Step 2: AEAD-encrypt with header AAD.

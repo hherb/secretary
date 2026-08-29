@@ -544,8 +544,11 @@ mod vault {
 
     /// Strategy for one `RecordField`. Per-field `unknown` left empty —
     /// modelling forward-compat unknowns in proptest adds significant
-    /// strategy complexity beyond Task 7's scope; the integration tests
-    /// in `core/tests/vault.rs` and the fixed KATs cover that path.
+    /// strategy complexity beyond Task 7's scope; the fixed KATs and the
+    /// integration tests in `core/tests/conflict.rs` /
+    /// `core/tests/vault_e2e.rs` cover that path. (This cited
+    /// `core/tests/vault.rs` until the #584 review; that file contains no
+    /// `UnknownValue` at any level.)
     fn record_field_strategy() -> impl Strategy<Value = RecordField> {
         (field_value_strategy(), any::<u64>(), any::<[u8; 16]>()).prop_map(
             |(value, last_mod, device_uuid)| RecordField {
@@ -1299,12 +1302,19 @@ mod vault {
 // significant strategy complexity and is the deferred enhancement noted in
 // secretary_next_session.md Item 7. The fixed KATs in the
 // `core/src/vault/manifest/` module's own `mod tests` (distributed across
-// the module's files by #564) and the integration tests in
-// `core/tests/vault.rs` cover the unknown-key round-trip path.
+// the module's files by #564) are what covers the manifest unknown-key
+// round-trip path — and they are ALL of it. This comment also cited "the
+// integration tests in `core/tests/vault.rs`" until the #584 review:
+// that file contains no `UnknownValue` at any level, and there is no
+// manifest-level unknown round trip at integration level anywhere.
 //
 // Tracked as #578: because this strategy leaves those three bags empty,
 // Property F below never exercises the forward-compat `unknown` round trip
 // that #572's re-encode-and-compare check relies on for v2 soundness.
+// Note for whoever takes #578 that "significant strategy complexity" above
+// overstates the cost at the manifest level: `unknown_map_strategy` already
+// exists in this file (record section) and `UnknownValue::from_canonical_cbor`
+// does the validation.
 
 mod manifest_props {
     use std::collections::BTreeMap;

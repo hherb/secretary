@@ -193,7 +193,7 @@ impl Drop for CborScratch {
 /// was SIX production sites until #569 path 2 deleted
 /// `manifest::encode::unknown_value_inner`, whose encode-side re-parse was
 /// the manifest module's second — note that's a grep for the NEW call, not the old
-/// `ciborium::de::from_reader` one: none of the six spell that anymore, so
+/// `ciborium::de::from_reader` one: none of the five spell that anymore, so
 /// that grep now shows only the two sites that deliberately stay on plain
 /// `from_reader`, each carrying a comment saying why its input provably
 /// holds no secret (`identity/card.rs`, `sync/state.rs`), plus test code

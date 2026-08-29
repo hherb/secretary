@@ -90,11 +90,14 @@ fn parse_vector_clock_entry(v: &Value) -> Result<VectorClockEntry, ManifestError
             }
             // Vector clock entries don't carry an unknown bag in v1 —
             // they're a fixed two-field shape per §4.2. Unknown keys here
-            // would be out of scope for the spec and should not be
-            // silently absorbed; reject as WrongType-equivalent. Treat as
-            // a missing-field semantic by ignoring (see §6.3.2 forward-
-            // compat principle: no extension surface here means strict).
-            // We choose the conservative path: reject.
+            // would be out of scope for the spec and must not be silently
+            // absorbed, so we take the conservative path and REJECT, as
+            // WrongType-equivalent (§6.3.2's forward-compat principle: no
+            // extension surface here means strict). This comment carried a
+            // contradictory "treat as a missing-field semantic by ignoring"
+            // clause until the #584 review — the code has always rejected,
+            // and a future editor reconciling the code to that clause would
+            // have converted a rejection into a silent absorb.
             _ => {
                 return Err(ManifestError::WrongType {
                     field: KEY_VECTOR_CLOCK,

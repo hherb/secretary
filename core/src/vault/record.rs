@@ -518,9 +518,11 @@ pub struct Record {
 /// cannot be deleted without a compile error — a stronger guarantee than a
 /// caller-side `SecretBytes::new(..)` call, which is deletable with the
 /// whole suite still green (verified by execution, #558/#565). That
-/// contrast describes `block.rs`'s `encrypt_block` and `manifest.rs`'s
-/// `sign_manifest`, which used to apply exactly that caller-side wrap;
-/// this function never had one to begin with — `re_encoded`'s comparison
+/// contrast describes `block.rs`'s `encrypt_block` and
+/// `manifest/file/sign.rs`'s `sign_manifest` (in `manifest.rs` until #564
+/// split it), which used to apply exactly that caller-side wrap, and
+/// `unlock::create_vault_unchecked`, which did so until #571; this
+/// function never had one to begin with — `re_encoded`'s comparison
 /// (below) was the only call site, and it never wrapped the result either.
 /// The property this signature buys is the same regardless of which
 /// pre-state a given call site came from: nothing calling `encode` can

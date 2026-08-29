@@ -32,13 +32,22 @@
 //!
 //! ## Forward compatibility
 //!
-//! Mirrors [`record`](super::record)'s discipline: every struct that maps
-//! to a CBOR object carries an `unknown`
+//! Mirrors [`record`](super::record)'s discipline, with two deliberate
+//! exceptions. [`Manifest`], [`BlockEntry`] and [`TrashEntry`] each carry
+//! an `unknown`
 //! [`BTreeMap<String, UnknownValue>`](std::collections::BTreeMap)
 //! that captures unrecognised keys on decode and round-trips them
 //! verbatim on encode. A v1 client receiving a v2 manifest preserves the
 //! v2 material so a v2 device that subsequently reads the file still sees
 //! its extra fields.
+//!
+//! **[`KdfParamsRef`] and [`VectorClockEntry`] have no such bag and reject
+//! an unrecognised key outright** (`WrongType`) — both are fixed-shape
+//! sub-maps in v1 with no extension surface, so nothing is silently
+//! absorbed there. The consequence is worth stating: a v2 client that adds
+//! a field to either sub-map produces a manifest a v1 client cannot open
+//! at all. This paragraph said "every struct that maps to a CBOR object"
+//! until the #584 review, which was false of both.
 //!
 //! ## Pure-function API
 //!

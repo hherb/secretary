@@ -140,7 +140,14 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
     //
     // What this does NOT catch, stated exactly, because the obvious
     // wider claim is FALSE: **duplicate keys and map key ORDER** inside
-    // a forward-compat `unknown` subtree. Nothing else. An earlier
+    // a forward-compat `unknown` subtree. Nothing else — of what still
+    // REACHES this comparison. A tag or a float inside such a subtree is
+    // not caught by the comparison either (a normalising parse preserves
+    // both and re-encodes them identically), but neither ever gets here:
+    // `reject_floats_and_tags` above walks the whole body, subtrees
+    // included, and has already rejected them. The residual is therefore
+    // the decoder's, not merely this check's — which is the claim that
+    // matters, and the one the paragraph below spells out. An earlier
     // version of this comment said "a duplicate key — or any other
     // non-canonical shape — … the comparison is equal no matter what is
     // inside them", which is wrong, and wrong in the direction that

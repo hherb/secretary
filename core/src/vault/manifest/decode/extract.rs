@@ -151,10 +151,14 @@ fn take_integer_i128(v: &Value, field: &'static str) -> Result<i128, ManifestErr
 /// review). Pre-reserving stops it REALLOCATING and freeing unwiped
 /// prefixes; it does nothing about the final buffer, which is a complete
 /// CBOR re-encoding of a decrypted forward-compat subtree and was dropped
-/// intact on both the success and error paths. `unknown_value_inner` —
-/// this function's encode-side twin, in this same file — already wrapped
-/// its equivalent buffer, so the two were treating the same content class
-/// oppositely.
+/// intact on both the success and error paths. Its encode-side twin,
+/// `unknown_value_inner`, already wrapped its equivalent buffer, so the two
+/// were treating the same content class oppositely. **That twin no longer
+/// exists**, and it was never in this file: #564 put it in `encode.rs`
+/// (an earlier version of this sentence said "in this same file", which
+/// was already wrong at the split), and #569 path 2 deleted it outright
+/// once the encode path began borrowing the subtree rather than
+/// re-encoding and re-parsing it.
 pub(super) fn value_to_unknown(v: &Value) -> Result<UnknownValue, ManifestError> {
     let mut buf = Vec::with_capacity(cbor_size_bound(v));
     ciborium::ser::into_writer(v, &mut buf)
@@ -164,11 +168,14 @@ pub(super) fn value_to_unknown(v: &Value) -> Result<UnknownValue, ManifestError>
         .map_err(|e| ManifestError::CborDecode(record_error_to_cbor_fault(e)))
 }
 
-/// Collapse a [`RecordError`] raised by [`UnknownValue::to_canonical_cbor`]
-/// / [`UnknownValue::from_canonical_cbor`] into a [`CborFault`].
+/// Collapse a [`RecordError`] raised by [`UnknownValue::from_canonical_cbor`]
+/// into a [`CborFault`].
 ///
-/// Those two calls are the only place `ManifestError`'s CBOR variants are
-/// sourced from a lower-layer `RecordError` rather than a raw
+/// That call — ONE, not the two this doc named until #569 path 2 deleted
+/// `unknown_value_inner`, which was this module's only
+/// [`UnknownValue::to_canonical_cbor`] caller — is the only place
+/// `ManifestError`'s CBOR variants are sourced from a lower-layer
+/// `RecordError` rather than a raw
 /// `ciborium::{de,ser}::Error` directly — `RecordError` itself has no
 /// `#[from]`-worthy conversion to `ManifestError` (unlike `BlockError`,
 /// which has a dedicated `Record(#[from] RecordError)` variant), so there is

@@ -82,9 +82,16 @@
 //! content — a different exposure class from `block_name`, and one this
 //! slice did not assess. [`encode_canonical_map`] likewise keeps two
 //! production callers, `sync::state` and `identity::card`. Both functions
-//! also remain in use from `record.rs`'s and `block.rs`'s `#[cfg(test)]`
-//! byte-identity oracles, which deliberately keep the pre-migration owned
-//! path alive to prove the borrowing one emits identical bytes.
+//! also remain in use from `#[cfg(test)]` byte-identity oracles and
+//! fixtures, which deliberately keep the pre-migration owned path alive to
+//! prove the borrowing one emits identical bytes — but **not from the same
+//! set of files**, and an earlier version of this paragraph flattened the
+//! two: [`canonical_sort_entries`] is called from `record.rs` and
+//! `manifest/test_support.rs` only, while [`encode_canonical_map`] is
+//! called from `record.rs`, `block.rs` and three manifest test files.
+//! `block.rs` does not call [`canonical_sort_entries`] at all, directly or
+//! transitively — [`encode_canonical_map`] has its own inline borrowing
+//! sort and does not call it either.
 //!
 //! [`size`]
 //! holds [`cbor_size_bound`], the pre-reservation helper
