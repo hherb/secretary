@@ -7,7 +7,7 @@
 //! also drives `encode::encode_manifest` and `decode::decode_manifest` to
 //! get its hand-built duplicate onto the wire.
 
-use crate::vault::manifest::test_support::dummy_kdf_params;
+use crate::vault::manifest::test_support::{dummy_kdf_params, unexpected};
 use crate::vault::manifest::{
     decode_manifest, encode_manifest, Manifest, FORMAT_VERSION_V1, MANIFEST_VERSION_V1, SUITE_ID_V1,
 };
@@ -343,7 +343,10 @@ fn vector_clock_entry_rejects_every_duplicate_key() {
                     "DuplicateKey must report the ordinal of the repeat"
                 );
             }
-            other => panic!("expected DuplicateKey for {repeated}, got {other:?}"),
+            other => panic!(
+                "expected DuplicateKey for {repeated}, got {}",
+                unexpected(&other)
+            ),
         }
     }
 }
@@ -365,7 +368,10 @@ fn kdf_params_rejects_every_duplicate_key() {
                     "DuplicateKey must report the ordinal of the repeat"
                 );
             }
-            other => panic!("expected DuplicateKey for {repeated}, got {other:?}"),
+            other => panic!(
+                "expected DuplicateKey for {repeated}, got {}",
+                unexpected(&other)
+            ),
         }
     }
 }
@@ -396,7 +402,10 @@ fn block_entry_rejects_every_duplicate_key() {
                     "DuplicateKey must report the ordinal of the repeat"
                 );
             }
-            other => panic!("expected DuplicateKey for {repeated}, got {other:?}"),
+            other => panic!(
+                "expected DuplicateKey for {repeated}, got {}",
+                unexpected(&other)
+            ),
         }
     }
 }
@@ -424,7 +433,10 @@ fn trash_entry_rejects_every_duplicate_key() {
                     "DuplicateKey must report the ordinal of the repeat"
                 );
             }
-            other => panic!("expected DuplicateKey for {repeated}, got {other:?}"),
+            other => panic!(
+                "expected DuplicateKey for {repeated}, got {}",
+                unexpected(&other)
+            ),
         }
     }
 }

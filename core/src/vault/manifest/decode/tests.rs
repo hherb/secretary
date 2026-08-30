@@ -15,7 +15,7 @@ use crate::vault::manifest::encode::encode_manifest;
 // them and they are imported explicitly here.
 use crate::vault::manifest::test_support::{
     build_manifest_map_with_overrides, dummy_kdf_params_value, minimal_manifest,
-    parse_to_value_map, populated_manifest, UNKNOWN_MAP_NONCANONICAL,
+    parse_to_value_map, populated_manifest, unexpected, UNKNOWN_MAP_NONCANONICAL,
     UNKNOWN_MAP_NONCANONICAL_BLOCK, UNKNOWN_MAP_NONCANONICAL_TRASH,
 };
 use crate::vault::manifest::{
@@ -459,7 +459,7 @@ fn decode_manifest_rejects_a_non_canonical_body() {
     // above drives exactly that).
     match decode_manifest(&scrambled) {
         Err(ManifestError::NonCanonicalEncoding) => {}
-        other => panic!("expected NonCanonicalEncoding, got {other:?}"),
+        other => panic!("expected NonCanonicalEncoding, got {}", unexpected(&other)),
     }
 }
 
@@ -547,7 +547,10 @@ fn duplicate_key_wins_over_non_canonical_encoding() {
             field: KEY_DEVICE_UUID,
             ..
         }) => {}
-        other => panic!("DuplicateKey must precede NonCanonicalEncoding, got {other:?}"),
+        other => panic!(
+            "DuplicateKey must precede NonCanonicalEncoding, got {}",
+            unexpected(&other)
+        ),
     }
 }
 
@@ -705,7 +708,10 @@ fn non_canonical_shapes_are_each_rejected() {
     non_shortest.splice(value_at..value_at + 1, [0x18u8, MANIFEST_VERSION_V1]);
     match decode_manifest(&non_shortest) {
         Err(ManifestError::NonCanonicalEncoding) => {}
-        other => panic!("non-shortest-form integer: expected NonCanonicalEncoding, got {other:?}"),
+        other => panic!(
+            "non-shortest-form integer: expected NonCanonicalEncoding, got {}",
+            unexpected(&other)
+        ),
     }
 
     // (2) Indefinite-length top-level map: `0xBF … 0xFF` in place of the
@@ -715,7 +721,10 @@ fn non_canonical_shapes_are_each_rejected() {
     indefinite.push(0xFF);
     match decode_manifest(&indefinite) {
         Err(ManifestError::NonCanonicalEncoding) => {}
-        other => panic!("indefinite-length map: expected NonCanonicalEncoding, got {other:?}"),
+        other => panic!(
+            "indefinite-length map: expected NonCanonicalEncoding, got {}",
+            unexpected(&other)
+        ),
     }
 
     // (3) An array out of its §4.2 sort order. `populated_manifest()`'s
@@ -747,7 +756,10 @@ fn non_canonical_shapes_are_each_rejected() {
     );
     match decode_manifest(&unsorted) {
         Err(ManifestError::NonCanonicalEncoding) => {}
-        other => panic!("unsorted vector_clock: expected NonCanonicalEncoding, got {other:?}"),
+        other => panic!(
+            "unsorted vector_clock: expected NonCanonicalEncoding, got {}",
+            unexpected(&other)
+        ),
     }
 }
 
@@ -796,7 +808,10 @@ fn every_array_sort_discipline_is_rejected_out_of_order_on_decode() {
         );
         match decode_manifest(perturbed) {
             Err(ManifestError::NonCanonicalEncoding) => {}
-            other => panic!("{label}: expected NonCanonicalEncoding, got {other:?}"),
+            other => panic!(
+                "{label}: expected NonCanonicalEncoding, got {}",
+                unexpected(&other)
+            ),
         }
     }
 
@@ -954,7 +969,8 @@ fn unknown_subtree_tolerates_key_order_and_duplicates_but_not_encoding() {
         match decode_manifest(&splice(repl)) {
             Err(ManifestError::NonCanonicalEncoding) => {}
             other => panic!(
-                "{what} inside an unknown subtree: expected NonCanonicalEncoding, got {other:?}"
+                "{what} inside an unknown subtree: expected NonCanonicalEncoding, got {}",
+                unexpected(&other)
             ),
         }
     }

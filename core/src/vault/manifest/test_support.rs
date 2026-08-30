@@ -228,6 +228,27 @@ pub(super) const UNKNOWN_MAP_NONCANONICAL_BLOCK: &[u8] =
 pub(super) const UNKNOWN_MAP_NONCANONICAL_TRASH: &[u8] =
     &[0xA2, 0x62, b'z', b'z', 0x05, 0x61, b'a', 0x06];
 
+/// Render an unexpected decode outcome for a panic message **without
+/// dumping the decoded payload**.
+///
+/// The natural `panic!("... got {other:?}")` over a
+/// `Result<Manifest, ManifestError>` prints the whole decoded structure on
+/// the `Ok` arm — every UUID, the KDF salt, both fingerprints, and every
+/// `block_name`, which is user-authored plaintext. That reaches CI logs on
+/// any failure, and it is what CodeQL's `rust/cleartext-logging` flags
+/// across this module (#584 review). It is also unreadable: the dump runs
+/// to several screens and buries the assertion.
+///
+/// The `Err` arm is the diagnostically useful half and is kept in full —
+/// `ManifestError` is data-free by construction (#474), so printing it
+/// cannot leak. The `Ok` arm carries no information beyond "it decoded".
+pub(super) fn unexpected<T, E: core::fmt::Debug>(outcome: &Result<T, E>) -> String {
+    match outcome {
+        Ok(_) => "Ok(<decoded — payload withheld, see `unexpected`>)".to_string(),
+        Err(e) => format!("Err({e:?})"),
+    }
+}
+
 /// Re-parse encoded bytes to a `ciborium::Value` map for raw
 /// inspection of array order.
 pub(super) fn parse_to_value_map(bytes: &[u8]) -> Vec<(Value, Value)> {
@@ -321,13 +342,20 @@ pub(super) fn test_ibk(byte: u8) -> AeadKey {
 }
 
 pub(super) fn test_nonce() -> AeadNonce {
-    // Deterministic 24-byte nonce for fixture stability. NOT
-    // representative of production: real callers must source nonces
-    // from `crypto::rand` (or pinned KAT inputs in tests).
-    let mut n = [0u8; 24];
-    for (i, b) in n.iter_mut().enumerate() {
-        *b = i as u8;
-    }
+    // Per-run random, NOT a hard-coded literal: `rand` is a dev-dependency
+    // of this crate for exactly this purpose (see `core/Cargo.toml`'s
+    // `[dev-dependencies]` comment and CLAUDE.md's
+    // `feedback_test_crypto_random_not_hardcoded`), and the same
+    // `rand::rng().fill_bytes(..)` shape is what `tests/sync_helpers` uses.
+    //
+    // This was a deterministic `0..24` ramp until the #584 review, which is
+    // what CodeQL's `rust/hard-coded-cryptographic-value` flagged. Nothing
+    // needed the determinism: every consumer feeds the nonce straight into
+    // an `encrypt_manifest_body` / `sign_manifest` round trip and asserts on
+    // the round trip, never on fixed ciphertext bytes. Randomising is
+    // strictly stronger — the round trips no longer all share one nonce.
+    let mut n: AeadNonce = [0u8; 24];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut n);
     n
 }
 
