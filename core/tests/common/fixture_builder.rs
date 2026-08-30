@@ -449,7 +449,7 @@ pub fn build_identity_envelope(
     rng.fill_bytes(&mut nonce_rec);
 
     let bundle_aad = compose_aad(TAG_ID_BUNDLE, &vault_uuid);
-    let bundle_ct_with_tag = aead::encrypt(&ibk, &nonce_id, &bundle_aad, &bundle_plaintext)
+    let bundle_ct_with_tag = aead::encrypt(&ibk, &nonce_id, &bundle_aad, bundle_plaintext.expose())
         .expect("aead encrypt bundle");
 
     let wrap_pw_aad = compose_aad(TAG_ID_WRAP_PW, &vault_uuid);

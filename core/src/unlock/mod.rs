@@ -199,16 +199,19 @@ pub fn create_vault_unchecked(
     // Step 5: generate identity + canonical CBOR
     let identity = bundle::generate(display_name, created_at_ms, rng);
     // `bundle_plaintext` is a cleartext CBOR copy of the entire secret-key set
-    // (all four sk's), wrapped in `SecretBytes` at construction. It is
-    // AEAD-encrypted under the IBK below via `.expose()`; `SecretBytes`'
-    // `ZeroizeOnDrop` wipes it on every path — normal return, an early `?`,
-    // or an unwinding panic — rather than relying on a trailing `.zeroize()`
-    // call that only the happy path reaches (#513). It is then dropped
-    // EXPLICITLY the moment step 7 stops needing it, so the two properties
-    // compose: `Drop` guarantees the wipe happens, and the explicit drop
-    // keeps the dirty window as narrow as the pre-#513 code's was. See #357
-    // for why the cleartext copy must not linger.
-    let bundle_plaintext = SecretBytes::new(identity.to_canonical_cbor()?);
+    // (all four sk's). The `SecretBytes` wrap is now in `to_canonical_cbor`'s
+    // return type (#571), not applied here — there is no unwrapped form to
+    // forget, so this call site cannot be "simplified" back to a bare
+    // `Vec<u8>` without a compile error. It is AEAD-encrypted under the IBK
+    // below via `.expose()`; `SecretBytes`' `ZeroizeOnDrop` wipes it on every
+    // path — normal return, an early `?`, or an unwinding panic — rather
+    // than relying on a trailing `.zeroize()` call that only the happy path
+    // reaches (#513). It is then dropped EXPLICITLY the moment step 7 stops
+    // needing it, so the two properties compose: `Drop` guarantees the wipe
+    // happens, and the explicit drop keeps the dirty window as narrow as the
+    // pre-#513 code's was. See #357 for why the cleartext copy must not
+    // linger.
+    let bundle_plaintext = identity.to_canonical_cbor()?;
 
     // Step 6: three independent 24-byte AEAD nonces — one per AEAD call below.
     // Each key (IBK, master_kek, recovery_kek) is used exactly once, but

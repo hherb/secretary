@@ -1070,10 +1070,21 @@ grepping every production (non-`#[cfg(test)]`) call site of
 
 | Root | Call site | Direction |
 |---|---|---|
-| `record.rs` | `record::decode` (`record.rs:635`) | decode |
+| `record.rs` | `record::decode` (`record.rs:663`) | decode |
 | `block.rs` | `block::decode_plaintext` (`block.rs:1049`) | decode |
-| `unlock/bundle.rs` | `IdentityBundle::from_canonical_cbor` (`bundle.rs:367`, `SecretEntries`) | decode |
-| `manifest.rs` | `decode_manifest` (`manifest.rs:810`) | decode |
+| `unlock/bundle.rs` | `IdentityBundle::from_canonical_cbor` (`bundle.rs:398`, `SecretEntries`) | decode |
+| `manifest/` | `decode_manifest` (`manifest/decode/mod.rs:110`) | decode |
+
+**Line numbers refreshed 2026-08-29 (manifest-closeout slice), each by
+re-reading its enclosing function rather than by re-running a line-number
+grep** — the discipline this section's own next paragraph records being
+violated. The manifest row's *path* changed too: #564 split the 4273-line
+`core/src/vault/manifest.rs` into the directory module
+`core/src/vault/manifest/`, so every `manifest.rs` citation below that is
+not explicitly historical now names a file that does not exist. Where the
+text reads `manifest.rs` as a module shorthand it has been left, and where
+it carried a line number or a deleted symbol it has been repointed or
+retracted.
 
 **This table is narrower than it was, twice over — and the second
 correction fixes an error THIS task introduced, not one it inherited.**
@@ -1093,9 +1104,10 @@ does not reproduce its own claim: the bare `grep -rn
 "SecretValueTree::new\|SecretEntries::new" core/src | grep -v
 secret_tree/` returns **ten** rows on the committed tree, not four — the
 four production sites in the table above, one test-fixture call
-(`bundle.rs:1047`, `wipe_fixture()`, inside `#[cfg(test)] mod tests`), and
-five doc-comment mentions (`bundle.rs:1132`, `manifest.rs:2539`,
-`block.rs:2977`, `record.rs:2321`, `record.rs:2335`). Anchored to the
+(`bundle.rs:1091`, `wipe_fixture()`, inside `#[cfg(test)] mod tests`), and
+five doc-comment mentions (`bundle.rs:1175`, `block.rs:2983`,
+`record.rs:2355`, `record.rs:2369`,
+`manifest/decode/tests.rs:88`). Anchored to the
 shape a real construction site actually has — every production call binds
 its result to a local with `let` (`let parsed =
 SecretValueTree::new(parsed);` / `let mut map = SecretEntries::new(m);`),
@@ -1103,36 +1115,44 @@ while the test fixture returns its value directly with no binding and
 every doc-comment hit is prose, never a `let` statement — `grep -rnE "let
 .* = (SecretValueTree|SecretEntries)::new\(" core/src | grep -v
 secret_tree/` returns exactly the four rows above, and only those four;
-nothing for `unknown_value_inner`. Its own doc comment
-(`manifest.rs:745-747`) says why: *"The counter-based test Task 7b wrote
-for the removed `SecretValueTree` wrap is retired with the wrap it
-pinned"* — the wrap was removed before this branch existed, absent at
-`main` and at this branch's own pre-Task-8 tip. During this task the row's
+nothing for `unknown_value_inner`. During this task the row's
 CITATION was refreshed (line 723 → 748) without re-verifying the
 underlying FACT, which made a stale claim read as freshly confirmed — the
 exact defect class this whole slice exists to fight, landed in the one
-task whose entire product is prose. `unknown_value_inner` still calls
-`from_secret_reader` (see the six-call-site count in "Resolved:
-cbor-residue-closeout follow-up" below, which is a
-DIFFERENT count — of `from_secret_reader` call sites, not of
-`SecretValueTree`/`SecretEntries` construction sites, and stays six); the
-`Value` it parses is real and secret-bearing, but nothing wraps it. That
-gap is not new, not caused by this slice, and not covered by any of
-#561/#565-#570 — it is the same class `unknown_value_inner`'s own comment
-already places under **#558** (the AEAD-plaintext-buffer class), stated
-outright rather than pretending to a coverage this table used to imply.
+task whose entire product is prose.
+
+**`unknown_value_inner` no longer exists (#569 path 2, manifest-closeout
+slice, commit `0f1a8384`).** This paragraph used to close by recording
+that it still called `from_secret_reader` on a real, secret-bearing,
+unwrapped `Value`, and placed that residual under **#558**. The function
+was deleted outright when the manifest encode path moved onto the
+borrowing `CanonicalMap`, so the residual is gone rather than merely
+retracted: there is no re-parse, no intermediate `SecretBytes`, and no
+`from_secret_reader` call on the manifest encode side at all. The
+`from_secret_reader` production count in "Resolved: cbor-residue-closeout
+follow-up" below — a DIFFERENT count from this table's, of
+`from_secret_reader` call sites rather than of
+`SecretValueTree`/`SecretEntries` construction sites — went from six to
+**five** for exactly this reason. Its own retired doc comment
+(then `manifest.rs:745-747`) is quoted in the git history rather than
+here, since the file it lived in no longer exists.
 
 Grouped by *file*, this is now **four roots — record, block, bundle,
 manifest — and all four are decode-only** for `SecretValueTree`/
 `SecretEntries`: **four call sites total**, not five, not six. That
-uniformity has two different causes, and conflating them would itself be
-an overclaim: `record`, `block` and `bundle` are decode-only because their
-encode sides use Mechanism A (elimination) — nothing owned is ever
-materialised, so there is nothing to wrap. `manifest.rs` is decode-only
-for a different reason — its encode side (`unknown_value_inner`) DOES
-materialise an owned, secret-bearing `Value`, and that value is simply
-unwrapped, a real residual rather than an eliminated copy. Do not read
-"four roots, all decode-only" as "four roots, uniformly covered."
+uniformity USED TO have two different causes, and conflating them would
+have been an overclaim: `record`, `block` and `bundle` were decode-only
+because their encode sides use Mechanism A (elimination) — nothing owned
+is ever materialised, so there is nothing to wrap — while `manifest` was
+decode-only for a *different* reason: its encode side
+(`unknown_value_inner`) DID materialise an owned, secret-bearing `Value`
+that was simply left unwrapped, a real residual rather than an eliminated
+copy. **As of #569 path 2 the two causes have converged**: the manifest
+encode path borrows through `CanonicalMap` like the other three, and
+`unknown_value_inner` is deleted. All four roots are now decode-only *for
+the same reason*. This paragraph existed to deny that reading, so the
+convergence is stated outright rather than left for a reader to infer
+from the table's unchanged shape.
 
 `identity/card.rs`'s own `from_canonical_cbor` (`ContactCard`) and
 `sync/state.rs`'s `SyncState::from_canonical_cbor` are deliberately outside
@@ -1160,11 +1180,13 @@ line of work's most repeated review finding:
   afterward can retroactively wipe it.
 - **`SecretValueTree` covers the buffer the tree points at when it drops**
   — nothing more. A value cloned OUT of the tree before drop (the
-  `UnknownValue` clones both `record.rs`/`block.rs`/`manifest.rs` make for
-  forward-compat unknowns, and `manifest.rs`'s `unknown_value_inner` clone
-  of its own tree's root — see "Still open," below) is a fresh, ordinary,
-  non-zeroizing allocation from that point on. The source is covered; the
-  clone is not.
+  `UnknownValue` clones `record.rs` and `block.rs` make for forward-compat
+  unknowns — see "Still open," below) is a fresh, ordinary, non-zeroizing
+  allocation from that point on. The source is covered; the clone is not.
+  The manifest module used to belong in that list twice over, for its own
+  forward-compat clone and for `unknown_value_inner`'s clone of its tree's
+  root; #569 path 2 deleted the latter, and the former now borrows through
+  `CanonicalValue::Borrowed` on the encode side rather than cloning.
 
 ### The one validation-semantics change, and the test that discharges it
 
@@ -1191,8 +1213,9 @@ proves `decode_plaintext` still rejects it. Both `decode_value`'s and
 
 The six-copy trace above and the Mechanism A/B accounting both stop one step
 short of where each save path actually ends: the already-canonical `Vec<u8>`
-that `encode_plaintext` (`block.rs`) / `encode_manifest` (`manifest.rs`)
-returns, which is handed straight to `aead::encrypt`. Neither mechanism's
+that `encode_plaintext` (`block.rs`) / `encode_manifest`
+(`manifest/encode.rs`) returns, which is handed straight to
+`aead::encrypt`. Neither mechanism's
 grep covered it — it holds no `ciborium::Value`, so `SecretValueTree`
 (Mechanism B) has nothing to wrap, and it is the *output* of the borrowing
 encoder, not a copy `CanonicalValue`/`CanonicalMap` (Mechanism A) could have
@@ -1220,13 +1243,18 @@ pattern in `unlock::create_vault_unchecked` (#513, #357).~~
 `bundle_plaintext` comparison is now wrong too.** The later
 cbor-residue-closeout slice (#558, #565) moved the wrapper into the
 encoders' RETURN TYPE, so `block.rs`'s `encrypt_block` reads
-`let pt_bytes = encode_plaintext(plaintext)?;` and `manifest.rs`'s
+`let pt_bytes = encode_plaintext(plaintext)?;` and `manifest/file/sign.rs`'s
 `sign_manifest` reads `let body_bytes = encode_manifest(body)?;` — there is
 no `SecretBytes::new(..)` at either site to find. `bundle_plaintext` in
-`unlock::create_vault_unchecked` is now the ONLY remaining member of the
-old pattern (tracked as #571), so it is a contrast, not a match; the
-in-code comment at `manifest.rs`'s step 1 states this as "the same
-PROPERTY … but no longer the same MECHANISM". See "The canonical encoders
+`unlock::create_vault_unchecked` was at that point the ONLY remaining
+member of the old pattern, tracked as #571 — **and #571 has since landed**,
+so it is no longer a contrast either: `unlock/mod.rs` now reads
+`let bundle_plaintext = identity.to_canonical_cbor()?;`, that encoder
+returning `SecretBytes` like the other three. All four sites now match, by
+the same mechanism. (The in-code comments at `manifest/file/sign.rs`'s
+step 1 and `block.rs`'s step 5 stated the contrast until the same slice
+corrected them; this paragraph asserted it one slice longer than it was
+true, which is why it says so explicitly here.) See "The canonical encoders
 return the wrapper, instead of a caller applying one (#558, #565)" below
 for the current state.
 
@@ -1249,13 +1277,15 @@ fix:**
   Per-record/per-field copies were already eliminated by Mechanism A (Task
   4/5); `pt_bytes`, the one bare `Vec<u8>` that survived past Mechanism A
   because it isn't a `ciborium::Value` copy, is now wrapped.
-- **Manifest save (`sign_manifest`).** Two unwiped plaintext copies remain,
-  down from three: the two `block_name` clones inside
-  `canonical_sort_entries` this document's Census section already tracks as
-  **deliberately** out of scope (manifest.rs's encode side stays on
-  `canonical_sort_entries`/`encode_canonical_map` rather than migrating to
-  `CanonicalValue` — a churn-avoidance decision recorded in the design
-  spec's §6, not an oversight, and not touched by this fix). `body_bytes`,
+- **Manifest save (`sign_manifest`).** ~~Two unwiped plaintext copies
+  remain, down from three: the two `block_name` clones inside
+  `canonical_sort_entries`~~ — **both eliminated by #569 path 2**
+  (manifest-closeout slice). This bullet recorded them as
+  **deliberately** out of scope, on the churn-avoidance decision in that
+  slice's design spec §6; the follow-on slice reversed the decision and
+  migrated the manifest encode path onto the borrowing `CanonicalMap`, so
+  neither clone is made at all. The count is now ZERO here, not two.
+  `body_bytes`,
   the third copy — and the only one this section's mechanisms had not
   already accounted for — is now wrapped.
 
@@ -1306,19 +1336,30 @@ own repeated warning against exactly that shortcut:
   self-signature — no secret keys, by construction (see the type's own
   field list). Out of scope: there is no secret content to leak.
 - **`vault/canonical/legacy.rs:32` `pair.clone()`, inside
-  `canonical_sort_entries`.** This is the ONE deliberately-retained clone
-  the design spec calls out by name (§3.3, "What is NOT in scope"):
-  `manifest.rs`'s own *encode* side stays on `canonical_sort_entries` /
-  `encode_canonical_map` rather than migrating to `CanonicalValue`, a
-  churn-avoidance decision, not an oversight. Its only plaintext-bearing
-  caller through this function is `block_entry_to_value`'s `block_name`
-  field (`manifest.rs`) — genuinely user-visible plaintext within the
-  encrypted manifest, cloned once via `.clone()` into the entry list and
-  again via `canonical_sort_entries`'s `pair.clone()`. Two clones of a
-  block name per manifest save; not wiped, not eliminated, and
-  **deliberately** left that way by this slice's own scope decision — see
-  "Still open," below, for why this is not silently accepted as fine
-  either.
+  `canonical_sort_entries`.** This was the ONE deliberately-retained clone
+  the #547/#548 design spec called out by name (§3.3, "What is NOT in
+  scope"): the manifest's own *encode* side stayed on
+  `canonical_sort_entries` / `encode_canonical_map` rather than migrating
+  to `CanonicalValue`, a churn-avoidance decision, not an oversight. Its
+  only plaintext-bearing caller through this function was
+  `block_entry_to_value`'s `block_name` field — genuinely user-visible
+  plaintext within the encrypted manifest, cloned once via `.clone()` into
+  the entry list and again via `canonical_sort_entries`'s `pair.clone()`,
+  two clones of a block name per manifest save.
+  **#569 path 2 (manifest-closeout slice) eliminated both**:
+  `block_entry_to_value` is deleted and `manifest::encode::
+  manifest_to_canonical` borrows the block name through
+  `CanonicalValue::Text(&str)`. `canonical_sort_entries` is **not**
+  thereby dead — saying so would be its own overclaim. One production
+  caller remains, `sync::state::SyncState::to_canonical_cbor`
+  (`core/src/sync/state.rs:107`), which sorts a two-key
+  `(device_uuid, counter)` vector-clock entry map on the way to
+  OS-keystore persistence: sync metadata, not decrypted vault content, a
+  different exposure class from the block name and one no slice has yet
+  assessed. `encode_canonical_map` likewise keeps production callers in
+  `sync::state` and `identity::card`, and both functions stay in use from
+  `record.rs`'s, `block.rs`'s and the manifest module's `#[cfg(test)]`
+  fixtures and oracles.
 - **`sync/state.rs`'s `canonical_sort_entries` / `from_reader` calls.**
   `SyncState` carries `vault_uuid`, `device_uuid`, and vector-clock
   counters — no secret material. Out of scope.
@@ -1384,8 +1425,8 @@ it was judged out of this slice's scope rather than because it was missed:
   remains sound. Two things about the DESCRIPTION were not:
   - It said "the `take_*` helper family", unqualified. That is true only of
     `unlock/bundle.rs`, whose five helpers took `v: Value` **by value**.
-    Every `take_*` in `record.rs`, `block.rs` and `manifest.rs` takes
-    `&Value` and therefore cannot drop it at all. As written the bullet
+    Every `take_*` in `record.rs`, `block.rs` and the manifest module
+    takes `&Value` and therefore cannot drop it at all. As written the bullet
     overstated the residual across three files that never had it.
   - It named only *shape-mismatch* branches. The wrong-**LENGTH** branches
     of `take_uuid` and `take_sized_public` were the same leak and are not
@@ -1412,10 +1453,11 @@ it was judged out of this slice's scope rather than because it was missed:
   (`#[derive(Debug, Clone, PartialEq)]` only). Every clone made of a
   `Value` before wrapping it in `UnknownValue` — `record.rs`'s direct
   `UnknownValue(v.clone())` (it owns the type, so it constructs directly;
-  `record.rs:753`, `:878`), and `block.rs`'s / `manifest.rs`'s
-  serialise-then-reparse round trip through `value_to_unknown` /
-  `unknown_value_inner` (neither owns `UnknownValue`'s private field) —
-  escapes the enclosing `SecretValueTree` uncovered, by design of the
+  `record.rs:753`, `:878`), and `block.rs`'s and the manifest decoder's
+  serialise-then-reparse round trip through `value_to_unknown` (neither
+  owns `UnknownValue`'s private field; the manifest ENCODE side's
+  `unknown_value_inner`, once named here as a third, was deleted by #569
+  path 2) — escapes the enclosing `SecretValueTree` uncovered, by design of the
   type: the SOURCE stays covered until the tree drops; the CLONE never
   was. No regression relative to pre-slice behaviour (the clone was
   exactly as uncovered before this slice existed), but the type itself is
@@ -1443,7 +1485,9 @@ it was judged out of this slice's scope rather than because it was missed:
   constructs `CanonicalValue::Borrowed`), **#563**/**#564** (`block.rs` at
   2895 lines and `manifest.rs` at 3844 lines, the two largest files in the
   tree, both grown by this slice and neither previously filed alongside
-  #556), **#565** (`re_encoded`, promoted from this list's own prose to a
+  #556 — **#564 closed by the manifest-closeout slice**, which split
+  `manifest.rs` into the `core/src/vault/manifest/` directory module;
+  **#563 remains open**, `block.rs` is 3146 lines today), **#565** (`re_encoded`, promoted from this list's own prose to a
   tracked issue — **closed by the cbor-residue-closeout follow-up slice**:
   `encode`/`encode_plaintext` now return `SecretBytes`, wrapping it by
   construction), **#566** (the `set_once` residual described above —
@@ -1462,19 +1506,25 @@ it was judged out of this slice's scope rather than because it was missed:
   nested parsers as the same "four" the filing counted, which does not add
   up (one-of-four plus four-nested is five). **Closed by the same
   follow-up slice** at the top level: `parse_manifest_map` now rejects a
-  repeated key via `ManifestError::DuplicateKey`. That leaves
-  `manifest.rs`'s own four NESTED parsers — `parse_vector_clock_entry`,
+  repeated key via `ManifestError::DuplicateKey`. That left the manifest's
+  own four NESTED parsers — `parse_vector_clock_entry`,
   `parse_block_entry`, `parse_trash_entry`, `parse_kdf_params` — with no
-  equivalent check of their own; unchanged by this slice, tracked
-  separately as #573),
+  equivalent check of their own, tracked separately as #573;
+  **#573 is now closed by the manifest-closeout slice**, which gave all
+  four the same rejection (`core/src/vault/manifest/decode/entries.rs`,
+  21 `DuplicateKey` construction sites, each keyed on a `KEY_*` constant
+  or the literal `"<unknown>"`)),
   **#569** (`bundle.rs`, `manifest.rs` and `card.rs` encode paths still
   copy secrets into an owned `ciborium::Value` rather than borrowing
   through `CanonicalMap` — bundle's copies all four long-term secret keys
-  per encode, as filed; **partially closed by the same follow-up slice**:
-  `bundle.rs`'s copies of the four long-term secret keys are gone —
-  `to_canonical_cbor` borrows through `CanonicalMap` now. `manifest.rs`'s
-  user-visible block-name clone and `card.rs`'s public-key-only encode are unchanged;
-  neither carries the secret-key material #569 was filed over), **#570**
+  per encode, as filed. **Three paths, closed one slice at a time, and
+  #569 is STILL OPEN**: path 1 (`bundle.rs`) closed by the
+  cbor-residue-closeout follow-up slice — `to_canonical_cbor` borrows
+  through `CanonicalMap` now; path 2 (`manifest.rs`'s user-visible
+  block-name clone) closed by the manifest-closeout slice, commit
+  `0f1a8384`; **path 3 (`card.rs`'s public-key-only encode) remains**, and
+  is the only reason #569 stays open. `card.rs` carries no secret-key
+  material, which is why it was never the urgent half), **#570**
   (`ciborium`'s decode side grows payload buffers from capacity 0, so any
   field over 4 KiB reallocs repeatedly and frees unwiped prefixes —
   measured, by execution, at 6 allocation events / 5 reallocations for a
@@ -1511,9 +1561,15 @@ source, not inferred from its docs), differing only in who owns, and
 wipes, the scratch space.
 
 Every secret-bearing decode in the crate now routes through it: six
-production call sites — `unlock/bundle.rs` (1), `vault/block.rs` (1),
-`vault/manifest.rs` (2, one of them `unknown_value_inner`'s encode-side
-re-parse), `vault/record.rs` (2). Two call sites deliberately stay on
+production call sites at the time of writing — `unlock/bundle.rs` (1),
+`vault/block.rs` (1), `vault/manifest.rs` (2, one of them
+`unknown_value_inner`'s encode-side re-parse), `vault/record.rs` (2).
+**That count is FIVE as of #569 path 2** (manifest-closeout slice), which
+deleted `unknown_value_inner` and with it the manifest module's
+encode-side re-parse; the surviving manifest site is
+`vault/manifest/decode/mod.rs:95`. Note that the grep the `scratch.rs`
+doc comment names returns SIX rows against five call sites — the sixth
+row is that doc comment itself. Two call sites deliberately stay on
 plain `ciborium::de::from_reader`, each with a comment stating why its
 input provably holds no secret: `identity/card.rs`'s `ContactCard` decode
 (public key material + a display name, meant to be shared) and
@@ -1542,7 +1598,15 @@ plus a wipe of the value it rejects (#566). What is unchanged is the
 elimination-vs-wrap posture, not the function.) #569 also named `manifest.rs`'s user-visible
 block-name clone and `card.rs`'s public-key-only encode; neither carries the four
 long-term secret keys #569 was filed over, and neither is touched by this
-slice — #569 stays open for those two, closed only for `bundle.rs`.
+slice — #569 stayed open for those two, closed only for `bundle.rs`.
+
+**Updated (manifest-closeout slice):** the manifest half is now closed
+too — see "The manifest encode path borrows instead of copying (#569 path
+2)" below. **#569 is open for `card.rs` ALONE.** The sentence above said
+"those two" and was true when written; leaving it uncorrected is how a
+reader concludes the manifest path is still outstanding and re-does work
+that has shipped, which is precisely what happened to path 2 between the
+two slices.
 
 ### The canonical encoders return the wrapper, instead of a caller applying one (#558, #565)
 
@@ -1552,7 +1616,7 @@ return a bare `Vec<u8>`, relying on each caller to wrap it —
 that caller-side wrap at all (see the correction at "Four production …
 roots, not three" ABOVE — this read "see the correction below" until the
 #575 review, and the passage it means is ~450 lines earlier); `block.rs`'s
-`encrypt_block` and `manifest.rs`'s `sign_manifest` did, and a `SecretBytes::
+`encrypt_block` and `manifest/file/sign.rs`'s `sign_manifest` did, and a `SecretBytes::
 new(..)` call at a call site is *deletable with the whole test suite still
 green* — verified by execution — because a derived `Zeroize`/`ZeroizeOnDrop`
 gives no observable signal when its wrap is simply skipped. All three
@@ -1589,10 +1653,11 @@ wipe to cover it.
   `record`, `block`, `bundle`, `manifest` — not the nested parsers below,
   a separate group) that did not. It now tracks the keys seen so far in a
   set and returns `ManifestError::DuplicateKey` on a repeat. Scoped to the
-  top level only — `manifest.rs`'s own four NESTED parsers
+  top level only — the manifest's own four NESTED parsers
   (`parse_vector_clock_entry`, `parse_block_entry`, `parse_trash_entry`,
-  `parse_kdf_params`) have no equivalent check of their own, tracked
-  separately as **#573**.
+  `parse_kdf_params`) had no equivalent check of their own, tracked
+  separately as **#573** and **closed by the manifest-closeout slice**
+  (commit `a95bf58d`); all four now reject a repeated key the same way.
 - **The `(len, bytes)` == RFC 8949 §4.2.1 claim is now a committed
   proptest (#567).** `CanonicalMap::serialize`'s key sort — the mechanism
   that lets its keys stay borrowed `&str`s with no key buffer ever
@@ -1628,6 +1693,143 @@ wipe to cover it.
   equally to `CborScratch`.
 
 ---
+
+## Resolved: manifest-closeout (#571, #569 path 2)
+
+A third slice on the same line of work (branch `feature/manifest-closeout`),
+whose two memory-hygiene items are the last two encode-side residues the
+#547/#548 and #561/#565-#569 sections left behind. Its other four items —
+the `manifest.rs` split (#564), nested duplicate-key rejection (#573), the
+decode-side re-encode-and-compare (#572) and a proptest counterexample
+carve-out (#577) — are correctness and structure work, not secret handling,
+and are recorded here only because they moved every `manifest.rs` citation
+in this memo.
+
+### The bundle encoder returns the wrapper (#571)
+
+`IdentityBundle::to_canonical_cbor` returned a bare `Vec<u8>` and left the
+caller to wrap it: `unlock::create_vault_unchecked` read
+`let bundle_plaintext = SecretBytes::new(identity.to_canonical_cbor()?);`
+and now reads `let bundle_plaintext = identity.to_canonical_cbor()?;`.
+That is the last member of
+the pattern the "#558, #565" section above describes — the one it named as
+"the ONLY remaining member" and tracked as #571. `to_canonical_cbor` now
+returns `SecretBytes` directly, and the caller-side wrap is deleted.
+
+The mechanism is the same one that section already argues, so it is not
+re-argued here: a `SecretBytes::new(f()?)` at a call site is *deletable
+with the whole suite green*, because a derived `Zeroize`/`ZeroizeOnDrop`
+gives no observable signal when its wrap is skipped, whereas moving the
+wrapper into the RETURN TYPE makes that same deletion a compile error.
+Verified by execution rather than asserted: splicing the type-pinning test
+into the pre-change tree yields exactly one `E0308`, at the test's own type
+ascription.
+
+### The manifest encode path borrows instead of copying (#569 path 2)
+
+`encode_manifest` built an owned `ciborium::Value` tree: every manifest
+sub-structure was assembled into a `Vec<(Value, Value)>` and handed to
+`canonical_sort_entries`, which `pair.clone()`d every entry again. One of
+those entries carried decrypted plaintext — `BlockEntry::block_name`, a
+user-chosen name that lives inside the encrypted manifest — so every
+manifest save made **two** unwiped heap copies of every block name, one
+into the owned entry list and one inside the sort.
+
+The encode path now builds a `CanonicalMap` of borrowed `CanonicalValue`
+leaves (`manifest::encode::manifest_to_canonical`), so the block name is
+read straight out of the `Manifest` as a `&str` and neither copy is made.
+This is Mechanism A (elimination) applied to the last plaintext-bearing
+encoder that was still on Mechanism B's owned-tree path; `encode.rs`'s
+helpers became infallible in the process, because a borrow cannot fail
+where a clone-and-sort could. `unknown_value_inner` — which re-encoded and
+re-parsed each forward-compat subtree through an intermediate `SecretBytes`
+and a `from_secret_reader` call, once per unknown per save — is deleted
+outright rather than rewritten: `CanonicalValue::Borrowed` emits the
+already-parsed subtree directly.
+
+Two consequences recorded elsewhere in this memo rather than only here: the
+production `from_secret_reader` call-site count dropped from six to
+**five**, and the manifest module's row in the "Four production
+`SecretValueTree`/`SecretEntries` roots" table stopped being the one
+decode-only-for-a-different-reason entry.
+
+### What this does not claim
+
+Both items are narrower than "the manifest save path is now clean," and the
+two are narrow in *different* ways — which is the distinction worth keeping,
+because one is strictly stronger than the other.
+
+- **#571 pins a TYPE; it does not perform, or prove, a wipe.** Freed heap
+  is not observable from safe Rust — the same limit every section above
+  states, and it is not lifted here. The bundle plaintext was *already*
+  wrapped before this change; a caller was already applying
+  `SecretBytes::new`. What changed is only that the wrap can no longer be
+  removed silently: deleting it is now a compile error rather than a green
+  test run. That is a guarantee about future edits, not about this
+  binary's behaviour, and the runtime behaviour of the shipped code is
+  **unchanged** by #571. Do not read the entry in the resolved list as a
+  new wipe.
+- **#569 path 2 ELIMINATES a copy rather than wiping one**, which *is*
+  strictly stronger — a copy that never exists needs no wipe, cannot be
+  missed by a future caller, and has no window at all. But its scope is
+  the ENCODE side only. It does not touch the DECODE side's
+  `take_text(...)`, which clones a `String` out of the borrowed tree into
+  `BlockEntry::block_name` on every `decode_manifest`. **That destination
+  is a plain, non-zeroizing `String` and remains one**: `BlockEntry` is not
+  a zeroize-typed struct, the clone is a genuine owned allocation, and
+  nothing in this slice wraps or wipes it. Manifest *decode* therefore
+  still materialises every block name in unwiped heap, once per open. The
+  encode side is closed; the decode side is not, and no issue tracks it
+  yet — it is named here so the "eliminated" verdict is not read across
+  the whole path.
+- **The block name is the only *known-field* plaintext this covers.** Every
+  other known field in the manifest body is UUIDs, counters, timestamps and
+  fingerprints — but the body also carries three
+  `BTreeMap<String, UnknownValue>` bags (`Manifest`, `BlockEntry`,
+  `TrashEntry`), which hold a v2 client's content verbatim and which #569
+  path 2 also stopped materialising: the deleted `unknown_value_inner`
+  re-encoded and re-parsed each one, per unknown, per write. This bullet
+  said "the only plaintext" until the #584 review, understating its own
+  result. The
+  elimination is real but its plaintext surface is one field.
+
+### Verification discipline: the cargo mtime trap
+
+Recorded here because this memo's sections lean on mutation verification —
+"delete the mechanism, confirm the test reds, restore" — and that technique
+has a silent failure mode nobody in three slices had written down.
+
+`cargo` decides whether to rebuild by comparing source mtime against the
+existing artifact. **A file restored or mutated by a BACKDATING operation
+can therefore be ignored entirely**, with the suite reporting on a binary
+that does not contain the edit. The backdating operations are `mv` (a
+same-filesystem rename preserves mtime), `cp -p`, `rsync -a`, and
+`touch -t`/`-r`. In-place editors are **immune by construction**: a write
+stamps "now", which postdates any prior build, which is exactly the
+monotonic-forward property cargo's check needs.
+
+**The two directions are not equally dangerous, and only one of them is a
+correctness risk:**
+
+- **Restore backdated** — cargo keeps serving the MUTATED binary, so the
+  test still reds after a genuine restore. Spurious and **loud**: it looks
+  like the restore failed, so it prompts investigation. Self-limiting, and
+  this is how the trap was found.
+- **Mutation backdated** — cargo keeps serving the CORRECT binary, the test
+  passes, and the verifier reads that as *"the mutation didn't red
+  anything, so this mechanism is unpinned."* A silent **false negative
+  about a guard's effectiveness**. **This is the dangerous direction**, and
+  it is dangerous precisely because its output is indistinguishable from a
+  real finding.
+
+Blast radius on this slice, stated as what was checked rather than as a
+clearance: the one task whose report names its literal restore command used
+a plain `cp` (which stamps "now", so it is not vulnerable). Three others
+say "restored from backup" without the command, so they could not be ruled
+out **from report text**; no positive evidence of the dangerous direction
+was found in any of them, and that is not the same as having excluded it.
+If you are verifying a mutation, prefer an in-place edit, or `touch` the
+file forward before building.
 
 ## Resolved: record-content zeroize
 
@@ -1713,7 +1915,7 @@ zeroize-typed output buffer**." `CanonicalValue`/`CanonicalMap` deliver the
 borrowing-input half in full. The output half — this paragraph continued —
 they did not: `to_canonical_vec` returned a bare `Vec<u8>`, and the
 `SecretBytes` wrap happened in the caller afterwards (`block.rs`'s
-`encrypt_block`, `manifest.rs`'s `sign_manifest`), which is why this
+`encrypt_block`, `manifest/file/sign.rs`'s `sign_manifest`), which is why this
 memo's own "still open" list named `re_encoded` (#565) as exactly the
 unwiped output buffer option (a) called for. **That description of the
 output half is ITSELF now stale, closed by the cbor-residue-closeout
@@ -1723,8 +1925,18 @@ INTO the encoder, out of the caller. `encrypt_block` and `sign_manifest`
 no longer wrap anything: they call `encode_plaintext(plaintext)?` /
 `encode_manifest(body)?` and get an already-wrapped `SecretBytes` back.
 Option (a) as written above — a borrowing CBOR encoder that writes
-directly to a zeroize-typed output buffer — is now built in full, not
-just its input half; see "Resolved: cbor-residue-closeout follow-up"
+directly to a zeroize-typed output buffer — is built on its INPUT side and
+at each encoder's RETURN BOUNDARY, which is not the same as its output
+buffer and this paragraph said "in full" until the #584 review.
+`canonical::to_canonical_vec` (and `legacy::encode_canonical_map`) still
+fill a plain `Vec<u8>` and the wrapper is applied one frame up, so on the
+`?` from ciborium's serialise call and on the `CapacityBoundExceeded`
+return that buffer — fully written, and on the bundle path a cleartext copy
+of all four long-term secret keys — drops unwiped. Both paths are
+unreachable today (serialising into a `Vec` writer is structurally
+infallible, and the bound check is a tripwire for a future
+`ciborium::Value` variant), so this
+is latent rather than live; see "Resolved: cbor-residue-closeout follow-up"
 below for why a structural return-type wrap is a stronger claim than a
 caller-side one, and "Resolved: canonical-CBOR codec-boundary residue
 (#547, #548)" above for the state this paragraph was originally

@@ -1,1 +1,1 @@
-docs/handoffs/2026-08-25-cbor-residue-closeout-shipped.md
+docs/handoffs/2026-08-29-manifest-closeout-shipped.md

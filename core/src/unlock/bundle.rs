@@ -296,24 +296,35 @@ impl IdentityBundle {
     /// deterministic: encoding twice produces identical bytes, and any
     /// conformant RFC 8949 §4.2.1 encoder produces the same output.
     ///
-    /// **Returns a bare `Vec<u8>`, unlike its three siblings** —
-    /// `record::encode`, `block::encode_plaintext` and `encode_manifest`
-    /// all return `SecretBytes` so the wrap cannot be deleted without a
-    /// compile error (#558, #565). This output is the highest-value
-    /// plaintext buffer in the crate (cleartext CBOR of the X25519 secret
-    /// key, the 2400-byte ML-KEM-768 decapsulation key, the Ed25519 secret
-    /// key and the ML-DSA-65 seed), and its production caller
-    /// `unlock::create_vault_unchecked` applies exactly the deletable
-    /// `SecretBytes::new(f()?)` shape those three were changed to
-    /// eliminate.
+    /// Returns [`SecretBytes`], not `Vec<u8>` (#571): this output is the
+    /// highest-value plaintext buffer in the crate — cleartext CBOR of the
+    /// X25519 secret key, the 2400-byte ML-KEM-768 decapsulation key, the
+    /// Ed25519 secret key and the ML-DSA-65 seed. Returning the wrapper
+    /// rather than leaving a caller to apply one means the wrap cannot be
+    /// deleted without a compile error — a stronger guarantee than a
+    /// caller-side `SecretBytes::new(..)` call, which is deletable with the
+    /// whole suite still green (verified by execution, #558). This closes
+    /// the last gap in that specific sibling group — `record::encode`,
+    /// `block::encode_plaintext` and `encode_manifest` made the same move
+    /// under #558/#565, and this was the one still returning `Vec<u8>`.
+    /// It is NOT the last `core` encoder of decrypted plaintext to return a
+    /// bare `Vec<u8>`: `UnknownValue::to_canonical_cbor`
+    /// ([`crate::vault::record`]) also serialises decrypted content and has
+    /// no wrapper at any point — untouched by this change, and tracked
+    /// separately (the memory-hygiene memo's still-open "`UnknownValue` has
+    /// no `Zeroize` impl" gap).
     ///
-    /// Tracked as **#571**, deliberately deferred for slice size — NOT
-    /// because anything blocks it. The handoff for the slice that changed
-    /// the other three recorded the reason as "T5's tests depend on it";
-    /// the #575 review found that misleading, since the two affected tests
-    /// need the same one-word `.as_slice()` -> `.expose()` edit that ~35
-    /// other tests in that slice already took.
-    pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, BundleError> {
+    /// The guarantee is about the TYPE, not about an observable wipe: freed
+    /// heap is not observable from safe Rust, so this signature makes no
+    /// claim about what happened to any earlier allocation. What it does
+    /// guarantee is that `Drop` runs on THIS buffer on every exit a caller
+    /// takes while holding it — a normal return, an early `?`, or an
+    /// unwinding panic. The production caller
+    /// (`unlock::create_vault_unchecked`) still hands the plaintext to
+    /// [`crate::crypto::aead::encrypt`] as `&[u8]`, via `.expose()` — the
+    /// AEAD primitive is a general one and does not itself require its
+    /// plaintext to be secret.
+    pub fn to_canonical_cbor(&self) -> Result<SecretBytes, BundleError> {
         // Every value BORROWS. The four long-term secret keys — X25519,
         // ML-KEM-768 (2400 B), Ed25519 and ML-DSA-65 — used to be cloned out
         // of their `Sensitive` wrappers into owned `Value::Bytes` on EVERY
@@ -353,7 +364,9 @@ impl IdentityBundle {
         map.push(KEY_ML_DSA_65_PK, CanonicalValue::Bytes(&self.ml_dsa_65_pk));
         map.push(KEY_CREATED_AT, CanonicalValue::Uint(self.created_at_ms));
 
-        to_canonical_vec(&map).map_err(canonical_error_to_bundle_error)
+        to_canonical_vec(&map)
+            .map(SecretBytes::new)
+            .map_err(canonical_error_to_bundle_error)
     }
 
     /// Inverse of [`Self::to_canonical_cbor`]. Validates that every required field
@@ -544,8 +557,33 @@ impl IdentityBundle {
             // no `Sensitive::new` needed here, and none of the leak this
             // fixed depended on where in this struct literal these two
             // fields sit.
+            //
+            // The `x25519_sk_bytes` / `ed25519_sk_bytes` locals are
+            // `Option<Sensitive<[u8; N]>>` (see the declarations above), so
+            // the `.ok_or(...)?` below MOVES each one — `Sensitive` is not
+            // `Copy` — either into the `bundle` field it becomes, or, on an
+            // early return from a field further down this struct literal,
+            // into a temporary that is then dropped (and zeroized) right
+            // there. This is a borrow-checker claim, not a memory one: the
+            // move is a memcpy, and the source stack slot still holds the
+            // bytes — the compiler only forbids NAMING that slot again
+            // (E0382), which is why the old trailing `.zeroize()` call on
+            // it had to be deleted rather than kept (#518). That residual
+            // slot is not a regression (the pre-#518 code left an
+            // equivalent unwiped temporary at the same point) — it is just
+            // not a "nothing left to wipe" completeness claim; the
+            // wrapper's own `Drop` is what actually reclaims it, on
+            // whichever of the two paths above the value ends up on.
             x25519_sk: x25519_sk_bytes.ok_or(BundleError::MissingField(KEY_X25519_SK))?,
             x25519_pk: x25519_pk.ok_or(BundleError::MissingField(KEY_X25519_PK))?,
+            // The Vec-typed `ml_kem_768_sk_bytes` / `ml_dsa_65_sk_bytes`
+            // locals are moved rather than copied, so on the path that
+            // REACHES the move below they need no wipe. That is not the
+            // whole story: on any `?` BEFORE their field in this struct
+            // literal they were never moved at all, and a plain `Vec<u8>`
+            // frees its heap buffer without zeroizing. They are
+            // `Sensitive<Vec<u8>>` (see the declarations above), so that
+            // path is covered by the wrapper's `Drop` like the other two.
             ml_kem_768_sk: ml_kem_768_sk_bytes
                 .ok_or(BundleError::MissingField(KEY_ML_KEM_768_SK))?,
             ml_kem_768_pk: ml_kem_768_pk.ok_or(BundleError::MissingField(KEY_ML_KEM_768_PK))?,
@@ -558,46 +596,19 @@ impl IdentityBundle {
 
         // Reject non-canonical input. Cheapest reliable check: re-encode
         // and compare; passes iff the input was already canonical. Same
-        // pattern as `card.rs::from_canonical_cbor`.
-        let mut canonical = bundle.to_canonical_cbor()?;
-        let is_canonical = canonical.as_slice() == bytes;
-        {
-            use zeroize::Zeroize as _;
-            // `canonical` is a full cleartext CBOR copy of every secret key;
-            // wipe it before returning on either branch. See #357.
-            //
-            // The `x25519_sk_bytes` / `ed25519_sk_bytes` locals that used to
-            // be wiped here explicitly are gone by this point regardless:
-            // they are `Option<Sensitive<[u8; N]>>` now (see the
-            // declarations above), so `.ok_or(...)?` in the struct
-            // construction above MOVED each one — `Sensitive` is not
-            // `Copy` — either into the `bundle` field it became, or, on an
-            // early return from a field further down the struct literal,
-            // into a temporary that is then dropped (and zeroized) right
-            // there. This is a borrow-checker claim, not a memory one:
-            // the move is a memcpy, and the source stack slot still holds
-            // the bytes — the compiler only forbids NAMING that slot again
-            // (E0382), which is why the old trailing `.zeroize()` call on
-            // it had to be deleted rather than kept (#518). That residual
-            // slot is not a regression (the pre-#518 code left an
-            // equivalent unwiped temporary at the same point) — it is just
-            // not the "nothing left to wipe" completeness this comment used
-            // to claim; the wrapper's own `Drop` is what actually reclaims
-            // it, on whichever of the two paths above the value ends up on.
-            // The Vec-typed `ml_kem_768_sk_bytes` / `ml_dsa_65_sk_bytes`
-            // locals are moved rather than copied, so on the path that
-            // REACHES the move they need no wipe here. That is not the whole
-            // story, and an earlier version of this comment stopped there:
-            // on any `?` BEFORE their field in the struct literal they were
-            // never moved at all, and a plain `Vec<u8>` frees its heap
-            // buffer without zeroizing. They are now `Sensitive<Vec<u8>>`
-            // (see the declarations above), so that path is covered by the
-            // wrapper's `Drop` like the other two.
-            canonical.zeroize();
-        }
+        // pattern as `card.rs::from_canonical_cbor`. `canonical` is a full
+        // cleartext CBOR copy of every secret key; see #357 for why that
+        // copy must not linger. `to_canonical_cbor` now returns
+        // `SecretBytes` (#571), so `Drop` wipes it on every exit below — no
+        // manual `.zeroize()` call needed, unlike the pre-#571 version of
+        // this check. Only the mechanism changed; the #357 rationale is why
+        // it still matters.
+        let canonical = bundle.to_canonical_cbor()?;
+        let is_canonical = canonical.expose() == bytes;
         if !is_canonical {
-            // `bundle` drops here at scope exit, zeroizing its sensitive
-            // fields; the caller never sees the partially-decoded value.
+            // `bundle` (and `canonical`) drop here at scope exit, zeroizing
+            // their sensitive contents; the caller never sees the
+            // partially-decoded value.
             return Err(BundleError::NonCanonicalCbor);
         }
 
@@ -1126,8 +1137,7 @@ mod tests {
         let bundle = generate("residue-test", 1_700_000_000_000, &mut rng);
 
         let encoded = bundle.to_canonical_cbor().expect("encode");
-        let round_tripped =
-            IdentityBundle::from_canonical_cbor(encoded.as_slice()).expect("decode");
+        let round_tripped = IdentityBundle::from_canonical_cbor(encoded.expose()).expect("decode");
         let re_encoded = round_tripped.to_canonical_cbor().expect("re-encode");
         assert_eq!(
             encoded, re_encoded,
@@ -1139,7 +1149,7 @@ mod tests {
         // the decoded bytes and compare: this stays correct if a key is
         // ever added, and it fails loudly if the comparator regresses.
         let Value::Map(entries) =
-            ciborium::de::from_reader::<Value, _>(encoded.as_slice()).expect("parse")
+            ciborium::de::from_reader::<Value, _>(encoded.expose()).expect("parse")
         else {
             panic!("bundle CBOR must be a map");
         };
@@ -1186,6 +1196,28 @@ mod tests {
              SecretEntries/SecretValueTree at all, since every value it \
              encodes borrows directly out of the bundle's own fields (#569)"
         );
+    }
+
+    /// The `SecretBytes` return type is what makes the wrap non-deletable
+    /// (#571). A `Vec<u8>` return would let a caller hold cleartext CBOR of
+    /// all four long-term secret keys with no wipe on drop, which is the
+    /// `SecretBytes::new(f()?)` shape #558 records as deletable with the
+    /// whole suite green.
+    ///
+    /// This test does not observe the wipe — freed heap is not observable
+    /// from safe Rust. It pins the TYPE, which is what the compiler enforces.
+    #[test]
+    fn to_canonical_cbor_returns_a_zeroizing_wrapper() {
+        let mut rng = ChaCha20Rng::from_seed([73u8; 32]);
+        let bundle = generate("return-type-check", 1_700_000_000_003, &mut rng);
+        let encoded: SecretBytes = bundle.to_canonical_cbor().expect("encode");
+        // The `SecretBytes` ascription above is the pin that actually
+        // fires: if the return type regressed to `Vec<u8>`, rustc reports a
+        // mismatched-types error right there (verified by mutation) and
+        // never reaches this line. `.expose()` below is a second, weaker
+        // pin — it would itself fail to compile (no such method on
+        // `Vec<u8>`) only if the ascription above were also removed.
+        assert!(!encoded.expose().is_empty());
     }
 
     /// #548 — the C-4 read side, and the audit's own FIRST-named sub-item.
@@ -1266,7 +1298,7 @@ mod tests {
         let encoded = bundle.to_canonical_cbor().expect("encode");
 
         let before = crate::cbor::wipe_calls();
-        let decoded = IdentityBundle::from_canonical_cbor(&encoded).expect("decode");
+        let decoded = IdentityBundle::from_canonical_cbor(encoded.expose()).expect("decode");
         let after = crate::cbor::wipe_calls();
 
         assert_eq!(decoded.user_uuid, bundle.user_uuid);
@@ -1516,7 +1548,7 @@ mod tests {
         let mut rng = ChaCha20Rng::from_seed([6u8; 32]);
         let b = generate("Bob", 1_714_060_800_001, &mut rng);
         let bytes = b.to_canonical_cbor().expect("encode");
-        let parsed = IdentityBundle::from_canonical_cbor(&bytes).expect("decode");
+        let parsed = IdentityBundle::from_canonical_cbor(bytes.expose()).expect("decode");
         // `Sensitive` does not impl PartialEq (see crypto::secret docs), so
         // compare exposed contents explicitly.
         assert_eq!(parsed.user_uuid, b.user_uuid);
@@ -1610,7 +1642,7 @@ mod tests {
         let b = generate("Carol", 1_714_060_800_002, &mut rng);
         let bytes = b.to_canonical_cbor().expect("encode");
 
-        let value: Value = ciborium::de::from_reader(&bytes[..]).expect("re-decode as CBOR");
+        let value: Value = ciborium::de::from_reader(bytes.expose()).expect("re-decode as CBOR");
         let Value::Map(entries) = value else {
             panic!("expected top-level map")
         };
@@ -1745,7 +1777,7 @@ mod tests {
         let canonical = b.to_canonical_cbor().unwrap();
 
         for (key, expected) in sites {
-            let value: Value = ciborium::de::from_reader(&canonical[..]).unwrap();
+            let value: Value = ciborium::de::from_reader(canonical.expose()).unwrap();
             let Value::Map(mut entries) = value else {
                 panic!("bundle is a map")
             };
@@ -1786,7 +1818,7 @@ mod tests {
         let mut rng = ChaCha20Rng::from_seed([8u8; 32]);
         let b = generate("X", 0, &mut rng);
         let bytes = b.to_canonical_cbor().unwrap();
-        let value: Value = ciborium::de::from_reader(&bytes[..]).unwrap();
+        let value: Value = ciborium::de::from_reader(bytes.expose()).unwrap();
         let Value::Map(mut entries) = value else {
             panic!()
         };
@@ -1822,7 +1854,7 @@ mod tests {
         let mut rng = ChaCha20Rng::from_seed([10u8; 32]);
         let b = generate("X", 0, &mut rng);
         let bytes = b.to_canonical_cbor().unwrap();
-        let value: Value = ciborium::de::from_reader(&bytes[..]).unwrap();
+        let value: Value = ciborium::de::from_reader(bytes.expose()).unwrap();
         let Value::Map(mut entries) = value else {
             panic!()
         };
@@ -1985,7 +2017,7 @@ mod tests {
         // the canonicality comparison, so the error must be
         // `DuplicateField`.
         let Value::Map(mut entries) =
-            ciborium::de::from_reader::<Value, _>(encoded.as_slice()).expect("parse")
+            ciborium::de::from_reader::<Value, _>(encoded.expose()).expect("parse")
         else {
             panic!("bundle CBOR must be a map");
         };

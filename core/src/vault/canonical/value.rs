@@ -685,6 +685,21 @@ mod tests {
         /// `CanonicalMap` and asserting the SERIALIZED key order, which is
         /// the only thing that makes this a pin rather than a proof.
         /// Verified by mutation in both directions.
+        ///
+        /// Counterexamples from this test ARE committed — the one exception to
+        /// the project's "do not commit proptest regressions" policy, carved out
+        /// in `.gitignore` (#577). The reason is the paragraph above: this is a
+        /// format-freezing property whose only other anchors are ASCII-only
+        /// fixtures (#562), so a CI failure here must yield a replayable seed
+        /// rather than a message.
+        ///
+        /// **The carve-out is keyed on the MODULE FILE, not on this test.**
+        /// `proptest` names its regression file after the module path, so the
+        /// negation re-includes `core/proptest-regressions/vault/canonical/
+        /// value.txt` — every proptest in THIS file, not just this one. There
+        /// is exactly one today. A second proptest added here would have its
+        /// counterexamples become committable with no signal, so either keep
+        /// this file to one proptest or widen `.gitignore` deliberately.
         #[test]
         fn len_then_bytes_matches_full_cbor_encoding_order(a: String, b: String) {
             let by_parts = (a.len(), a.as_bytes()).cmp(&(b.len(), b.as_bytes()));

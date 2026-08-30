@@ -344,7 +344,7 @@ mod unlock {
             let bytes_1 = b.to_canonical_cbor().unwrap();
             let bytes_2 = b.to_canonical_cbor().unwrap();
             prop_assert_eq!(&bytes_1, &bytes_2, "encoding non-deterministic");
-            let parsed = bundle::IdentityBundle::from_canonical_cbor(&bytes_1).unwrap();
+            let parsed = bundle::IdentityBundle::from_canonical_cbor(bytes_1.expose()).unwrap();
             prop_assert_eq!(parsed.user_uuid, b.user_uuid);
             prop_assert_eq!(parsed.x25519_pk, b.x25519_pk);
         }
@@ -544,8 +544,11 @@ mod vault {
 
     /// Strategy for one `RecordField`. Per-field `unknown` left empty —
     /// modelling forward-compat unknowns in proptest adds significant
-    /// strategy complexity beyond Task 7's scope; the integration tests
-    /// in `core/tests/vault.rs` and the fixed KATs cover that path.
+    /// strategy complexity beyond Task 7's scope; the fixed KATs and the
+    /// integration tests in `core/tests/conflict.rs` /
+    /// `core/tests/vault_e2e.rs` cover that path. (This cited
+    /// `core/tests/vault.rs` until the #584 review; that file contains no
+    /// `UnknownValue` at any level.)
     fn record_field_strategy() -> impl Strategy<Value = RecordField> {
         (field_value_strategy(), any::<u64>(), any::<[u8; 16]>()).prop_map(
             |(value, last_mod, device_uuid)| RecordField {
@@ -1297,9 +1300,21 @@ mod vault {
 // empty for the same reason they are left empty in `record_strategy` and
 // `record_field_strategy`: modelling forward-compat unknowns adds
 // significant strategy complexity and is the deferred enhancement noted in
-// secretary_next_session.md Item 7. The fixed KATs in `core/src/vault/manifest.rs`
-// `mod tests` and the integration tests in `core/tests/vault.rs` cover the
-// unknown-key round-trip path.
+// secretary_next_session.md Item 7. The fixed KATs in the
+// `core/src/vault/manifest/` module's own `mod tests` (distributed across
+// the module's files by #564) are what covers the manifest unknown-key
+// round-trip path — and they are ALL of it. This comment also cited "the
+// integration tests in `core/tests/vault.rs`" until the #584 review:
+// that file contains no `UnknownValue` at any level, and there is no
+// manifest-level unknown round trip at integration level anywhere.
+//
+// Tracked as #578: because this strategy leaves those three bags empty,
+// Property F below never exercises the forward-compat `unknown` round trip
+// that #572's re-encode-and-compare check relies on for v2 soundness.
+// Note for whoever takes #578 that "significant strategy complexity" above
+// overstates the cost at the manifest level: `unknown_map_strategy` already
+// exists in this file (record section) and `UnknownValue::from_canonical_cbor`
+// does the validation.
 
 mod manifest_props {
     use std::collections::BTreeMap;
@@ -1541,8 +1556,9 @@ mod manifest_props {
     proptest! {
         /// Property F. `decode_manifest(encode_manifest(m)) == m` for any
         /// well-formed [`Manifest`]. Catches encoder/decoder asymmetry that
-        /// the fixed KATs in `core/src/vault/manifest.rs::tests` cannot
-        /// catch by construction (they only pin pre-chosen inputs).
+        /// the fixed KATs in the `core/src/vault/manifest/` module's own
+        /// `mod tests` cannot catch by construction (they only pin
+        /// pre-chosen inputs).
         ///
         /// All sort-discipline arrays (`vector_clock`, per-block
         /// `vector_clock_summary`, `blocks`, `trash`, per-block

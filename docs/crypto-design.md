@@ -311,7 +311,7 @@ Every byte string referenced as `canonical_cbor(...)` in this document — the �
 2. **Definite-length encoding** for all maps, arrays, and byte/text strings.
 3. **Shortest-form integer and length prefixes.** Integers and length headers use the smallest CBOR major-type-0 / major-type-1 / length encoding that fits. Negative integers are encoded as major type 1 with the same shortest-form rule.
 4. **No tags, no floats, no indefinite-length items** anywhere in v1 records.
-5. **Duplicate map keys are forbidden** (RFC 8949 §5.4); decoders MUST reject input that contains them.
+5. **Duplicate map keys are forbidden** (RFC 8949 §5.4); decoders MUST reject input that contains them. This reject-MUST is scoped to the material a decoder *interprets* — every map whose keys it dispatches on. It does **not** reach inside a forward-compat unknown subtree (vault-format §6.3.2), whose contents the decoder cannot interpret and must reproduce byte-for-byte on re-encode; a decoder therefore accepts a repeated key, and a key order of its own, *within* such a subtree. Rule 1 is scoped the same way and for the same reason. This is a limit on what a decoder may reject, not a licence for an encoder: the version that authors an extension is bound by all five rules inside its own subtrees, and a decoder that understands the extension interprets it and applies them. vault-format §4.2 states the per-rule split and the preservation requirement in full.
 
 A clean-room implementation passing the equivalent of `cbor2.dumps(record, canonical=True)` (Python) or sorting and shortest-form-encoding manually produces bit-identical bytes to this reference. The KAT files under `core/tests/data/` pin the byte form for v1 cards.
 

@@ -13,6 +13,9 @@ The cryptographic design and on-disk format are **frozen for v1** because vaults
 ```
 core/                Rust crate `secretary-core` — the security-critical source of truth
 core/src/{crypto,identity,unlock,vault}/   — module per spec section
+core/src/vault/manifest/                   — DIRECTORY module (#564), not manifest.rs; 18 files:
+                                             10 production, 7 sibling `tests.rs`, and one
+                                             `#[cfg(test)]` `test_support.rs`
 core/tests/          — integration tests; tests/data/ holds KATs and fuzz regressions
 core/tests/python/conformance.py           — clean-room verifier (generic crypto primitives via
                                              PEP 723; no dependency on `secretary-core`); proves
@@ -252,6 +255,93 @@ If a CRDT change requires the proptests to weaken, that's a design problem. Push
 ### Crash recovery: repair_vault and the equal-clock invariant (#350)
 
 `core/src/vault/repair.rs` holds the crash-recovery layer: an open-time best-effort sweep completing interrupted trash renames (`trash_block` is **manifest-first** — the signed-manifest write is the commit point; the physical `blocks/ → trash/` move is best-effort), and `repair_vault`, which adopts crash-residue blocks whose fingerprint mismatches the manifest, behind hard gates (hybrid verify ∧ header binding ∧ clock freshness, all-or-nothing). The non-obvious, load-bearing invariant: **equal block clock ⇒ identical plaintext**. Content writes (`save_block`) tick the block vector clock; re-keys (`share_block` / `revoke_block_recipient` via `rewrite_block_with_recipients`) re-encrypt the *unchanged* plaintext and preserve the clock. `repair_vault` therefore refuses to adopt any recipient **widening** regardless of clock relation (fail-closed — re-granting access is never automatic): a legitimate crashed `save_block` re-encrypts to the *existing* recipient set so its `IncomingDominates` residue never adds a recipient, and a crashed re-key lands as `Equal` where only a strict-subset reduction is adopted. This guard is relation-independent on purpose — an earlier Equal-only version left the `IncomingDominates` arm able to re-grant a clock-invisible revoke via a planted owner-signed content-save. Soundness of the Equal tier rests on the equal-clock invariant; it holds *only while* that invariant holds. If you ever make a clock-preserving path mutate the plaintext, you MUST tick the block clock instead (guard comments at `rewrite_block_with_recipients`; normative in vault-format.md §6.5.1). Wall-clock `last_mod_ms` must never be used as a freshness signal — it has no monotonicity guarantee, and a timestamp-gated variant was demonstrated exploitable (revoked-recipient re-grant) during the #350 review.
+
+### The manifest module, and what its canonical-input check does not catch
+
+`core/src/vault/manifest/` is a **directory module** (#564) — `manifest.rs`
+was 4273 lines and is gone. Any `core/src/vault/manifest.rs:NNN` citation you
+find in a doc predates the split and is stale. **Watch for the near-miss:**
+`ffi/secretary-ffi-bridge/src/vault/manifest.rs` is a DIFFERENT file that
+still exists, and citations to it are valid — only ones resolving under
+`core/src/` are stale.
+
+`decode_manifest` re-encodes the parsed `Manifest` and requires a
+byte-identical match against its input (#572), which is what `record::decode`
+and `block::decode_plaintext` already did. **At this layer the check is
+strictly stronger than at those two**, and deliberately so: `encode_manifest`
+sorts five arrays on output (`vector_clock`, `blocks`, `trash`, per-block
+`recipients`, per-block `vector_clock_summary`), so an array that arrives out
+of sort order is rejected too. That is a wider rejection surface than "canonical
+CBOR", on the path *every vault open* takes.
+
+**The residual, stated exactly, because the obvious wider claim is false.**
+Inside a forward-compat `unknown` subtree the check misses **duplicate map
+keys and map-key order — and nothing else.** Every encoding-level
+non-canonicality *is* rejected there: indefinite-length maps, arrays, text
+and byte strings, and non-shortest-form integer and length prefixes. The
+mechanism is the `from_secret_reader` call at the TOP of `decode_manifest`,
+not anything on the unknown-key path: `ciborium`'s `Value` reader collapses
+indefinite lengths and non-shortest heads at parse time, so any subtree is
+already the *normalisation* of the wire bytes by the time it is examined, and
+only properties `ciborium::Value` can still represent survive — `Value::Map`
+is an ordered `Vec` of pairs, so entry order and repeats do. Do **not**
+attribute this to `extract::value_to_unknown`'s re-serialise/re-parse hop;
+that hop is an identity on an already-normalised `Value`, and `record.rs`,
+which has no such hop, behaves identically. The practical consequence runs
+the opposite way to the intuitive one: a v2 client that puts **one
+indefinite-length item** inside an extension field makes those vaults
+**unopenable by v1**.
+
+**Two frozen-spec edits were made. No byte on disk changes, and both are
+reversible** — but be precise about *whose* behaviour each documents, because
+the writer and reader halves have different histories:
+
+- `docs/vault-format.md` §4.2 now states the five array sort disciplines as
+  normative, plus the repeated-array-value rules. **Writer side: longstanding**
+  — `6e53b49d`, the first manifest commit, already sorted all five and named
+  them in its module doc, so every manifest this codebase has ever written is
+  sorted. **Reader side: NEW, at `a2da3d24` (#572)** — the same commit that
+  added the normative sentence. `main`'s manifest decoder has no
+  `ManifestError::NonCanonicalEncoding` variant, no re-encode-and-compare, and
+  no array-order check at all (`parse_vector_clock` / `parse_blocks` /
+  `parse_trash` sort a *copy* of the ids only to detect duplicates, never the
+  input order). So the accepted-manifest set genuinely **narrowed** for
+  anything this codebase did not write — do not summarise this as "no reader
+  behaviour changed". The sort disciplines were enforced by the encoder and
+  written down nowhere, so a clean-room implementer reading `docs/` alone
+  would have emitted unsorted arrays and been rejected by the new check —
+  exactly the property `conformance.py` exists to gate. The same section carries the
+  per-rule split for `unknown` subtrees — a five-row table against
+  crypto-design §6.2's five rules, with **2/3/4 enforced and 1/5 not**. Be
+  careful with the mechanism, which is not uniform across those three: rules 2
+  and 3 are caught by the §4.3 step-4 re-encode *for a normalising-parse
+  reader* (a byte-retaining reader must check them directly, and the table's
+  row 2 says so); rule 4 is never the re-encode, because a normalising parse
+  preserves a tag or a float and re-encodes it identically — it is caught by a
+  separate whole-body walk, which in this codebase is
+  `reject_floats_and_tags` at `manifest/decode/mod.rs:114`, run before the
+  re-encode. Alongside the table sits the byte-preservation MUST that makes
+  re-emission possible, stated as a two-part obligation so that every
+  representation is admissible on equal terms.
+- `docs/crypto-design.md` §6.2 **rules 1 and 5** (map-key order; reject
+  duplicate keys) are now scoped to material the reader *interprets*. The Rust
+  decoder has always accepted both inside `unknown` subtrees — in `record.rs`
+  and `block.rs` as well as here, verified by execution over twelve cases — so
+  the unscoped rules had been inconsistent with the implementation since v1.
+  Enforcing them instead would break forward-compat and change three modules.
+
+`canonical_sort_entries` **still has a production caller** — the manifest
+encoder is no longer it. #569 path 2 moved the manifest encode path onto the
+borrowing `CanonicalMap`, but `sync::state::SyncState::to_canonical_cbor`
+(`core/src/sync/state.rs:107`) still sorts a two-key vector-clock entry map on
+the way to OS-keystore persistence. `encode_canonical_map` likewise keeps
+`sync::state` and `identity::card`. Both also remain in use from `#[cfg(test)]`
+oracles and fixtures — but not the same files, so do not flatten the two:
+`canonical_sort_entries` is called from `record.rs` and the manifest module's
+`test_support.rs`; `encode_canonical_map` from `record.rs`, `block.rs` and three
+manifest test files. `block.rs` calls `canonical_sort_entries` nowhere, and
+`encode_canonical_map` does not reach it either (it has its own inline sort).
+Do not delete either as dead.
 
 ### Atomic-write contract
 
@@ -921,9 +1011,9 @@ Every secret-bearing byte string is wrapped in `Sensitive<T>` or `SecretBytes` (
 - **If the secret is incrementally built from several byte slices** (e.g. an HKDF `ikm` concatenating multiple shared secrets) — use `SecretBytes::concat(&[a, b, c, ...])` (#524), not `build`/`try_build`. Wrapping first covers a panic during the fill but **not a reallocation**: if a hand-written capacity is ever wrong, a growing push reallocates, and the allocator frees the *old* buffer unwiped while `Drop` only ever wipes whatever buffer the `Vec` points at when it drops — the new one. `concat` derives capacity and performs every push from the same slice list in one function, so the two cannot drift and no reallocation can occur. Don't "simplify" a `concat` call back to `try_build` — that reintroduces exactly this hazard.
 - **If a secret must cross a foreign serialisation boundary** (encoding a `SecretString`/`SecretBytes` into `ciborium::Value`, or parsing untrusted CBOR back into one) — the two hazards above (fill-then-wrap, incremental-build realloc) don't cover this case, because the foreign type's own allocator, not this crate's fill logic, is what's under-controlled. Two mechanisms, matched to which side owns the allocation (#547, #548):
   - **We own the allocation (encoding a secret out)** — prefer a **borrowing mirror** over copying into the foreign type. `CanonicalValue`/`CanonicalMap` ([core/src/vault/canonical/value.rs](core/src/vault/canonical/value.rs)) is a borrowing mirror of the CBOR subset the vault format uses: every leaf borrows straight out of a `SecretString`/`SecretBytes` (`Text(&'a str)`, `Bytes(&'a [u8])`) instead of copying into an owned `ciborium::Value::{Text,Bytes}`, and `CanonicalMap` sorts its keys by `(key.len(), key.as_bytes())` read straight through the borrowed `&str`s, so **no key buffer is ever materialised** (the sort does allocate a small `Vec<usize>` index permutation — pointers and lengths, never key bytes; "allocation-free" overstated it, and `value.rs`'s own module doc has the precise wording) — which matters when the keys themselves are decrypted plaintext (record field names). A copy that never exists needs no wipe and can't be missed by a future caller; elimination is strictly stronger than the wrap below wherever it's achievable.
-  - **The foreign type owns the allocation (a parser's output)** — you can't eliminate that copy, only wipe it. `SecretValueTree`/`SecretEntries` ([core/src/cbor/secret_tree/](core/src/cbor/secret_tree/)) wrap a parsed `ciborium::Value` (or entry list) and recursively zeroize `Bytes` and `Text` through `Array`/`Map`/`Tag` on `Drop`, covering the parser's own allocation on every exit — including an early `?` or an unwinding panic — that a bare `Value`'s ordinary drop does not. **What this does not claim:** freed heap is not observable from safe Rust, and a reallocation `ciborium`'s parser performed internally, before the wrapper ever sees the value, predates the wrapper and is not covered. `SecretValueTree` covers the buffer the tree points at when it drops — a value cloned *out* of the tree beforehand is an ordinary, unwiped allocation from that point on. The parser's *scratch* buffer (as opposed to the tree it builds) is a separate gap, closed by `cbor::scratch::from_secret_reader` ([core/src/cbor/scratch.rs](core/src/cbor/scratch.rs)), which owns `ciborium`'s `[0u8; 4096]` staging buffer and wipes it on every exit; six secret-bearing decode sites route through it and the two that do not each say why in source. What that does NOT close is the parser growing a payload buffer from capacity 0 above 4 KiB, freeing unwiped prefixes as it doubles (#570).
+  - **The foreign type owns the allocation (a parser's output)** — you can't eliminate that copy, only wipe it. `SecretValueTree`/`SecretEntries` ([core/src/cbor/secret_tree/](core/src/cbor/secret_tree/)) wrap a parsed `ciborium::Value` (or entry list) and recursively zeroize `Bytes` and `Text` through `Array`/`Map`/`Tag` on `Drop`, covering the parser's own allocation on every exit — including an early `?` or an unwinding panic — that a bare `Value`'s ordinary drop does not. **What this does not claim:** freed heap is not observable from safe Rust, and a reallocation `ciborium`'s parser performed internally, before the wrapper ever sees the value, predates the wrapper and is not covered. `SecretValueTree` covers the buffer the tree points at when it drops — a value cloned *out* of the tree beforehand is an ordinary, unwiped allocation from that point on. The parser's *scratch* buffer (as opposed to the tree it builds) is a separate gap, closed by `cbor::scratch::from_secret_reader` ([core/src/cbor/scratch.rs](core/src/cbor/scratch.rs)), which owns `ciborium`'s `[0u8; 4096]` staging buffer and wipes it on every exit; five secret-bearing decode sites route through it and the two that do not each say why in source (it was six until #569 path 2 deleted the manifest encoder's `unknown_value_inner`, whose re-parse was the sixth — note the grep that `scratch.rs`'s doc comment names returns six ROWS against five call sites, the sixth row being that doc comment itself). What that does NOT close is the parser growing a payload buffer from capacity 0 above 4 KiB, freeing unwiped prefixes as it doubles (#570).
 
-  See `docs/manual/contributors/memory-hygiene-audit-internal.md`, "Resolved: canonical-CBOR codec-boundary residue (#547, #548)" for the full six-copy trace this pair of mechanisms closes and the four production `SecretValueTree`/`SecretEntries` roots (`record`, `block`, `bundle`, `manifest`); its own "Resolved: cbor-residue-closeout follow-up" section (#561, #565–#569) covers what a later slice closed on top of it (#570 is named there too, but deliberately documented rather than closed) — the `re_encoded` re-check buffer is no longer on that memo's open list; `UnknownValue` having no `Zeroize` impl still is.
+  See `docs/manual/contributors/memory-hygiene-audit-internal.md`, "Resolved: canonical-CBOR codec-boundary residue (#547, #548)" for the full six-copy trace this pair of mechanisms closes and the four production `SecretValueTree`/`SecretEntries` roots (`record`, `block`, `bundle`, `manifest`); its own "Resolved: cbor-residue-closeout follow-up" section (#561, #565–#569) covers what a later slice closed on top of it (#570 is named there too, but deliberately documented rather than closed) — the `re_encoded` re-check buffer is no longer on that memo's open list; `UnknownValue` having no `Zeroize` impl still is. A third section, "Resolved: manifest-closeout (#571, #569 path 2)", covers the last two encode-side residues: the bundle encoder returning `SecretBytes` and the manifest encode path borrowing rather than copying. Read its "what this does not claim" paragraph before citing either — #571 pins a TYPE and performs no new wipe, and #569 path 2's elimination is ENCODE-side only, leaving manifest DECODE still cloning every `block_name` into a plain, non-zeroizing `String`.
 - **If a function's output is *always* secret** (a canonical encoding of decrypted
   content, an AEAD body) — return the wrapper, don't ask callers to apply one.
   `record::encode` / `block::encode_plaintext` / `encode_manifest` return

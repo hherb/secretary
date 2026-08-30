@@ -119,3 +119,14 @@ docs/threat-model.md::registrable_domain
 
 # reason: D.4 autofill design identifier (origin_binding mode value), no code yet — see ADR 0010
 docs/threat-model.md::exact_origin
+
+# --- Symbols deleted by the manifest-closeout slice (#569 path 2, #564).
+# --- The memory-hygiene memo cites them in explicitly HISTORICAL narrative
+# --- ("this table used to carry a fifth row", "was deleted by") — retracting
+# --- the prose instead would erase the audit trail these sections exist for.
+
+# reason: core/src/vault/manifest.rs::unknown_value_inner — deleted by #569 path 2 (commit 0f1a8384); memo cites it historically to record what the manifest encode path used to materialise
+docs/manual/contributors/memory-hygiene-audit-internal.md::unknown_value_inner
+
+# reason: core/src/vault/manifest.rs::block_entry_to_value — deleted by #569 path 2 (commit 0f1a8384); memo cites it historically as the plaintext-bearing caller of canonical_sort_entries that path 2 eliminated
+docs/manual/contributors/memory-hygiene-audit-internal.md::block_entry_to_value
