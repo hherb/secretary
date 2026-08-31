@@ -3904,8 +3904,96 @@ TRASH_ENTRY_KNOWN_KEYS = frozenset({
     "fingerprint", "purged_at_ms",
 })
 
+# Required subsets of the two entry-known-key sets above (#585 fix round 2,
+# Finding 4). `BlockEntry` has no `Option` field at all, so all 8 known
+# keys are required; `TrashEntry` has exactly 2 (`fingerprint`,
+# `purged_at_ms`), so its required set excludes them.
+BLOCK_ENTRY_REQUIRED_KEYS = BLOCK_ENTRY_KNOWN_KEYS
+TRASH_ENTRY_REQUIRED_KEYS = frozenset({"block_uuid", "tombstoned_at_ms", "tombstoned_by"})
 
-def _decode_manifest_entry_map(data: bytes, pos: int, end: int, known_keys: frozenset) -> dict:
+# `KdfParamsRef`'s known wire keys, verified against
+# `manifest/decode/entries.rs::parse_kdf_params` (:442-511): its catch-all
+# match arm returns `WrongType` for any key outside this set -- unlike
+# `BlockEntry`/`TrashEntry`, `KdfParamsRef` has NO `unknown` bag (#585 fix
+# round 2, Finding 3). All four are required (no `Option` field).
+KDF_PARAMS_KNOWN_KEYS = frozenset({"memory_kib", "iterations", "parallelism", "salt"})
+
+# `VectorClockEntry`'s known wire keys, verified against
+# `manifest/decode/entries.rs::parse_vector_clock_entry` (:49-108): same
+# catch-all `WrongType` shape as `parse_kdf_params` -- no `unknown` bag
+# (#585 fix round 2, Finding 3). Serves BOTH the top-level `vector_clock`
+# array and each block entry's `vector_clock_summary` array: Rust's
+# `parse_vector_clock` is one function taking only an error-message
+# `field: &'static str`, called with `KEY_VECTOR_CLOCK` at the top level
+# and `KEY_VECTOR_CLOCK_SUMMARY` inside `parse_block_entry` -- the entry
+# shape itself never varies. Both keys are required (no `Option` field).
+VECTOR_CLOCK_ENTRY_KNOWN_KEYS = frozenset({"device_uuid", "counter"})
+
+
+def _decode_strict_entry_map(
+    data: bytes, pos: int, end: int, known_keys: frozenset, label: str
+) -> dict:
+    """Decode one CBOR map with a FIXED shape and NO forward-compat
+    `unknown` bag (#585 fix round 2, Finding 3) -- the OPPOSITE polarity to
+    `_decode_manifest_entry_map` below. `KdfParamsRef` and
+    `VectorClockEntry` have no `unknown` field, unlike `BlockEntry`/
+    `TrashEntry`: `parse_kdf_params` / `parse_vector_clock_entry` each end
+    in a catch-all match arm that REJECTS any key outside their known set
+    as `ManifestError::WrongType`, where the block/trash entry parsers
+    instead absorb it into their own `unknown` bag. The distinguishing
+    fact is whether the Rust struct HAS an `unknown` bag at all -- do not
+    generalise this helper's rejection behaviour onto
+    `_decode_manifest_entry_map`'s entries, or vice versa.
+
+    Also rejects a duplicate of a KNOWN key, mirroring each Rust parser's
+    own per-field `DuplicateKey` check.
+    """
+    import cbor2
+
+    entries, entry_end = _scan_map_entries(data, pos)
+    if entry_end != end:
+        raise ValueError(f"{label} entry map span mismatch at offset {pos}")
+
+    out: dict[str, Any] = {}
+    for (ks, ke), (vs, ve) in entries:
+        kmaj, _, _, _ = _decode_head(data, ks)
+        if kmaj != 3:
+            raise ValueError(f"{label} entry map key at offset {ks} is not a text string")
+        key = cbor2.loads(data[ks:ke])
+        if key not in known_keys:
+            raise ValueError(
+                f"{label} has no forward-compat bag -- unrecognised key {key!r}"
+            )
+        if key in out:
+            raise ValueError(f"duplicate {label} key: {key!r}")
+
+        _check_canonical_item(data, vs)
+
+        out[key] = cbor2.loads(data[vs:ve])
+    return out
+
+
+def _decode_strict_array(
+    data: bytes, pos: int, end: int, known_keys: frozenset, label: str
+) -> list:
+    """Decode an array of `_decode_strict_entry_map` entries -- the
+    `vector_clock` / `vector_clock_summary` shape (#585 fix round 2,
+    Finding 3).
+    """
+    items, arr_end = _scan_array_items(data, pos)
+    if arr_end != end:
+        raise ValueError(f"{label} array span mismatch at offset {pos}")
+    return [_decode_strict_entry_map(data, s, e, known_keys, label) for s, e in items]
+
+
+def _decode_manifest_entry_map(
+    data: bytes,
+    pos: int,
+    end: int,
+    known_keys: frozenset,
+    required_keys: frozenset,
+    label: str,
+) -> dict:
     """Decode one manifest-array entry map (a `blocks[i]` or `trash[i]`),
     matching the corresponding Rust `parse_block_entry` / `parse_trash_entry`
     (#585 fix round 1, Finding 1): the design originally scoped span-based
@@ -3916,22 +4004,36 @@ def _decode_manifest_entry_map(data: bytes, pos: int, end: int, known_keys: froz
     `cbor2.loads` (Rust tolerates it; §4.2's unknown-subtree exemption for
     rules 1/5 applies at every nesting level, not just the top one).
 
-    Dispatches KNOWN entry keys through `cbor2.loads` on their value span;
-    retains UNKNOWN values as raw bytes; rejects a duplicate key -- known
-    or unknown -- within this one entry (mirrors Rust's per-arm
-    `DuplicateKey` / `BTreeMap::insert` duplicate check). Every value,
-    known or unknown, is checked for §6.2 rules 2/3/4 via
-    `_check_canonical_item`, exactly as `py_decode_manifest`'s own
+    Dispatches KNOWN entry keys through `cbor2.loads` on their value span
+    -- EXCEPT `vector_clock_summary`, routed through `_decode_strict_array`
+    (#585 fix round 2, Finding 3), since a `VectorClockEntry` has no
+    `unknown` bag of its own and must reject any key outside its fixed
+    shape, unlike this entry itself. Retains UNKNOWN values as raw bytes;
+    rejects a duplicate key -- known or unknown -- within this one entry
+    (mirrors Rust's per-arm `DuplicateKey` / `BTreeMap::insert` duplicate
+    check). Every value, known or unknown, is checked for §6.2 rules 2/3/4
+    via `_check_canonical_item`, exactly as `py_decode_manifest`'s own
     top-level loop does one level up (redundant with the top-level call
     that already walked this whole subtree structurally, but kept for
     exact symmetry with that loop and so this helper is correct if ever
     called on its own).
+
+    Finally, asserts every key in `required_keys` is present, raising
+    `ValueError` (not `KeyError`) naming the missing field (#585 fix round
+    2, Finding 4) -- `BlockEntry` has no `Option` field (all 8 known keys
+    required) and `TrashEntry` excludes its 2 `Option` fields
+    (`fingerprint`, `purged_at_ms`) from its required set. `ValueError` is
+    deliberate: a `KeyError` here would still be caught cleanly at the
+    `verify_block_and_manifest` call site (which catches both), but this
+    module's own `section_manifest_body_*_guard` test sections use the
+    narrower `except ValueError`, and a corpus fixture exercising this gap
+    would otherwise crash the verifier instead of reporting a clean FAIL.
     """
     import cbor2
 
     entries, entry_end = _scan_map_entries(data, pos)
     if entry_end != end:
-        raise ValueError(f"manifest entry map span mismatch at offset {pos}")
+        raise ValueError(f"{label} entry map span mismatch at offset {pos}")
 
     out: dict[str, Any] = {}
     unknown: dict[str, bytes] = {}
@@ -3940,24 +4042,40 @@ def _decode_manifest_entry_map(data: bytes, pos: int, end: int, known_keys: froz
     for (ks, ke), (vs, ve) in entries:
         kmaj, _, _, _ = _decode_head(data, ks)
         if kmaj != 3:
-            raise ValueError(f"manifest entry map key at offset {ks} is not a text string")
+            raise ValueError(f"{label} entry map key at offset {ks} is not a text string")
         key = cbor2.loads(data[ks:ke])
         if key in seen:
-            raise ValueError(f"duplicate manifest entry key: {key!r}")
+            raise ValueError(f"duplicate {label} entry key: {key!r}")
         seen.add(key)
 
         _check_canonical_item(data, vs)
 
         if key in known_keys:
-            out[key] = cbor2.loads(data[vs:ve])
+            if key == "vector_clock_summary":
+                out[key] = _decode_strict_array(
+                    data, vs, ve, VECTOR_CLOCK_ENTRY_KNOWN_KEYS, "vector_clock_summary"
+                )
+            else:
+                out[key] = cbor2.loads(data[vs:ve])
         else:
             unknown[key] = data[vs:ve]
+
+    for required in sorted(required_keys):
+        if required not in out:
+            raise ValueError(f"{label} entry missing required field: {required!r}")
 
     out["unknown"] = unknown
     return out
 
 
-def _decode_manifest_array(data: bytes, pos: int, end: int, known_keys: frozenset) -> list:
+def _decode_manifest_array(
+    data: bytes,
+    pos: int,
+    end: int,
+    known_keys: frozenset,
+    required_keys: frozenset,
+    label: str,
+) -> list:
     """Decode a manifest `blocks`/`trash` array at `pos` into a list of
     per-entry dicts via `_scan_array_items` + `_decode_manifest_entry_map`,
     one nesting level below `py_decode_manifest`'s own top-level loop
@@ -3965,8 +4083,11 @@ def _decode_manifest_array(data: bytes, pos: int, end: int, known_keys: frozense
     """
     items, arr_end = _scan_array_items(data, pos)
     if arr_end != end:
-        raise ValueError(f"manifest array span mismatch at offset {pos}")
-    return [_decode_manifest_entry_map(data, s, e, known_keys) for s, e in items]
+        raise ValueError(f"{label} array span mismatch at offset {pos}")
+    return [
+        _decode_manifest_entry_map(data, s, e, known_keys, required_keys, label)
+        for s, e in items
+    ]
 
 
 def py_decode_manifest(data: bytes) -> dict:
@@ -4029,9 +4150,21 @@ def py_decode_manifest(data: bytes) -> dict:
 
         if key in MANIFEST_KNOWN_KEYS:
             if key == "blocks":
-                out[key] = _decode_manifest_array(data, vs, ve, BLOCK_ENTRY_KNOWN_KEYS)
+                out[key] = _decode_manifest_array(
+                    data, vs, ve, BLOCK_ENTRY_KNOWN_KEYS, BLOCK_ENTRY_REQUIRED_KEYS, "blocks"
+                )
             elif key == "trash":
-                out[key] = _decode_manifest_array(data, vs, ve, TRASH_ENTRY_KNOWN_KEYS)
+                out[key] = _decode_manifest_array(
+                    data, vs, ve, TRASH_ENTRY_KNOWN_KEYS, TRASH_ENTRY_REQUIRED_KEYS, "trash"
+                )
+            elif key == "vector_clock":
+                out[key] = _decode_strict_array(
+                    data, vs, ve, VECTOR_CLOCK_ENTRY_KNOWN_KEYS, "vector_clock"
+                )
+            elif key == "kdf_params":
+                out[key] = _decode_strict_entry_map(
+                    data, vs, ve, KDF_PARAMS_KNOWN_KEYS, "kdf_params"
+                )
             else:
                 out[key] = cbor2.loads(data[vs:ve])
         else:
@@ -4296,7 +4429,10 @@ def _dup_key_inner_map_bytes(key_name: str) -> bytes:
 
 
 def _build_test_block_entry_bytes(
-    extra_unknown: tuple[str, bytes] | None = None, dup_known: bool = False
+    extra_unknown: tuple[str, bytes] | None = None,
+    dup_known: bool = False,
+    vector_clock_summary_bytes: bytes | None = None,
+    omit_field: str | None = None,
 ) -> bytes:
     """Raw CBOR bytes for one `blocks[i]` entry, for section MDN's fixtures.
 
@@ -4305,27 +4441,35 @@ def _build_test_block_entry_bytes(
     `section_manifest_body_duplicate_key_guard`'s fixture). `dup_known`
     appends a SECOND `suite_id` entry (a duplicate KNOWN key, which must be
     REJECTED); `extra_unknown`, when given, appends one more `(key, raw
-    value bytes)` pair as a forward-compat entry-level unknown field.
-    Built via `encode_canonical_map_raw` -- the same sort this repo's own
-    `_encode_manifest_block_entry` re-encode uses -- so a fixture with no
-    duplicate keys round-trips byte-identically regardless of the order
-    these entries are listed in below.
+    value bytes)` pair as a forward-compat entry-level unknown field;
+    `vector_clock_summary_bytes`, when given, REPLACES the default
+    well-formed `vector_clock_summary` value bytes (for #585 fix round 2,
+    Finding 3's tampered-entry fixtures); `omit_field`, when given, drops
+    that one known field entirely (for Finding 4's missing-required-field
+    fixture). Built via `encode_canonical_map_raw` -- the same sort this
+    repo's own `_encode_manifest_block_entry` re-encode uses -- so a
+    fixture with no duplicate keys round-trips byte-identically regardless
+    of the order these entries are listed in below.
     """
     import cbor2
 
+    vcs_bytes = (
+        vector_clock_summary_bytes
+        if vector_clock_summary_bytes is not None
+        else cbor2.dumps([{"device_uuid": b"\x44" * 16, "counter": 1}], canonical=True)
+    )
     entries: list[tuple[str, bytes]] = [
         ("block_uuid", cbor2.dumps(b"\xaa" * 16, canonical=True)),
         ("block_name", cbor2.dumps("block-one", canonical=True)),
         ("fingerprint", cbor2.dumps(b"\xbb" * 32, canonical=True)),
         ("recipients", cbor2.dumps([b"\x22" * 16], canonical=True)),
-        (
-            "vector_clock_summary",
-            cbor2.dumps([{"device_uuid": b"\x44" * 16, "counter": 1}], canonical=True),
-        ),
+        ("vector_clock_summary", vcs_bytes),
         ("suite_id", cbor2.dumps(1, canonical=True)),
         ("created_at_ms", cbor2.dumps(1000, canonical=True)),
         ("last_mod_ms", cbor2.dumps(1000, canonical=True)),
     ]
+    if omit_field is not None:
+        entries = [(k, v) for k, v in entries if k != omit_field]
     if dup_known:
         entries.append(("suite_id", cbor2.dumps(2, canonical=True)))  # duplicate KNOWN key
     if extra_unknown is not None:
@@ -4356,38 +4500,45 @@ def _build_test_trash_entry_bytes(
     return encode_canonical_map_raw(entries)
 
 
-def _build_test_manifest_bytes(blocks_bytes: bytes, trash_bytes: bytes) -> bytes:
-    """Full manifest-body bytes for section MDN's fixtures, given already
-    -encoded `blocks`/`trash` array bytes, with the other 7 known
+def _build_test_manifest_bytes(
+    blocks_bytes: bytes,
+    trash_bytes: bytes,
+    kdf_params_bytes: bytes | None = None,
+    vector_clock_bytes: bytes | None = None,
+) -> bytes:
+    """Full manifest-body bytes for section MDN/MSS's fixtures, given
+    already-encoded `blocks`/`trash` array bytes, with the other 7 known
     top-level fields filled in as fixed literal test values (same values
-    `section_manifest_body_duplicate_key_guard` uses).
+    `section_manifest_body_duplicate_key_guard` uses). `kdf_params_bytes` /
+    `vector_clock_bytes`, when given, REPLACE the default well-formed
+    values (for #585 fix round 2, Finding 3's tampered-subshape fixtures).
     """
     import cbor2
 
     vault_uuid = b"\x11" * 16
     owner_uuid = b"\x22" * 16
     salt = b"\x33" * 32
+    kdf_bytes = (
+        kdf_params_bytes
+        if kdf_params_bytes is not None
+        else cbor2.dumps(
+            {"memory_kib": 262144, "iterations": 3, "parallelism": 1, "salt": salt},
+            canonical=True,
+        )
+    )
+    vc_bytes = (
+        vector_clock_bytes if vector_clock_bytes is not None else cbor2.dumps([], canonical=True)
+    )
     entries: list[tuple[str, bytes]] = [
         ("manifest_version", cbor2.dumps(1, canonical=True)),
         ("vault_uuid", cbor2.dumps(vault_uuid, canonical=True)),
         ("format_version", cbor2.dumps(1, canonical=True)),
         ("suite_id", cbor2.dumps(1, canonical=True)),
         ("owner_user_uuid", cbor2.dumps(owner_uuid, canonical=True)),
-        ("vector_clock", cbor2.dumps([], canonical=True)),
+        ("vector_clock", vc_bytes),
         ("blocks", blocks_bytes),
         ("trash", trash_bytes),
-        (
-            "kdf_params",
-            cbor2.dumps(
-                {
-                    "memory_kib": 262144,
-                    "iterations": 3,
-                    "parallelism": 1,
-                    "salt": salt,
-                },
-                canonical=True,
-            ),
-        ),
+        ("kdf_params", kdf_bytes),
     ]
     return encode_canonical_map_raw(entries)
 
@@ -4556,6 +4707,172 @@ def section_manifest_body_required_keys_guard() -> tuple[bool, list[str]]:
             issues.append(
                 f"manifest body missing required key {missing!r} raised "
                 f"ValueError instead of the expected KeyError: {e}"
+            )
+
+    return (not issues), issues
+
+
+def section_manifest_body_strict_subshapes_guard() -> tuple[bool, list[str]]:
+    """Pin the #585 fix round 2, Finding 3 fix: `kdf_params`, `vector_clock`
+    entries, and `vector_clock_summary` entries each have a FIXED shape in
+    Rust with NO forward-compat `unknown` bag -- `parse_kdf_params` and
+    `parse_vector_clock_entry` (`manifest/decode/entries.rs`) each end in a
+    catch-all match arm that REJECTS any key outside their known set as
+    `WrongType`. The pre-fix Python decoder routed all three through
+    blanket `cbor2.loads`/`cbor2.dumps`, silently accepting and
+    round-tripping an extra key where Rust rejects it -- the OPPOSITE
+    polarity to Finding 1 (there an unrecognised key is retained and
+    accepted; here it must be rejected), because `KdfParamsRef` and
+    `VectorClockEntry` have no `unknown` bag at all, unlike `BlockEntry`/
+    `TrashEntry`. Four rows:
+
+    1. Positive control: a valid, complete `kdf_params` (and empty
+       `blocks`/`trash`/`vector_clock`) is ACCEPTED and round-trips
+       byte-identically.
+    2. An extra unrecognised key inside `kdf_params` must be REJECTED.
+    3. An extra unrecognised key inside a `vector_clock` entry must be
+       REJECTED.
+    4. An extra unrecognised key inside a `vector_clock_summary` entry
+       (nested inside a block entry) must be REJECTED.
+    """
+    import cbor2
+
+    issues: list[str] = []
+
+    empty_blocks = _encode_array_header(0)
+    empty_trash = _encode_array_header(0)
+
+    # --- Row 1: positive control.
+    good = _build_test_manifest_bytes(empty_blocks, empty_trash)
+    try:
+        decoded = py_decode_manifest(good)
+        if py_encode_manifest(decoded) != good:
+            issues.append(
+                "manifest body fixture: valid kdf_params did not "
+                "round-trip byte-identically (positive control failed)"
+            )
+    except ValueError as e:
+        issues.append(f"manifest body fixture: valid kdf_params was REJECTED: {e}")
+
+    # --- Row 2: extra unrecognised key inside kdf_params -> REJECTED.
+    salt = b"\x33" * 32
+    kdf_extra = encode_canonical_map_raw([
+        ("memory_kib", cbor2.dumps(262144, canonical=True)),
+        ("iterations", cbor2.dumps(3, canonical=True)),
+        ("parallelism", cbor2.dumps(1, canonical=True)),
+        ("salt", cbor2.dumps(salt, canonical=True)),
+        ("extra_field", cbor2.dumps("nope", canonical=True)),
+    ])
+    tampered_kdf = _build_test_manifest_bytes(
+        empty_blocks, empty_trash, kdf_params_bytes=kdf_extra
+    )
+    try:
+        py_decode_manifest(tampered_kdf)
+        issues.append(
+            "kdf_params with an unrecognised extra key was ACCEPTED -- "
+            "must be REJECTED (KdfParamsRef has no unknown bag)"
+        )
+    except ValueError:
+        pass  # expected
+
+    # --- Row 3: extra unrecognised key inside a vector_clock entry ->
+    # REJECTED.
+    vc_entry_extra = encode_canonical_map_raw([
+        ("device_uuid", cbor2.dumps(b"\x44" * 16, canonical=True)),
+        ("counter", cbor2.dumps(1, canonical=True)),
+        ("extra_field", cbor2.dumps("nope", canonical=True)),
+    ])
+    tampered_vc = _build_test_manifest_bytes(
+        empty_blocks,
+        empty_trash,
+        vector_clock_bytes=_encode_array_header(1) + vc_entry_extra,
+    )
+    try:
+        py_decode_manifest(tampered_vc)
+        issues.append(
+            "a vector_clock entry with an unrecognised extra key was "
+            "ACCEPTED -- must be REJECTED (VectorClockEntry has no "
+            "unknown bag)"
+        )
+    except ValueError:
+        pass  # expected
+
+    # --- Row 4: extra unrecognised key inside a vector_clock_summary
+    # entry (nested inside a block entry) -> REJECTED.
+    vcs_entry_extra = encode_canonical_map_raw([
+        ("device_uuid", cbor2.dumps(b"\x44" * 16, canonical=True)),
+        ("counter", cbor2.dumps(1, canonical=True)),
+        ("extra_field", cbor2.dumps("nope", canonical=True)),
+    ])
+    block_bad_vcs = _build_test_block_entry_bytes(
+        vector_clock_summary_bytes=_encode_array_header(1) + vcs_entry_extra
+    )
+    tampered_vcs = _build_test_manifest_bytes(
+        _encode_array_header(1) + block_bad_vcs, empty_trash
+    )
+    try:
+        py_decode_manifest(tampered_vcs)
+        issues.append(
+            "a vector_clock_summary entry with an unrecognised extra key "
+            "was ACCEPTED -- must be REJECTED (VectorClockEntry has no "
+            "unknown bag, regardless of which array it appears in)"
+        )
+    except ValueError:
+        pass  # expected
+
+    return (not issues), issues
+
+
+def section_manifest_body_entry_required_fields_guard() -> tuple[bool, list[str]]:
+    """Pin the #585 fix round 2, Finding 4 fix: `_decode_manifest_entry_map`
+    now validates that every `BlockEntry`/`TrashEntry` required field is
+    present, raising `ValueError` (not `KeyError`) naming the missing
+    field. Before this fix, a block entry missing e.g. `block_uuid`
+    surfaced only as a raw, uncaught `KeyError` -- verified by execution
+    (mutation-verified below) to come from `_check_sorted`'s `r[key]`
+    indexing inside `py_decode_manifest`'s own array-sort-discipline loop,
+    which runs BEFORE the final re-encode-and-compare and so is the
+    earliest crash site, not (as an earlier draft of this comment
+    guessed) `_encode_manifest_block_entry`'s dict indexing during that
+    later re-encode -- both would crash the same way if reached, but only
+    the former is actually reached first. Caught at the
+    `verify_block_and_manifest` call site (which catches both
+    `ValueError` and `KeyError`), but NOT by this module's own
+    `except ValueError` guard sections, which crash instead of reporting a
+    clean FAIL.
+    """
+    issues: list[str] = []
+
+    empty_trash = _encode_array_header(0)
+
+    # Positive control: a complete block entry is accepted (proves the
+    # omission below, not some unrelated fixture bug, is what triggers
+    # the rejection).
+    block_full = _build_test_block_entry_bytes()
+    good = _build_test_manifest_bytes(_encode_array_header(1) + block_full, empty_trash)
+    try:
+        py_decode_manifest(good)
+    except ValueError as e:
+        issues.append(f"manifest body fixture: complete block entry was REJECTED: {e}")
+
+    # A block entry missing a required field ("block_uuid") -> REJECTED
+    # with ValueError, caught cleanly by this narrow `except ValueError`
+    # (no broader except here on purpose: if a regression reintroduced the
+    # raw KeyError, this block would NOT catch it and the test would crash
+    # loudly rather than silently pass).
+    block_missing = _build_test_block_entry_bytes(omit_field="block_uuid")
+    tampered = _build_test_manifest_bytes(_encode_array_header(1) + block_missing, empty_trash)
+    try:
+        py_decode_manifest(tampered)
+        issues.append(
+            "a block entry missing its required 'block_uuid' field was "
+            "ACCEPTED -- must be REJECTED (BlockEntry has no Option field)"
+        )
+    except ValueError as e:
+        if "block_uuid" not in str(e):
+            issues.append(
+                f"block entry missing-field rejection did not name the "
+                f"field: {e}"
             )
 
     return (not issues), issues
@@ -5354,6 +5671,18 @@ def main() -> int:
         print(ln)
 
     print()
+    print("--- Section MSS: manifest body strict-subshape (kdf_params/vector_clock) guard (#585 fix round 2) ---")
+    manifest_strict_ok, manifest_strict_lines = section_manifest_body_strict_subshapes_guard()
+    for ln in manifest_strict_lines:
+        print(ln)
+
+    print()
+    print("--- Section MERF: manifest body entry required-fields guard (#585 fix round 2) ---")
+    manifest_entry_req_ok, manifest_entry_req_lines = section_manifest_body_entry_required_fields_guard()
+    for ln in manifest_entry_req_lines:
+        print(ln)
+
+    print()
     if (
         section1_ok
         and section2_ok
@@ -5370,6 +5699,8 @@ def main() -> int:
         and manifest_dup_ok
         and manifest_nested_ok
         and manifest_required_ok
+        and manifest_strict_ok
+        and manifest_entry_req_ok
     ):
         print("PASS")
         return 0
@@ -5403,6 +5734,10 @@ def main() -> int:
         print("FAIL: manifest body nested block/trash-entry unknown-bag guard", file=sys.stderr)
     if not manifest_required_ok:
         print("FAIL: manifest body all-9-required-keys guard", file=sys.stderr)
+    if not manifest_strict_ok:
+        print("FAIL: manifest body strict-subshape (kdf_params/vector_clock) guard", file=sys.stderr)
+    if not manifest_entry_req_ok:
+        print("FAIL: manifest body entry required-fields guard", file=sys.stderr)
     return 1
 
 
