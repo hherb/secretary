@@ -3769,6 +3769,11 @@ def _scan_item(buf: bytes, pos: int) -> int:
         return p
     if major == 6:                            # tag
         if arg is None:
+            # Unreachable: `_decode_head` already rejects ai=31 (indefinite)
+            # for every major outside (2, 3, 4, 5, 7), so a major-6 (tag)
+            # head with ai=31 never reaches this point -- it raises inside
+            # `_decode_head` first. Kept as defence in depth so this
+            # primitive does not depend on a caller's validation.
             raise ValueError(f"indefinite-length tag at offset {pos}")
         return _scan_item(buf, p)
     raise ValueError(f"unreachable CBOR major type {major}")
@@ -3852,7 +3857,18 @@ def _shortest_ai(arg: int) -> int:
 
 
 def _check_canonical_item(buf: bytes, pos: int) -> int:
-    """Enforce crypto-design §6.2 rules 2, 3 and 4 over the item at `pos`.
+    """Enforce crypto-design §6.2 rules 2, 3 and 4 over the item at `pos`,
+    plus two ordinary CBOR well-formedness properties that are NOT among
+    those five numbered rules but that `cbor2.loads` / `ciborium::Value`
+    each enforce IMPLICITLY at parse time by construction of their own
+    output types, and which this byte-retaining scanner must therefore
+    check EXPLICITLY, since it never materialises either type (#592
+    findings A/B): a major-3 text string's content must be valid UTF-8
+    (a `str`/`String` cannot hold anything else), and a major-7 item must
+    be one of false/true/null (`ciborium::Value`'s major-7 variants are
+    exactly `Bool`/`Null`/`Float`, with no generic "other simple value"
+    case -- `record.rs`/`block.rs`/manifest decode all reject the other
+    six major-7 shapes wholesale, not just inside an `unknown` subtree).
 
     Rule 2 (definite lengths), rule 3 (shortest-form heads), rule 4 (no
     floats, no tags).  Returns the offset one past the item; raises
@@ -3875,7 +3891,17 @@ def _check_canonical_item(buf: bytes, pos: int) -> int:
         if ai in (25, 26, 27):        # float16 / float32 / float64
             raise ValueError(f"rule 4: float at offset {pos}")
         if ai > 24:
+            # Unreachable: ai in (28, 29, 30) is rejected by `_decode_head`
+            # itself (reserved additional-info), and ai == 31 is caught by
+            # the rule-2 check above -- so by the time control reaches
+            # here, ai is always <= 24. Kept as defence in depth so this
+            # primitive does not depend on a caller's validation.
             raise ValueError(f"rule 3: non-shortest simple value at offset {pos}")
+        if ai not in (20, 21, 22):     # RFC 8949 §3.3: false(20)/true(21)/null(22) only
+            raise ValueError(
+                f"RFC 8949 §3.3: major-7 value outside {{false, true, null}} "
+                f"at offset {pos} (ai={ai})"
+            )
         return pos + head
     if ai != _shortest_ai(arg):
         raise ValueError(f"rule 3: non-shortest-form head at offset {pos} (ai={ai})")
@@ -3885,6 +3911,13 @@ def _check_canonical_item(buf: bytes, pos: int) -> int:
     if major in (2, 3):
         if p + arg > len(buf):
             raise ValueError(f"string length {arg} overruns buffer at offset {pos}")
+        if major == 3:                 # RFC 8949 §3.1: text string content MUST be valid UTF-8
+            try:
+                buf[p : p + arg].decode("utf-8")
+            except UnicodeDecodeError as e:
+                raise ValueError(
+                    f"RFC 8949 §3.1: invalid UTF-8 in text string at offset {pos}: {e}"
+                ) from e
         return p + arg
     per = 1 if major == 4 else 2
     for _ in range(arg * per):
@@ -3977,12 +4010,39 @@ def section_cbor_scanner_units() -> tuple[bool, list[str]]:
         # oversized length claim must not silently return a bogus
         # out-of-buffer offset (the bug Finding 1 fixed).
         ("bounds-check truncated tstr", bytes([0x63, 0x61, 0x62])),
+        # 0x61 = major 3 (tstr), length 1; 0xFF is never a valid standalone
+        # UTF-8 byte (RFC 3629) -- regression pin for Finding A: this used
+        # to reach `cbor2.loads`, which raised on it, before this scanner
+        # took over the `unknown`-subtree path and stopped checking it.
+        ("invalid-UTF-8 text string", bytes([0x61, 0xFF])),
+        # 0xF8 0x14 = major 7 (simple value), ai=24 (one-byte argument
+        # follows), argument byte 0x14 = 20 -- the extended-form, redundant
+        # re-encoding of `false` (canonical form is the single byte 0xF4).
+        # Regression pin for Finding B.
+        ("non-canonical extended-form false (0xF8 0x14)", bytes([0xF8, 0x14])),
+        # 0xF7 = major 7, ai=23 = "undefined". An ordinary CBOR item a
+        # future writer could emit; Rust's major-7 value space is limited
+        # to false/true/null. Pin for Finding B.
+        ("major-7 undefined (0xF7)", bytes([0xF7])),
     ]:
         try:
             _check_canonical_item(raw, 0)
             issues.append(f"{label} must be REJECTED, was accepted")
         except ValueError:
             pass
+
+    # --- Positive controls for the major-7 restriction above: false/true/
+    # --- null must each still be ACCEPTED, so the restriction added for
+    # --- Finding B could not have been over-tightened without this catching it.
+    for label, raw in [
+        ("false (0xF4)", bytes([0xF4])),
+        ("true (0xF5)", bytes([0xF5])),
+        ("null (0xF6)", bytes([0xF6])),
+    ]:
+        try:
+            _check_canonical_item(raw, 0)
+        except ValueError as e:
+            issues.append(f"{label} must be ACCEPTED, got: {e}")
 
     return (not issues), issues
 
@@ -5031,8 +5091,12 @@ def section_manifest_canonicality_kat() -> tuple[bool, list[str]]:
     found lives at block-entry level. Two readers, one corpus:
 
     1. `py_decode_manifest` (byte-retaining) MUST agree with the recorded
-       Rust verdict on every row. That is the "two conformant readers
-       accept the same set" property §4.2 states in prose (#583).
+       Rust verdict on every row. These 21 rows are EVIDENCE for the "two
+       conformant readers accept the same set" property §4.2 states in
+       prose (#583), not a proof of it: what this assertion actually
+       establishes is that `py_decode_manifest` and `decode_manifest`
+       agree on these specific 21 rows, at the three nesting levels the
+       corpus carries (top-level, block entry, trash entry).
     2. A deliberately naive `cbor2.loads` reader MUST DIVERGE on all
        THREE `*__rule5_duplicate_key` rows (one per level). This is a
        POSITIVE CONTROL: without it, a corpus that happened to contain no
@@ -5053,11 +5117,21 @@ def section_manifest_canonicality_kat() -> tuple[bool, list[str]]:
         return False, ["corpus is empty"]
 
     def naive_accepts(body: bytes) -> bool:
-        """The reader crypto-design §6.2 currently points an implementer at."""
+        """The reader crypto-design §6.2 currently points an implementer at.
+
+        Catches only the exception types `cbor2.loads` / `cbor2.dumps` and
+        the `==` comparison can legitimately raise -- `cbor2.CBORError`
+        (the common base of `CBORDecodeError`/`CBOREncodeError` and its
+        two subclasses), plus `ValueError`/`TypeError` -- NOT a bare
+        `Exception` (Finding C): a bare catch would silently treat a
+        `NameError`/`AttributeError` from a programming error in this
+        helper as "rejected", satisfying the divergence assertion below
+        for the wrong reason instead of surfacing the bug.
+        """
         try:
             decoded = cbor2.loads(body)
             return cbor2.dumps(decoded, canonical=True) == body
-        except Exception:
+        except (cbor2.CBORError, ValueError, TypeError):
             return False
 
     divergences: list[str] = []
@@ -5276,10 +5350,16 @@ def section_record_unknown_subtree_canonicality() -> tuple[bool, list[str]]:
     # change that accidentally stopped exercising the gap would show up
     # here as a control failure rather than a silently-vacuous pass.
     def naive_accepts(body: bytes) -> bool:
+        # Narrowed to the exception types cbor2 and the comparison can
+        # legitimately raise -- same fix as `section_manifest_canonicality_kat`'s
+        # sibling helper and for the same reason (Finding C): a bare
+        # `except Exception` would silently treat a `NameError`/
+        # `AttributeError` programming error as "rejected" and satisfy the
+        # divergence assertion below for the wrong reason.
         try:
             decoded = cbor2.loads(body)
             return cbor2.dumps(decoded, canonical=True) == body
-        except Exception:
+        except (cbor2.CBORError, ValueError, TypeError):
             return False
 
     for level, at in [("record-level", record_at), ("field-level", field_at)]:
