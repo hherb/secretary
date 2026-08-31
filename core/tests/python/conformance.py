@@ -3476,6 +3476,273 @@ def _reject_floats_and_tags_py(v: Any) -> None:
             _reject_floats_and_tags_py(item)
 
 
+# ---------------------------------------------------------------------------
+# Span-recording CBOR scanner (§4.2 forward-compat subtree support)
+# ---------------------------------------------------------------------------
+# `cbor2.loads` decodes a CBOR map into a `dict`, which COLLAPSES duplicate
+# keys and cannot reproduce them.  `docs/vault-format.md` §4.2 makes it a
+# reader MUST to reproduce an unknown subtree's entry order *and* its
+# repeated entries, so a `dict`-based reader is structurally non-conformant:
+# it rejects (via the §4.3 step-4 byte comparison) manifests the Rust
+# decoder accepts.  See #592, and `core/src/vault/manifest/decode/tests.rs`'s
+# `unknown_subtree_tolerates_key_order_and_duplicates_but_not_encoding`.
+#
+# These four functions are the conformant alternative: they record BYTE
+# SPANS into the input rather than decoding, so a subtree can be re-emitted
+# verbatim.  A `Span` is a `(start, end)` offset pair -- never a copy.
+
+CBOR_BREAK = 0xFF          # RFC 8949 §3.2.1: the "break" stop code.
+CBOR_AI_INDEFINITE = 31    # RFC 8949 §3: additional info 31 == indefinite.
+
+
+def _decode_head(buf: bytes, pos: int) -> tuple[int, int, int | None, int]:
+    """Decode the CBOR head at `pos` (RFC 8949 §3).
+
+    Returns `(major, ai, arg, head_len)`.  `arg` is None for the
+    indefinite-length form; `head_len` counts the initial byte plus any
+    argument bytes.
+    """
+    if pos >= len(buf):
+        raise ValueError(f"truncated CBOR head at offset {pos}")
+    ib = buf[pos]
+    major, ai = ib >> 5, ib & 0x1F
+    if ai < 24:
+        return major, ai, ai, 1
+    if ai == 24:
+        n = 1
+    elif ai == 25:
+        n = 2
+    elif ai == 26:
+        n = 4
+    elif ai == 27:
+        n = 8
+    elif ai == CBOR_AI_INDEFINITE:
+        return major, ai, None, 1
+    else:
+        raise ValueError(f"reserved additional-info {ai} at offset {pos}")
+    if pos + 1 + n > len(buf):
+        raise ValueError(f"truncated {n}-byte argument at offset {pos}")
+    return major, ai, int.from_bytes(buf[pos + 1 : pos + 1 + n], "big"), 1 + n
+
+
+def _scan_item(buf: bytes, pos: int) -> int:
+    """Return the offset one past the single CBOR item starting at `pos`.
+
+    Structure only -- indefinite-length forms scan successfully here and are
+    rejected by `_check_canonical_item`, because the two are different rules
+    (§4.2 table rows 2 and 5 have opposite verdicts).
+    """
+    major, ai, arg, head = _decode_head(buf, pos)
+    p = pos + head
+
+    if major in (0, 1):                       # uint / negative int
+        return p
+    if major == 7:                            # simple value / float
+        if ai == CBOR_AI_INDEFINITE:
+            raise ValueError(f"unexpected break at offset {pos}")
+        return p
+    if major in (2, 3):                       # byte string / text string
+        if arg is None:                       # indefinite: definite chunks to break
+            while True:
+                if p >= len(buf):
+                    raise ValueError("unterminated indefinite-length string")
+                if buf[p] == CBOR_BREAK:
+                    return p + 1
+                cmaj, _, carg, chead = _decode_head(buf, p)
+                if cmaj != major or carg is None:
+                    raise ValueError(f"bad chunk in indefinite-length string at {p}")
+                p += chead + carg
+        if p + arg > len(buf):
+            raise ValueError(f"string length {arg} overruns buffer at offset {pos}")
+        return p + arg
+    if major in (4, 5):                       # array / map
+        per = 1 if major == 4 else 2
+        if arg is None:
+            while True:
+                if p >= len(buf):
+                    raise ValueError("unterminated indefinite-length array/map")
+                if buf[p] == CBOR_BREAK:
+                    return p + 1
+                for _ in range(per):
+                    p = _scan_item(buf, p)
+        for _ in range(arg * per):
+            p = _scan_item(buf, p)
+        return p
+    if major == 6:                            # tag
+        if arg is None:
+            raise ValueError(f"indefinite-length tag at offset {pos}")
+        return _scan_item(buf, p)
+    raise ValueError(f"unreachable CBOR major type {major}")
+
+
+def _scan_map_entries(
+    buf: bytes, pos: int
+) -> tuple[list[tuple[tuple[int, int], tuple[int, int]]], int]:
+    """Entry spans for the CBOR map at `pos`, plus the offset one past it.
+
+    Each element is `((key_start, key_end), (value_start, value_end))`.
+    Entry ORDER and REPEATED entries are preserved -- the two properties a
+    `dict` destroys and §4.2 part (1) requires a reader to reproduce.
+    """
+    major, _, arg, head = _decode_head(buf, pos)
+    if major != 5:
+        raise ValueError(f"expected a CBOR map at offset {pos}, got major type {major}")
+    p = pos + head
+    out: list[tuple[tuple[int, int], tuple[int, int]]] = []
+    if arg is None:
+        while True:
+            if p >= len(buf):
+                raise ValueError("unterminated indefinite-length map")
+            if buf[p] == CBOR_BREAK:
+                return out, p + 1
+            ks = p
+            ke = _scan_item(buf, p)
+            ve = _scan_item(buf, ke)
+            out.append(((ks, ke), (ke, ve)))
+            p = ve
+    for _ in range(arg):
+        ks = p
+        ke = _scan_item(buf, p)
+        ve = _scan_item(buf, ke)
+        out.append(((ks, ke), (ke, ve)))
+        p = ve
+    return out, p
+
+
+def _shortest_ai(arg: int) -> int:
+    """The additional-info value RFC 8949 §4.2.1 requires for `arg`."""
+    if arg < 24:
+        return arg
+    if arg < 0x100:
+        return 24
+    if arg < 0x10000:
+        return 25
+    if arg < 0x100000000:
+        return 26
+    return 27
+
+
+def _check_canonical_item(buf: bytes, pos: int) -> int:
+    """Enforce crypto-design §6.2 rules 2, 3 and 4 over the item at `pos`.
+
+    Rule 2 (definite lengths), rule 3 (shortest-form heads), rule 4 (no
+    floats, no tags).  Returns the offset one past the item; raises
+    `ValueError` naming the rule and offset on any violation.
+
+    Rules 1 and 5 -- map-key order and duplicate keys -- are deliberately
+    NOT checked.  `docs/vault-format.md` §4.2's table marks both unenforced
+    inside a forward-compat `unknown` subtree, and the Rust decoder accepts
+    both (`decode/tests.rs`'s
+    `unknown_subtree_tolerates_key_order_and_duplicates_but_not_encoding`).
+    Checking them here would reintroduce exactly the #592 divergence this
+    scanner exists to remove.
+    """
+    major, ai, arg, head = _decode_head(buf, pos)
+    if ai == CBOR_AI_INDEFINITE:
+        raise ValueError(f"rule 2: indefinite-length item at offset {pos}")
+    if major == 6:
+        raise ValueError(f"rule 4: CBOR tag at offset {pos}")
+    if major == 7:
+        if ai in (25, 26, 27):        # float16 / float32 / float64
+            raise ValueError(f"rule 4: float at offset {pos}")
+        if ai > 24:
+            raise ValueError(f"rule 3: non-shortest simple value at offset {pos}")
+        return pos + head
+    if ai != _shortest_ai(arg):
+        raise ValueError(f"rule 3: non-shortest-form head at offset {pos} (ai={ai})")
+    p = pos + head
+    if major in (0, 1):
+        return p
+    if major in (2, 3):
+        return p + arg
+    per = 1 if major == 4 else 2
+    for _ in range(arg * per):
+        p = _check_canonical_item(buf, p)
+    return p
+
+
+def section_cbor_scanner_units() -> tuple[bool, list[str]]:
+    """Unit coverage for the span-recording CBOR scanner (§4.2 support).
+
+    The scanner exists because `cbor2.loads` collapses duplicate map keys
+    into a `dict` and therefore cannot reproduce them, while
+    `docs/vault-format.md` §4.2 part (1) requires a reader to reproduce an
+    unknown subtree's entry order AND its repeated entries. See #592.
+    """
+    import cbor2
+
+    issues: list[str] = []
+
+    # --- _scan_item consumes exactly one item, for every shape cbor2 emits
+    for label, value in [
+        ("uint", 1),
+        ("large uint", 10**12),
+        ("negative", -5000),
+        ("bstr", b"\xaa" * 300),
+        ("tstr", "hello" * 100),
+        ("array", [1, [2, 3], "x"]),
+        ("map", {"a": 1, "b": [1, 2]}),
+        ("nested map", {"a": {"b": {"c": [1, 2, 3]}}}),
+        ("simple values", [True, False, None]),
+    ]:
+        enc = cbor2.dumps(value)
+        end = _scan_item(enc, 0)
+        if end != len(enc):
+            issues.append(f"_scan_item {label}: consumed {end} of {len(enc)} bytes")
+
+    # --- indefinite-length forms SCAN (structure); canonicality is a
+    # --- separate rule checked by _check_canonical_item below.
+    for label, raw in [
+        ("indefinite map", bytes([0xBF, 0x61, 0x61, 0x01, 0xFF])),
+        ("indefinite array", bytes([0x9F, 0x01, 0x02, 0xFF])),
+        ("indefinite tstr", bytes([0x7F, 0x61, 0x78, 0xFF])),
+        ("indefinite bstr", bytes([0x5F, 0x41, 0xAA, 0xFF])),
+    ]:
+        end = _scan_item(raw, 0)
+        if end != len(raw):
+            issues.append(f"_scan_item {label}: consumed {end} of {len(raw)} bytes")
+
+    # --- THE point: duplicates and wire order survive the scan
+    dup = bytes([0xA2, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02])   # {"a":1,"a":2}
+    entries, end = _scan_map_entries(dup, 0)
+    if len(entries) != 2:
+        issues.append(f"duplicate-key map: {len(entries)} entries, expected 2 (a dict gives 1)")
+    if end != len(dup):
+        issues.append(f"duplicate-key map: end {end}, expected {len(dup)}")
+
+    noncanon = bytes([0xA2, 0x62, 0x7A, 0x7A, 0x01, 0x61, 0x61, 0x02])  # {"zz":1,"a":2}
+    entries, _ = _scan_map_entries(noncanon, 0)
+    keys = [noncanon[ks:ke] for (ks, ke), _ in entries]
+    if keys != [b"\x62zz", b"\x61a"]:
+        issues.append(f"wire order not preserved: {keys!r}")
+
+    # --- _check_canonical_item: the §4.2 five-rule table, row by row.
+    # Rules 1 and 5 are NOT enforced inside an unknown subtree; 2, 3, 4 are.
+    for label, raw in [("rule 1 key order", noncanon), ("rule 5 duplicate key", dup)]:
+        try:
+            _check_canonical_item(raw, 0)
+        except ValueError as e:
+            issues.append(f"{label} must be ACCEPTED inside an unknown subtree, got: {e}")
+
+    for label, raw in [
+        ("rule 2 indefinite map", bytes([0xBF, 0x61, 0x61, 0x01, 0xFF])),
+        ("rule 2 indefinite tstr", bytes([0xA1, 0x61, 0x61, 0x7F, 0x61, 0x78, 0xFF])),
+        ("rule 2 indefinite bstr", bytes([0xA1, 0x61, 0x61, 0x5F, 0x41, 0xAA, 0xFF])),
+        ("rule 2 indefinite array", bytes([0xA1, 0x61, 0x61, 0x9F, 0x01, 0xFF])),
+        ("rule 3 non-shortest int", bytes([0xA1, 0x61, 0x61, 0x18, 0x01])),
+        ("rule 3 non-shortest map length", bytes([0xB8, 0x01, 0x61, 0x61, 0x01])),
+        ("rule 4 float", cbor2.dumps({"a": 1.5})),
+        ("rule 4 tag", cbor2.dumps(cbor2.CBORTag(24, b"x"))),
+    ]:
+        try:
+            _check_canonical_item(raw, 0)
+            issues.append(f"{label} must be REJECTED, was accepted")
+        except ValueError:
+            pass
+
+    return (not issues), issues
+
+
 def _check_no_duplicate_keys(data: bytes) -> None:
     """Detect duplicate CBOR map keys at any level.
 
@@ -4259,6 +4526,12 @@ def main() -> int:
         print(ln)
 
     print()
+    print("--- Section CS: span-recording CBOR scanner unit coverage (§4.2, #592) ---")
+    cbor_scan_ok, cbor_scan_lines = section_cbor_scanner_units()
+    for ln in cbor_scan_lines:
+        print(ln)
+
+    print()
     if (
         section1_ok
         and section2_ok
@@ -4271,6 +4544,7 @@ def main() -> int:
         and sync_pass_ok
         and convergence_ok
         and purge_ok
+        and cbor_scan_ok
     ):
         print("PASS")
         return 0
@@ -4296,6 +4570,8 @@ def main() -> int:
         print("FAIL: convergence_kat.json two-client convergence", file=sys.stderr)
     if not purge_ok:
         print("FAIL: manifest TrashEntry purge marker scenario", file=sys.stderr)
+    if not cbor_scan_ok:
+        print("FAIL: span-recording CBOR scanner unit coverage", file=sys.stderr)
     return 1
 
 
