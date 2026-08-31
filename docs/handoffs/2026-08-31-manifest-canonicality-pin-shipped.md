@@ -2,11 +2,16 @@
 
 Branch `feature/manifest-canonicality-pin`, worktree `.worktrees/manifest-canonicality-pin`,
 base `e29cb216` (`main`, i.e. immediately after PR #584).
-**Fourteen commits** — `git rev-list --count main..HEAD` = 14, from `2f260a34` (the design
-spec) through this baton. Thirteen landed before it; this baton's commit is the fourteenth.
-The tip SHA is deliberately not quoted: this document *is* the tip commit, so any SHA
-written for it is falsified by its own amendment.
-**Not pushed at time of writing; no PR yet. A whole-branch review runs before the push.**
+**Fifteen commits of substance**, from `2f260a34` (the design spec) through `88114077`
+(the post-review fix wave); this baton update is the **sixteenth**, so
+`git rev-list --count main..HEAD` reads 16 once it lands. Its own SHA is deliberately not
+quoted — this document *is* the tip commit, so any SHA written for it is falsified by its
+own amendment.
+**The whole-branch review has RUN**, after the first baton was written at `43b5a4d5`. It
+returned **five findings — two Important, three Minor** — and the first Important one is a
+**regression this branch itself created**. A single fix wave, `88114077`, closed all five.
+Two issues were filed: **#593** and **#594**.
+**Still not pushed; no PR yet. CI has never run on this branch.**
 
 ---
 
@@ -29,9 +34,12 @@ written for it is falsified by its own amendment.
 | `40c42888` | **T6 (#583, #592)** — replay the corpus through both reader strategies |
 | `ee7181dd` | **T7 (#592)** — byte retention in the **record** decoder, at both nesting levels |
 | `1674573b` | **T8 (#592)** — name the `cbor2` duplicate-collapse trap in §4.2; scope §6.2's `canonical=True` |
-| *(this)* | **T9** — closeout: full gate set, three doc corrections, this baton |
+| `43b5a4d5` | **T9** — closeout: full gate set, three doc corrections, the first baton |
+| `88114077` | **post-review fix wave** — findings A-E of the whole-branch review, all in `conformance.py` |
+| *(this)* | baton update: the fix wave, #593 / #594, and the sharpened boundaries in §(2) |
 
-`31 files changed, 4300 insertions(+), 149 deletions(-)` before this commit.
+`33 files changed, 4775 insertions(+), 150 deletions(-)` at `88114077`. The figure is quoted
+at the last **code-bearing** commit on purpose, so this baton update does not falsify it.
 
 ### What the slice actually establishes
 
@@ -56,6 +64,45 @@ subtrees. **Nothing executable checked any of it.** That is what this slice clos
 - **#578** — manifest Property F now generates `unknown` bags instead of hardcoding
   `BTreeMap::new()` at all three strategies.
 
+### The whole-branch review, and the fix wave `88114077`
+
+Five findings, **all** of them in `core/tests/python/conformance.py` — no Rust, no fixture,
+no spec text. Two are Important and the first is a regression this branch created.
+
+- **A (Important — a REGRESSION, measured against the pre-branch commit `e29cb216`).**
+  Moving record `unknown` subtrees off `cbor2.loads` onto byte retention (T7) silently lost
+  two validations `cbor2` had been performing **implicitly**, because
+  `_check_canonical_item` checked neither. An invalid-UTF-8 text string inside a
+  `RecordField.unknown` subtree was **REJECTED on `main` and ACCEPTED on this branch**;
+  Rust rejects it. Same for `F8 14`, a redundant one-byte encoding of `false`. `record` is
+  a live **fuzz** and **differential-replay** target, so this would have surfaced as a
+  *false* cross-language disagreement once the fuzzer explored it. Fixed by validating
+  UTF-8 for major 3.
+- **B (Important).** Major 7 diverged wholesale: Rust accepts only `F4` / `F5` / `F6`,
+  while Python also accepted `E0`, `F0`, `F7` (undefined), `F8 14`, `F8 20` and `F8 FF`.
+  `F7 undefined` is an **ordinary item a v2 writer could emit**, so this was a live
+  forward-compat divergence, not a malformed-input curiosity. Fixed by restricting major 7
+  to `ai in (20, 21, 22)`.
+- **C (Minor).** `naive_accepts` caught bare `Exception`, so a `NameError` in the naive
+  reader would have been counted as "rejected" and would have satisfied the positive
+  control **for the wrong reason**. Narrowed to `(cbor2.CBORError, ValueError, TypeError)`.
+  The implementer found and fixed the identical bug in a **verbatim-duplicated sibling
+  helper** that the findings list had not named.
+- **D (Minor).** A docstring called the 21 corpus rows "the 'two conformant readers accept
+  the same set' property". Twenty-one rows are *evidence* for that property, not the
+  property. Reworded; §(2) below states the corrected claim.
+- **E (Minor).** Two branches became unreachable once `_decode_head` started validating
+  indefinite-length majors (Ruling 4). Commented as unreachable-and-kept-for-defence-in-
+  depth, deliberately **NOT deleted**.
+
+**Non-vacuity, by execution rather than by claim.** The scoped re-review reproduced both
+mutations independently: deleting the UTF-8 check reds exactly the `invalid-UTF-8 text
+string` row, deleting the major-7 restriction reds exactly the `0xF8 0x14` and `0xF7` rows,
+and nothing else moves in either case. The three positive controls are load-bearing too —
+narrowing the accepted set to `(20, 21)` reds the `null (0xF6)` row. Regression A's closure
+was proven end to end by splicing `61 FF` into `Record.unknown["zzz_future"]` and watching
+`py_decode_record` reject it with a byte offset.
+
 ### The measured result
 
 - **2001 tests green across 98 binaries** (`cargo test --release --workspace`), 0 failed,
@@ -70,7 +117,7 @@ subtrees. **Nothing executable checked any of it.** That is what this slice clos
 - **All six hygiene guards pass, each `--self-test` first** so no green guard is vacuous.
 - **`conformance.py` PASS** — the clean-room verifier still decrypts `golden_vault_001`
   from `docs/` alone, now through the strict body decoder rather than `cbor2.loads`.
-- **The two gates no CI job covers**, both clean at HEAD:
+- **The two gates no CI job covers**, both clean at `43b5a4d5`:
   `cargo check --release --features differential-replay --tests -p secretary-core`, and
   `core/fuzz` under the pinned nightly. `--workspace` builds **neither** (`core/fuzz` is
   workspace-`exclude`d; `differential_replay.rs` is `#![cfg(feature = …)]`), which is
@@ -78,6 +125,12 @@ subtrees. **Nothing executable checked any of it.** That is what this slice clos
 - **`spec_test_name_freshness.py` = 90**, the baseline, with a **member set identical to
   `main`'s** — `comm` empty in both directions on a file-qualified comparison, verified
   against a throwaway detached worktree of `main` rather than assumed from the count.
+- **Re-run at `88114077`**, because every figure above was measured at `43b5a4d5`:
+  `conformance.py` **PASS**; `cargo test --release --workspace` zero failures across **98**
+  `test result: ok` blocks; `cargo test --release --workspace --features
+  differential-replay` zero failures including `differential_replay_full_corpus`. The fix
+  wave touches one Python file so no Rust gate *could* move — it was re-run rather than
+  assumed.
 - **No on-disk format change.** `git diff main...HEAD --stat -- core/tests/data/` shows
   **exactly one added path** (`manifest_canonicality_kat.json`, +109) and **zero modified**.
   The uniffi `.udl` diff is **empty**. The only `core/src/` change is +131 lines **inside
@@ -87,8 +140,9 @@ subtrees. **Nothing executable checked any of it.** That is what this slice clos
 
 ## (2) What this slice does **not** claim — read this before citing it
 
-Two boundaries, both stated as boundaries rather than caveats, because the wider reading
-is the one a summary naturally reaches for.
+Five boundaries, each stated as a boundary rather than a caveat, because the wider reading
+is the one a summary naturally reaches for. The final review found one of them overstated
+**in the code itself** (finding D) and had it corrected there too.
 
 **The corpus proves agreement on 21 specific rows, not on all inputs.** Seven subtree
 shapes (five §6.2 rule violations plus two accepting controls) x three nesting levels
@@ -96,7 +150,10 @@ shapes (five §6.2 rule violations plus two accepting controls) x three nesting 
 two readers agree on those 21 inputs at those three levels. Nothing here establishes that
 they agree on an arbitrary manifest body. The randomized coverage (#578's Property F) and
 the `manifest_body` differential-replay target are what widen the input space, and both are
-single-language or seed-bounded respectively.
+single-language or seed-bounded respectively. A docstring on the replay section asserted the
+wider reading — that the 21 rows *were* the "two conformant readers accept the same set"
+property rather than evidence for it — and the fix wave reworded it (finding D). Do not
+reintroduce the wider phrasing here or there.
 
 **`golden_vault_001` is VACUOUS for every claim this slice pins, and the corpus carries
 the whole weight alone.** Verified by execution at the slice tip, decrypting the fixture's
@@ -117,19 +174,77 @@ holds **at most one element**, so it is equally vacuous for the five array sort 
 it validates nothing this slice is about. That was named as a risk in the design spec's §10
 and it held.
 
+**The fix wave's new pins are SCANNER-UNIT rows, not cross-language corpus rows — and
+there are three of them, not six.** `section_cbor_scanner_units` gained one invalid-UTF-8
+reject row and **two** of the six divergent major-7 shapes (`F8 14`, `F7`), plus three
+`F4`/`F5`/`F6` positive controls. The other four (`E0`, `F0`, `F8 20`, `F8 FF`) fall to the
+same one-line restriction but have **no row of their own**; they were verified by hand
+during the fix, not pinned. Every one of these is a Python-only assertion that the
+byte-retaining scanner rejects the shape. The 21-row
+`manifest_canonicality_kat.json` corpus was **deliberately not extended** with them:
+adding a row means regenerating the fixture from Rust ground truth, which was out of the
+fix wave's scope. So for those shapes the *cross-language agreement* rests on reading
+`ciborium::Value`, not on a replayed Rust verdict. That is a smaller claim than the 21 rows
+carry, and it is the honest one. Extending the corpus with them is the obvious companion to
+#594's second half.
+
+**#590's title says "five causes"; the corpus fires that variant on 6 of 21 rows, and
+`rule4_float` does not reach it at all** — it yields `CanonicalError::FloatRejected`
+instead. The two shapes that do reach `NonCanonicalEncoding` are `*__rule2_indefinite_map`
+and `*__rule3_non_shortest_int`, at three nesting levels each. **Do not write "the corpus
+fires #590 five ways" anywhere**; §(3)(c) states the measured version.
+
+**The manifest's three uniqueness invariants are outside everything this slice pins, and
+that is not a corpus defect.** `DuplicateBlockUuid`, `DuplicateTrashUuid` and
+`VectorClockDuplicateDevice` are array-level rules; the §4.2 table the corpus is built
+against covers per-item encoding rules. A sortedness check passes for a repeated element —
+`[x, x]` **is** sorted — so nothing in the sort disciplines implies uniqueness either.
+That gap is now **#594**; §(3)(b) has it.
+
 ---
 
 ## (3) What is next — with acceptance criteria
 
-### Immediate: whole-branch review, then push and open the PR
+### Immediate: push and open the PR
 
-CI has **never run on this branch**. The controller drives the push after the review.
+The whole-branch review has **run**, and its five findings are closed in `88114077`. CI has
+**never run on this branch** — that is the one gate still outstanding. The controller drives
+the push.
 
 ### Then, in the order the slice's own findings argue for
 
-**(a) #590 — "`ManifestError::NonCanonicalEncoding` collapses five causes with no
+**(a) #593 — split `conformance.py`. THE NEXT SLICE, not the one after.** Filed during this
+closeout, **mandated by the design spec's own §10 risk row** rather than discretionary. The
+file went 4303 → **6187** lines (6107 when the issue was filed at `43b5a4d5`; the fix wave
+added 80 more). The final review's judgement is the load-bearing half and must not be
+dropped in a summary: shipping this slice is acceptable **only because** #593 is filed with
+concrete acceptance criteria. A clean-room verifier's value is exactly proportional to how
+credibly a human can read it. **Acceptance:** a `core/tests/python/conformance/` package
+behind a thin entrypoint, the PEP 723 header still the sole dependency declaration, `uv run
+core/tests/python/conformance.py` working verbatim, and the `--diff-replay` CLI contract
+byte-identical. The issue lists all four constraints.
+
+**(b) #594 — the manifest's three uniqueness invariants are enforced by Rust and stated
+NOWHERE in `docs/`.** `DuplicateBlockUuid`, `DuplicateTrashUuid` and
+`VectorClockDuplicateDevice` (`core/src/vault/manifest/error.rs:150`, `:154`, `:160`) have
+no normative counterpart: `grep -c "uniq" docs/vault-format.md` returns **0**, and §4.2
+states the five SORT disciplines and says nothing about uniqueness — a sortedness check
+passes for a repeated element, because `[x, x]` **is** sorted. Verified by execution: a body
+carrying two `blocks[]` entries that share a `block_uuid` is **ACCEPTED** by the Python
+reader and **rejected** by Rust. **This is the clean-room verifier doing exactly what it
+exists to do** — building a reader from `docs/` alone surfaced a gap in the spec, not a bug
+in the reader — and it is **not** a defect in this slice's corpus, which is built against
+the §4.2 per-item table (see §(2)). **It has two halves and they must land together:** the
+frozen-spec edit stating the three invariants as normative, and the `py_decode_manifest`
+fix. Doing only the second encodes a rule the spec still does not state, which is the
+divergence class this whole slice exists to remove. **Acceptance:** §4.2 states all three
+invariants; `py_decode_manifest` rejects each; each is pinned by a test row; the golden
+vault still decrypts and `conformance.py` still PASSes.
+
+**(c) #590 — "`ManifestError::NonCanonicalEncoding` collapses five causes with no
 locator, on the every-open path".** This slice makes #590 *more visible*, which is the
-argument for doing it next. Be exact about how far, because the obvious overstatement is
+argument for keeping it high in the queue — behind #593 and #594, which the final review
+ranked ahead of it. Be exact about how far, because the obvious overstatement is
 available. The variant's own doc (`core/src/vault/manifest/error.rs`) groups those causes as
 indefinite-length item, map-key disorder, non-shortest-form integer or length prefix, and
 this layer's extra one, an array outside its §4.2 sort order. The new corpus fires **two**
@@ -143,25 +258,18 @@ discriminant plus a byte offset (the `CborFault` shape `core/src/cbor/mod.rs` al
 so it stays data-free by construction); each of those six rows names its own cause; the
 payload-hygiene guard passes with **no new allowlist entry**.
 
-**(b) #589 — the 21 duplicate-key guards are hand-copied, not a type invariant.**
+**(d) #589 — the 21 duplicate-key guards are hand-copied, not a type invariant.**
 **Acceptance:** the duplicate-key check is expressed once (a helper or a type that cannot
 be constructed with a repeat), all 21 hand-copied sites route through it, and deleting the
 single implementation reds more than one test.
 
-**(c) A `manifest_body` cargo-fuzz target — the natural eighth.**
+**(e) A `manifest_body` cargo-fuzz target — the natural eighth.**
 The `--diff-replay` wiring landed in this slice specifically to make this cheap.
 **Acceptance:** `core/fuzz/fuzz_targets/manifest_body.rs` exists, `cargo fuzz run
 manifest_body` starts from the 21 seeds already committed at
 `core/fuzz/seeds/manifest_body/`, and `CLAUDE.md`'s "Seven targets" line becomes eight.
 
-**(d) #593 — split `conformance.py`.** Filed during this closeout, per the design spec's
-own §10 mitigation. It went 4303 → **6107** lines in one slice. **Acceptance:** a
-`core/tests/python/conformance/` package behind a thin entrypoint, with the PEP 723 header
-still the sole dependency declaration, `uv run core/tests/python/conformance.py` working
-verbatim, and the `--diff-replay` CLI contract byte-identical. The issue lists all four
-constraints.
-
-**(e) #586 / #587 stay open and untouched.** The encoder can still emit or sign a body its
+**(f) #586 / #587 stay open and untouched.** The encoder can still emit or sign a body its
 own decoder would reject. The design spec's §6 constraint 1 avoids *tripping* #586; it does
 not fix it. **Do not record these as addressed.**
 
@@ -169,7 +277,9 @@ not fix it. **Do not record these as addressed.**
 
 **#578, #583, #585, #592.** This repo cites fixes as `(#N)` and never `Closes #N`, so each
 outlives its fix until a human closes it. Nothing in this slice closes **#589, #590, #586,
-#587, #569** (path 3, `identity/card.rs`, untouched).
+#587, #569** (path 3, `identity/card.rs`, untouched). **#593 and #594 were FILED by this
+slice and are open by design** — #594 in particular is a live Rust/Python acceptance-set
+divergence that this branch documents rather than fixes.
 
 ---
 
@@ -179,7 +289,9 @@ outlives its fix until a human closes it. Nothing in this slice closes **#589, #
 
 Thirteen decisions were recorded in the slice ledger
 (`.superpowers/sdd/2026-08-31-manifest-canonicality-pin/progress.md`). Each carries a
-"cost if wrong" in that file; the substance is here.
+"cost if wrong" in that file; the substance is here. **Ruling 9 is absent from this list on
+purpose** — it survives in the ledger only as a correction against itself, and is the second
+entry in the subsection below, so the 1-8 / 10-13 numbering here is not an omission.
 
 1. **Ruling 1 (pre-flight, a defect in my own plan).** `py_decode_manifest` as planned did
    no re-encode-and-compare of its own, leaving a divergence *opposite* to #592: a duplicate
@@ -254,27 +366,36 @@ These are part of the honest record; a reader should not have to reconstruct the
   `encode_manifest` already returns `SecretBytes`. The implementer's correction is strictly
   better and its source comment explains why.
 
-### Deferred minors — surfaced, not fixed, and each is a real known gap
+### Deferred minors — surfaced and consciously left (one since closed)
 
-Every one of these was raised in review and consciously left. **None is cosmetic-by-default;
-read the reason before dismissing one.**
+Every one of these was raised in review and left on purpose. **None is cosmetic-by-default;
+read the reason before dismissing one.** Each row carries the **final review's triage
+verdict**, so a reader can tell what was re-examined at the end from what was recorded once
+and never revisited — and one row is no longer deferred at all, closed as a side effect of
+finding B.
 
-| # | Item | Why deferred |
-|---|---|---|
-| T1 | The brief's step-2 "watch it fail" was folded into step 6's mutation rather than run as a discrete step | Implementer disclosed it; reviewer judged it substantively harmless — three independent asserts over the same 256-sample loop, and the step-6 mutation is exactly what the brief specifies |
-| T2 | `_check_canonical_item`'s major-7 branch does not check that the one-byte simple-value form (`ai=24`) is used only for values ≥ 32, so a redundant encoding of an in-range simple value passes rule 3 | No live producer |
-| T2 | No recursion-depth guard — pathological nesting raises Python's `RecursionError`, not `ValueError` | Fail-closed (raises rather than hanging or mis-scanning); inconsistent error **typing** only |
-| T2 | Finding 2's `_decode_head` change makes `_scan_item`'s own major-6 indefinite-tag check (`raise ValueError(f"indefinite-length tag at offset {pos}")`, inside `_scan_item`) unreachable dead code | The item is still rejected, just via an earlier `ValueError` with a different message, and no test asserts on that message |
-| T3 | `encode_canonical_map_raw` omits the `n >= 2^32` map-header case (`0xBB` + 8-byte length) | Unreachable for any real manifest |
-| T3 | No unit row directly exercises `TrashEntry`'s own required-field rejection, nor the strict-subshape duplicate-key path | Correctness confirmed by the re-reviewer's direct execution, but the **corpus** has a coverage gap |
-| T3 | `py_decode_manifest`'s docstring says duplicate-known-key in `kdf_params`/`vector_clock` is caught "via the re-encode collapse"; it is now caught explicitly and earlier, in `_decode_strict_entry_map` | Doc drift |
-| T8 | The note's "gets no enforcement from the §4.3 step 4 re-encode AND MUST check rules 2/3/4" reads as consequence, whereas `vault-format.md:344` says rule 4 is never the re-encode for **any** reader | The phrasing mirrors §4.3 step 4 verbatim, so it is consistent with the document as written. **Recorded so a later editor does not "correct" it into a divergence.** |
-| T9 | The eight conformance sections added by this slice print **nothing** on success, unlike the older sections which print a `PASS` line per row | Not a defect — each returns `(ok, issues)` and every `ok` flag is in the final conjunction, verified by reading `main()`. But a reader of the output cannot tell the eight ran. Named as constraint 4 in **#593** |
+| # | Item | Why deferred | Final-review verdict |
+|---|---|---|---|
+| T1 | The brief's step-2 "watch it fail" was folded into step 6's mutation rather than run as a discrete step | Implementer disclosed it; reviewer judged it substantively harmless — three independent asserts over the same 256-sample loop, and the step-6 mutation is exactly what the brief specifies | **ship** |
+| T2 | `_check_canonical_item`'s major-7 branch does not check that the one-byte simple-value form (`ai=24`) is used only for values ≥ 32, so a redundant encoding of an in-range simple value passes rule 3 | No live producer | **CLOSED by finding B** — restricting major 7 to `ai in (20, 21, 22)` rejects the extended form outright, which subsumes this. `F8 14` is now a pinned reject row |
+| T2 | No recursion-depth guard — pathological nesting raises Python's `RecursionError`, not `ValueError` | Fail-closed (raises rather than hanging or mis-scanning); inconsistent error **typing** only | **ship** |
+| T2 | Finding 2's `_decode_head` change makes `_scan_item`'s own major-6 indefinite-tag check (`raise ValueError(f"indefinite-length tag at offset {pos}")`, inside `_scan_item`) unreachable dead code | The item is still rejected, just via an earlier `ValueError` with a different message, and no test asserts on that message | **ship, now documented** — finding E marks it unreachable-and-kept-for-defence-in-depth. Deliberately **not** deleted |
+| T3 | `encode_canonical_map_raw` omits the `n >= 2^32` map-header case (`0xBB` + 8-byte length) | Unreachable for any real manifest | **ship** |
+| T3 | No unit row directly exercises `TrashEntry`'s own required-field rejection, nor the strict-subshape duplicate-key path | Correctness confirmed by the re-reviewer's direct execution, but the **corpus** has a coverage gap | **ship** — a coverage gap, not a divergence |
+| T3 | `py_decode_manifest`'s docstring says duplicate-known-key in `kdf_params`/`vector_clock` is caught "via the re-encode collapse"; it is now caught explicitly and earlier, in `_decode_strict_entry_map` | Doc drift | **ship** |
+| T8 | The note's "gets no enforcement from the §4.3 step 4 re-encode AND MUST check rules 2/3/4" reads as consequence, whereas `vault-format.md:344` says rule 4 is never the re-encode for **any** reader | The phrasing mirrors §4.3 step 4 verbatim, so it is consistent with the document as written. **Recorded so a later editor does not "correct" it into a divergence.** | **ship — do NOT "fix"** |
+| T9 | The eight conformance sections added by this slice print **nothing** on success, unlike the older sections which print a `PASS` line per row | Not a defect — each returns `(ok, issues)` and every `ok` flag is in the final conjunction, verified by reading `main()`. But a reader of the output cannot tell the eight ran. Named as constraint 4 in **#593** | **ship** |
+| fix wave | The 21-row cross-language corpus was **not** extended with the invalid-UTF-8 / major-7 rows | A new row means regenerating `manifest_canonicality_kat.json` from Rust ground truth, outside the fix wave's scope; the scanner-unit rows are the pin instead | **ship** — the narrower claim is stated in §(2) rather than papered over |
 
 ### Standing risks this slice does not remove
 
-- **`conformance.py` is now 6107 lines** (from 4303). The clean-room verifier's value is
-  proportional to how credibly a human can read it. **#593**.
+- **`conformance.py` is now 6187 lines** (from 4303; 6107 at `43b5a4d5`, +80 in the fix
+  wave). The clean-room verifier's value is proportional to how credibly a human can read
+  it. **#593**, and the final review's ship judgement is **conditional on it** — see §(3)(a).
+- **A live Rust/Python acceptance-set divergence ships open**: the three manifest uniqueness
+  invariants are enforced by Rust, stated nowhere in `docs/`, and accepted by the Python
+  reader. **#594**, §(3)(b). Every other divergence this slice found was closed; this one is
+  documented because closing it needs a frozen-spec edit that is its own review.
 - **Five of the six PEP 723 deps stay unbounded** (`cryptography`, `pynacl`, `argon2-cffi`,
   `blake3`, `cbor2`), and `ed25519_verify` still has the "no exception means success" shape
   `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure
@@ -337,9 +458,12 @@ cargo test --release --workspace -- --ignored generate_manifest_canonicality_kat
 
 ## (6) Where this document lives
 
-`NEXT_SESSION.md` at the repo root is a **symlink**, retargeted by this commit to
-`docs/handoffs/2026-08-31-manifest-canonicality-pin-shipped.md`. This file is the single
-authored baton — do not create a second copy at the root, and do not sync it to `main`
-during a pause window (that produces an add/add conflict). The slice's full task-by-task
-record, including every review round and the "cost if wrong" for each ruling above, is at
-`.superpowers/sdd/2026-08-31-manifest-canonicality-pin/progress.md`.
+`NEXT_SESSION.md` at the repo root is a **symlink**, retargeted at `43b5a4d5` to
+`docs/handoffs/2026-08-31-manifest-canonicality-pin-shipped.md` and unchanged since. This
+file is the single authored baton — do not create a second copy at the root, and do not sync
+it to `main` during a pause window (that produces an add/add conflict). The slice's full
+task-by-task record, including every review round and the "cost if wrong" for each ruling
+above, is at `.superpowers/sdd/2026-08-31-manifest-canonicality-pin/progress.md`; the fix
+wave's per-finding report, mutation transcripts included, is at
+`final-fix-report.md` in the same directory. Both are untracked by design — this baton is
+the part that rides inside the PR.
