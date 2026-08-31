@@ -31,6 +31,7 @@ const TARGETS: &[&str] = &[
     "contact_card",
     "bundle_file",
     "manifest_file",
+    "manifest_body",
     "block_file",
 ];
 
@@ -102,6 +103,13 @@ fn rust_decode(
         "manifest_file" => vault::manifest::decode_manifest_file(bytes)
             .and_then(|f| vault::manifest::encode_manifest_file(&f))
             .map(SecretBytes::new)
+            .map_err(|e| format!("{:?}", e)),
+        // Unlike `manifest_file` above, `encode_manifest` already returns
+        // `SecretBytes` (the manifest *body*, §4.2/§4.3, is decrypted
+        // plaintext) — so this arm needs no `SecretBytes::new` wrap, the
+        // same reason the "record" arm above has none.
+        "manifest_body" => vault::manifest::decode_manifest(bytes)
+            .and_then(|m| vault::manifest::encode_manifest(&m))
             .map_err(|e| format!("{:?}", e)),
         "block_file" => vault::block::decode_block_file(bytes)
             .and_then(|f| vault::block::encode_block_file(&f))

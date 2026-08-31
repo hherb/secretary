@@ -5548,6 +5548,14 @@ def run_diff_replay(target: str, input_path: str) -> int:
                 "reencoded_b64": base64.standard_b64encode(reencoded).decode("ascii"),
             }))
             return 0
+        elif target == "manifest_body":
+            parsed = py_decode_manifest(data)
+            reencoded = py_encode_manifest(parsed)
+            print(json.dumps({
+                "status": "accept",
+                "reencoded_b64": base64.standard_b64encode(reencoded).decode("ascii"),
+            }))
+            return 0
         elif target == "block_file":
             parsed = py_decode_block_file(data)
             reencoded = py_encode_block_file(parsed)
