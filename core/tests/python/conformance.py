@@ -4878,6 +4878,83 @@ def section_manifest_body_entry_required_fields_guard() -> tuple[bool, list[str]
     return (not issues), issues
 
 
+def section_manifest_canonicality_kat() -> tuple[bool, list[str]]:
+    """Replay `manifest_canonicality_kat.json` -- the §4.2 per-rule table,
+    at all three nesting levels the corpus carries (#583, #592).
+
+    The corpus is 21 rows: 7 shapes x 3 levels (`top__*`, `block__*`,
+    `trash__*`), because `BlockEntry` and `TrashEntry` each carry their own
+    forward-compat `unknown` bag and the deepest divergence this slice
+    found lives at block-entry level. Two readers, one corpus:
+
+    1. `py_decode_manifest` (byte-retaining) MUST agree with the recorded
+       Rust verdict on every row. That is the "two conformant readers
+       accept the same set" property §4.2 states in prose (#583).
+    2. A deliberately naive `cbor2.loads` reader MUST DIVERGE on all
+       THREE `*__rule5_duplicate_key` rows (one per level). This is a
+       POSITIVE CONTROL: without it, a corpus that happened to contain no
+       discriminating row would pass and prove nothing (#592). The naive
+       reader is also expected to diverge on the three `*__rule1_key_order`
+       rows (`canonical=True` re-sorts the subtree's keys) -- that is fine;
+       the assertion here is membership (rule5 subset of divergences), not
+       equality of the divergence set, since a wider divergence set does
+       not undermine the control.
+    """
+    import cbor2
+
+    path = Path(__file__).resolve().parents[1] / "data" / "manifest_canonicality_kat.json"
+    doc = load_json_fixture(path, "manifest_canonicality_kat.json")
+    rows = doc["rows"]
+    issues: list[str] = []
+    if not rows:
+        return False, ["corpus is empty"]
+
+    def naive_accepts(body: bytes) -> bool:
+        """The reader crypto-design §6.2 currently points an implementer at."""
+        try:
+            decoded = cbor2.loads(body)
+            return cbor2.dumps(decoded, canonical=True) == body
+        except Exception:
+            return False
+
+    divergences: list[str] = []
+    for row in rows:
+        label, body = row["label"], bytes.fromhex(row["manifest_body_hex"])
+        expected = row["expect_accept"]
+
+        try:
+            py_decode_manifest(body)
+            strict = True
+        except Exception:
+            strict = False
+        if strict != expected:
+            issues.append(
+                f"row {label!r}: strict reader accept={strict}, Rust recorded {expected}"
+            )
+
+        if naive_accepts(body) != expected:
+            divergences.append(label)
+
+    expected_rule5_rows = {
+        label for label in (r["label"] for r in rows) if label.endswith("__rule5_duplicate_key")
+    }
+    if len(expected_rule5_rows) != 3:
+        issues.append(
+            f"expected 3 '*__rule5_duplicate_key' rows in the corpus (one per "
+            f"level), found {len(expected_rule5_rows)}: {sorted(expected_rule5_rows)}"
+        )
+    missing_divergence = expected_rule5_rows - set(divergences)
+    if missing_divergence:
+        issues.append(
+            "positive control failed: the naive cbor2.loads reader did NOT "
+            f"diverge on {sorted(missing_divergence)}, so this corpus cannot "
+            "distinguish a byte-retaining reader from a dict-based one at "
+            "every level (#592)"
+        )
+
+    return (not issues), issues
+
+
 def py_encode_record(record: dict) -> bytes:
     """Re-encode a parsed record dict to canonical CBOR.
 
@@ -5691,6 +5768,12 @@ def main() -> int:
         print(ln)
 
     print()
+    print("--- Section MCK: manifest_canonicality_kat.json §4.2 per-rule corpus replay (#583, #592) ---")
+    manifest_canon_ok, manifest_canon_lines = section_manifest_canonicality_kat()
+    for ln in manifest_canon_lines:
+        print(ln)
+
+    print()
     if (
         section1_ok
         and section2_ok
@@ -5709,6 +5792,7 @@ def main() -> int:
         and manifest_required_ok
         and manifest_strict_ok
         and manifest_entry_req_ok
+        and manifest_canon_ok
     ):
         print("PASS")
         return 0
@@ -5746,6 +5830,8 @@ def main() -> int:
         print("FAIL: manifest body strict-subshape (kdf_params/vector_clock) guard", file=sys.stderr)
     if not manifest_entry_req_ok:
         print("FAIL: manifest body entry required-fields guard", file=sys.stderr)
+    if not manifest_canon_ok:
+        print("FAIL: manifest_canonicality_kat.json §4.2 per-rule corpus replay", file=sys.stderr)
     return 1
 
 
