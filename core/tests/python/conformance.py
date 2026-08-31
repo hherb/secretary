@@ -962,6 +962,42 @@ def encode_canonical_map(entries: list[tuple[Any, Any]]) -> bytes:
     return cbor2.dumps(d, canonical=True)
 
 
+def encode_canonical_map_raw(entries: list[tuple[str, bytes]]) -> bytes:
+    """Encode a canonical CBOR map from PRE-ENCODED value bytes.
+
+    `encode_canonical_map` cannot serve this: it builds a `dict` and hands
+    it to `cbor2.dumps(..., canonical=True)`, which re-sorts every nested
+    map.  A retained forward-compat subtree must be emitted EXACTLY as it
+    arrived (§4.2 part 1), so its bytes are spliced rather than re-encoded.
+
+    Keys are text strings sorted by RFC 8949 §4.2.1 order -- length first,
+    then bytewise -- computed on the encoded key, which for a text key is
+    equivalent to `(len(utf8), utf8)`.
+    """
+    import cbor2
+
+    encoded = [(cbor2.dumps(k), v) for k, v in entries]
+    encoded.sort(key=lambda kv: (len(kv[0]), kv[0]))
+
+    n = len(encoded)
+    # RFC 8949 §3.1: major type 5 (map) head byte is 0xA0 | additional-info,
+    # with the shortest-form encodings for the entry count `n` (§4.2.1).
+    if n < 24:
+        head = bytes([0xA0 | n])
+    elif n < 0x100:
+        head = bytes([0xB8, n])
+    elif n < 0x10000:
+        head = bytes([0xB9]) + n.to_bytes(2, "big")
+    else:
+        head = bytes([0xBA]) + n.to_bytes(4, "big")
+
+    out = bytearray(head)
+    for k, v in encoded:
+        out += k
+        out += v
+    return bytes(out)
+
+
 def encode_pk_bundle(
     x25519_pk: bytes,
     ml_kem_768_pk: bytes,
@@ -1574,8 +1610,12 @@ def verify_block_and_manifest(
         return False, issues
 
     try:
-        manifest_pt = cbor2.loads(manifest_pt_bytes)
-    except cbor2.CBORDecodeError as e:
+        # §4.2/§4.3 strict decode, not a bare `cbor2.loads` (#585). The
+        # strict decoder enforces the five array sort disciplines, rejects
+        # duplicate keys at every KNOWN level, and retains each unknown
+        # subtree's raw bytes so it can be re-emitted verbatim (#592).
+        manifest_pt = py_decode_manifest(manifest_pt_bytes)
+    except (cbor2.CBORDecodeError, ValueError, KeyError) as e:
         issues.append(f"manifest plaintext CBOR decode: {e}")
         return False, issues
 
@@ -1646,6 +1686,15 @@ def verify_block_and_manifest(
         issues.append(
             f"manifest.kdf_params.salt: parsed={kdf.get('salt')!r},"
             f" expected={vt.kdf_salt!r}"
+        )
+
+    # The §4.3 step-4 obligation, exercised against the frozen fixture:
+    # re-encoding the parsed manifest must reproduce the input byte for byte.
+    reencoded = py_encode_manifest(manifest_pt)
+    if reencoded != manifest_pt_bytes:
+        issues.append(
+            "manifest body re-encode is not byte-identical: "
+            f"{len(reencoded)} bytes out vs {len(manifest_pt_bytes)} in"
         )
 
     return (not issues), issues
@@ -3782,6 +3831,230 @@ def _check_no_duplicate_keys(data: bytes) -> None:
     pass
 
 
+# ---------------------------------------------------------------------------
+# §4.2/§4.3 manifest BODY decoder/encoder (#585)
+# ---------------------------------------------------------------------------
+# Distinct from `py_decode_manifest_file`/`py_encode_manifest_file` above,
+# which handle the §4.1 outer signed envelope (header + AEAD blob +
+# signatures). This pair operates on the AEAD-DECRYPTED CBOR body -- the
+# plaintext `manifest_pt_bytes` that comes out of `verify_block_and_manifest`
+# step 8 -- and consumes the span-recording scanner primitives
+# (`_decode_head` / `_scan_item` / `_scan_map_entries` / `_check_canonical_item`)
+# defined above so a forward-compat `unknown` subtree's raw bytes, entry
+# order and repeats survive a decode/re-encode round trip (#592).
+
+# Known top-level manifest body keys (§4.2). Anything else is a
+# forward-compat unknown and is retained as raw bytes.
+MANIFEST_KNOWN_KEYS = frozenset({
+    "manifest_version", "vault_uuid", "format_version", "suite_id",
+    "owner_user_uuid", "vector_clock", "blocks", "trash", "kdf_params",
+})
+
+
+def py_decode_manifest(data: bytes) -> dict:
+    """Strict §4.2/§4.3 manifest BODY decoder matching
+    `manifest/decode/mod.rs::decode_manifest`.
+
+    Validates:
+    - Top level is a CBOR map with text-string keys.
+    - No duplicate key at the top level or in any nested KNOWN map (#568,
+      #573) -- checked on the SPAN list, so a repeat is visible.
+    - No float and no CBOR tag anywhere (§6.2 rule 4).
+    - Known values are canonical per §6.2 rules 2 and 3.
+    - Unknown subtrees are checked for rules 2, 3 and 4 only, and their raw
+      bytes are RETAINED so they can be re-emitted verbatim (rules 1 and 5
+      are unenforced there -- §4.2's table).
+    - The whole body re-encodes byte-identically (§4.3 step 4) -- this is
+      what makes a duplicate key inside a nested KNOWN map (a block entry,
+      a trash entry, `kdf_params`, or a vector-clock entry) a REJECTION
+      rather than a silent `cbor2.loads` collapse-and-accept: Rust rejects
+      those with a precise `DuplicateKey`, and matching the verdict is
+      what this check buys, even though the two disagree on *how* they
+      detect it.
+
+    The returned dict maps `"unknown"` to `{key: raw_bytes}`.  That
+    asymmetry is the design: a decoded object cannot reproduce what §4.2
+    requires reproducing (#592).
+    """
+    import cbor2
+
+    entries, end = _scan_map_entries(data, 0)
+    if end != len(data):
+        raise ValueError(f"trailing bytes after manifest map: {len(data) - end}")
+
+    out: dict[str, Any] = {}
+    unknown: dict[str, bytes] = {}
+    seen: set[str] = set()
+
+    for (ks, ke), (vs, ve) in entries:
+        kmaj, _, _, _ = _decode_head(data, ks)
+        if kmaj != 3:
+            raise ValueError(f"manifest map key at offset {ks} is not a text string")
+        key = cbor2.loads(data[ks:ke])
+        if key in seen:
+            raise ValueError(f"duplicate manifest key: {key!r}")
+        seen.add(key)
+
+        # Rules 2/3/4 apply to every value, known or unknown.
+        _check_canonical_item(data, vs)
+
+        if key in MANIFEST_KNOWN_KEYS:
+            out[key] = cbor2.loads(data[vs:ve])
+        else:
+            unknown[key] = data[vs:ve]
+
+    for required in ("manifest_version", "vault_uuid", "owner_user_uuid"):
+        if required not in out:
+            raise KeyError(f"manifest missing required field: {required!r}")
+
+    # The five §4.2 array sort disciplines. `encode_manifest` sorts all five
+    # on output, so an array arriving out of order is rejected -- a WIDER
+    # rejection surface than plain canonical CBOR, and deliberate.
+    _check_sorted(out.get("vector_clock", []), "device_uuid", "vector_clock")
+    _check_sorted(out.get("blocks", []), "block_uuid", "blocks")
+    _check_sorted(out.get("trash", []), "block_uuid", "trash")
+    for i, blk in enumerate(out.get("blocks", [])):
+        recips = blk.get("recipients", [])
+        if recips != sorted(recips):
+            raise ValueError(f"blocks[{i}].recipients is not sorted")
+        _check_sorted(
+            blk.get("vector_clock_summary", []),
+            "device_uuid",
+            f"blocks[{i}].vector_clock_summary",
+        )
+
+    out["unknown"] = unknown
+
+    # §4.3 step 4: the re-encode must reproduce the input byte for byte.
+    # This is what makes the decoder reject a duplicate key inside a nested
+    # KNOWN map (a block entry, a trash entry, `kdf_params`, a vector-clock
+    # entry): `cbor2.loads` collapses such a repeat, so the re-encode comes
+    # back shorter and the comparison fails.  Rust rejects those with a
+    # precise `DuplicateKey`; matching the VERDICT is what matters here.
+    # Retained unknown subtrees are spliced verbatim and compare equal, so
+    # this check does not undo the byte-retention design.
+    if py_encode_manifest(out) != data:
+        raise ValueError("manifest body is not in canonical CBOR form")
+
+    return out
+
+
+def _check_sorted(rows: list, key: str, label: str) -> None:
+    """Assert `rows` is sorted ascending by `row[key]` (§4.2)."""
+    ids = [r[key] for r in rows]
+    if ids != sorted(ids):
+        raise ValueError(f"{label} is not sorted by {key}")
+
+
+def py_encode_manifest(parsed: dict) -> bytes:
+    """Re-encode a `py_decode_manifest` result to canonical CBOR.
+
+    Known values go through `cbor2.dumps(..., canonical=True)`; unknown
+    subtrees are spliced from their retained bytes, never re-encoded.
+    """
+    import cbor2
+
+    entries: list[tuple[str, bytes]] = [
+        (k, cbor2.dumps(v, canonical=True))
+        for k, v in parsed.items()
+        if k != "unknown"
+    ]
+    entries.extend(parsed.get("unknown", {}).items())
+    return encode_canonical_map_raw(entries)
+
+
+def section_manifest_body_duplicate_key_guard() -> tuple[bool, list[str]]:
+    """Pin the pre-flight amendment to `py_decode_manifest` (progress.md
+    Ruling 1, #585): a duplicate key inside a NESTED KNOWN map -- a block
+    entry, a trash entry, `kdf_params`, or a vector-clock entry -- must be
+    REJECTED, not silently collapsed by `cbor2.loads` and accepted. Without
+    this row the amendment's `py_encode_manifest(out) != data` re-encode
+    check inside `py_decode_manifest` is unpinned: the golden vault has no
+    duplicate keys anywhere, so section 2 alone cannot exercise it.
+    """
+    import cbor2
+
+    issues: list[str] = []
+
+    vault_uuid = b"\x11" * 16
+    owner_uuid = b"\x22" * 16
+    salt = b"\x33" * 32
+
+    top: dict[str, Any] = {
+        "manifest_version": 1,
+        "vault_uuid": vault_uuid,
+        "format_version": 1,
+        "suite_id": 1,
+        "owner_user_uuid": owner_uuid,
+        "vector_clock": [],
+        "blocks": [],
+        "trash": [],
+        "kdf_params": {
+            "memory_kib": 262144,
+            "iterations": 3,
+            "parallelism": 1,
+            "salt": salt,
+        },
+    }
+    good = cbor2.dumps(top, canonical=True)
+
+    # Positive control: a well-formed manifest body decodes and round-trips
+    # byte-identically, so the negative control below is known to be
+    # testing the duplicate key and nothing else.
+    try:
+        decoded = py_decode_manifest(good)
+        if py_encode_manifest(decoded) != good:
+            issues.append(
+                "manifest body fixture: well-formed body did not round-trip "
+                "byte-identically (positive control failed)"
+            )
+    except ValueError as e:
+        issues.append(f"manifest body fixture: well-formed body was REJECTED: {e}")
+
+    # Hand-build a `kdf_params` sub-map with its "iterations" key written
+    # TWICE -- the exact #573 divergence: `cbor2.loads` collapses the wire
+    # entry list [memory_kib, iterations, iterations, parallelism, salt]
+    # (5 entries) into a 4-key dict, so a decoder that never re-encodes
+    # would silently ACCEPT this. Key order here need not be canonical --
+    # the point under test is the ENTRY COUNT collapse, and
+    # `py_encode_manifest` re-sorts on the way back out regardless.
+    kdf_dup_pairs = [
+        (cbor2.dumps("memory_kib"), cbor2.dumps(262144, canonical=True)),
+        (cbor2.dumps("iterations"), cbor2.dumps(3, canonical=True)),
+        (cbor2.dumps("iterations"), cbor2.dumps(3, canonical=True)),  # duplicate
+        (cbor2.dumps("parallelism"), cbor2.dumps(1, canonical=True)),
+        (cbor2.dumps("salt"), cbor2.dumps(salt, canonical=True)),
+    ]
+    n = len(kdf_dup_pairs)
+    assert n < 24  # RFC 8949 §3.1: major type 5 (map), short-form count.
+    kdf_dup_bytes = bytearray([0xA0 | n])
+    for k, v in kdf_dup_pairs:
+        kdf_dup_bytes += k
+        kdf_dup_bytes += v
+
+    good_kdf_bytes = cbor2.dumps(top["kdf_params"], canonical=True)
+    if good.count(good_kdf_bytes) != 1:
+        issues.append(
+            "manifest body fixture: kdf_params splice point is not unique "
+            "in the well-formed body"
+        )
+    else:
+        idx = good.find(good_kdf_bytes)
+        tampered = good[:idx] + bytes(kdf_dup_bytes) + good[idx + len(good_kdf_bytes):]
+        try:
+            py_decode_manifest(tampered)
+            issues.append(
+                "duplicate key inside a nested KNOWN map "
+                "(kdf_params.iterations, written twice) was ACCEPTED -- "
+                "must be REJECTED to match decode_manifest's #573 "
+                "DuplicateKey guards (progress.md Ruling 1)"
+            )
+        except ValueError:
+            pass  # expected: the §4.3 step-4 re-encode compare rejects it
+
+    return (not issues), issues
+
+
 def py_encode_record(record: dict) -> bytes:
     """Re-encode a parsed record dict to canonical CBOR.
 
@@ -4557,6 +4830,12 @@ def main() -> int:
         print(ln)
 
     print()
+    print("--- Section MD: manifest body duplicate-key-in-nested-map guard (#585) ---")
+    manifest_dup_ok, manifest_dup_lines = section_manifest_body_duplicate_key_guard()
+    for ln in manifest_dup_lines:
+        print(ln)
+
+    print()
     if (
         section1_ok
         and section2_ok
@@ -4570,6 +4849,7 @@ def main() -> int:
         and convergence_ok
         and purge_ok
         and cbor_scan_ok
+        and manifest_dup_ok
     ):
         print("PASS")
         return 0
@@ -4597,6 +4877,8 @@ def main() -> int:
         print("FAIL: manifest TrashEntry purge marker scenario", file=sys.stderr)
     if not cbor_scan_ok:
         print("FAIL: span-recording CBOR scanner unit coverage", file=sys.stderr)
+    if not manifest_dup_ok:
+        print("FAIL: manifest body duplicate-key-in-nested-map guard", file=sys.stderr)
     return 1
 
 
