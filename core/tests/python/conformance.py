@@ -3668,6 +3668,36 @@ def _scan_map_entries(
     return out, p
 
 
+def _scan_array_items(buf: bytes, pos: int) -> tuple[list[tuple[int, int]], int]:
+    """Item spans for the CBOR array at `pos`, plus the offset one past it.
+
+    Mirrors `_scan_map_entries` for major type 4 (array): records each
+    element's `(start, end)` span rather than decoding it, so a manifest
+    `blocks`/`trash` array can be walked entry by entry with each entry's
+    own forward-compat subtree inspected and re-spliced, one nesting level
+    below the top-level map (#585 fix round 1, Finding 1).
+    """
+    major, _, arg, head = _decode_head(buf, pos)
+    if major != 4:
+        raise ValueError(f"expected a CBOR array at offset {pos}, got major type {major}")
+    p = pos + head
+    out: list[tuple[int, int]] = []
+    if arg is None:
+        while True:
+            if p >= len(buf):
+                raise ValueError("unterminated indefinite-length array")
+            if buf[p] == CBOR_BREAK:
+                return out, p + 1
+            s = p
+            p = _scan_item(buf, p)
+            out.append((s, p))
+    for _ in range(arg):
+        s = p
+        p = _scan_item(buf, p)
+        out.append((s, p))
+    return out, p
+
+
 def _shortest_ai(arg: int) -> int:
     """The additional-info value RFC 8949 §4.2.1 requires for `arg`."""
     if arg < 24:
@@ -3850,6 +3880,94 @@ MANIFEST_KNOWN_KEYS = frozenset({
     "owner_user_uuid", "vector_clock", "blocks", "trash", "kdf_params",
 })
 
+# All nine are required -- `manifest/types.rs::Manifest` has no `Option`
+# among them, so `decode_manifest` requires every one (#585 fix round 1,
+# Finding 2). A prior version of this decoder only hard-required three;
+# the re-encode-and-compare does NOT catch that gap on its own, because a
+# body simply missing a key re-encodes to itself byte-for-byte.
+MANIFEST_REQUIRED_KEYS = MANIFEST_KNOWN_KEYS
+
+# `BlockEntry`'s own known wire keys (`manifest/types.rs`), verified against
+# `manifest/decode/entries.rs::parse_block_entry`. All eight are required
+# there (no `Option` field on `BlockEntry`).
+BLOCK_ENTRY_KNOWN_KEYS = frozenset({
+    "block_uuid", "block_name", "fingerprint", "recipients",
+    "vector_clock_summary", "suite_id", "created_at_ms", "last_mod_ms",
+})
+
+# `TrashEntry`'s own known wire keys, verified against
+# `manifest/decode/entries.rs::parse_trash_entry`. `fingerprint` and
+# `purged_at_ms` are `Option` on `TrashEntry` and each omitted-key decodes
+# to `None` (§7/§7.2); the other three are required.
+TRASH_ENTRY_KNOWN_KEYS = frozenset({
+    "block_uuid", "tombstoned_at_ms", "tombstoned_by",
+    "fingerprint", "purged_at_ms",
+})
+
+
+def _decode_manifest_entry_map(data: bytes, pos: int, end: int, known_keys: frozenset) -> dict:
+    """Decode one manifest-array entry map (a `blocks[i]` or `trash[i]`),
+    matching the corresponding Rust `parse_block_entry` / `parse_trash_entry`
+    (#585 fix round 1, Finding 1): the design originally scoped span-based
+    byte retention to the manifest body's TOP-LEVEL `unknown` bag only, but
+    `BlockEntry` and `TrashEntry` each carry their OWN forward-compat
+    `unknown` bag one level deeper (`manifest/types.rs`) -- so a duplicate
+    key inside e.g. a block entry's unknown subtree was being collapsed by
+    `cbor2.loads` (Rust tolerates it; §4.2's unknown-subtree exemption for
+    rules 1/5 applies at every nesting level, not just the top one).
+
+    Dispatches KNOWN entry keys through `cbor2.loads` on their value span;
+    retains UNKNOWN values as raw bytes; rejects a duplicate key -- known
+    or unknown -- within this one entry (mirrors Rust's per-arm
+    `DuplicateKey` / `BTreeMap::insert` duplicate check). Every value,
+    known or unknown, is checked for §6.2 rules 2/3/4 via
+    `_check_canonical_item`, exactly as `py_decode_manifest`'s own
+    top-level loop does one level up (redundant with the top-level call
+    that already walked this whole subtree structurally, but kept for
+    exact symmetry with that loop and so this helper is correct if ever
+    called on its own).
+    """
+    import cbor2
+
+    entries, entry_end = _scan_map_entries(data, pos)
+    if entry_end != end:
+        raise ValueError(f"manifest entry map span mismatch at offset {pos}")
+
+    out: dict[str, Any] = {}
+    unknown: dict[str, bytes] = {}
+    seen: set[str] = set()
+
+    for (ks, ke), (vs, ve) in entries:
+        kmaj, _, _, _ = _decode_head(data, ks)
+        if kmaj != 3:
+            raise ValueError(f"manifest entry map key at offset {ks} is not a text string")
+        key = cbor2.loads(data[ks:ke])
+        if key in seen:
+            raise ValueError(f"duplicate manifest entry key: {key!r}")
+        seen.add(key)
+
+        _check_canonical_item(data, vs)
+
+        if key in known_keys:
+            out[key] = cbor2.loads(data[vs:ve])
+        else:
+            unknown[key] = data[vs:ve]
+
+    out["unknown"] = unknown
+    return out
+
+
+def _decode_manifest_array(data: bytes, pos: int, end: int, known_keys: frozenset) -> list:
+    """Decode a manifest `blocks`/`trash` array at `pos` into a list of
+    per-entry dicts via `_scan_array_items` + `_decode_manifest_entry_map`,
+    one nesting level below `py_decode_manifest`'s own top-level loop
+    (#585 fix round 1, Finding 1).
+    """
+    items, arr_end = _scan_array_items(data, pos)
+    if arr_end != end:
+        raise ValueError(f"manifest array span mismatch at offset {pos}")
+    return [_decode_manifest_entry_map(data, s, e, known_keys) for s, e in items]
+
 
 def py_decode_manifest(data: bytes) -> dict:
     """Strict §4.2/§4.3 manifest BODY decoder matching
@@ -3857,13 +3975,23 @@ def py_decode_manifest(data: bytes) -> dict:
 
     Validates:
     - Top level is a CBOR map with text-string keys.
-    - No duplicate key at the top level or in any nested KNOWN map (#568,
-      #573) -- checked on the SPAN list, so a repeat is visible.
+    - No duplicate key at the top level, in any nested KNOWN map, or
+      within a `blocks[i]`/`trash[i]` entry map (#568, #573) -- checked on
+      the SPAN list, so a repeat is visible.
     - No float and no CBOR tag anywhere (§6.2 rule 4).
     - Known values are canonical per §6.2 rules 2 and 3.
-    - Unknown subtrees are checked for rules 2, 3 and 4 only, and their raw
-      bytes are RETAINED so they can be re-emitted verbatim (rules 1 and 5
-      are unenforced there -- §4.2's table).
+    - Unknown subtrees -- at the top level AND inside each `blocks[i]` /
+      `trash[i]` entry, per `BlockEntry`/`TrashEntry`'s OWN forward-compat
+      bag -- are checked for rules 2, 3 and 4 only, and their raw bytes
+      are RETAINED so they can be re-emitted verbatim (rules 1 and 5 are
+      unenforced there -- §4.2's table applies at every nesting level, not
+      only the top one; #585 fix round 1, Finding 1). `vector_clock` and
+      every `vector_clock_summary` are NOT given this treatment: a
+      `VectorClockEntry` has no unknown bag at all and rejects an unknown
+      key outright (`manifest/decode/entries.rs::parse_vector_clock_entry`),
+      so plain `cbor2` handling is correct for them.
+    - All nine known top-level keys are present (#585 fix round 1,
+      Finding 2) -- `Manifest` has no `Option` among them.
     - The whole body re-encodes byte-identically (§4.3 step 4) -- this is
       what makes a duplicate key inside a nested KNOWN map (a block entry,
       a trash entry, `kdf_params`, or a vector-clock entry) a REJECTION
@@ -3872,9 +4000,10 @@ def py_decode_manifest(data: bytes) -> dict:
       what this check buys, even though the two disagree on *how* they
       detect it.
 
-    The returned dict maps `"unknown"` to `{key: raw_bytes}`.  That
-    asymmetry is the design: a decoded object cannot reproduce what §4.2
-    requires reproducing (#592).
+    The returned dict maps `"unknown"` to `{key: raw_bytes}`, at the top
+    level AND inside each `blocks[i]` / `trash[i]` entry.  That asymmetry
+    is the design: a decoded object cannot reproduce what §4.2 requires
+    reproducing (#592).
     """
     import cbor2
 
@@ -3899,11 +4028,16 @@ def py_decode_manifest(data: bytes) -> dict:
         _check_canonical_item(data, vs)
 
         if key in MANIFEST_KNOWN_KEYS:
-            out[key] = cbor2.loads(data[vs:ve])
+            if key == "blocks":
+                out[key] = _decode_manifest_array(data, vs, ve, BLOCK_ENTRY_KNOWN_KEYS)
+            elif key == "trash":
+                out[key] = _decode_manifest_array(data, vs, ve, TRASH_ENTRY_KNOWN_KEYS)
+            else:
+                out[key] = cbor2.loads(data[vs:ve])
         else:
             unknown[key] = data[vs:ve]
 
-    for required in ("manifest_version", "vault_uuid", "owner_user_uuid"):
+    for required in sorted(MANIFEST_REQUIRED_KEYS):
         if required not in out:
             raise KeyError(f"manifest missing required field: {required!r}")
 
@@ -3931,8 +4065,9 @@ def py_decode_manifest(data: bytes) -> dict:
     # entry): `cbor2.loads` collapses such a repeat, so the re-encode comes
     # back shorter and the comparison fails.  Rust rejects those with a
     # precise `DuplicateKey`; matching the VERDICT is what matters here.
-    # Retained unknown subtrees are spliced verbatim and compare equal, so
-    # this check does not undo the byte-retention design.
+    # Retained unknown subtrees -- top-level AND per-entry -- are spliced
+    # verbatim and compare equal, so this check does not undo the
+    # byte-retention design at either nesting level.
     if py_encode_manifest(out) != data:
         raise ValueError("manifest body is not in canonical CBOR form")
 
@@ -3946,19 +4081,105 @@ def _check_sorted(rows: list, key: str, label: str) -> None:
         raise ValueError(f"{label} is not sorted by {key}")
 
 
-def py_encode_manifest(parsed: dict) -> bytes:
-    """Re-encode a `py_decode_manifest` result to canonical CBOR.
+def _encode_array_header(n: int) -> bytes:
+    """RFC 8949 §3.1: major type 4 (array) head byte is `0x80 |
+    additional-info`, with the shortest-form encodings for the element
+    count `n` (§4.2.1) -- the array-header analogue of
+    `encode_canonical_map_raw`'s map-header construction.
+    """
+    if n < 24:
+        return bytes([0x80 | n])
+    if n < 0x100:
+        return bytes([0x98, n])
+    if n < 0x10000:
+        return bytes([0x99]) + n.to_bytes(2, "big")
+    return bytes([0x9A]) + n.to_bytes(4, "big")
 
-    Known values go through `cbor2.dumps(..., canonical=True)`; unknown
-    subtrees are spliced from their retained bytes, never re-encoded.
+
+def _encode_manifest_array(items: list, entry_encoder) -> bytes:
+    """Encode a `blocks`/`trash` array from already-decoded entry dicts,
+    each rebuilt to raw bytes by `entry_encoder` (`_encode_manifest_block_entry`
+    or `_encode_manifest_trash_entry`). Array ELEMENT order is never
+    resorted here -- `py_decode_manifest` already validated the incoming
+    order against the §4.2 sort discipline, and canonical CBOR only
+    constrains map KEY order, never array element order.
+    """
+    out = bytearray(_encode_array_header(len(items)))
+    for item in items:
+        out += entry_encoder(item)
+    return bytes(out)
+
+
+def _encode_manifest_block_entry(entry: dict) -> bytes:
+    """Re-encode one `blocks[i]` entry dict (from `_decode_manifest_entry_map`)
+    to canonical CBOR. All eight known fields are required (`BlockEntry` has
+    no `Option` field); `unknown` values are spliced verbatim from their
+    retained raw bytes, never re-encoded.
     """
     import cbor2
 
     entries: list[tuple[str, bytes]] = [
-        (k, cbor2.dumps(v, canonical=True))
-        for k, v in parsed.items()
-        if k != "unknown"
+        ("block_uuid", cbor2.dumps(entry["block_uuid"], canonical=True)),
+        ("block_name", cbor2.dumps(entry["block_name"], canonical=True)),
+        ("fingerprint", cbor2.dumps(entry["fingerprint"], canonical=True)),
+        ("recipients", cbor2.dumps(entry["recipients"], canonical=True)),
+        (
+            "vector_clock_summary",
+            cbor2.dumps(entry["vector_clock_summary"], canonical=True),
+        ),
+        ("suite_id", cbor2.dumps(entry["suite_id"], canonical=True)),
+        ("created_at_ms", cbor2.dumps(entry["created_at_ms"], canonical=True)),
+        ("last_mod_ms", cbor2.dumps(entry["last_mod_ms"], canonical=True)),
     ]
+    entries.extend(entry.get("unknown", {}).items())
+    return encode_canonical_map_raw(entries)
+
+
+def _encode_manifest_trash_entry(entry: dict) -> bytes:
+    """Re-encode one `trash[i]` entry dict (from `_decode_manifest_entry_map`)
+    to canonical CBOR. `fingerprint` and `purged_at_ms` are each omitted
+    entirely when absent/`None` -- never an explicit CBOR null -- matching
+    `TrashEntry`'s §7/§7.2 optional-field semantics
+    (`manifest/encode.rs::trash_entry_to_canonical`); `unknown` values are
+    spliced verbatim from their retained raw bytes.
+    """
+    import cbor2
+
+    entries: list[tuple[str, bytes]] = [
+        ("block_uuid", cbor2.dumps(entry["block_uuid"], canonical=True)),
+        ("tombstoned_at_ms", cbor2.dumps(entry["tombstoned_at_ms"], canonical=True)),
+        ("tombstoned_by", cbor2.dumps(entry["tombstoned_by"], canonical=True)),
+    ]
+    if entry.get("fingerprint") is not None:
+        entries.append(("fingerprint", cbor2.dumps(entry["fingerprint"], canonical=True)))
+    if entry.get("purged_at_ms") is not None:
+        entries.append(("purged_at_ms", cbor2.dumps(entry["purged_at_ms"], canonical=True)))
+    entries.extend(entry.get("unknown", {}).items())
+    return encode_canonical_map_raw(entries)
+
+
+def py_encode_manifest(parsed: dict) -> bytes:
+    """Re-encode a `py_decode_manifest` result to canonical CBOR.
+
+    Known values go through `cbor2.dumps(..., canonical=True)`, EXCEPT
+    `blocks`/`trash`, each of which is rebuilt entry-by-entry through
+    `_encode_manifest_array` so a per-entry `unknown` subtree is spliced
+    from its retained raw bytes rather than collapsed through `cbor2`
+    (#585 fix round 1, Finding 1). Top-level unknown subtrees are spliced
+    from their retained bytes the same way, never re-encoded.
+    """
+    import cbor2
+
+    entries: list[tuple[str, bytes]] = []
+    for k, v in parsed.items():
+        if k == "unknown":
+            continue
+        if k == "blocks":
+            entries.append((k, _encode_manifest_array(v, _encode_manifest_block_entry)))
+        elif k == "trash":
+            entries.append((k, _encode_manifest_array(v, _encode_manifest_trash_entry)))
+        else:
+            entries.append((k, cbor2.dumps(v, canonical=True)))
     entries.extend(parsed.get("unknown", {}).items())
     return encode_canonical_map_raw(entries)
 
@@ -4051,6 +4272,291 @@ def section_manifest_body_duplicate_key_guard() -> tuple[bool, list[str]]:
             )
         except ValueError:
             pass  # expected: the §4.3 step-4 re-encode compare rejects it
+
+    return (not issues), issues
+
+
+def _dup_key_inner_map_bytes(key_name: str) -> bytes:
+    """Raw CBOR bytes for a 2-entry map with `key_name` written TWICE.
+
+    Tolerated by Rust anywhere inside a forward-compat unknown subtree
+    (§4.2's unenforced rules 1/5, at every nesting level -- #585 fix round
+    1, Finding 1), so splicing this in as an unknown field's VALUE must be
+    ACCEPTED, not rejected, by `py_decode_manifest`.
+    """
+    import cbor2
+
+    return (
+        bytes([0xA2])  # RFC 8949 §3.1: major type 5 (map), 2 entries, short form.
+        + cbor2.dumps(key_name)
+        + cbor2.dumps(1, canonical=True)
+        + cbor2.dumps(key_name)
+        + cbor2.dumps(2, canonical=True)
+    )
+
+
+def _build_test_block_entry_bytes(
+    extra_unknown: tuple[str, bytes] | None = None, dup_known: bool = False
+) -> bytes:
+    """Raw CBOR bytes for one `blocks[i]` entry, for section MDN's fixtures.
+
+    All 8 known fields use fixed literal test values (structural CBOR test
+    data, not a cryptographic secret -- same convention as
+    `section_manifest_body_duplicate_key_guard`'s fixture). `dup_known`
+    appends a SECOND `suite_id` entry (a duplicate KNOWN key, which must be
+    REJECTED); `extra_unknown`, when given, appends one more `(key, raw
+    value bytes)` pair as a forward-compat entry-level unknown field.
+    Built via `encode_canonical_map_raw` -- the same sort this repo's own
+    `_encode_manifest_block_entry` re-encode uses -- so a fixture with no
+    duplicate keys round-trips byte-identically regardless of the order
+    these entries are listed in below.
+    """
+    import cbor2
+
+    entries: list[tuple[str, bytes]] = [
+        ("block_uuid", cbor2.dumps(b"\xaa" * 16, canonical=True)),
+        ("block_name", cbor2.dumps("block-one", canonical=True)),
+        ("fingerprint", cbor2.dumps(b"\xbb" * 32, canonical=True)),
+        ("recipients", cbor2.dumps([b"\x22" * 16], canonical=True)),
+        (
+            "vector_clock_summary",
+            cbor2.dumps([{"device_uuid": b"\x44" * 16, "counter": 1}], canonical=True),
+        ),
+        ("suite_id", cbor2.dumps(1, canonical=True)),
+        ("created_at_ms", cbor2.dumps(1000, canonical=True)),
+        ("last_mod_ms", cbor2.dumps(1000, canonical=True)),
+    ]
+    if dup_known:
+        entries.append(("suite_id", cbor2.dumps(2, canonical=True)))  # duplicate KNOWN key
+    if extra_unknown is not None:
+        entries.append(extra_unknown)
+    return encode_canonical_map_raw(entries)
+
+
+def _build_test_trash_entry_bytes(
+    extra_unknown: tuple[str, bytes] | None = None, dup_known: bool = False
+) -> bytes:
+    """Raw CBOR bytes for one `trash[i]` entry, for section MDN's fixtures.
+
+    Only the 3 required `TrashEntry` fields are populated (`fingerprint` /
+    `purged_at_ms` omitted, per §7/§7.2's optional-field semantics).
+    `dup_known` / `extra_unknown` mirror `_build_test_block_entry_bytes`.
+    """
+    import cbor2
+
+    entries: list[tuple[str, bytes]] = [
+        ("block_uuid", cbor2.dumps(b"\xcc" * 16, canonical=True)),
+        ("tombstoned_at_ms", cbor2.dumps(2000, canonical=True)),
+        ("tombstoned_by", cbor2.dumps(b"\x44" * 16, canonical=True)),
+    ]
+    if dup_known:
+        entries.append(("tombstoned_at_ms", cbor2.dumps(3000, canonical=True)))  # duplicate
+    if extra_unknown is not None:
+        entries.append(extra_unknown)
+    return encode_canonical_map_raw(entries)
+
+
+def _build_test_manifest_bytes(blocks_bytes: bytes, trash_bytes: bytes) -> bytes:
+    """Full manifest-body bytes for section MDN's fixtures, given already
+    -encoded `blocks`/`trash` array bytes, with the other 7 known
+    top-level fields filled in as fixed literal test values (same values
+    `section_manifest_body_duplicate_key_guard` uses).
+    """
+    import cbor2
+
+    vault_uuid = b"\x11" * 16
+    owner_uuid = b"\x22" * 16
+    salt = b"\x33" * 32
+    entries: list[tuple[str, bytes]] = [
+        ("manifest_version", cbor2.dumps(1, canonical=True)),
+        ("vault_uuid", cbor2.dumps(vault_uuid, canonical=True)),
+        ("format_version", cbor2.dumps(1, canonical=True)),
+        ("suite_id", cbor2.dumps(1, canonical=True)),
+        ("owner_user_uuid", cbor2.dumps(owner_uuid, canonical=True)),
+        ("vector_clock", cbor2.dumps([], canonical=True)),
+        ("blocks", blocks_bytes),
+        ("trash", trash_bytes),
+        (
+            "kdf_params",
+            cbor2.dumps(
+                {
+                    "memory_kib": 262144,
+                    "iterations": 3,
+                    "parallelism": 1,
+                    "salt": salt,
+                },
+                canonical=True,
+            ),
+        ),
+    ]
+    return encode_canonical_map_raw(entries)
+
+
+def section_manifest_body_nested_entry_guard() -> tuple[bool, list[str]]:
+    """Pin the #585 fix round 1, Finding 1 fix: byte retention must reach
+    ONE nesting level deeper than the design originally scoped it to.
+
+    `BlockEntry` and `TrashEntry` each carry their OWN forward-compat
+    `unknown` bag (`manifest/types.rs`); the pre-fix `py_decode_manifest`
+    handled `blocks`/`trash` wholesale through `cbor2.loads`, so a
+    duplicate key inside a BLOCK- or TRASH-entry's own unknown subtree was
+    silently collapsed and then REJECTED by the top-level §4.3 re-encode
+    check -- the opposite verdict to Rust, which tolerates it (§4.2's
+    unenforced rules 1/5 apply at every nesting level, not only the top
+    one). Four rows:
+
+    1. Positive control: block + trash entries each carrying a
+       WELL-FORMED (non-duplicate) unknown field round-trip byte-identically.
+    2. A duplicate key inside a BLOCK-entry unknown subtree must be
+       ACCEPTED.
+    3. A duplicate key inside a TRASH-entry unknown subtree must be
+       ACCEPTED.
+    4. A duplicate KNOWN key (`suite_id` written twice) within a block
+       entry must still be REJECTED.
+    """
+    import cbor2
+
+    issues: list[str] = []
+
+    # --- Row 1: positive control -- well-formed unknown fields at both
+    # nesting levels round-trip byte-identically.
+    block_ok = _build_test_block_entry_bytes(
+        extra_unknown=("future_field", cbor2.dumps({"a": 1, "b": 2}, canonical=True))
+    )
+    trash_ok = _build_test_trash_entry_bytes(
+        extra_unknown=("future_field2", cbor2.dumps({"c": 3}, canonical=True))
+    )
+    good = _build_test_manifest_bytes(
+        _encode_array_header(1) + block_ok, _encode_array_header(1) + trash_ok
+    )
+    try:
+        decoded = py_decode_manifest(good)
+        if py_encode_manifest(decoded) != good:
+            issues.append(
+                "manifest body fixture: well-formed per-entry unknown "
+                "fields did not round-trip byte-identically (positive "
+                "control failed)"
+            )
+    except ValueError as e:
+        issues.append(
+            f"manifest body fixture: well-formed per-entry unknown fields "
+            f"were REJECTED: {e}"
+        )
+
+    # --- Row 2: duplicate key inside a BLOCK-entry unknown subtree ->
+    # must be ACCEPTED.
+    block_dup_unknown = _build_test_block_entry_bytes(
+        extra_unknown=("future_field", _dup_key_inner_map_bytes("dup"))
+    )
+    trash_plain = _build_test_trash_entry_bytes()
+    tampered_block = _build_test_manifest_bytes(
+        _encode_array_header(1) + block_dup_unknown, _encode_array_header(1) + trash_plain
+    )
+    try:
+        py_decode_manifest(tampered_block)
+    except ValueError as e:
+        issues.append(
+            "duplicate key inside a BLOCK-entry unknown subtree was "
+            f"REJECTED -- must be ACCEPTED (Rust tolerates it): {e}"
+        )
+
+    # --- Row 3: duplicate key inside a TRASH-entry unknown subtree ->
+    # must be ACCEPTED.
+    block_plain = _build_test_block_entry_bytes()
+    trash_dup_unknown = _build_test_trash_entry_bytes(
+        extra_unknown=("future_field2", _dup_key_inner_map_bytes("dup2"))
+    )
+    tampered_trash = _build_test_manifest_bytes(
+        _encode_array_header(1) + block_plain, _encode_array_header(1) + trash_dup_unknown
+    )
+    try:
+        py_decode_manifest(tampered_trash)
+    except ValueError as e:
+        issues.append(
+            "duplicate key inside a TRASH-entry unknown subtree was "
+            f"REJECTED -- must be ACCEPTED (Rust tolerates it): {e}"
+        )
+
+    # --- Row 4: duplicate KNOWN key (`suite_id` twice) within a block
+    # entry -> must be REJECTED.
+    block_dup_known = _build_test_block_entry_bytes(dup_known=True)
+    tampered_known = _build_test_manifest_bytes(
+        _encode_array_header(1) + block_dup_known, _encode_array_header(1) + trash_plain
+    )
+    try:
+        py_decode_manifest(tampered_known)
+        issues.append(
+            "duplicate KNOWN key (suite_id, written twice) within a "
+            "block entry was ACCEPTED -- must be REJECTED to match "
+            "parse_block_entry's #573 DuplicateKey guard"
+        )
+    except ValueError:
+        pass  # expected
+
+    return (not issues), issues
+
+
+def section_manifest_body_required_keys_guard() -> tuple[bool, list[str]]:
+    """Pin the #585 fix round 1, Finding 2 fix: all NINE known top-level
+    manifest body keys are required, matching `manifest/types.rs::Manifest`
+    (no `Option` among them) -- not just the three (`manifest_version`,
+    `vault_uuid`, `owner_user_uuid`) the pre-fix decoder hard-required.
+    The §4.3 step-4 re-encode-and-compare does NOT catch a missing key on
+    its own: a body simply missing a key re-encodes to itself byte for
+    byte, so this needs its own row per previously-unchecked key.
+    """
+    import cbor2
+
+    issues: list[str] = []
+
+    vault_uuid = b"\x11" * 16
+    owner_uuid = b"\x22" * 16
+    salt = b"\x33" * 32
+    full: dict[str, Any] = {
+        "manifest_version": 1,
+        "vault_uuid": vault_uuid,
+        "format_version": 1,
+        "suite_id": 1,
+        "owner_user_uuid": owner_uuid,
+        "vector_clock": [],
+        "blocks": [],
+        "trash": [],
+        "kdf_params": {
+            "memory_kib": 262144,
+            "iterations": 3,
+            "parallelism": 1,
+            "salt": salt,
+        },
+    }
+
+    # Positive control: the full 9-key body decodes fine.
+    good = cbor2.dumps(full, canonical=True)
+    try:
+        py_decode_manifest(good)
+    except (ValueError, KeyError) as e:
+        issues.append(f"manifest body fixture: full 9-key body was REJECTED: {e}")
+
+    # The 6 keys the pre-fix decoder did NOT hard-require.
+    previously_unchecked = (
+        "format_version", "suite_id", "vector_clock", "blocks", "trash", "kdf_params",
+    )
+    for missing in previously_unchecked:
+        partial = {k: v for k, v in full.items() if k != missing}
+        body = cbor2.dumps(partial, canonical=True)
+        try:
+            py_decode_manifest(body)
+            issues.append(
+                f"manifest body missing required key {missing!r} was "
+                "ACCEPTED -- must be REJECTED (Manifest has no Option "
+                "among its 9 known fields)"
+            )
+        except KeyError:
+            pass  # expected
+        except ValueError as e:
+            issues.append(
+                f"manifest body missing required key {missing!r} raised "
+                f"ValueError instead of the expected KeyError: {e}"
+            )
 
     return (not issues), issues
 
@@ -4836,6 +5342,18 @@ def main() -> int:
         print(ln)
 
     print()
+    print("--- Section MDN: manifest body nested block/trash-entry unknown-bag guard (#585 fix round 1) ---")
+    manifest_nested_ok, manifest_nested_lines = section_manifest_body_nested_entry_guard()
+    for ln in manifest_nested_lines:
+        print(ln)
+
+    print()
+    print("--- Section MRK: manifest body all-9-required-keys guard (#585 fix round 1) ---")
+    manifest_required_ok, manifest_required_lines = section_manifest_body_required_keys_guard()
+    for ln in manifest_required_lines:
+        print(ln)
+
+    print()
     if (
         section1_ok
         and section2_ok
@@ -4850,6 +5368,8 @@ def main() -> int:
         and purge_ok
         and cbor_scan_ok
         and manifest_dup_ok
+        and manifest_nested_ok
+        and manifest_required_ok
     ):
         print("PASS")
         return 0
@@ -4879,6 +5399,10 @@ def main() -> int:
         print("FAIL: span-recording CBOR scanner unit coverage", file=sys.stderr)
     if not manifest_dup_ok:
         print("FAIL: manifest body duplicate-key-in-nested-map guard", file=sys.stderr)
+    if not manifest_nested_ok:
+        print("FAIL: manifest body nested block/trash-entry unknown-bag guard", file=sys.stderr)
+    if not manifest_required_ok:
+        print("FAIL: manifest body all-9-required-keys guard", file=sys.stderr)
     return 1
 
 
