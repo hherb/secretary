@@ -146,9 +146,10 @@ Each is a pure function; I/O stays at the edges, matching the repo's convention.
 
 | Component | Purpose | Depends on |
 |---|---|---|
-| `_scan_item(buf, pos) -> int` | Return the end offset of the single CBOR item at `pos`. Recurses through arrays/maps/tags; handles indefinite-length forms by scanning to the break. | nothing (pure byte walk) |
+| `_decode_head(buf, pos) -> tuple[int, int, int \| None, int]` | Decode one CBOR head (RFC 8949 §3) into `(major, ai, arg, head_len)`; `arg` is `None` for the indefinite form. The shared primitive under the three below. | nothing |
+| `_scan_item(buf, pos) -> int` | Return the end offset of the single CBOR item at `pos`. Recurses through arrays/maps/tags; handles indefinite-length forms by scanning to the break. | `_decode_head` |
 | `_scan_map_entries(buf, pos) -> tuple[list[tuple[Span, Span]], int]` | Entry list of `(key_span, value_span)` for the map at `pos`, plus its end offset. A `Span` is a `(start, end)` offset pair into `buf` — never a copy, so a retained subtree is exhibited as `buf[start:end]` at re-encode time. **Preserves order and repeats** — this is the whole point. | `_scan_item` |
-| `_is_canonical_item(buf, span) -> bool` | Rules 2/3/4 check on one span: no indefinite length, shortest-form heads, no floats, no tags. Recursive. | `_scan_item` |
+| `_check_canonical_item(buf, pos) -> int` | Rules 2/3/4 over the item at `pos`: no indefinite length, shortest-form heads, no floats, no tags. Recursive. **Raises `ValueError` naming the rule and the byte offset** rather than returning a bool — the corpus needs the locator, and a bare `False` would be exactly the undiagnosable failure #590 records. Returns the end offset. | `_decode_head` |
 | `py_decode_manifest(data) -> dict` | Strict §4.2/§4.3 body decoder. Known keys via `cbor2.loads`; unknown keys keep raw bytes. Rejects duplicates at known levels; enforces the five array sort disciplines. | all of the above |
 | `py_encode_manifest(parsed) -> bytes` | Canonical re-encode; splices retained unknown bytes verbatim. | `encode_canonical_map_raw` |
 | `encode_canonical_map_raw(entries: list[tuple[str, bytes]]) -> bytes` | Canonical map from **pre-encoded** value bytes. Sorts keys by `(len, bytes)` on their encoded form; writes the map header by hand. | nothing |
