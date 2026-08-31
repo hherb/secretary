@@ -175,8 +175,14 @@ pub enum RecordError {
     /// inside a forward-compat `unknown` subtree, which is an
     /// arbitrary-depth CBOR map stored verbatim: `UnknownValue`'s only
     /// validation is `reject_floats_and_tags`, and the record-level
-    /// re-encode-and-compare cannot see it either, because duplicate keys
-    /// sort adjacently and re-encode byte-identically.
+    /// re-encode-and-compare cannot see it either, because
+    /// `ciborium::Value::Map` is an ordered `Vec` of pairs: no sorting or
+    /// de-duplication happens on the way in or out, so a repeated key
+    /// survives the round trip in its arrival order and re-encodes
+    /// byte-identically. (An earlier version of this sentence said
+    /// duplicate keys "sort adjacently", which describes a sort that does
+    /// not occur; the ordered-`Vec` property is the real mechanism, and is
+    /// the one `manifest/decode/mod.rs` and `decode/tests.rs` state.)
     ///
     /// Carries the map LEVEL and the offending entry's ordinal, never the
     /// key itself: at the `"fields"` level the key is a decrypted user field
@@ -2086,8 +2092,12 @@ mod tests {
     /// `unknown_subtree_tolerates_key_order_and_duplicates_but_not_encoding`
     /// (`core/src/vault/manifest/decode/tests.rs`) -- same splice-over-a-
     /// needle technique, same six-reject/two-accept shape set -- extended
-    /// to the SECOND level a [`Record`] has that a `Manifest` does not:
-    /// [`RecordField::unknown`]. Retention must hold at BOTH levels
+    /// to the second level a [`Record`] has, [`RecordField::unknown`].
+    /// That is the record analogue of the manifest's own nested bags: a
+    /// `Manifest` carries `unknown` at THREE levels (top, `BlockEntry`,
+    /// `TrashEntry`), which `core/tests/manifest_canonicality_kat.rs`
+    /// covers with a 3-level corpus -- the manifest twin cited above
+    /// exercises only the top one. Retention must hold at BOTH levels
     /// independently: an earlier task in this slice cost two review
     /// rounds because a design scoped byte retention to the top level
     /// only and a reviewer had to find the nested case by execution

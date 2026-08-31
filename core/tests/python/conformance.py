@@ -99,6 +99,7 @@ import os
 import re
 import sys
 import tomllib
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1615,8 +1616,13 @@ def verify_block_and_manifest(
         # duplicate keys at every KNOWN level, and retains each unknown
         # subtree's raw bytes so it can be re-emitted verbatim (#592).
         manifest_pt = py_decode_manifest(manifest_pt_bytes)
-    except (cbor2.CBORDecodeError, ValueError, KeyError) as e:
-        issues.append(f"manifest plaintext CBOR decode: {e}")
+    except (*_REJECTION_EXCEPTIONS, RecursionError) as e:
+        # `RecursionError` is included deliberately: `_scan_item` and
+        # `_check_canonical_item` recurse once per CBOR nesting level, so a
+        # deeply nested unknown subtree exhausts the stack. Without it that
+        # crashes the whole conformance run with a traceback instead of
+        # reporting a clean FAIL for this vault (#595).
+        issues.append(f"manifest plaintext CBOR decode: {type(e).__name__}: {e}")
         return False, issues
 
     # 9. Cross-check manifest body fields.
@@ -3620,8 +3626,18 @@ def py_decode_record(data: bytes) -> dict:
     # Canonical-input check: re-encode and compare. Retained unknown
     # subtrees -- record-level AND per-field -- are spliced verbatim by
     # `py_encode_record` and compare equal, so this does not undo the
-    # byte-retention above; it is what makes a duplicate/out-of-order key
-    # inside a nested KNOWN map (e.g. two field names) a REJECTION.
+    # byte-retention above.
+    #
+    # What it does and does NOT catch (#595). It catches KEY ORDER inside a
+    # nested KNOWN map. It does NOT catch a DUPLICATE key there: those are
+    # rejected earlier and explicitly, by the `seen`-set checks in
+    # `_decode_record_fields_map` / `_decode_record_field_map`, which raise
+    # before this line runs. Since #592 those maps do not go through
+    # `cbor2.loads` at all -- `_scan_map_entries` preserves a repeat, so it
+    # would survive the round trip and compare EQUAL. Attributing duplicate
+    # rejection to the re-encode is the exact reasoning this slice deleted
+    # from `_check_no_duplicate_keys`; do not remove a `seen` set as
+    # redundant with this check.
     reencoded = py_encode_record(out)
     if reencoded != data:
         raise ValueError("record is not in canonical CBOR form")
@@ -4044,7 +4060,9 @@ def section_cbor_scanner_units() -> tuple[bool, list[str]]:
         except ValueError as e:
             issues.append(f"{label} must be ACCEPTED, got: {e}")
 
-    return (not issues), issues
+    if issues:
+        return False, issues
+    return True, ["PASS  CBOR scanner unit coverage"]
 
 
 # `_check_no_duplicate_keys` (a `pass`-bodied no-op asserting that the
@@ -4078,6 +4096,15 @@ def section_cbor_scanner_units() -> tuple[bool, list[str]]:
 
 # Known top-level manifest body keys (§4.2). Anything else is a
 # forward-compat unknown and is retained as raw bytes.
+# Fixed widths the Rust decoder pins via `take_fixed_bytes::<N>`
+# (`manifest/mod.rs`: `UUID_LEN`, `BLOCK_FINGERPRINT_LEN`, `SALT_LEN`), and
+# the `manifest_version` sentinel (`MANIFEST_VERSION_V1`). `FORMAT_VERSION`
+# and `SUITE_ID` are already defined at the top of this file.
+UUID_LEN = 16
+BLOCK_FINGERPRINT_LEN = 32
+SALT_LEN = 32
+MANIFEST_VERSION_V1 = 1
+
 MANIFEST_KNOWN_KEYS = frozenset({
     "manifest_version", "vault_uuid", "format_version", "suite_id",
     "owner_user_uuid", "vector_clock", "blocks", "trash", "kdf_params",
@@ -4115,14 +4142,19 @@ BLOCK_ENTRY_REQUIRED_KEYS = BLOCK_ENTRY_KNOWN_KEYS
 TRASH_ENTRY_REQUIRED_KEYS = frozenset({"block_uuid", "tombstoned_at_ms", "tombstoned_by"})
 
 # `KdfParamsRef`'s known wire keys, verified against
-# `manifest/decode/entries.rs::parse_kdf_params` (:442-511): its catch-all
+# `manifest/decode/entries.rs::parse_kdf_params`: its catch-all
 # match arm returns `WrongType` for any key outside this set -- unlike
 # `BlockEntry`/`TrashEntry`, `KdfParamsRef` has NO `unknown` bag (#585 fix
 # round 2, Finding 3). All four are required (no `Option` field).
 KDF_PARAMS_KNOWN_KEYS = frozenset({"memory_kib", "iterations", "parallelism", "salt"})
 
+# Every `KdfParamsRef` field is mandatory: `parse_kdf_params` ends by
+# `ok_or(ManifestError::MissingField)`-ing all four
+# (`manifest/decode/entries.rs`, `parse_kdf_params`).
+KDF_PARAMS_REQUIRED_KEYS = KDF_PARAMS_KNOWN_KEYS
+
 # `VectorClockEntry`'s known wire keys, verified against
-# `manifest/decode/entries.rs::parse_vector_clock_entry` (:49-108): same
+# `manifest/decode/entries.rs::parse_vector_clock_entry`: same
 # catch-all `WrongType` shape as `parse_kdf_params` -- no `unknown` bag
 # (#585 fix round 2, Finding 3). Serves BOTH the top-level `vector_clock`
 # array and each block entry's `vector_clock_summary` array: Rust's
@@ -4132,9 +4164,18 @@ KDF_PARAMS_KNOWN_KEYS = frozenset({"memory_kib", "iterations", "parallelism", "s
 # shape itself never varies. Both keys are required (no `Option` field).
 VECTOR_CLOCK_ENTRY_KNOWN_KEYS = frozenset({"device_uuid", "counter"})
 
+# Both `VectorClockEntry` fields are mandatory, same construction as
+# `KDF_PARAMS_REQUIRED_KEYS` above (`parse_vector_clock_entry`).
+VECTOR_CLOCK_ENTRY_REQUIRED_KEYS = VECTOR_CLOCK_ENTRY_KNOWN_KEYS
+
 
 def _decode_strict_entry_map(
-    data: bytes, pos: int, end: int, known_keys: frozenset, label: str
+    data: bytes,
+    pos: int,
+    end: int,
+    known_keys: frozenset,
+    required_keys: frozenset,
+    label: str,
 ) -> dict:
     """Decode one CBOR map with a FIXED shape and NO forward-compat
     `unknown` bag (#585 fix round 2, Finding 3) -- the OPPOSITE polarity to
@@ -4149,7 +4190,12 @@ def _decode_strict_entry_map(
     `_decode_manifest_entry_map`'s entries, or vice versa.
 
     Also rejects a duplicate of a KNOWN key, mirroring each Rust parser's
-    own per-field `DuplicateKey` check.
+    own per-field `DuplicateKey` check, AND a MISSING one: both Rust
+    parsers end by `ok_or(ManifestError::MissingField)`-ing every field
+    (`parse_kdf_params`, `parse_vector_clock_entry`). Absence cannot be
+    caught by the caller's §4.3 step-4 re-encode -- a body simply missing
+    a key re-encodes to itself byte-for-byte -- which is why it is checked
+    here, the same reasoning `MANIFEST_REQUIRED_KEYS` records one level up.
     """
     import cbor2
 
@@ -4173,11 +4219,20 @@ def _decode_strict_entry_map(
         _check_canonical_item(data, vs)
 
         out[key] = cbor2.loads(data[vs:ve])
+
+    for required in sorted(required_keys):
+        if required not in out:
+            raise ValueError(f"{label} entry missing required field: {required!r}")
     return out
 
 
 def _decode_strict_array(
-    data: bytes, pos: int, end: int, known_keys: frozenset, label: str
+    data: bytes,
+    pos: int,
+    end: int,
+    known_keys: frozenset,
+    required_keys: frozenset,
+    label: str,
 ) -> list:
     """Decode an array of `_decode_strict_entry_map` entries -- the
     `vector_clock` / `vector_clock_summary` shape (#585 fix round 2,
@@ -4186,7 +4241,10 @@ def _decode_strict_array(
     items, arr_end = _scan_array_items(data, pos)
     if arr_end != end:
         raise ValueError(f"{label} array span mismatch at offset {pos}")
-    return [_decode_strict_entry_map(data, s, e, known_keys, label) for s, e in items]
+    return [
+        _decode_strict_entry_map(data, s, e, known_keys, required_keys, label)
+        for s, e in items
+    ]
 
 
 def _decode_manifest_entry_map(
@@ -4256,7 +4314,12 @@ def _decode_manifest_entry_map(
         if key in known_keys:
             if key == "vector_clock_summary":
                 out[key] = _decode_strict_array(
-                    data, vs, ve, VECTOR_CLOCK_ENTRY_KNOWN_KEYS, "vector_clock_summary"
+                    data,
+                    vs,
+                    ve,
+                    VECTOR_CLOCK_ENTRY_KNOWN_KEYS,
+                    VECTOR_CLOCK_ENTRY_REQUIRED_KEYS,
+                    "vector_clock_summary",
                 )
             else:
                 out[key] = cbor2.loads(data[vs:ve])
@@ -4316,13 +4379,14 @@ def py_decode_manifest(data: bytes) -> dict:
       so plain `cbor2` handling is correct for them.
     - All nine known top-level keys are present (#585 fix round 1,
       Finding 2) -- `Manifest` has no `Option` among them.
-    - The whole body re-encodes byte-identically (§4.3 step 4) -- this is
-      what makes a duplicate key inside a nested KNOWN map (a block entry,
-      a trash entry, `kdf_params`, or a vector-clock entry) a REJECTION
-      rather than a silent `cbor2.loads` collapse-and-accept: Rust rejects
-      those with a precise `DuplicateKey`, and matching the verdict is
-      what this check buys, even though the two disagree on *how* they
-      detect it.
+    - The whole body re-encodes byte-identically (§4.3 step 4). This
+      catches KEY ORDER (and, per the array bullet above, an out-of-sort
+      array) inside a nested KNOWN map. It does NOT catch a DUPLICATE key
+      there: `_decode_manifest_entry_map` / `_decode_strict_entry_map`
+      reject those explicitly from their own `seen` sets, before this
+      check runs -- and since those maps are scanned rather than
+      `cbor2.loads`-ed, a repeat is PRESERVED and would re-encode equal
+      (#595).
 
     The returned dict maps `"unknown"` to `{key: raw_bytes}`, at the top
     level AND inside each `blocks[i]` / `trash[i]` entry.  That asymmetry
@@ -4362,11 +4426,21 @@ def py_decode_manifest(data: bytes) -> dict:
                 )
             elif key == "vector_clock":
                 out[key] = _decode_strict_array(
-                    data, vs, ve, VECTOR_CLOCK_ENTRY_KNOWN_KEYS, "vector_clock"
+                    data,
+                    vs,
+                    ve,
+                    VECTOR_CLOCK_ENTRY_KNOWN_KEYS,
+                    VECTOR_CLOCK_ENTRY_REQUIRED_KEYS,
+                    "vector_clock",
                 )
             elif key == "kdf_params":
                 out[key] = _decode_strict_entry_map(
-                    data, vs, ve, KDF_PARAMS_KNOWN_KEYS, "kdf_params"
+                    data,
+                    vs,
+                    ve,
+                    KDF_PARAMS_KNOWN_KEYS,
+                    KDF_PARAMS_REQUIRED_KEYS,
+                    "kdf_params",
                 )
             else:
                 out[key] = cbor2.loads(data[vs:ve])
@@ -4375,7 +4449,13 @@ def py_decode_manifest(data: bytes) -> dict:
 
     for required in sorted(MANIFEST_REQUIRED_KEYS):
         if required not in out:
-            raise KeyError(f"manifest missing required field: {required!r}")
+            raise ValueError(f"manifest missing required field: {required!r}")
+
+    # Type/range/version checks on every known field. Must run AFTER the
+    # presence loop above (it indexes `out` unconditionally) and BEFORE the
+    # sort checks below (which index `row[key]` and would raise `KeyError`
+    # on a malformed entry instead of a clean `ValueError`).
+    _validate_manifest_shape(out)
 
     # The five §4.2 array sort disciplines. `encode_manifest` sorts all five
     # on output, so an array arriving out of order is rejected -- a WIDER
@@ -4396,11 +4476,20 @@ def py_decode_manifest(data: bytes) -> dict:
     out["unknown"] = unknown
 
     # §4.3 step 4: the re-encode must reproduce the input byte for byte.
-    # This is what makes the decoder reject a duplicate key inside a nested
-    # KNOWN map (a block entry, a trash entry, `kdf_params`, a vector-clock
-    # entry): `cbor2.loads` collapses such a repeat, so the re-encode comes
-    # back shorter and the comparison fails.  Rust rejects those with a
-    # precise `DuplicateKey`; matching the VERDICT is what matters here.
+    # This is the ONLY thing checking the OUTER map's own head and key
+    # order -- `_check_canonical_item` above runs on values, never on the
+    # body as a whole -- which is why `section_manifest_body_outer_
+    # canonicality_guard` pins it (#595).
+    #
+    # It does NOT reject a duplicate key inside a nested KNOWN map. An
+    # earlier version of this comment said it did, reasoning that
+    # `cbor2.loads` collapses the repeat so the re-encode comes back
+    # shorter. That stopped being true in this same slice: those maps are
+    # scanned by `_scan_map_entries`, which PRESERVES the repeat, so
+    # `py_encode_manifest` re-emits it and the comparison passes. The
+    # `seen`-set checks in `_decode_manifest_entry_map` /
+    # `_decode_strict_entry_map` are what reject them, and they run first.
+    #
     # Retained unknown subtrees -- top-level AND per-entry -- are spliced
     # verbatim and compare equal, so this check does not undo the
     # byte-retention design at either nesting level.
@@ -4408,6 +4497,103 @@ def py_decode_manifest(data: bytes) -> dict:
         raise ValueError("manifest body is not in canonical CBOR form")
 
     return out
+
+
+def _check_uint(value: Any, field: str, bits: int) -> None:
+    """Assert `value` is a CBOR unsigned integer that fits in `bits`.
+
+    Mirrors `manifest/decode/extract.rs`'s `take_u8`/`take_u16`/`take_u32`/
+    `take_u64`, each of which rejects a non-integer as `WrongType` and an
+    out-of-range integer as `IntegerOutOfRange`. `bool` is excluded
+    explicitly because Python's `bool` subclasses `int` -- `isinstance(True,
+    int)` is `True` -- while ciborium decodes a CBOR bool to `Value::Bool`,
+    which `take_u*` rejects. Without the guard a `true` would pass here and
+    be rejected by Rust.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field} must be a uint, got {type(value).__name__}")
+    if not 0 <= value < (1 << bits):
+        raise ValueError(f"{field} is out of range for u{bits}: {value}")
+
+
+def _check_fixed_bytes(value: Any, field: str, n: int) -> None:
+    """Assert `value` is a byte string of exactly `n` bytes, mirroring
+    `extract.rs`'s `take_fixed_bytes::<N>` (`WrongType` for a non-bstr,
+    `WrongLength` for the wrong size).
+    """
+    if not isinstance(value, bytes):
+        raise ValueError(f"{field} must be a bstr, got {type(value).__name__}")
+    if len(value) != n:
+        raise ValueError(f"{field} must be {n} bytes, got {len(value)}")
+
+
+def _validate_manifest_shape(out: dict) -> None:
+    """Type-, range- and version-check every KNOWN manifest field (#595).
+
+    Until this existed `py_decode_manifest` decoded the known scalars with a
+    bare `cbor2.loads` and never looked at them, so it ACCEPTED bodies the
+    Rust decoder rejects -- `manifest_version = 999`, a text `manifest_version`,
+    a 5-byte `vault_uuid`, a 3-byte salt. That is a fail-OPEN divergence in
+    the direction that matters: this file exists to prove `docs/` alone is
+    enough to build a conformant reader, so a reader here that is LAXER than
+    `decode_manifest` proves the opposite of what it claims.
+
+    Nothing else in the file can catch this class. The §4.3 step-4 re-encode
+    compares BYTES, and every mutation above re-encodes to itself; the 21-row
+    canonicality corpus mutates only `unknown` subtrees. The three version
+    sentinels mirror `decode/mod.rs`'s `UnsupportedManifestVersion` /
+    `UnsupportedFormatVersion` / `UnsupportedSuiteId`.
+    """
+    _check_uint(out["manifest_version"], "manifest_version", 8)
+    if out["manifest_version"] != MANIFEST_VERSION_V1:
+        raise ValueError(f"unsupported manifest_version: {out['manifest_version']}")
+    _check_uint(out["format_version"], "format_version", 16)
+    if out["format_version"] != FORMAT_VERSION:
+        raise ValueError(f"unsupported format_version: {out['format_version']}")
+    _check_uint(out["suite_id"], "suite_id", 16)
+    if out["suite_id"] != SUITE_ID:
+        raise ValueError(f"unsupported suite_id: {out['suite_id']}")
+
+    _check_fixed_bytes(out["vault_uuid"], "vault_uuid", UUID_LEN)
+    _check_fixed_bytes(out["owner_user_uuid"], "owner_user_uuid", UUID_LEN)
+
+    kdf = out["kdf_params"]
+    for name in ("memory_kib", "iterations", "parallelism"):
+        _check_uint(kdf[name], f"kdf_params.{name}", 32)
+    _check_fixed_bytes(kdf["salt"], "kdf_params.salt", SALT_LEN)
+
+    for i, e in enumerate(out["vector_clock"]):
+        _check_fixed_bytes(e["device_uuid"], f"vector_clock[{i}].device_uuid", UUID_LEN)
+        _check_uint(e["counter"], f"vector_clock[{i}].counter", 64)
+
+    for i, blk in enumerate(out["blocks"]):
+        _check_fixed_bytes(blk["block_uuid"], f"blocks[{i}].block_uuid", UUID_LEN)
+        if not isinstance(blk["block_name"], str):
+            raise ValueError(f"blocks[{i}].block_name must be tstr")
+        _check_fixed_bytes(
+            blk["fingerprint"], f"blocks[{i}].fingerprint", BLOCK_FINGERPRINT_LEN
+        )
+        _check_uint(blk["suite_id"], f"blocks[{i}].suite_id", 16)
+        _check_uint(blk["created_at_ms"], f"blocks[{i}].created_at_ms", 64)
+        _check_uint(blk["last_mod_ms"], f"blocks[{i}].last_mod_ms", 64)
+        if not isinstance(blk["recipients"], list):
+            raise ValueError(f"blocks[{i}].recipients must be an array")
+        for j, r in enumerate(blk["recipients"]):
+            _check_fixed_bytes(r, f"blocks[{i}].recipients[{j}]", UUID_LEN)
+        for j, e in enumerate(blk["vector_clock_summary"]):
+            _check_fixed_bytes(
+                e["device_uuid"],
+                f"blocks[{i}].vector_clock_summary[{j}].device_uuid",
+                UUID_LEN,
+            )
+            _check_uint(
+                e["counter"], f"blocks[{i}].vector_clock_summary[{j}].counter", 64
+            )
+
+    for i, t in enumerate(out["trash"]):
+        _check_fixed_bytes(t["block_uuid"], f"trash[{i}].block_uuid", UUID_LEN)
+        _check_uint(t["tombstoned_at_ms"], f"trash[{i}].tombstoned_at_ms", 64)
+        _check_fixed_bytes(t["tombstoned_by"], f"trash[{i}].tombstoned_by", UUID_LEN)
 
 
 def _check_sorted(rows: list, key: str, label: str) -> None:
@@ -4609,7 +4795,9 @@ def section_manifest_body_duplicate_key_guard() -> tuple[bool, list[str]]:
         except ValueError:
             pass  # expected: the §4.3 step-4 re-encode compare rejects it
 
-    return (not issues), issues
+    if issues:
+        return False, issues
+    return True, ["PASS  manifest body duplicate-key-in-nested-map guard"]
 
 
 def _dup_key_inner_map_bytes(key_name: str) -> bytes:
@@ -4847,7 +5035,9 @@ def section_manifest_body_nested_entry_guard() -> tuple[bool, list[str]]:
     except ValueError:
         pass  # expected
 
-    return (not issues), issues
+    if issues:
+        return False, issues
+    return True, ["PASS  manifest body nested block/trash unknown-bag guard"]
 
 
 def section_manifest_body_required_keys_guard() -> tuple[bool, list[str]]:
@@ -4890,11 +5080,11 @@ def section_manifest_body_required_keys_guard() -> tuple[bool, list[str]]:
     except (ValueError, KeyError) as e:
         issues.append(f"manifest body fixture: full 9-key body was REJECTED: {e}")
 
-    # The 6 keys the pre-fix decoder did NOT hard-require.
-    previously_unchecked = (
-        "format_version", "suite_id", "vector_clock", "blocks", "trash", "kdf_params",
-    )
-    for missing in previously_unchecked:
+    # ALL 9 keys, not just the 6 the pre-fix decoder failed to hard-require:
+    # `Manifest` has no `Option` among them, so dropping any one must be a
+    # rejection. Scoping the loop to the 6 was a point-in-time framing that
+    # left the other 3 covered by nothing (#595).
+    for missing in sorted(MANIFEST_REQUIRED_KEYS):
         partial = {k: v for k, v in full.items() if k != missing}
         body = cbor2.dumps(partial, canonical=True)
         try:
@@ -4904,15 +5094,20 @@ def section_manifest_body_required_keys_guard() -> tuple[bool, list[str]]:
                 "ACCEPTED -- must be REJECTED (Manifest has no Option "
                 "among its 9 known fields)"
             )
-        except KeyError:
-            pass  # expected
         except ValueError as e:
-            issues.append(
-                f"manifest body missing required key {missing!r} raised "
-                f"ValueError instead of the expected KeyError: {e}"
-            )
+            # Assert on message CONTENT, not just type: every guard in this
+            # file raises `ValueError`, so a bare type check would be
+            # satisfied by an unrelated rejection two checks further on and
+            # this loop would pass without ever exercising the presence test.
+            if "missing required field" not in str(e) or missing not in str(e):
+                issues.append(
+                    f"manifest body missing required key {missing!r} was "
+                    f"rejected, but not by the presence check: {e}"
+                )
 
-    return (not issues), issues
+    if issues:
+        return False, issues
+    return True, ["PASS  manifest body required-keys guard: all 9 top-level keys checked"]
 
 
 def section_manifest_body_strict_subshapes_guard() -> tuple[bool, list[str]]:
@@ -5023,7 +5218,106 @@ def section_manifest_body_strict_subshapes_guard() -> tuple[bool, list[str]]:
     except ValueError:
         pass  # expected
 
-    return (not issues), issues
+    if issues:
+        return False, issues
+    return True, ["PASS  manifest body strict-subshape guard"]
+
+
+def section_manifest_body_shape_guard() -> tuple[bool, list[str]]:
+    """Pin the #595 fix: `py_decode_manifest` type-, range- and
+    version-checks every KNOWN field, so it does not ACCEPT bodies
+    `decode_manifest` REJECTS.
+
+    Before this, the decoder pulled the known scalars out with a bare
+    `cbor2.loads` and never inspected them. `manifest_version = 999`, a
+    text `manifest_version`, a 5-byte `vault_uuid` and a 3-byte salt all
+    decoded cleanly here and are all rejected by Rust -- a fail-OPEN
+    divergence in a file whose whole purpose is proving `docs/` alone is
+    sufficient to build a CONFORMANT reader.
+
+    Nothing else in this file can see this class, which is why it needs its
+    own section: the §4.3 step-4 re-encode compares BYTES and every row
+    below re-encodes to itself, and the 21-row canonicality corpus mutates
+    only `unknown` subtrees. Each row asserts on message CONTENT as well as
+    on rejection, so a row cannot be satisfied by an unrelated `ValueError`
+    raised further down the decoder.
+    """
+    import cbor2
+
+    issues: list[str] = []
+    seed = (
+        Path(__file__).resolve().parents[1]
+        / ".."
+        / "fuzz"
+        / "seeds"
+        / "manifest_body"
+        / "block__control_canonical.bin"
+    ).resolve()
+    if not seed.is_file():
+        return False, [f"fixture missing: {seed}"]
+    base = seed.read_bytes()
+
+    # Positive control: the unmutated body must still decode. Without it a
+    # decoder that rejected EVERYTHING would satisfy every row below.
+    try:
+        py_decode_manifest(base)
+    except Exception as e:  # noqa: BLE001 - reported, not swallowed
+        return False, [f"positive control: unmutated seed was REJECTED: {e!r}"]
+
+    def top(key, val):
+        def f(d):
+            d[key] = val
+        return f
+
+    def kdf(key, val):
+        def f(d):
+            d["kdf_params"][key] = val
+        return f
+
+    def blk(key, val):
+        def f(d):
+            d["blocks"][0][key] = val
+        return f
+
+    # (label, mutation, substring the rejection message must contain)
+    rows = [
+        ("manifest_version out of range", top("manifest_version", 999), "manifest_version"),
+        ("manifest_version wrong type", top("manifest_version", "1"), "manifest_version"),
+        ("manifest_version as bool", top("manifest_version", True), "manifest_version"),
+        ("manifest_version negative", top("manifest_version", -1), "manifest_version"),
+        ("format_version unsupported", top("format_version", 999), "format_version"),
+        ("suite_id unsupported", top("suite_id", 999), "suite_id"),
+        ("suite_id null", top("suite_id", None), "suite_id"),
+        ("vault_uuid short", top("vault_uuid", b"\x01" * 5), "vault_uuid"),
+        ("owner_user_uuid wrong type", top("owner_user_uuid", "x" * 16), "owner_user_uuid"),
+        ("kdf salt short", kdf("salt", b"\x02" * 3), "salt"),
+        ("kdf memory_kib wrong type", kdf("memory_kib", "1"), "memory_kib"),
+        ("kdf iterations negative", kdf("iterations", -3), "iterations"),
+        ("block fingerprint short", blk("fingerprint", b"\x03" * 31), "fingerprint"),
+        ("block_name wrong type", blk("block_name", 7), "block_name"),
+        ("block created_at_ms negative", blk("created_at_ms", -1), "created_at_ms"),
+    ]
+
+    for label, mutate, want in rows:
+        d = cbor2.loads(base)
+        mutate(d)
+        body = cbor2.dumps(d, canonical=True)
+        try:
+            py_decode_manifest(body)
+            issues.append(f"{label}: ACCEPTED -- Rust rejects this body")
+        except ValueError as e:
+            if want not in str(e):
+                issues.append(
+                    f"{label}: rejected, but not by the shape check "
+                    f"(message lacks {want!r}): {e}"
+                )
+
+    if issues:
+        return False, issues
+    return True, [
+        f"PASS  manifest body shape guard: {len(rows)} mutations rejected, "
+        "unmutated control accepted"
+    ]
 
 
 def section_manifest_body_entry_required_fields_guard() -> tuple[bool, list[str]]:
@@ -5078,7 +5372,201 @@ def section_manifest_body_entry_required_fields_guard() -> tuple[bool, list[str]
                 f"field: {e}"
             )
 
-    return (not issues), issues
+    if issues:
+        return False, issues
+    return True, ["PASS  manifest body entry required-fields guard"]
+
+
+def section_manifest_body_outer_canonicality_guard() -> tuple[bool, list[str]]:
+    """Pin `py_decode_manifest`'s §4.3 step-4 re-encode-and-compare at the
+    OUTER map (#595).
+
+    `_check_canonical_item` is only ever called on VALUES, never on the body
+    as a whole, so the outer map's own head and key order are checked by
+    nothing but the final `py_encode_manifest(out) != data` comparison.
+    That comparison was pinned by no test: replacing it with `if False:`
+    left the entire conformance suite green while three inputs flipped from
+    REJECT to ACCEPT -- all three of which Rust rejects.
+
+    The three rows below are exactly those inputs. They sit at the outer
+    map, which the 21-row canonicality corpus cannot reach: every corpus row
+    splices its mutation INSIDE an `unknown` subtree.
+    """
+    import cbor2
+
+    issues: list[str] = []
+    seed = (
+        Path(__file__).resolve().parents[1]
+        / ".."
+        / "fuzz"
+        / "seeds"
+        / "manifest_body"
+        / "top__control_canonical.bin"
+    ).resolve()
+    if not seed.is_file():
+        return False, [f"fixture missing: {seed}"]
+    base = seed.read_bytes()
+
+    try:
+        py_decode_manifest(base)
+    except Exception as e:  # noqa: BLE001 - reported, not swallowed
+        return False, [f"positive control: unmutated seed was REJECTED: {e!r}"]
+
+    # The body is a definite-length map of N entries; N <= 23 so the head is
+    # a single byte 0xA0|N. Assert that rather than assume it, so a future
+    # manifest with more keys fails loudly here instead of silently
+    # mutating the wrong byte.
+    head = base[0]
+    if not 0xA0 <= head <= 0xB7:
+        return False, [
+            f"fixture's outer head is {head:#04x}, not a small definite-length "
+            "map -- the byte surgery below would target the wrong offset"
+        ]
+    n_entries = head - 0xA0
+
+    decoded = cbor2.loads(base)
+    reordered = {k: decoded[k] for k in reversed(list(decoded))}
+
+    rows = [
+        (
+            "outer keys out of canonical order",
+            # `canonical=False` preserves insertion order, so the outer map
+            # is emitted largest-key-first. Nested maps were loaded from
+            # canonical bytes and keep that order, so this isolates the
+            # outer level.
+            cbor2.dumps(reordered, canonical=False),
+        ),
+        (
+            "indefinite-length outer map",
+            bytes([0xBF]) + base[1:] + bytes([0xFF]),
+        ),
+        (
+            "non-shortest-form outer map length",
+            bytes([0xB8, n_entries]) + base[1:],
+        ),
+    ]
+
+    for label, body in rows:
+        if body == base:
+            issues.append(f"{label}: mutation produced an identical body -- vacuous row")
+            continue
+        try:
+            py_decode_manifest(body)
+            issues.append(
+                f"{label} was ACCEPTED -- the §4.3 step-4 re-encode check is "
+                "not enforcing outer-map canonicality (Rust rejects this body)"
+            )
+        except _REJECTION_EXCEPTIONS:
+            pass
+
+    if issues:
+        return False, issues
+    return True, [
+        f"PASS  manifest body outer-canonicality guard: {len(rows)} outer-map "
+        "violations rejected, canonical control accepted"
+    ]
+
+
+def section_manifest_body_array_sort_guard() -> tuple[bool, list[str]]:
+    """Pin the five §4.2 array sort disciplines (#595).
+
+    `encode_manifest` sorts `vector_clock`, `blocks`, `trash`, per-block
+    `recipients` and per-block `vector_clock_summary` on output, so a body
+    whose arrays arrive out of order is REJECTED -- a wider rejection
+    surface than plain canonical CBOR, and the *newly narrowing* half of
+    the §4.2 reader contract (#572), i.e. exactly what a clean-room
+    implementer reading `docs/` alone would get wrong.
+
+    Nothing tested it. `_check_sorted` could be made a no-op and the whole
+    conformance suite stayed green, because until #595 every corpus row had
+    `vector_clock`/`recipients`/`vector_clock_summary` EMPTY and at most one
+    `blocks`/`trash` entry -- and an array of length 0 or 1 is sorted no
+    matter what any check does.
+
+    Note the mechanism this does NOT rely on: `py_encode_manifest` re-emits
+    array order verbatim, so a reversed array re-encodes byte-identically
+    and the §4.3 step-4 comparison does not fire. `_check_sorted` is the
+    only thing standing between this decoder and accepting what Rust
+    rejects, which is why each row below asserts on the message as well as
+    on the rejection.
+    """
+    import cbor2
+
+    issues: list[str] = []
+    seed = (
+        Path(__file__).resolve().parents[1]
+        / ".."
+        / "fuzz"
+        / "seeds"
+        / "manifest_body"
+        / "top__control_canonical.bin"
+    ).resolve()
+    if not seed.is_file():
+        return False, [f"fixture missing: {seed}"]
+    base = seed.read_bytes()
+
+    try:
+        py_decode_manifest(base)
+    except Exception as e:  # noqa: BLE001 - reported, not swallowed
+        return False, [f"positive control: unmutated seed was REJECTED: {e!r}"]
+
+    def reverse(outer, inner=None):
+        def f(d):
+            if inner is None:
+                target = d[outer]
+            else:
+                target = d[outer][0][inner]
+            if len(target) < 2:
+                raise AssertionError(
+                    f"{outer}/{inner} has {len(target)} element(s) -- a sort "
+                    "discipline cannot be violated with fewer than 2, so this "
+                    "row would be vacuous"
+                )
+            target.reverse()
+        return f
+
+    rows = [
+        ("vector_clock", reverse("vector_clock"), "vector_clock"),
+        ("blocks", reverse("blocks"), "blocks"),
+        ("trash", reverse("trash"), "trash"),
+        ("blocks[0].recipients", reverse("blocks", "recipients"), "recipients"),
+        (
+            "blocks[0].vector_clock_summary",
+            reverse("blocks", "vector_clock_summary"),
+            "vector_clock_summary",
+        ),
+    ]
+
+    for label, mutate, want in rows:
+        d = cbor2.loads(base)
+        try:
+            mutate(d)
+        except AssertionError as e:
+            issues.append(str(e))
+            continue
+        body = cbor2.dumps(d, canonical=True)
+        if body == base:
+            issues.append(f"{label}: reversal produced an identical body -- vacuous row")
+            continue
+        try:
+            py_decode_manifest(body)
+            issues.append(
+                f"{label} reversed was ACCEPTED -- §4.2's sort discipline "
+                "for it is not enforced (Rust rejects this body)"
+            )
+        except ValueError as e:
+            if "sorted" not in str(e) or want not in str(e):
+                issues.append(
+                    f"{label} reversed was rejected, but not by the sort "
+                    f"check: {e}"
+                )
+
+    if issues:
+        return False, issues
+    return True, [
+        f"PASS  manifest body array sort guard: {len(rows)} arrays rejected "
+        "when reversed, sorted control accepted"
+    ]
 
 
 def section_manifest_canonicality_kat() -> tuple[bool, list[str]]:
@@ -5106,6 +5594,13 @@ def section_manifest_canonicality_kat() -> tuple[bool, list[str]]:
        the assertion here is membership (rule5 subset of divergences), not
        equality of the divergence set, since a wider divergence set does
        not undermine the control.
+
+       Membership alone is NOT sufficient, though, which is why the control
+       is two-sided as of #595: a naive reader returning False for every
+       input puts all 12 `expect_accept` rows into `divergences`, of which
+       the 3 rule-5 rows are a subset, so the membership check passes on a
+       reader that discriminates nothing. The second half asserts the naive
+       reader AGREES on the three `*__control_canonical` rows.
     """
     import cbor2
 
@@ -5142,7 +5637,14 @@ def section_manifest_canonicality_kat() -> tuple[bool, list[str]]:
         try:
             py_decode_manifest(body)
             strict = True
-        except Exception:
+        except _REJECTION_EXCEPTIONS:
+            # NARROW, for the reason `naive_accepts` above states about
+            # itself and this arm did not apply to the reader actually
+            # under test (#595). 9 of the 21 rows expect a REJECT, so a
+            # bare `except Exception` let a `NameError`/`AttributeError`
+            # inside `py_decode_manifest` satisfy them for the wrong
+            # reason -- verified by mutation: making every rejection raise
+            # `NameError` instead left this section reporting ok=True.
             strict = False
         if strict != expected:
             issues.append(
@@ -5169,7 +5671,53 @@ def section_manifest_canonicality_kat() -> tuple[bool, list[str]]:
             "every level (#592)"
         )
 
-    return (not issues), issues
+    # The KNOWN-NEGATIVE half, without which the control is one-sided
+    # (#595). The membership check above is satisfied by a naive reader
+    # that returns False for EVERYTHING: all 12 `expect_accept` rows then
+    # land in `divergences`, and the 3 rule-5 rows are a subset of them.
+    # Verified by execution -- with `naive_accepts` stuck at False the
+    # control passed having proven nothing. A reader that is uniformly
+    # False now fails here instead, which is the two-sided discipline
+    # every `--self-test` guard in this repo already follows: it must fire
+    # on a known-positive AND stay silent on a known-negative.
+    control_rows = {
+        label for label in (r["label"] for r in rows) if label.endswith("__control_canonical")
+    }
+    if len(control_rows) != 3:
+        issues.append(
+            f"expected 3 '*__control_canonical' rows (one per level), "
+            f"found {len(control_rows)}: {sorted(control_rows)}"
+        )
+    spurious = control_rows & set(divergences)
+    if spurious:
+        issues.append(
+            "positive control failed: the naive cbor2.loads reader DIVERGED "
+            f"on the fully-canonical rows {sorted(spurious)}, so it is not "
+            "discriminating between reader strategies -- it is simply broken, "
+            "and its agreement above proves nothing (#595)"
+        )
+
+    # Corpus floors, mirroring what `manifest_canonicality_kat_replays`
+    # asserts on the Rust side against the SAME fixture (#595). Without
+    # them a corpus trimmed to 3 rows, or to accept-only rows, passed here
+    # -- verified by execution -- leaving this section unable to detect a
+    # decoder that accepts everything.
+    n_accept = sum(1 for r in rows if r["expect_accept"])
+    n_reject = len(rows) - n_accept
+    if len(rows) != 21:
+        issues.append(f"corpus must carry 7 shapes x 3 levels = 21 rows, found {len(rows)}")
+    if n_accept == 0:
+        issues.append("corpus has no ACCEPT rows -- it would pass by rejecting everything")
+    if n_reject == 0:
+        issues.append("corpus has no REJECT rows -- it would pass by accepting everything")
+
+    if issues:
+        return False, issues
+    return True, [
+        f"PASS  manifest canonicality corpus: {len(rows)} rows replayed "
+        f"({n_accept} accept / {n_reject} reject), naive control diverged on "
+        f"{len(divergences)} rows including all 3 rule-5 rows"
+    ]
 
 
 def _encode_record_field(field: dict) -> bytes:
@@ -5303,8 +5851,19 @@ def section_record_unknown_subtree_canonicality() -> tuple[bool, list[str]]:
     record_at = find_one(record_base)
     field_at = find_one(field_base)
 
+    # One splice closure serves both sites only because both needles are the
+    # same width. The Rust ground-truth twin asserts this
+    # (`assert_eq!(RECORD_BASE.len(), FIELD_BASE.len())` in
+    # `core/src/vault/record.rs`); assert it here too so the hardcoded width
+    # below cannot drift from the needles it is meant to match (#595).
+    assert len(record_base) == len(field_base), (
+        "both needles must be the same width, or one splice closure cannot "
+        "serve both sites"
+    )
+    needle_len = len(record_base)
+
     def splice(at: int, repl: bytes) -> bytes:
-        return baseline[:at] + repl + baseline[at + 4 :]
+        return baseline[:at] + repl + baseline[at + needle_len :]
 
     # REJECTED: every encoding-level departure from the deterministic
     # profile, at either level's unknown subtree. `record_base` /
@@ -5333,14 +5892,27 @@ def section_record_unknown_subtree_canonicality() -> tuple[bool, list[str]]:
                 issues.append(
                     f"{what} inside {level} unknown subtree must be REJECTED, was accepted"
                 )
-            except Exception:
-                pass
+            except _REJECTION_EXCEPTIONS as e:
+                # Narrow, and assert on CONTENT: this loop guards 12
+                # assertions (6 shapes x 2 levels), and as a bare
+                # `except Exception: pass` it proved only that
+                # `py_decode_record` threw SOMETHING. Verified by
+                # mutation: replacing every rejection with a `NameError`
+                # left the section green (#595).
+                if "rule" not in str(e) and "canonical" not in str(e):
+                    issues.append(
+                        f"{what} inside {level} unknown subtree was rejected, "
+                        f"but not by a canonicality check: {e!r}"
+                    )
         for what, repl in accept_shapes:
             try:
                 py_decode_record(splice(at, repl))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - reported, never swallowed
+                # Broad is correct HERE: this arm reports rather than
+                # classifies, so any exception is a finding either way.
                 issues.append(
-                    f"{what} inside {level} unknown subtree must still decode, got: {e}"
+                    f"{what} inside {level} unknown subtree must still decode, "
+                    f"got {type(e).__name__}: {e}"
                 )
 
     # `cbor2.loads`, straight through with no span retention, is the naive
@@ -5373,7 +5945,13 @@ def section_record_unknown_subtree_canonicality() -> tuple[bool, list[str]]:
                     "from a dict-based one there (#592)"
                 )
 
-    return (not issues), issues
+    if issues:
+        return False, issues
+    return True, [
+        f"PASS  record unknown-subtree canonicality: "
+        f"{len(reject_shapes)} reject + {len(accept_shapes)} accept shapes "
+        "at both the record and field levels"
+    ]
 
 
 def py_decode_contact_card(data: bytes) -> dict:
@@ -5904,23 +6482,61 @@ def py_encode_block_file(parsed: dict) -> bytes:
     return bytes(out)
 
 
+def _rejection_exceptions() -> tuple:
+    """The exception types a decoder in this file raises DELIBERATELY to
+    mean "this input is non-conformant" (#595).
+
+    An ALLOWLIST, not a denylist of programming errors: a type absent from
+    here is treated as a harness failure, so a new decoder raising a new
+    type fails loudly and visibly rather than being silently scored as a
+    verdict. `ParseError` is this module's own wire-format error;
+    `cbor2.CBORError` is the common base of `CBORDecodeError` /
+    `CBOREncodeError`. `UnicodeDecodeError` is a `ValueError` subclass and
+    so is already covered.
+    """
+    import cbor2
+
+    return (ValueError, KeyError, ParseError, cbor2.CBORError)
+
+
+_REJECTION_EXCEPTIONS = _rejection_exceptions()
+
+
 def run_diff_replay(target: str, input_path: str) -> int:
     """Differential replay one input through the Python decoder for `target`.
 
     Output (always to stdout, single line of JSON):
       {"status": "accept", "reencoded_b64": "..."}    # for non-TOML targets
       {"status": "accept", "reencoded_b64": ""}       # for vault_toml (no roundtrip)
-      {"status": "reject", "error_class": "..."}
+      {"status": "reject", "error_class": "...", "detail": "..."}
+      {"status": "error",  "error_class": "...", "detail": "..."}
 
-    Exit code: always 0 for accept|reject; nonzero only for unrecoverable
-    script errors (e.g. unknown target).
+    Exit code: 0 for accept|reject; 3 for `status: "error"`.
+
+    **"reject" is a VERDICT; "error" is this script failing (#595).** Until
+    that split existed every exception became `{"status": "reject"}` with
+    exit 0 -- a `NameError` from a typo, a `RecursionError` on a deeply
+    nested subtree, a `cbor2` API break, a missing input file. The Rust
+    caller (`core/tests/differential_replay.rs`) scores reject-vs-reject as
+    AGREEMENT, and 9 of the 21 committed `manifest_body` seeds are
+    Rust-reject rows -- so an internal bug in this script became a green
+    differential test on exactly the inputs whose decode paths are most
+    interesting. Only the exception types the decoders raise DELIBERATELY
+    to signal a wire-format violation are verdicts; everything else is a
+    harness failure and must be surfaced, not scored.
     """
     try:
         with open(input_path, "rb") as f:
             data = f.read()
     except OSError as e:
-        print(json.dumps({"status": "reject", "error_class": f"io: {type(e).__name__}"}))
-        return 0
+        # A missing or unreadable input is a HARNESS failure, never a
+        # verdict about the input's conformance.
+        print(json.dumps({
+            "status": "error",
+            "error_class": f"io: {type(e).__name__}",
+            "detail": str(e),
+        }))
+        return 3
 
     try:
         if target == "vault_toml":
@@ -5981,11 +6597,30 @@ def run_diff_replay(target: str, input_path: str) -> int:
             }))
             return 0
         else:
-            print(json.dumps({"status": "reject", "error_class": f"unknown target {target}"}))
-            return 0
-    except Exception as e:
-        print(json.dumps({"status": "reject", "error_class": type(e).__name__}))
+            # An unknown target is a wiring bug between this script and
+            # `differential_replay.rs`'s TARGETS list -- not a verdict. As a
+            # "reject" it read as agreement on every Rust-reject input.
+            print(json.dumps({
+                "status": "error",
+                "error_class": "UnknownTarget",
+                "detail": f"unknown target {target}",
+            }))
+            return 3
+    except _REJECTION_EXCEPTIONS as e:
+        print(json.dumps({
+            "status": "reject",
+            "error_class": type(e).__name__,
+            "detail": str(e),
+        }))
         return 0
+    except Exception as e:  # noqa: BLE001 - surfaced as a harness failure
+        traceback.print_exc(file=sys.stderr)
+        print(json.dumps({
+            "status": "error",
+            "error_class": type(e).__name__,
+            "detail": str(e),
+        }))
+        return 3
 
 
 # ---------------------------------------------------------------------------
@@ -6107,6 +6742,24 @@ def main() -> int:
         print(ln)
 
     print()
+    print("--- Section MSH: manifest body known-field shape/version guard (#595) ---")
+    manifest_shape_ok, manifest_shape_lines = section_manifest_body_shape_guard()
+    for ln in manifest_shape_lines:
+        print(ln)
+
+    print()
+    print("--- Section MOC: manifest body outer-map canonicality guard (#595) ---")
+    manifest_outer_ok, manifest_outer_lines = section_manifest_body_outer_canonicality_guard()
+    for ln in manifest_outer_lines:
+        print(ln)
+
+    print()
+    print("--- Section MAS: manifest body array sort-discipline guard (#595) ---")
+    manifest_sort_ok, manifest_sort_lines = section_manifest_body_array_sort_guard()
+    for ln in manifest_sort_lines:
+        print(ln)
+
+    print()
     print("--- Section MCK: manifest_canonicality_kat.json §4.2 per-rule corpus replay (#583, #592) ---")
     manifest_canon_ok, manifest_canon_lines = section_manifest_canonicality_kat()
     for ln in manifest_canon_lines:
@@ -6137,6 +6790,9 @@ def main() -> int:
         and manifest_required_ok
         and manifest_strict_ok
         and manifest_entry_req_ok
+        and manifest_shape_ok
+        and manifest_sort_ok
+        and manifest_outer_ok
         and manifest_canon_ok
         and record_canon_ok
     ):
@@ -6176,6 +6832,12 @@ def main() -> int:
         print("FAIL: manifest body strict-subshape (kdf_params/vector_clock) guard", file=sys.stderr)
     if not manifest_entry_req_ok:
         print("FAIL: manifest body entry required-fields guard", file=sys.stderr)
+    if not manifest_shape_ok:
+        print("FAIL: manifest body known-field shape/version guard", file=sys.stderr)
+    if not manifest_sort_ok:
+        print("FAIL: manifest body array sort-discipline guard", file=sys.stderr)
+    if not manifest_outer_ok:
+        print("FAIL: manifest body outer-map canonicality guard", file=sys.stderr)
     if not manifest_canon_ok:
         print("FAIL: manifest_canonicality_kat.json §4.2 per-rule corpus replay", file=sys.stderr)
     if not record_canon_ok:

@@ -1674,7 +1674,7 @@ mod manifest_props {
     /// `manifest_roundtrip` cannot distinguish "the unknown bags round-trip
     /// correctly" from "the strategy generated no unknown bags at all" — the
     /// exact failure #578 records, where all three strategies hardcoded
-    /// `BTreeMap::new()` and the property passed for two years having never
+    /// `BTreeMap::new()` and the property passed for four months having never
     /// exercised the subtree path. This test asserts the corpus is
     /// non-degenerate at ALL THREE levels that carry a bag.
     #[test]

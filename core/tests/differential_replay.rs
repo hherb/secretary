@@ -71,7 +71,9 @@ fn corpus_dirs(target: &str) -> Vec<PathBuf> {
 /// whole job is replaying a corpus of decoded records — so the wrapper is
 /// threaded through the signature instead.
 ///
-/// The other five arms wrap too. Their outputs are not decrypted plaintext
+/// Five of the other six arms wrap too — `manifest_body`, added later, is
+/// the second arm that does not, for the reason its own comment below
+/// gives. Their outputs are not decrypted plaintext
 /// (a `ContactCard` is the artifact handed to other users; the three `*_file`
 /// encoders emit on-disk forms whose bodies are already AEAD ciphertext), so
 /// wrapping them buys nothing directly — but a uniform return type keeps the
@@ -119,7 +121,26 @@ fn rust_decode(
     }
 }
 
-fn python_decode(target: &str, input_path: &std::path::Path) -> Result<Vec<u8>, String> {
+/// What the Python child reported.
+///
+/// The third arm is the point (#595). Before it existed, `python_decode`
+/// returned `Result<Vec<u8>, String>`, so a TIMEOUT, a non-zero exit, an
+/// unparseable stdout or a `uv` that could not resolve its dependencies all
+/// collapsed into `Err` — and `Err` on both sides is scored as AGREEMENT by
+/// the match in `differential_replay_full_corpus`. A completely
+/// non-functional Python side therefore "agreed" on every input the Rust
+/// decoder rejects, which is 9 of the 21 committed `manifest_body` seeds.
+/// A harness failure is not a verdict and must never reach that match.
+enum PyOutcome {
+    /// The Python decoder accepted, and re-encoded to these bytes.
+    Accept(Vec<u8>),
+    /// The Python decoder deliberately rejected the input. A verdict.
+    Reject(String),
+    /// This harness failed. Never a verdict — always a test failure.
+    Harness(String),
+}
+
+fn python_decode(target: &str, input_path: &std::path::Path) -> PyOutcome {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let conformance = manifest.join("tests/python/conformance.py");
 
@@ -146,6 +167,28 @@ fn python_decode(target: &str, input_path: &std::path::Path) -> Result<Vec<u8>, 
         .spawn()
         .expect("spawn uv run conformance.py");
 
+    // Drain BOTH pipes on their own threads, started before the wait loop
+    // below. The pipes must not be read after `wait` returns: the child is
+    // `uv run`, whose cold-cache wheel builds can emit far more than a
+    // pipe buffer holds (64 KiB on macOS), and a child blocked writing
+    // stderr never exits — the wait loop would spin to `PER_INPUT_TIMEOUT`
+    // and the timeout would then be scored as a Python verdict. An earlier
+    // comment here reasoned only about stdout ("a single short JSON line,
+    // so the pipe buffers cannot fill"), which is true of stdout and says
+    // nothing about the stderr this same function also pipes (#595).
+    let mut stdout_pipe = child.stdout.take().expect("piped stdout");
+    let mut stderr_pipe = child.stderr.take().expect("piped stderr");
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = stdout_pipe.read_to_string(&mut buf);
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = stderr_pipe.read_to_string(&mut buf);
+        buf
+    });
+
     // Bounded wait. Poll try_wait on a 50ms cadence; if the deadline
     // elapses, kill the child and report a timeout — this prevents one
     // pathological corpus input from hanging the whole test run.
@@ -156,65 +199,89 @@ fn python_decode(target: &str, input_path: &std::path::Path) -> Result<Vec<u8>, 
             Ok(None) if start.elapsed() > PER_INPUT_TIMEOUT => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
+                return PyOutcome::Harness(format!(
                     "python timeout after {}s on {}",
                     PER_INPUT_TIMEOUT.as_secs(),
                     input_path.display()
                 ));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(e) => return Err(format!("wait: {}", e)),
+            Err(e) => return PyOutcome::Harness(format!("wait: {}", e)),
         }
     };
 
-    // Conformance.py emits a single short JSON line, so the pipe buffers
-    // cannot fill before the child exits — reading after wait is safe here.
-    let mut stdout_buf = String::new();
-    let mut stderr_buf = String::new();
-    child
-        .stdout
-        .take()
-        .expect("piped stdout")
-        .read_to_string(&mut stdout_buf)
-        .map_err(|e| format!("read stdout: {}", e))?;
-    child
-        .stderr
-        .take()
-        .expect("piped stderr")
-        .read_to_string(&mut stderr_buf)
-        .map_err(|e| format!("read stderr: {}", e))?;
+    // Both readers hit EOF when the child exits, so these join promptly.
+    let stdout_buf = stdout_thread.join().unwrap_or_default();
+    let stderr_buf = stderr_thread.join().unwrap_or_default();
 
+    // Exit 3 is the script's own "I failed" code; any other non-zero exit
+    // (a signal, a `uv` resolution failure, an unhandled crash) is equally
+    // a harness failure. `stderr` is carried through in both cases —
+    // previously it was formatted into an `Err` that the agreement arm
+    // discarded, so a broken Python side left no trace at all.
     if !status.success() {
-        return Err(format!(
+        return PyOutcome::Harness(format!(
             "python exit={:?} stderr={}",
             status.code(),
-            stderr_buf
+            stderr_buf.trim()
         ));
     }
-    let json: serde_json::Value = serde_json::from_str(stdout_buf.trim())
-        .unwrap_or_else(|e| panic!("python output not JSON: {} ({:?})", stdout_buf, e));
+    let json: serde_json::Value = match serde_json::from_str(stdout_buf.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            return PyOutcome::Harness(format!(
+                "python output not JSON: {:?} ({:?}) stderr={}",
+                stdout_buf,
+                e,
+                stderr_buf.trim()
+            ))
+        }
+    };
     match json["status"].as_str() {
         Some("accept") => {
             let b64 = json["reencoded_b64"].as_str().unwrap_or("");
             use base64::Engine as _;
-            base64::engine::general_purpose::STANDARD
-                .decode(b64)
-                .map_err(|e| format!("base64: {}", e))
+            match base64::engine::general_purpose::STANDARD.decode(b64) {
+                Ok(v) => PyOutcome::Accept(v),
+                Err(e) => PyOutcome::Harness(format!("base64: {}", e)),
+            }
         }
-        Some("reject") => Err(json["error_class"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_string()),
-        _ => panic!("python output missing status: {}", stdout_buf),
+        Some("reject") => PyOutcome::Reject(format!(
+            "{}: {}",
+            json["error_class"].as_str().unwrap_or("unknown"),
+            json["detail"].as_str().unwrap_or("")
+        )),
+        Some("error") => PyOutcome::Harness(format!(
+            "python reported an internal error: {} {} stderr={}",
+            json["error_class"].as_str().unwrap_or("unknown"),
+            json["detail"].as_str().unwrap_or(""),
+            stderr_buf.trim()
+        )),
+        // Default-deny: an unrecognised status is a harness failure, not a
+        // verdict — the same posture the repo's hygiene guards take.
+        other => PyOutcome::Harness(format!(
+            "python output has unrecognised status {:?}: {}",
+            other, stdout_buf
+        )),
     }
 }
 
 #[test]
 fn differential_replay_full_corpus() {
     let mut disagreements: Vec<String> = vec![];
+    let mut harness_failures: Vec<String> = vec![];
     for target in TARGETS {
-        for dir in corpus_dirs(target) {
-            for entry in fs::read_dir(&dir).expect("read corpus dir") {
+        // Per-target input floor (#595). `corpus_dirs` skips any directory
+        // that does not exist, with no `else` — so a renamed or moved
+        // `fuzz/seeds/` made every target iterate ZERO inputs and this test
+        // passed having verified nothing. That is the same fail-open shape
+        // `Path.rglob` produced in the payload guard (#496), and this
+        // target's own module doc records it happening here. Populating the
+        // directory fixed the symptom; this fixes the mechanism.
+        let mut seen = 0usize;
+        let dirs = corpus_dirs(target);
+        for dir in &dirs {
+            for entry in fs::read_dir(dir).expect("read corpus dir") {
                 let path = entry.expect("dir entry").path();
                 if !path.is_file() {
                     continue;
@@ -222,18 +289,29 @@ fn differential_replay_full_corpus() {
                 if path.file_name().and_then(|s| s.to_str()) == Some(".gitkeep") {
                     continue;
                 }
+                seen += 1;
                 let bytes = fs::read(&path).expect("read input");
 
                 let rust = rust_decode(target, &bytes);
                 let python = python_decode(target, &path);
 
+                // A harness failure is not a verdict, so it never reaches
+                // the agreement match below: that match reads a Rust `Err`
+                // beside a `PyOutcome::Reject` as "both implementations
+                // rejected", and a Python crash or timeout establishes
+                // nothing at all about the input.
+                if let PyOutcome::Harness(msg) = &python {
+                    harness_failures.push(format!("[{}] {}: {}", target, path.display(), msg));
+                    continue;
+                }
+
                 let ok = match (&rust, &python) {
                     // Both reject → agreement (don't compare error classes for now;
                     // can tighten later if we standardize them).
-                    (Err(_), Err(_)) => true,
+                    (Err(_), PyOutcome::Reject(_)) => true,
                     // Both accept: for crash-only target (vault_toml) compare nothing;
                     // for the rest, compare re-encoded bytes.
-                    (Ok(r_bytes), Ok(p_bytes)) => {
+                    (Ok(r_bytes), PyOutcome::Accept(p_bytes)) => {
                         if *target == "vault_toml" {
                             true
                         } else {
@@ -257,14 +335,31 @@ fn differential_replay_full_corpus() {
                             Err(e) => format!("Err({})", e),
                         },
                         match &python {
-                            Ok(v) => format!("Ok({} bytes)", v.len()),
-                            Err(e) => format!("Err({})", e),
+                            PyOutcome::Accept(v) => format!("Ok({} bytes)", v.len()),
+                            PyOutcome::Reject(e) => format!("Err({})", e),
+                            PyOutcome::Harness(_) => unreachable!("filtered above"),
                         },
                     ));
                 }
             }
         }
+        assert!(
+            seen > 0,
+            "target {target}: no corpus inputs found — searched {dirs:?}. \
+             A target that replays nothing passes vacuously; either commit \
+             seeds under core/fuzz/seeds/{target}/ or remove it from TARGETS."
+        );
+        eprintln!("[{target}] replayed {seen} input(s)");
     }
+    // Harness failures first: a broken Python side makes every verdict
+    // below meaningless, so report it as the primary cause rather than
+    // burying it under whatever disagreements it happened to produce.
+    assert!(
+        harness_failures.is_empty(),
+        "differential harness failures ({}) — the Python side did not produce a verdict:\n{}",
+        harness_failures.len(),
+        harness_failures.join("\n")
+    );
     if !disagreements.is_empty() {
         panic!(
             "differential disagreements ({}):\n{}",

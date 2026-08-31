@@ -17,6 +17,21 @@ for goals and exit criteria.
 | `block_file`    | `vault::block::decode_block_file`                    | crash + roundtrip-eq  |
 | `device_file`   | `unlock::device_file::decode`                        | crash + roundtrip-eq  |
 
+### `seeds/manifest_body/` has no fuzz target
+
+`seeds/manifest_body/` holds 21 committed inputs but there is **no
+`fuzz_targets/manifest_body.rs` and no `[[bin]]` for it**, so
+`cargo fuzz run manifest_body` fails and `corpus/manifest_body/` is never
+created. Those seeds exist for a different consumer: `manifest_body` is a
+**differential-replay** target (`core/tests/differential_replay.rs`'s
+`TARGETS`), which reads `seeds/<target>/` directly.
+
+The practical consequence is that, unlike the seven targets above, its
+replay corpus can never grow beyond the 21 hand-authored rows — no mutation
+ever reaches `decode_manifest`'s body parser through this directory. Adding
+the target is tracked as a follow-up; until then, do not read the presence
+of this seed directory as evidence of fuzz coverage.
+
 ## One-time setup
 
 ```bash

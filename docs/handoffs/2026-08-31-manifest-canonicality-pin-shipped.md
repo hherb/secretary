@@ -2,16 +2,28 @@
 
 Branch `feature/manifest-canonicality-pin`, worktree `.worktrees/manifest-canonicality-pin`,
 base `e29cb216` (`main`, i.e. immediately after PR #584).
-**Fifteen commits of substance**, from `2f260a34` (the design spec) through `88114077`
-(the post-review fix wave); this baton update is the **sixteenth**, so
-`git rev-list --count main..HEAD` reads 16 once it lands. Its own SHA is deliberately not
-quoted — this document *is* the tip commit, so any SHA written for it is falsified by its
-own amendment.
+Commits of substance run from `2f260a34` (the design spec) through the PR-review fix wave;
+`git rev-list --count main..HEAD` is the authoritative count — deliberately not written out
+here, because it has already been wrong once: the figure was pinned before two further
+waves landed. This document's own SHA is likewise not quoted, since it *is* the tip commit
+and any SHA written for it is falsified by its own amendment.
 **The whole-branch review has RUN**, after the first baton was written at `43b5a4d5`. It
 returned **five findings — two Important, three Minor** — and the first Important one is a
 **regression this branch itself created**. A single fix wave, `88114077`, closed all five.
 Two issues were filed: **#593** and **#594**.
-**Still not pushed; no PR yet. CI has never run on this branch.**
+
+**PR #595 is OPEN**, and every check passed except one: CodeQL flagged a
+`rust/cleartext-logging` alert (#289) on a `#[cfg(test)]` `panic!` message. It is a false
+positive — test-only code, and the traced values are non-secret UUIDs — and has been
+dismissed "used in tests", matching 20+ prior dismissals of that rule in this repo. CodeQL
+is not in the `protect_main` required-check set.
+**A four-reviewer PR review then ran and returned three Critical and six Important
+findings**, the worst of them again something this branch shipped: `py_decode_manifest`
+was fail-OPEN on every known scalar field, accepting nine manifest bodies `decode_manifest`
+rejects. A second fix wave closed **all nine plus every suggestion**, adding three pinning
+guard sections (MSH / MOC / MAS), corpus floors on MCK, and one Rust test, and filed
+**#596**. See §(1) "The PR review, and the second fix wave" below for the full record.
+Nothing from that review is deferred.
 
 ---
 
@@ -133,8 +145,108 @@ was proven end to end by splicing `61 FF` into `Record.unknown["zzz_future"]` an
   assumed.
 - **No on-disk format change.** `git diff main...HEAD --stat -- core/tests/data/` shows
   **exactly one added path** (`manifest_canonicality_kat.json`, +109) and **zero modified**.
-  The uniffi `.udl` diff is **empty**. The only `core/src/` change is +131 lines **inside
-  `mod tests`** in `core/src/vault/record.rs` — no public API, no shipped behaviour.
+  The uniffi `.udl` diff is **empty**. Both `core/src/` changes are in
+  `core/src/vault/record.rs`: the +131-line test **inside `mod tests`**, and — added by the
+  PR-review wave — a corrected doc comment on `RecordError::DuplicateKey`, which is *outside*
+  `mod tests` and so no longer fits the "inside `mod tests`" phrasing this line used to
+  carry. It is a doc comment: no public API, no shipped behaviour, and `cargo doc -D
+  warnings` is clean.
+
+### The PR review, and the second fix wave
+
+`/pr-review-toolkit:review-pr 595` ran four reviewers (general code, test coverage,
+comment/spec accuracy, silent failures) over the pushed branch. It returned **three
+Critical and six Important findings**, and — like the first wave — the most serious was
+something this branch itself shipped. All were fixed on the branch; nothing was deferred.
+
+**Critical 1 — `py_decode_manifest` was fail-OPEN on every known scalar field.** It pulled
+`manifest_version`, `format_version`, `suite_id`, `vault_uuid`, `owner_user_uuid` and the
+four `kdf_params` members out with a bare `cbor2.loads` and never looked at them. Measured:
+`manifest_version = 999`, a text `manifest_version`, a 5-byte `vault_uuid`, `suite_id = 999`
+and a 3-byte salt all decoded cleanly here and are all rejected by `decode_manifest`. In the
+file whose stated purpose is proving `docs/` alone is sufficient to build a **conformant**
+reader, a reader LAXER than the frozen-format decoder proves the opposite of what it claims.
+Nothing in the tree could see it: the §4.3 step-4 re-encode compares BYTES and every one of
+those bodies re-encodes to itself, and all 21 corpus rows mutate only `unknown` subtrees.
+`_decode_strict_entry_map` had the same shape one level down — it took no `required_keys`,
+so `kdf_params` missing `iterations` or `salt`, and a vector-clock entry missing `counter`,
+were accepted. Closed by `_validate_manifest_shape` + `_check_uint`/`_check_fixed_bytes`,
+pinned by **Section MSH** (15 mutations, two-sided: no-op'ing the fix reds 16 rows,
+a reject-everything decoder reds the positive control).
+
+**Critical 2 — the differential harness could report agreement it never established.**
+`run_diff_replay` turned *every* exception into `{"status": "reject"}` with exit 0, and
+`differential_replay.rs` scores reject-vs-reject as agreement. A `NameError`, a
+`RecursionError`, a `cbor2` API break, a missing input file, a `uv` that could not resolve
+its dependencies — each became a green differential test, and **9 of the 21 committed
+`manifest_body` seeds are Rust-reject rows**, i.e. exactly the class where the misreading
+lands. Closed on both sides: Python now separates a VERDICT (`_REJECTION_EXCEPTIONS`, an
+allowlist so a new exception type fails loudly rather than being scored) from a HARNESS
+FAILURE (`status: "error"`, exit 3, traceback to stderr); Rust gained `PyOutcome`'s third
+arm, which never reaches the agreement match, plus default-deny on an unrecognised status.
+A timeout, a signal death and a non-zero exit are now harness failures, and stderr is
+carried through instead of being discarded on the agreement path.
+
+**Critical 3 — the corpus was vacuous on all five §4.2 array sort disciplines.** Measured
+across all 21 rows: `vector_clock`, `recipients` and `vector_clock_summary` were EMPTY in
+every one, and `blocks`/`trash` held at most one element. An array of length 0 or 1 is
+sorted whatever any check does, so `_check_sorted` could be made a no-op with the whole
+suite green — and the sort disciplines are the *newly narrowing* half of the §4.2 reader
+contract (#572), the half a clean-room implementer reading `docs/` alone gets wrong. This is
+bit-for-bit the vacuity §(2) below levels at `golden_vault_001`, in the corpus written to
+carry that weight instead. `base_manifest` now puts **two entries in all five arrays** at
+every level (fixture and seeds regenerated; verdict mix unchanged at 12 accept / 9 reject),
+and the REJECTION side is pinned twice — `array_sort_disciplines_are_enforced_and_not_vacuous`
+on the Rust side and **Section MAS** on the Python side, each reversing one array at a time.
+
+**The six Important findings**, each closed: three `except Exception` arms that a mutation
+proved would score a `NameError`-instead-of-reject as a passing verdict across 12 + 9
+assertions; a one-sided positive control (membership-only, so a naive reader returning False
+for *everything* satisfied it — now two-sided, asserting agreement on the three
+`*__control_canonical` rows, verified by isolated mutation); the outer-map re-encode check,
+pinned by nothing until **Section MOC** (disabling it flips three inputs from reject to
+accept); and three comment defects — rule 4 attributed to the re-encode when
+`reject_floats_and_tags` is what rejects it, a claim that a `Manifest` has no nested
+`unknown` bag when it has three, and three comments re-asserting that the re-encode rejects
+duplicate keys in nested KNOWN maps, which is the exact reasoning this branch deleted from
+`_check_no_duplicate_keys` and which the byte-retention design had already falsified.
+
+**Also closed:** per-target input floors in `differential_replay.rs` (a renamed seeds
+directory made every target replay zero inputs, silently — the mechanism behind the
+"passed vacuously" note this branch's own module doc recorded); corpus row-count and
+verdict-mix floors on the Python replay to match the Rust one; evidence lines on all
+fourteen previously-silent guard sections, so a shrunken corpus is visible in a CI log;
+`RecursionError` added to the verify path's catch tuple; concurrent draining of the child's
+stdout **and stderr** (the old "a single short JSON line cannot fill the pipe" comment
+reasoned about stdout only, while the code also piped stderr from a `uv` child whose
+cold-cache builds are what `PER_INPUT_TIMEOUT` exists to absorb); the splice width derived
+rather than hardcoded; and the "passed for two years" claim corrected to four months — the
+repository's initial commit is `450d3490`, 2026-04-25.
+
+**Reviewed and deliberately NOT changed:** the `RFC 8949 §4.2.1` citations. §4.2.1's
+bytewise-ordering-of-encodings rule *yields* length-then-bytewise for text-string keys,
+which is what `docs/crypto-design.md` §6.2 rule 1 already says; rewriting them to §4.2.3
+would introduce an error rather than fix one.
+
+**One finding was filed rather than fixed: #596** — `core/fuzz/seeds/manifest_body/` holds
+21 seeds but has no cargo-fuzz target, so its differential corpus can never grow. This was
+already recorded as future-work item (e) below, but only in a plan document; it now has an
+issue with acceptance criteria, and `core/fuzz/README.md` says so at the seed location.
+A `manifest_body` fuzzer is what would have surfaced Critical 1 automatically.
+
+**One CodeQL alert was dismissed, not fixed:** #289, `rust/cleartext-logging` (high), on the
+`panic!` message in this branch's new `record.rs` test. Test-only code; the traced values are
+`record_uuid`/`device_uuid`, non-secret metadata already in the signed manifest; and
+`SecretString`/`SecretBytes` have a redacting `Debug` that prints only a length, so field
+plaintext cannot reach it. 32 open alerts of this rule already sit on `main` and 20+ were
+previously dismissed "used in tests". CodeQL is not in the `protect_main` required-check set.
+
+**Re-measured after this wave:** `cargo test --release --workspace` **2002 passed, 0
+failed**; `--features differential-replay` clean, and the harness now prints its per-target
+input counts (3/3/2/1/1/**21**/1); `cargo clippy --release --workspace --tests -- -D
+warnings` clean; `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` clean;
+`cargo fmt --all` applied; `conformance.py` **PASS** with every section now emitting
+evidence rather than a bare header.
 
 ---
 
@@ -173,6 +285,15 @@ holds **at most one element**, so it is equally vacuous for the five array sort 
 `encode_manifest` enforces. The golden vault validates the known-field path and the crypto;
 it validates nothing this slice is about. That was named as a risk in the design spec's §10
 and it held.
+
+**A sentence that was wrong when first written here, and is true only now.** This section
+originally went on to say the 21-row corpus carried that weight instead. It did not: the
+corpus was vacuous on all five sort disciplines in exactly the same way, and for the same
+reason — `base_manifest` built three of the arrays empty and the other two with at most one
+element. The PR review measured it. As of that fix every corpus row carries **two entries in
+all five arrays**, so the claim now holds; before it, the criticism of `golden_vault_001`
+applied verbatim to the fixture written to replace it. See §(1) "The PR review, and the
+second fix wave", Critical 3.
 
 **The fix wave's new pins are SCANNER-UNIT rows, not cross-language corpus rows — and
 there are three of them, not six.** `section_cbor_scanner_units` gained one invalid-UTF-8
@@ -215,8 +336,12 @@ the push.
 
 **(a) #593 — split `conformance.py`. THE NEXT SLICE, not the one after.** Filed during this
 closeout, **mandated by the design spec's own §10 risk row** rather than discretionary. The
-file went 4303 → **6187** lines (6107 when the issue was filed at `43b5a4d5`; the fix wave
-added 80 more). The final review's judgement is the load-bearing half and must not be
+file went 4303 → **6849** lines (6107 when the issue was filed at `43b5a4d5`, 6187 after the
+first fix wave, and the PR-review wave added the rest — the four new guard sections and
+`_validate_manifest_shape` are ~660 lines between them). **The count has now been wrong
+three times in this document because each wave outgrew it; treat `wc -l` as authoritative.**
+The growth also strengthens the case: every wave has added sections, and none has been able
+to remove any. The final review's judgement is the load-bearing half and must not be
 dropped in a summary: shipping this slice is acceptable **only because** #593 is filed with
 concrete acceptance criteria. A clean-room verifier's value is exactly proportional to how
 credibly a human can read it. **Acceptance:** a `core/tests/python/conformance/` package
@@ -226,7 +351,7 @@ byte-identical. The issue lists all four constraints.
 
 **(b) #594 — the manifest's three uniqueness invariants are enforced by Rust and stated
 NOWHERE in `docs/`.** `DuplicateBlockUuid`, `DuplicateTrashUuid` and
-`VectorClockDuplicateDevice` (`core/src/vault/manifest/error.rs:150`, `:154`, `:160`) have
+`VectorClockDuplicateDevice` (all three in `core/src/vault/manifest/error.rs`) have
 no normative counterpart: `grep -c "uniq" docs/vault-format.md` returns **0**, and §4.2
 states the five SORT disciplines and says nothing about uniqueness — a sortedness check
 passes for a repeated element, because `[x, x]` **is** sorted. Verified by execution: a body
@@ -389,9 +514,11 @@ finding B.
 
 ### Standing risks this slice does not remove
 
-- **`conformance.py` is now 6187 lines** (from 4303; 6107 at `43b5a4d5`, +80 in the fix
-  wave). The clean-room verifier's value is proportional to how credibly a human can read
-  it. **#593**, and the final review's ship judgement is **conditional on it** — see §(3)(a).
+- **`conformance.py` is now 6849 lines** (from 4303; 6107 at `43b5a4d5`, 6187 after the
+  first fix wave, the rest from the PR-review wave). The clean-room verifier's value is
+  proportional to how credibly a human can read it, and this slice has now made it 59%
+  longer than the issue that asked for it to be split. **#593**, and the final review's
+  ship judgement is **conditional on it** — see §(3)(a).
 - **A live Rust/Python acceptance-set divergence ships open**: the three manifest uniqueness
   invariants are enforced by Rust, stated nowhere in `docs/`, and accepted by the Python
   reader. **#594**, §(3)(b). Every other divergence this slice found was closed; this one is

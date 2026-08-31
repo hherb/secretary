@@ -14,17 +14,32 @@
 //! compared row by row rather than asserted to match in prose (#583,
 //! #592). It is also written out as raw seed files under
 //! `core/fuzz/seeds/manifest_body/`, so `core/tests/differential_replay.rs`
-//! exercises the same 21 bodies (that target's seed directory was empty
-//! before this task, so it iterated zero inputs and passed vacuously).
+//! exercises the same 21 bodies. The `manifest_body` target is NEW in this
+//! change -- it was added one commit ahead of this corpus, so it never
+//! existed on `main` and never "passed vacuously" there; without these
+//! seeds it would have replayed zero inputs, which is what the seeds and
+//! `differential_replay.rs`'s own per-target input floor now prevent.
 //!
 //! The seven shapes' expected verdicts are the SPECIFICATION (vault-format
 //! §4.2's five-row table), not an observed decoder behaviour: rules 1
 //! (map-key order) and 5 (duplicate keys) are TOLERATED inside an
 //! `unknown` subtree, because `ciborium`'s `Value::Map` is an ordered
 //! `Vec` of pairs that survives the decode-then-re-encode check unchanged;
-//! rules 2 (indefinite-length item), 3 (non-shortest-form integer) and 4
-//! (float) are REJECTED, because they are encoding-level departures the
-//! parse normalises away, so the re-encode differs from the input.
+//! rules 2 (indefinite-length item) and 3 (non-shortest-form integer) are
+//! REJECTED because they are encoding-level departures the parse
+//! normalises away, so the re-encode differs from the input.
+//!
+//! **Rule 4 (float) is rejected by a different mechanism, and conflating
+//! the two is the specific error `decode/mod.rs` warns against.** A
+//! normalising parse PRESERVES a float and re-encodes it identically, so
+//! the step-4 comparison structurally cannot see one. Floats and tags are
+//! rejected by `reject_floats_and_tags`, a whole-body walk that runs
+//! BEFORE `parse_manifest_map` and long before the re-encode -- as
+//! `docs/vault-format.md` §4.2 states normatively and as this file's own
+//! `rule4_float` shape comment says. Reading rule 4 as re-encode-enforced
+//! invites deleting that walk as redundant, at which point floats and tags
+//! inside `unknown` subtrees are silently accepted.
+//!
 //! `generate_manifest_canonicality_kat` asserts these verdicts against the
 //! decoder's actual output rather than recording whatever comes out --
 //! see that function's own doc for why the distinction is load-bearing.
@@ -54,9 +69,16 @@ fn manifest_canonicality_kat_replays() {
         "corpus must carry all 7 shapes x 3 levels (top/block/trash)"
     );
 
+    // Every (level, shape) pair must be present, not merely 21 rows: a
+    // fixture holding 21 copies of one row satisfies a bare length check
+    // and proves nothing (#595).
+    let mut labels: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
     let mut accepted = 0usize;
+    let mut rejected = 0usize;
     for row in rows {
         let label = row["label"].as_str().expect("label");
+        labels.insert(label.to_string());
         let body = hex::decode(row["manifest_body_hex"].as_str().expect("body")).expect("hex");
         let expect_accept = row["expect_accept"].as_bool().expect("expect_accept");
         let got = decode_manifest(&body).is_ok();
@@ -66,12 +88,129 @@ fn manifest_canonicality_kat_replays() {
         );
         if expect_accept {
             accepted += 1;
+        } else {
+            rejected += 1;
         }
     }
     assert!(
         accepted > 0,
         "corpus has no ACCEPT rows -- it would pass by rejecting everything"
     );
+    // The mirror floor. Without it an accept-only corpus would pass against
+    // a decoder that accepted everything -- the exact failure the ACCEPT
+    // floor above guards in the other direction.
+    assert!(
+        rejected > 0,
+        "corpus has no REJECT rows -- it would pass by accepting everything"
+    );
+
+    let expected: std::collections::BTreeSet<String> = generate::Level::ALL
+        .iter()
+        .flat_map(|lvl| {
+            generate::SHAPES
+                .iter()
+                .map(move |sh| format!("{}__{}", lvl.label(), sh.label))
+        })
+        .collect();
+    assert_eq!(
+        labels, expected,
+        "corpus label set must be exactly Level::ALL x SHAPES"
+    );
+}
+
+/// The five §4.2 array sort disciplines are ENFORCED, and the corpus that
+/// carries them is not vacuous (#595).
+///
+/// Two halves, and the second is the one that was missing. Every corpus row
+/// now carries two entries in all five arrays, but "two entries, in order"
+/// is only evidence that sorted input is ACCEPTED. This reverses each array
+/// in turn and asserts the decoder REJECTS -- so no-op'ing
+/// `parse_manifest_map`'s order checks, or `encode_manifest`'s sort, fails
+/// here. Before this, all five arrays were empty or single-element in every
+/// row, so both could be removed with the whole suite green.
+///
+/// The out-of-order body cannot be produced by `encode_manifest` (it sorts
+/// on output, which is the discipline under test), so each case round-trips
+/// through `ciborium::Value` and reverses one array there.
+#[test]
+fn array_sort_disciplines_are_enforced_and_not_vacuous() {
+    use ciborium::Value;
+
+    /// Reverse one array inside the decoded manifest body.
+    ///
+    /// `outer` names a top-level key; if `inner` is `Some`, `outer` must be
+    /// an array of maps and the reversal targets `outer[0][inner]` instead.
+    /// Two levels is all the manifest has, so this is written flat rather
+    /// than as a general path walk.
+    fn reverse_array(body: &[u8], outer: &str, inner: Option<&str>) -> Vec<u8> {
+        fn array_mut<'a>(v: &'a mut Value, key: &str) -> &'a mut Vec<Value> {
+            let entries = match v {
+                Value::Map(m) => m,
+                other => panic!("expected a map, got {other:?}"),
+            };
+            let slot = entries
+                .iter_mut()
+                .find(|(k, _)| k.as_text() == Some(key))
+                .map(|(_, val)| val)
+                .unwrap_or_else(|| panic!("key {key:?} not found"));
+            match slot {
+                Value::Array(a) => a,
+                other => panic!("key {key:?} is not an array: {other:?}"),
+            }
+        }
+
+        let mut v: Value = ciborium::de::from_reader(body).expect("parse body");
+        let target = match inner {
+            None => array_mut(&mut v, outer),
+            Some(k) => {
+                let first = array_mut(&mut v, outer)
+                    .first_mut()
+                    .expect("outer array must be non-empty");
+                array_mut(first, k)
+            }
+        };
+        assert!(
+            target.len() >= 2,
+            "array {outer}/{inner:?} has {} element(s) -- a sort discipline \
+             cannot be violated with fewer than 2, so this case would be \
+             vacuous",
+            target.len()
+        );
+        target.reverse();
+
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&v, &mut out).expect("re-encode");
+        out
+    }
+
+    let body = {
+        let m = generate::base_manifest(generate::Level::Top);
+        secretary_core::vault::manifest::encode_manifest(&m)
+            .expect("encode")
+            .expose()
+            .to_vec()
+    };
+    decode_manifest(&body).expect("baseline: the unreversed fixture must decode");
+
+    for (outer, inner) in [
+        ("vector_clock", None),
+        ("blocks", None),
+        ("trash", None),
+        ("blocks", Some("recipients")),
+        ("blocks", Some("vector_clock_summary")),
+    ] {
+        let mutated = reverse_array(&body, outer, inner);
+        assert_ne!(
+            mutated, body,
+            "reversing {outer}/{inner:?} produced an identical body -- the \
+             case is vacuous"
+        );
+        assert!(
+            decode_manifest(&mutated).is_err(),
+            "{outer}/{inner:?} reversed was ACCEPTED -- §4.2's sort \
+             discipline for it is not enforced"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -85,6 +224,7 @@ mod generate {
 
     use secretary_core::vault::manifest::{
         decode_manifest, encode_manifest, BlockEntry, KdfParamsRef, Manifest, TrashEntry,
+        VectorClockEntry,
     };
     use secretary_core::vault::UnknownValue;
 
@@ -196,11 +336,67 @@ mod generate {
         }
     }
 
-    /// A minimal but structurally complete manifest whose `unknown` bag
-    /// at `level` carries exactly one entry: [`NEEDLE`]. Every other
-    /// field is a fixed, arbitrary value -- this fixture exercises the
-    /// canonicality check, not the rest of the schema, so nothing about
-    /// the other fields is load-bearing.
+    /// One `BlockEntry` carrying TWO recipients and TWO
+    /// `vector_clock_summary` entries, both in ascending order.
+    fn block_entry(uuid_byte: u8, name: &str) -> BlockEntry {
+        BlockEntry {
+            block_uuid: [uuid_byte; 16],
+            block_name: name.to_string(),
+            fingerprint: [0xFF; 32],
+            recipients: vec![[0x31; 16], [0x32; 16]],
+            vector_clock_summary: vec![
+                VectorClockEntry {
+                    device_uuid: [0x41; 16],
+                    counter: 7,
+                },
+                VectorClockEntry {
+                    device_uuid: [0x42; 16],
+                    counter: 9,
+                },
+            ],
+            suite_id: secretary_core::version::SUITE_ID,
+            created_at_ms: 1_700_000_000_000,
+            last_mod_ms: 1_700_000_000_000,
+            unknown: BTreeMap::new(),
+        }
+    }
+
+    /// One `TrashEntry`.
+    fn trash_entry(uuid_byte: u8) -> TrashEntry {
+        TrashEntry {
+            block_uuid: [uuid_byte; 16],
+            tombstoned_at_ms: 1_700_000_000_000,
+            tombstoned_by: [0xAA; 16],
+            fingerprint: None,
+            purged_at_ms: None,
+            unknown: BTreeMap::new(),
+        }
+    }
+
+    /// A structurally complete manifest whose `unknown` bag at `level`
+    /// carries exactly one entry: [`NEEDLE`].
+    ///
+    /// **Every one of the five §4.2 sort-discipline arrays carries TWO
+    /// entries** (#595). It used to carry none or one: `vector_clock`,
+    /// `recipients` and `vector_clock_summary` were `Vec::new()` in every
+    /// row and `blocks`/`trash` held at most one element, so all five sort
+    /// disciplines were satisfied only VACUOUSLY -- bit-for-bit the
+    /// criticism this slice levels at `golden_vault_001`. An array of
+    /// length 0 or 1 is sorted no matter what the encoder or the decoder's
+    /// order check does, so no-op'ing either left the whole corpus green.
+    /// The sort disciplines are the *newly narrowing* half of the §4.2
+    /// reader contract (#572) -- the half a clean-room implementer reading
+    /// `docs/` alone would get wrong -- which makes them precisely what
+    /// this cross-language corpus exists to pin.
+    ///
+    /// Two entries is the minimum that can be out of order, and the
+    /// values are chosen ascending so the fixture itself is conformant;
+    /// the REJECTION side of the discipline is covered by
+    /// `array_sort_disciplines_are_enforced_and_not_vacuous` below and by
+    /// `conformance.py`'s `section_manifest_body_array_sort_guard`.
+    /// Nothing else about these fields is load-bearing, except that
+    /// `format_version`/`suite_id` must be the real constants or the
+    /// baseline decode would fail before the splice is ever exercised.
     pub(super) fn base_manifest(level: Level) -> Manifest {
         let placeholder = UnknownValue::from_canonical_cbor(NEEDLE)
             .expect("NEEDLE is canonical CBOR by construction");
@@ -211,9 +407,21 @@ mod generate {
             format_version: secretary_core::version::FORMAT_VERSION,
             suite_id: secretary_core::version::SUITE_ID,
             owner_user_uuid: [0x02; 16],
-            vector_clock: Vec::new(),
-            blocks: Vec::new(),
-            trash: Vec::new(),
+            vector_clock: vec![
+                VectorClockEntry {
+                    device_uuid: [0x21; 16],
+                    counter: 3,
+                },
+                VectorClockEntry {
+                    device_uuid: [0x22; 16],
+                    counter: 5,
+                },
+            ],
+            blocks: vec![
+                block_entry(0xB1, "corpus-block"),
+                block_entry(0xB2, "corpus-block-2"),
+            ],
+            trash: vec![trash_entry(0xDE), trash_entry(0xDF)],
             kdf_params: KdfParamsRef {
                 memory_kib: 262_144,
                 iterations: 3,
@@ -228,31 +436,14 @@ mod generate {
                 m.unknown.insert("zzz_needle".to_string(), placeholder);
             }
             Level::Block => {
-                let mut block = BlockEntry {
-                    block_uuid: [0xB1; 16],
-                    block_name: "corpus-block".to_string(),
-                    fingerprint: [0xFF; 32],
-                    recipients: Vec::new(),
-                    vector_clock_summary: Vec::new(),
-                    suite_id: secretary_core::version::SUITE_ID,
-                    created_at_ms: 1_700_000_000_000,
-                    last_mod_ms: 1_700_000_000_000,
-                    unknown: BTreeMap::new(),
-                };
-                block.unknown.insert("zzz_needle".to_string(), placeholder);
-                m.blocks.push(block);
+                m.blocks[0]
+                    .unknown
+                    .insert("zzz_needle".to_string(), placeholder);
             }
             Level::Trash => {
-                let mut trash = TrashEntry {
-                    block_uuid: [0xDE; 16],
-                    tombstoned_at_ms: 1_700_000_000_000,
-                    tombstoned_by: [0xAA; 16],
-                    fingerprint: None,
-                    purged_at_ms: None,
-                    unknown: BTreeMap::new(),
-                };
-                trash.unknown.insert("zzz_needle".to_string(), placeholder);
-                m.trash.push(trash);
+                m.trash[0]
+                    .unknown
+                    .insert("zzz_needle".to_string(), placeholder);
             }
         }
 

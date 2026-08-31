@@ -373,7 +373,10 @@ mapping. Where a parser offers no pair-preserving output, retain the subtree's
 raw bytes and re-emit them verbatim, decoding only the keys this version
 interprets. That satisfies (1) and, per this section's two-part requirement,
 nothing else: such a reader gets no enforcement from the §4.3 step 4 re-encode
-for that subtree and MUST check rules 2, 3 and 4 itself.
+for that subtree, so it MUST check rules 2 and 3 itself — as well as rule 4,
+which no reader gets from the re-encode (see the rule-4 row above: a
+normalising parse preserves a tag or a float and re-encodes it identically,
+so every reader enforces rule 4 by a separate whole-body walk).
 
 `kdf_params` is duplicated here (also in `vault.toml`) so the manifest signature attests to them. A modified `vault.toml` cannot trick a reader into deriving a wrong `master_kek` without also producing an invalid manifest signature.
 
