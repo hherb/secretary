@@ -2078,6 +2078,137 @@ mod tests {
         );
     }
 
+    /// Ground truth for the Python clean-room conformance decoder
+    /// (`core/tests/python/conformance.py`'s `py_decode_record`), which
+    /// #592 found REJECTING two shapes this decoder ACCEPTS: a subtree
+    /// carrying a duplicate key, or keys out of canonical order, inside a
+    /// forward-compat `unknown` bag. Modelled on the manifest module's
+    /// `unknown_subtree_tolerates_key_order_and_duplicates_but_not_encoding`
+    /// (`core/src/vault/manifest/decode/tests.rs`) -- same splice-over-a-
+    /// needle technique, same six-reject/two-accept shape set -- extended
+    /// to the SECOND level a [`Record`] has that a `Manifest` does not:
+    /// [`RecordField::unknown`]. Retention must hold at BOTH levels
+    /// independently: an earlier task in this slice cost two review
+    /// rounds because a design scoped byte retention to the top level
+    /// only and a reviewer had to find the nested case by execution
+    /// afterwards. This test exercises both from the start, at both a
+    /// record-level and a field-level unknown subtree, so a regression at
+    /// either level fails here rather than only in the Python decoder.
+    #[test]
+    fn unknown_subtree_tolerates_key_order_and_duplicates_but_not_encoding_at_both_levels() {
+        // `{"a": 1}` / `{"b": 2}` -- the two subtrees spliced over, one per
+        // level and distinct from each other so the byte-offset search
+        // below cannot confuse the two.
+        const RECORD_BASE: &[u8] = &[0xA1, 0x61, b'a', 0x01];
+        const FIELD_BASE: &[u8] = &[0xA1, 0x61, b'b', 0x02];
+
+        let mut r = dummy_record();
+        r.unknown.insert(
+            "zzz_future".into(),
+            UnknownValue::from_canonical_cbor(RECORD_BASE).expect("UnknownValue"),
+        );
+        let mut field = dummy_field(RecordFieldValue::Text("alice".into()), 1);
+        field.unknown.insert(
+            "zzz_future_field".into(),
+            UnknownValue::from_canonical_cbor(FIELD_BASE).expect("UnknownValue"),
+        );
+        r.fields.insert("username".into(), field);
+
+        let encoded = encode(&r).expect("encode");
+        let bytes = encoded.expose().to_vec();
+        decode(&bytes).expect("baseline: the unspliced fixture must decode");
+
+        let find_one = |needle: &[u8]| -> usize {
+            let hits: Vec<usize> = bytes
+                .windows(needle.len())
+                .enumerate()
+                .filter(|(_, w)| *w == needle)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(
+                hits.len(),
+                1,
+                "needle must occur exactly once, or the splice below is \
+                 overwriting something else"
+            );
+            hits[0]
+        };
+        let record_at = find_one(RECORD_BASE);
+        let field_at = find_one(FIELD_BASE);
+        // Both needles are the same length (4 bytes), so one splice
+        // closure serves both sites.
+        assert_eq!(RECORD_BASE.len(), FIELD_BASE.len());
+        let splice = |at: usize, repl: &[u8]| -> Vec<u8> {
+            let mut v = bytes.clone();
+            v.splice(at..at + RECORD_BASE.len(), repl.iter().copied());
+            v
+        };
+
+        // REJECTED: every encoding-level departure from the deterministic
+        // profile, at either level's unknown subtree.
+        let reject_shapes: [(&str, &[u8]); 6] = [
+            ("indefinite-length map", &[0xBFu8, 0x61, b'a', 0x01, 0xFF]),
+            (
+                "non-shortest-form integer",
+                &[0xA1u8, 0x61, b'a', 0x18, 0x01],
+            ),
+            (
+                "indefinite-length text string",
+                &[0xA1u8, 0x61, b'a', 0x7F, 0x61, b'x', 0xFF],
+            ),
+            (
+                "indefinite-length byte string",
+                &[0xA1u8, 0x61, b'a', 0x5F, 0x41, 0xAA, 0xFF],
+            ),
+            (
+                "indefinite-length array",
+                &[0xA1u8, 0x61, b'a', 0x9F, 0x01, 0xFF],
+            ),
+            (
+                // A non-shortest LENGTH prefix, as distinct from a
+                // non-shortest integer VALUE above: `B8 01` is a 1-entry
+                // map written with a uint8 count header where `A1` suffices.
+                "non-shortest-form map length",
+                &[0xB8u8, 0x01, 0x61, b'a', 0x01],
+            ),
+        ];
+        for (level, at) in [("record-level", record_at), ("field-level", field_at)] {
+            for (what, repl) in reject_shapes {
+                match decode(&splice(at, repl)) {
+                    Err(RecordError::NonCanonicalEncoding) => {}
+                    other => panic!(
+                        "{what} inside {level} unknown subtree: expected \
+                         NonCanonicalEncoding, got {other:?}"
+                    ),
+                }
+            }
+        }
+
+        // ACCEPTED: the two order-carrying shapes, which are exactly the
+        // residual crypto-design §6.2 rules 1/5 leave unenforced inside an
+        // unknown subtree (`RecordError::DuplicateKey`'s own doc names it).
+        let accept_shapes: [(&str, &[u8]); 2] = [
+            (
+                "duplicate key",
+                &[0xA2u8, 0x61, b'a', 0x01, 0x61, b'a', 0x02],
+            ),
+            (
+                "keys out of canonical order",
+                &[0xA2u8, 0x62, b'z', b'z', 0x01, 0x61, b'a', 0x02],
+            ),
+        ];
+        for (level, at) in [("record-level", record_at), ("field-level", field_at)] {
+            for (what, repl) in accept_shapes {
+                decode(&splice(at, repl)).unwrap_or_else(|e| {
+                    panic!(
+                        "{what} inside {level} unknown subtree must still \
+                         decode, got {e:?}"
+                    )
+                });
+            }
+        }
+    }
+
     // ---- Strict canonical-input rejection --------------------------------
 
     #[test]
