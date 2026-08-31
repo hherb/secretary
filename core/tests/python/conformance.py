@@ -3517,6 +3517,16 @@ def _decode_head(buf: bytes, pos: int) -> tuple[int, int, int | None, int]:
     elif ai == 27:
         n = 8
     elif ai == CBOR_AI_INDEFINITE:
+        # RFC 8949 §3.2: the indefinite-length form (ai=31) is legal only for
+        # majors 2/3/4/5 (byte string, text string, array, map); major 7's
+        # ai=31 is a distinct thing -- the "break" stop code -- which
+        # _scan_item / _scan_map_entries detect by reaching it, not by
+        # decoding it as a head, so it must stay permitted here.
+        if major not in (2, 3, 4, 5, 7):
+            raise ValueError(
+                f"RFC 8949 §3.2: indefinite-length form is not valid for "
+                f"major type {major} at offset {pos}"
+            )
         return major, ai, None, 1
     else:
         raise ValueError(f"reserved additional-info {ai} at offset {pos}")
@@ -3654,6 +3664,8 @@ def _check_canonical_item(buf: bytes, pos: int) -> int:
     if major in (0, 1):
         return p
     if major in (2, 3):
+        if p + arg > len(buf):
+            raise ValueError(f"string length {arg} overruns buffer at offset {pos}")
         return p + arg
     per = 1 if major == 4 else 2
     for _ in range(arg * per):
@@ -3702,6 +3714,15 @@ def section_cbor_scanner_units() -> tuple[bool, list[str]]:
         if end != len(raw):
             issues.append(f"_scan_item {label}: consumed {end} of {len(raw)} bytes")
 
+    # --- RFC 8949 §3.2: ai=31 (indefinite) is only valid for majors 2/3/4/5
+    # --- (plus major 7, the break code). Major 0 with ai=31 is not a legal
+    # --- head at all and must be REJECTED, not scanned as a bare 1-byte item.
+    try:
+        _scan_item(bytes([0x1F]), 0)
+        issues.append("_scan_item major-0 ai=31 must be REJECTED, was accepted")
+    except ValueError:
+        pass
+
     # --- THE point: duplicates and wire order survive the scan
     dup = bytes([0xA2, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02])   # {"a":1,"a":2}
     entries, end = _scan_map_entries(dup, 0)
@@ -3733,6 +3754,10 @@ def section_cbor_scanner_units() -> tuple[bool, list[str]]:
         ("rule 3 non-shortest map length", bytes([0xB8, 0x01, 0x61, 0x61, 0x01])),
         ("rule 4 float", cbor2.dumps({"a": 1.5})),
         ("rule 4 tag", cbor2.dumps(cbor2.CBORTag(24, b"x"))),
+        # 0x63 = major 3 (tstr), length 3 -- but only 2 bytes follow. An
+        # oversized length claim must not silently return a bogus
+        # out-of-buffer offset (the bug Finding 1 fixed).
+        ("bounds-check truncated tstr", bytes([0x63, 0x61, 0x62])),
     ]:
         try:
             _check_canonical_item(raw, 0)
