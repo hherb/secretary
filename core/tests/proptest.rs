@@ -1332,6 +1332,7 @@ mod manifest_props {
         encode_manifest_file, sign_manifest, verify_manifest, BlockEntry, KdfParamsRef, Manifest,
         ManifestError, ManifestHeader, TrashEntry, VectorClockEntry,
     };
+    use secretary_core::vault::UnknownValue;
     use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
 
     const UUID_LEN: usize = 16;
@@ -1377,6 +1378,50 @@ mod manifest_props {
         )
     }
 
+    /// Five forward-compat subtree shapes, all of which a v1 decoder must
+    /// ACCEPT and re-emit verbatim (`docs/vault-format.md` §4.2).
+    ///
+    /// Shape 5 is deliberately in NON-CANONICAL key order (`{"zz":1,"a":2}`).
+    /// A canonically-ordered fixture cannot tell "emitted verbatim" apart
+    /// from "re-sorted on the way out", which is the whole property #572's
+    /// v2 soundness rests on — see `test_support::UNKNOWN_MAP_NONCANONICAL`.
+    ///
+    /// Every shape is an ACCEPTABLE one on purpose: Property F is a
+    /// round-trip property and must hold unconditionally. Rejected shapes
+    /// (indefinite lengths, non-shortest heads, floats, tags) belong in the
+    /// `manifest_canonicality_kat` corpus, not here.
+    const UNKNOWN_SUBTREE_SHAPES: [&[u8]; 5] = [
+        &[0x01],                                           // uint 1
+        &[0x41, 0xAA],                                     // bstr h'AA'
+        &[0x62, b'h', b'i'],                               // tstr "hi"
+        &[0x82, 0x01, 0x02],                               // array [1, 2]
+        &[0xA2, 0x62, b'z', b'z', 0x01, 0x61, b'a', 0x02], // {"zz":1,"a":2}
+    ];
+
+    /// Unknown-key names. The `zzz_` prefix keeps them clear of every known
+    /// key at every level, which matters: a collision would make
+    /// `encode_manifest` emit a signed, ambiguous manifest (#586), and
+    /// Property F is not the place to trip that.
+    const UNKNOWN_KEY_NAMES: [&str; 3] = ["zzz_future_a", "zzz_future_b", "zzz_future_c"];
+
+    fn unknown_bag_strategy() -> impl Strategy<Value = BTreeMap<String, UnknownValue>> {
+        prop::collection::vec(
+            (0..UNKNOWN_KEY_NAMES.len(), 0..UNKNOWN_SUBTREE_SHAPES.len()),
+            0..=3,
+        )
+        .prop_map(|picks| {
+            let mut bag = BTreeMap::new();
+            for (name_idx, shape_idx) in picks {
+                bag.insert(
+                    UNKNOWN_KEY_NAMES[name_idx].to_string(),
+                    UnknownValue::from_canonical_cbor(UNKNOWN_SUBTREE_SHAPES[shape_idx])
+                        .expect("UNKNOWN_SUBTREE_SHAPES entries are all valid"),
+                );
+            }
+            bag
+        })
+    }
+
     /// Strategy for `BlockEntry`. `block_name` is bounded ASCII; nested
     /// `vector_clock_summary` and `recipients` use the same dedup discipline
     /// as the top-level vector clock and the per-block recipients sort
@@ -1390,12 +1435,16 @@ mod manifest_props {
             vector_clock_strategy(),               // vector_clock_summary
             any::<u64>(),                          // created_at_ms
             any::<u64>(),                          // last_mod_ms
+            unknown_bag_strategy(),                // unknown
         )
-            .prop_filter("duplicate recipient uuid", |(_, _, _, recip, _, _, _)| {
-                let mut sorted = recip.clone();
-                sorted.sort();
-                sorted.windows(2).all(|p| p[0] != p[1])
-            })
+            .prop_filter(
+                "duplicate recipient uuid",
+                |(_, _, _, recip, _, _, _, _)| {
+                    let mut sorted = recip.clone();
+                    sorted.sort();
+                    sorted.windows(2).all(|p| p[0] != p[1])
+                },
+            )
             .prop_map(
                 |(
                     block_uuid,
@@ -1405,6 +1454,7 @@ mod manifest_props {
                     vector_clock_summary,
                     created_at_ms,
                     last_mod_ms,
+                    unknown,
                 )| BlockEntry {
                     block_uuid,
                     block_name,
@@ -1414,7 +1464,7 @@ mod manifest_props {
                     suite_id: SUITE_ID,
                     created_at_ms,
                     last_mod_ms,
-                    unknown: BTreeMap::new(),
+                    unknown,
                 },
             )
     }
@@ -1437,16 +1487,24 @@ mod manifest_props {
             arr16(),
             prop::option::of(arr32_fp()), // arr32_fp(): in-scope [u8; FINGERPRINT_LEN] strategy
             prop::option::of(any::<u64>()), // purged_at_ms (#399): same optional shape as fingerprint
+            unknown_bag_strategy(),
         )
             .prop_map(
-                |(block_uuid, tombstoned_at_ms, tombstoned_by, fingerprint, purged_at_ms)| {
+                |(
+                    block_uuid,
+                    tombstoned_at_ms,
+                    tombstoned_by,
+                    fingerprint,
+                    purged_at_ms,
+                    unknown,
+                )| {
                     TrashEntry {
                         block_uuid,
                         tombstoned_at_ms,
                         tombstoned_by,
                         fingerprint,
                         purged_at_ms,
-                        unknown: BTreeMap::new(),
+                        unknown,
                     }
                 },
             )
@@ -1482,19 +1540,30 @@ mod manifest_props {
             blocks_strategy(),       // blocks
             trash_strategy(),        // trash
             kdf_params_strategy(),   // kdf_params
+            unknown_bag_strategy(),  // unknown
         )
             .prop_map(
-                |(vault_uuid, owner_user_uuid, vector_clock, blocks, trash, kdf_params)| Manifest {
-                    manifest_version: MANIFEST_VERSION_V1,
+                |(
                     vault_uuid,
-                    format_version: FORMAT_VERSION,
-                    suite_id: SUITE_ID,
                     owner_user_uuid,
                     vector_clock,
                     blocks,
                     trash,
                     kdf_params,
-                    unknown: BTreeMap::new(),
+                    unknown,
+                )| {
+                    Manifest {
+                        manifest_version: MANIFEST_VERSION_V1,
+                        vault_uuid,
+                        format_version: FORMAT_VERSION,
+                        suite_id: SUITE_ID,
+                        owner_user_uuid,
+                        vector_clock,
+                        blocks,
+                        trash,
+                        kdf_params,
+                        unknown,
+                    }
                 },
             )
     }
@@ -1598,6 +1667,47 @@ mod manifest_props {
             let bytes_again = encode_manifest(&parsed).expect("re-encode");
             prop_assert_eq!(bytes, bytes_again, "encode→decode→encode not bit-identical");
         }
+    }
+
+    /// Positive control for Property F's forward-compat coverage (#578).
+    ///
+    /// `manifest_roundtrip` cannot distinguish "the unknown bags round-trip
+    /// correctly" from "the strategy generated no unknown bags at all" — the
+    /// exact failure #578 records, where all three strategies hardcoded
+    /// `BTreeMap::new()` and the property passed for two years having never
+    /// exercised the subtree path. This test asserts the corpus is
+    /// non-degenerate at ALL THREE levels that carry a bag.
+    #[test]
+    fn unknown_bag_strategy_is_non_degenerate_at_all_three_levels() {
+        use proptest::strategy::{Strategy, ValueTree};
+        use proptest::test_runner::TestRunner;
+
+        let mut runner = TestRunner::deterministic();
+        let (mut top, mut block, mut trash) = (0usize, 0usize, 0usize);
+        const CASES: usize = 256;
+
+        for _ in 0..CASES {
+            let m = manifest_strategy()
+                .new_tree(&mut runner)
+                .expect("new_tree")
+                .current();
+            if !m.unknown.is_empty() {
+                top += 1;
+            }
+            if m.blocks.iter().any(|b| !b.unknown.is_empty()) {
+                block += 1;
+            }
+            if m.trash.iter().any(|t| !t.unknown.is_empty()) {
+                trash += 1;
+            }
+        }
+
+        assert!(
+            top > 0,
+            "no generated manifest carried a top-level unknown bag"
+        );
+        assert!(block > 0, "no generated block entry carried an unknown bag");
+        assert!(trash > 0, "no generated trash entry carried an unknown bag");
     }
 
     // -----------------------------------------------------------------------
