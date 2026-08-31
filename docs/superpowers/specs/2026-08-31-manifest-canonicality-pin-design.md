@@ -120,7 +120,9 @@ manifest body bytes
 A minimal CBOR item scanner walks the body recording byte spans. Known keys
 dispatch to `cbor2.loads` on their value span; **unknown keys retain their value
 span's raw bytes verbatim**. Re-encode emits known values via `cbor2.dumps` and
-splices the retained bytes back.
+splices the retained bytes back. Retention applies at **every level that carries
+an `unknown` bag**, not only the body's top level — see the correction under
+§4.2.
 
 Rationale: it is the only one of the three that satisfies both halves of the
 §4.2 obligation, it keeps `cbor2` doing the leaf work it does correctly, and the
@@ -150,7 +152,9 @@ Each is a pure function; I/O stays at the edges, matching the repo's convention.
 | `_scan_item(buf, pos) -> int` | Return the end offset of the single CBOR item at `pos`. Recurses through arrays/maps/tags; handles indefinite-length forms by scanning to the break. | `_decode_head` |
 | `_scan_map_entries(buf, pos) -> tuple[list[tuple[Span, Span]], int]` | Entry list of `(key_span, value_span)` for the map at `pos`, plus its end offset. A `Span` is a `(start, end)` offset pair into `buf` — never a copy, so a retained subtree is exhibited as `buf[start:end]` at re-encode time. **Preserves order and repeats** — this is the whole point. | `_scan_item` |
 | `_check_canonical_item(buf, pos) -> int` | Rules 2/3/4 over the item at `pos`: no indefinite length, shortest-form heads, no floats, no tags. Recursive. **Raises `ValueError` naming the rule and the byte offset** rather than returning a bool — the corpus needs the locator, and a bare `False` would be exactly the undiagnosable failure #590 records. Returns the end offset. | `_decode_head` |
-| `py_decode_manifest(data) -> dict` | Strict §4.2/§4.3 body decoder. Known keys via `cbor2.loads`; unknown keys keep raw bytes. Rejects duplicates at known levels; enforces the five array sort disciplines. | all of the above |
+| `py_decode_manifest(data) -> dict` | Strict §4.2/§4.3 body decoder. Known keys via `cbor2.loads`; unknown keys keep raw bytes **at all three levels that have an `unknown` bag** (body, `blocks[i]`, `trash[i]`). Requires all 9 known top-level keys; rejects duplicates at known levels; enforces the five array sort disciplines; ends with the §4.3 step-4 re-encode-and-compare against its own input. | all of the above |
+| `_decode_manifest_entry_map(...) -> dict` | One `blocks[i]` / `trash[i]` entry map. Known keys via `cbor2.loads`, **its own `unknown` bag byte-retained**, required fields enforced. | `_scan_map_entries` |
+| `_decode_strict_entry_map(...) -> dict` | One fixed-shape map with **no** `unknown` bag — `kdf_params`, and each `vector_clock` / `vector_clock_summary` entry. **Rejects** any key outside the known set, matching Rust's catch-all `WrongType` arm. Opposite polarity to the row above. | `_scan_map_entries` |
 | `py_encode_manifest(parsed) -> bytes` | Canonical re-encode; splices retained unknown bytes verbatim. | `encode_canonical_map_raw` |
 | `encode_canonical_map_raw(entries: list[tuple[str, bytes]]) -> bytes` | Canonical map from **pre-encoded** value bytes. Sorts keys by `(len, bytes)` on their encoded form; writes the map header by hand. | nothing |
 
@@ -159,10 +163,35 @@ Each is a pure function; I/O stays at the edges, matching the repo's convention.
 a `dict` and calls `cbor2.dumps(d, canonical=True)`, so it re-sorts and cannot
 carry pre-encoded values.
 
+**Correction, recorded because the original scoping was the defect (Ruling 5).**
+As first written, this table scoped byte retention to the manifest body's
+**top-level** `unknown` bag only. That was wrong, and it cost Task 3 two fix
+rounds to discover: `BlockEntry` and `TrashEntry` each carry their **own**
+forward-compat `unknown` bag one level deeper (`core/src/vault/manifest/types.rs`),
+so an entry routed wholesale through `cbor2.loads`/`dumps` collapses a duplicate
+key that Rust accepts — the exact #592 divergence, one nesting level down. The
+rule is level-independent: §4.2's rules-1/5 exemption for unknown subtrees
+applies **wherever an `unknown` bag exists**, so retention must be implemented
+at every such level. As shipped, that is three levels in the manifest (body,
+`blocks[i]`, `trash[i]`) and — applying the same lesson prospectively under
+Ruling 12 — **two levels in the record decoder** (`py_decode_record`: the
+record-level `unknown` and each `RecordField`'s own `unknown`). The reviewer
+found the manifest case by execution, not by reading the design; the record case
+was scoped correctly from the start because this correction was already known.
+
+Two further shape checks were added for the same reason — a Python decoder whose
+accepted set differs from Rust's in *either* direction is a divergence:
+`py_decode_manifest` requires all 9 known top-level keys (Rust's `Manifest` has
+no `Option` among them; Ruling 6), and `kdf_params` / `vector_clock` /
+`vector_clock_summary` entries **reject** forward-compat keys, because those
+Rust parsers have no `unknown` bag and end in a catch-all `WrongType` arm
+(Ruling 7).
+
 ### 4.3 Interface contract
 
 `py_decode_manifest` returns a dict whose `unknown` entries map key -> **raw
-`bytes`**, never a decoded object. That asymmetry is the design, and it is
+`bytes`**, never a decoded object — at each of the three levels named above, and
+likewise for `py_decode_record`'s two. That asymmetry is the design, and it is
 stated in the function's own docstring: a decoded object cannot reproduce what
 the spec requires reproducing.
 
@@ -179,24 +208,44 @@ New fixture `core/tests/data/manifest_canonicality_kat.json`, generated by an
 `#[ignore]` Rust test in the established `generate_conformance_kat` idiom
 (`core/tests/conformance_kat.rs:317`), replayed by both languages.
 
-**Rows: five cases, one per crypto-design §6.2 rule, each violating that rule
-inside an `unknown` subtree**, each carrying the §4.2 table's expected verdict —
-plus acceptable controls so the corpus cannot pass by rejecting everything.
+**Seven subtree shapes** — one per crypto-design §6.2 rule, each violating that
+rule inside an `unknown` subtree, plus two acceptable controls so the corpus
+cannot pass by rejecting everything — each carrying the §4.2 table's expected
+verdict.
 
-| Rule | Violation inside the subtree | §4.2 table says | Rust today |
+| Shape | Subtree bytes | §4.2 table says | Rust today |
 |---|---|---|---|
-| 1 — map-key order | `{"zz":1,"a":2}` | not enforced | accept |
-| 2 — definite lengths | `BF 61 61 01 FF` | enforced | reject |
-| 3 — shortest-form heads | `A1 61 61 18 01` | enforced | reject |
-| 4 — no floats/tags | float or tag payload | enforced | reject |
-| 5 — no duplicate keys | `{"a":1,"a":2}` | not enforced | accept |
+| `control_canonical` | `A1 61 61 01` — `{"a":1}` | — | accept |
+| `control_array` | `82 01 02` — `[1,2]` | — | accept |
+| `rule1_key_order` | `{"zz":1,"a":2}` | not enforced | accept |
+| `rule2_indefinite_map` | `BF 61 61 01 FF` | enforced | reject |
+| `rule3_non_shortest_int` | `A1 61 61 18 01` | enforced | reject |
+| `rule4_float` | `A1 61 61 FA 3F C0 00 00` | enforced | reject |
+| `rule5_duplicate_key` | `{"a":1,"a":2}` | not enforced | accept |
+
+**Each shape is spliced at all THREE levels that carry an `unknown` bag — the
+manifest body, a `blocks[i]` entry, and a `trash[i]` entry — so the fixture is
+7 x 3 = 21 rows** (`top__*`, `block__*`, `trash__*`), not the 7 an earlier
+version of this section described. The reason is Ruling 11, which is §4.2's
+correction applied to the corpus: a corpus splicing only at top level would miss
+exactly the nested divergence Task 3 spent two fix rounds closing, and the
+agreement assertion below would pass while blind to it.
 
 The agreement assertion: **Rust's verdict, and the Python byte-retaining
-reader's verdict, must agree row for row.** A third column replays each row
-through a deliberately naive `cbor2.loads`-based reader and asserts it
-**diverges on the rule-5 row** — #592 pinned as a positive control, so the
-corpus proves it can tell the two strategies apart rather than passing
-vacuously.
+reader's verdict, must agree row for row — all 21.** A third column replays each
+row through a deliberately naive `cbor2.loads`-based reader and asserts it
+**diverges on all three `*__rule5_duplicate_key` rows** — #592 pinned as a
+positive control, so the corpus proves it can tell the two strategies apart, at
+every level, rather than passing vacuously. The naive reader also diverges on
+the three `*__rule1_key_order` rows (`canonical=True` re-sorts the subtree's
+keys); the assertion is membership, not set equality, so that is expected and
+does not weaken the control.
+
+**Seeds, not just a fixture.** `differential_replay.rs`'s `corpus_dirs()` reads
+`core/fuzz/{corpus,seeds}/<target>` and treats an absent directory as an empty
+list, so the new `manifest_body` target would pass **vacuously** with no seeds
+(Ruling 10). The generator therefore also writes
+`core/fuzz/seeds/manifest_body/` — 21 inputs, the same rows.
 
 **Fixture-diff note.** The baton's standing check `git diff main...HEAD --stat --
 core/tests/data/` must be **EMPTY** is about not changing the on-disk format.

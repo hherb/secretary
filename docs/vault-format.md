@@ -371,9 +371,9 @@ collapsing fails (1), and raising rejects a subtree the "no" rows above require
 a reader to accept — and an `object_hook` receives the already-collapsed
 mapping. Where a parser offers no pair-preserving output, retain the subtree's
 raw bytes and re-emit them verbatim, decoding only the keys this version
-interprets. That satisfies (1) and, per the paragraph above, nothing else: such
-a reader gets no enforcement from the §4.3 step 4 re-encode for that subtree and
-MUST check rules 2, 3 and 4 itself.
+interprets. That satisfies (1) and, per this section's two-part requirement,
+nothing else: such a reader gets no enforcement from the §4.3 step 4 re-encode
+for that subtree and MUST check rules 2, 3 and 4 itself.
 
 `kdf_params` is duplicated here (also in `vault.toml`) so the manifest signature attests to them. A modified `vault.toml` cannot trick a reader into deriving a wrong `master_kek` without also producing an invalid manifest signature.
 
