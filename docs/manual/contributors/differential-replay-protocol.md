@@ -27,9 +27,10 @@ Python decoder and assert that the two implementations agree on:
    Disagreement here means one side has a re-encoding bug that the other
    side's tests didn't catch.
 
-The Python decoder lives in `core/tests/python/conformance.py` and is
-deliberately written as a separate, "clean-room" implementation: it
-reads the spec docs, not the Rust source. Two implementations of the
+The Python decoders live in `core/tests/python/conformance_lib/codec/`
+(#593; `conformance.py` is now a thin entrypoint over that package) and
+are deliberately written as a separate, "clean-room" implementation: they
+read the spec docs, not the Rust source. Two implementations of the
 same spec are far less likely to share the same bug than one
 implementation tested against itself.
 
@@ -156,11 +157,13 @@ directories on every run.
 ## Adding a new target
 
 1. Add `py_decode_<target>(data: bytes) -> SomeDataclass` and
-   `py_encode_<target>(parsed: SomeDataclass) -> bytes` in the §5
-   region of `conformance.py`.
+   `py_encode_<target>(parsed: SomeDataclass) -> bytes` in a module under
+   `core/tests/python/conformance_lib/codec/` — one module per target,
+   named after it.
 2. Extend the `if target == "<target>":` chain inside `run_diff_replay()`
-   with the appropriate accept arm (with or without re-encoded bytes,
-   per §1/§2 above).
+   (`conformance_lib/diff_replay.py`) with the appropriate accept arm
+   (with or without re-encoded bytes, per §1/§2 above), importing the new
+   pair at the top of that module.
 3. Mirror the change on the Rust side in
    `core/tests/differential_replay.rs::rust_decode` and
    `core/tests/differential_replay.rs::TARGETS`.
@@ -186,7 +189,7 @@ same commit:
 
 1. Update `python_decode` in `differential_replay.rs` to recognise the
    new shape.
-2. Update `run_diff_replay` in `conformance.py` to emit it.
+2. Update `run_diff_replay` in `conformance_lib/diff_replay.py` to emit it.
 3. Update this document.
 
 Adding a new shape on only one side will manifest as
