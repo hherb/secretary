@@ -1,1 +1,1 @@
-docs/handoffs/2026-08-31-manifest-canonicality-pin-shipped.md
+docs/handoffs/2026-09-01-conformance-split-shipped.md

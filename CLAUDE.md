@@ -17,9 +17,16 @@ core/src/vault/manifest/                   — DIRECTORY module (#564), not mani
                                              10 production, 7 sibling `tests.rs`, and one
                                              `#[cfg(test)]` `test_support.rs`
 core/tests/          — integration tests; tests/data/ holds KATs and fuzz regressions
-core/tests/python/conformance.py           — clean-room verifier (generic crypto primitives via
-                                             PEP 723; no dependency on `secretary-core`); proves
-                                             the spec is implementable from `docs/` alone
+core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (136 lines; the PEP
+                                             723 header is the sole dependency declaration).
+                                             `conformance.py:NNN` citations predating #593 are
+                                             stale — the verifier is now a 52-file package.
+core/tests/python/conformance_lib/         — DIRECTORY module (#593), the verifier itself: no
+                                             dependency on `secretary-core`; proves the spec is
+                                             implementable from `docs/` alone. `wire/` parses to
+                                             INSPECT, `codec/` parses to RE-EMIT byte-identically,
+                                             `merge/` is §11 CRDT, `sections/` holds the replay
+                                             drivers and the registry `main()` iterates
 core/fuzz/           — `cargo-fuzz` harness, EXCLUDED from the workspace; nightly toolchain
 docs/                — normative specs (see "Spec is normative" below)
 docs/adr/            — architecture decision records, numbered 0001..0010
@@ -231,6 +238,32 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
+**`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
+was 6849 lines; it is now 136, over a 52-file package whose largest module is 383
+lines. Two properties are load-bearing and a change that breaks either defeats the
+point of the split:
+
+- **The PEP 723 header in `conformance.py` is the SOLE dependency declaration.** There
+  is no `pyproject.toml` and the package declares nothing of its own. Adding one would
+  let the installed set drift from the declared set, which is the clean-room claim.
+- **`uv run core/tests/python/conformance.py` must keep working verbatim from any
+  working directory.** Three callers depend on the exact invocation — this file, the
+  `clean-room conformance` job in `test.yml`, and `core/tests/differential_replay.rs`,
+  which shells out to it per fuzz input. The `conformance_lib` import resolves because
+  Python puts the ENTRYPOINT's directory on `sys.path[0]`; it is not a CWD property.
+  Every fixture path hangs off one anchor (`fixtures.test_data_dir`) rather than being
+  re-derived per helper, which is what made the one-level-deeper `__file__` a
+  single-line fix instead of nine.
+
+`main()` no longer carries each section three times (call, banner, `FAIL:` line) plus a
+term in a 22-term `and` chain — omitting that term was silent and **fail-open**, scoring
+a failing section green. `sections/registry.py` declares each section once and derives
+all four. Its dual — a section module that exists but is never registered, which
+produces no output and no failure — is closed by Section **REG**
+(`sections/completeness.py`), which discovers drivers by SHAPE and compares against the
+table. Both directions are mutation-proven. Adding a section means one `Section(...)`
+row; forgetting it reds REG.
+
 **It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and never enabled in `test.yml`. The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. Two standing consequences: **(1)** the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking; **(2)** five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
 
 ### Crypto layering
@@ -248,7 +281,7 @@ Whenever you touch a verification or KDF site, preserve the "both halves" proper
 
 ### CRDT merge: vector clocks + record-level death clock
 
-`core/src/vault/conflict.rs` is the merge layer. The non-obvious bit is `tombstoned_at_ms` — a record-level death clock that closes the associativity gap that naive tombstone-on-tie semantics leave open. Four `proptest` properties (commutativity, associativity, idempotence, well-formedness) hold over the full record domain, including arbitrary tombstone-and-resurrection histories and arbitrary `unknown` keys. The Python clean-room equivalent lives in `conformance.py` as `py_merge_record` / `py_merge_unknown_map`.
+`core/src/vault/conflict.rs` is the merge layer. The non-obvious bit is `tombstoned_at_ms` — a record-level death clock that closes the associativity gap that naive tombstone-on-tie semantics leave open. Four `proptest` properties (commutativity, associativity, idempotence, well-formedness) hold over the full record domain, including arbitrary tombstone-and-resurrection histories and arbitrary `unknown` keys. The Python clean-room equivalent lives in `conformance_lib/merge/records.py` as `py_merge_record` / `py_merge_unknown_map` (#593; it was `conformance.py` before the split).
 
 If a CRDT change requires the proptests to weaken, that's a design problem. Push back; don't relax the property.
 

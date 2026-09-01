@@ -184,5 +184,5 @@ For the contract between `differential_replay.rs` and the Python
 side (output JSON shapes, accept/reject semantics, how to add a new
 target), see
 [docs/manual/contributors/differential-replay-protocol.md](../../docs/manual/contributors/differential-replay-protocol.md).
-**Read it before changing `core/tests/python/conformance.py`'s
+**Read it before changing `conformance_lib/diff_replay.py`'s
 `--diff-replay` mode.**

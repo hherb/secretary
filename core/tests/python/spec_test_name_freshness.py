@@ -210,7 +210,7 @@ DENYLIST: frozenset[str] = frozenset(
         # Spec role / KDF role names
         "wrap_pw",
         "wrap_recovery",
-        # Python conformance helpers (live in core/tests/python/conformance.py, not Rust)
+        # Python conformance helpers (live in core/tests/python/conformance_lib/, not Rust)
         "py_decode",
         "py_encode",
         "py_merge_record",
