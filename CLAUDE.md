@@ -20,7 +20,7 @@ core/tests/          — integration tests; tests/data/ holds KATs and fuzz regr
 core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (136 lines; the PEP
                                              723 header is the sole dependency declaration).
                                              `conformance.py:NNN` citations predating #593 are
-                                             stale — the verifier is now a 52-file package.
+                                             stale — the verifier is now a 53-file package.
 core/tests/python/conformance_lib/         — DIRECTORY module (#593), the verifier itself: no
                                              dependency on `secretary-core`; proves the spec is
                                              implementable from `docs/` alone. `wire/` parses to
@@ -239,8 +239,8 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 136, over a 52-file package whose largest module is 383
-lines. Two properties are load-bearing and a change that breaks either defeats the
+was 6849 lines; it is now 136, over a 53-file package whose largest module is 383
+lines (52 files at the #593 split; #594 added `sections/manifest_uniqueness_kat.py`). Two properties are load-bearing and a change that breaks either defeats the
 point of the split:
 
 - **The PEP 723 header in `conformance.py` is the SOLE dependency declaration.** There
@@ -324,6 +324,29 @@ which has no such hop, behaves identically. The practical consequence runs
 the opposite way to the intuitive one: a v2 client that puts **one
 indefinite-length item** inside an extension field makes those vaults
 **unopenable by v1**.
+
+**A SECOND residual, at the array level, and it is not an encoding rule at
+all.** §4.2 forbids a repeated value in four of the five sorted arrays
+(`vector_clock` and each `vector_clock_summary` by `device_uuid`, `blocks`
+and `trash` by `block_uuid`); `recipients` is the **explicit exception** —
+`parse_recipients` has no uniqueness check and a repeated `contact_uuid`
+round-trips, since it denotes no additional grant. The re-encode catches
+**none** of the four: sortedness and distinctness are independent — `[x, x]`
+**is** sorted — and a body carrying a repeat re-encodes to itself byte for
+byte, so the step-4 comparison never fires. They are enforced by explicit
+adjacent-equality scans in `manifest/decode/entries.rs`, the same standing-
+apart-from-the-re-encode arrangement `reject_floats_and_tags` has for rule 4.
+`conformance.py` implemented the sort disciplines, ended with the re-encode,
+and therefore **accepted all four repeat shapes** until #594 — the divergence
+is now pinned cross-language by `core/tests/data/manifest_uniqueness_kat.json`
+(6 rows, replayed by `manifest_uniqueness_kat_replays` and Section MUQ, plus
+six `manifest_body` differential-replay seeds). Do **not** "tidy up" the
+`recipients` asymmetry into a fifth rejection: that narrows a v1-frozen
+decoder, and both `accepts_duplicate_contact_uuid_in_recipients` and the
+corpus's `recipients__duplicate_contact_uuid` row exist to red when someone
+tries. **#594's own text is unreliable on the spec half** — it reports these
+rules as absent from `docs/` on the strength of `grep -c "uniq"` → 0, but the
+spec says "Repeated values are forbidden" and has since `e29cb216`.
 
 **Two frozen-spec edits were made. No byte on disk changes, and both are
 reversible** — but be precise about *whose* behaviour each documents, because
