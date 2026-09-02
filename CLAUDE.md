@@ -307,6 +307,44 @@ sorts five arrays on output (`vector_clock`, `blocks`, `trash`, per-block
 of sort order is rejected too. That is a wider rejection surface than "canonical
 CBOR", on the path *every vault open* takes.
 
+**Its rejection now says which rule and where (#590).**
+`ManifestError::NonCanonicalEncoding` was fieldless, and its message named
+four candidate causes with "e.g." — on that same every-open path, for the
+reader most likely to hit it. It now carries a fieldless
+`NonCanonicalCause` (`core/src/vault/manifest/cause.rs`) plus the byte
+offset of the first divergence. Three things about it are load-bearing:
+
+- **The cause is ADVISORY; the byte comparison is the verdict.**
+  `classify_non_canonical` (`manifest/decode/classify.rs`) runs only once
+  the comparison has already decided to reject, so a misclassification
+  changes a diagnostic and never an acceptance. That is the whole reason a
+  positional classification — "read the CBOR head at the first differing
+  byte" — is acceptable on a security path. Do not promote it into the
+  decision.
+- **`ArraySortOrder` is the only decisive arm**, and it is checked first:
+  it is read off the parsed `Manifest`, not off a byte position, so a
+  sorted input can never diverge *because of* array order and an unsorted
+  one always does. It is also the cause a clean-room implementer is most
+  likely to hit, since #572 is what narrowed the accepted set for
+  unsorted arrays.
+- **`Unclassified` is a real outcome, not a bug.** Known-key map disorder
+  leaves an ordinary text head at the divergence and cannot be proven from
+  the bytes. Naming a cause there would make the diagnostic worse than
+  silence; `decode_manifest_rejects_a_non_canonical_body` asserts the
+  honest answer so a future "improvement" that guesses reds.
+
+The `thiserror` derive on `NonCanonicalCause` is **not cosmetic**: the
+payload guard credits an enum carrying `#[error(...)]` in its body as
+data-free by recursion (tier 2 of `is_data_free`), so the variant needed no
+allowlist row and no `DATA_FREE_TYPES` entry — which a plain fieldless
+enum WOULD have needed, and which is what `CborFault`, a plain struct, did
+need. The `at` offset is the same deliberate length-oracle disclosure
+`CborFault::offset` already documents. `manifest_canonicality_kat_replays`
+now asserts a cause per row and pins the 6/3 split by count: exactly six of
+the 21 rows reach the re-encode, and the three `rule4_float` rows are
+caught earlier by `reject_floats_and_tags` — a fact three handoffs carried
+only in prose.
+
 **The residual, stated exactly, because the obvious wider claim is false.**
 Inside a forward-compat `unknown` subtree the check misses **duplicate map
 keys and map-key order — and nothing else.** Every encoding-level
@@ -365,14 +403,53 @@ than argued):
   `blocks[0]`, a reader checking only the first block was conformant against
   the corpus (`if i == 0:` around the Python check left the suite green).
 - **The generator depends on `encode_manifest` NOT validating uniqueness, and
-  that gap is #600 — not #586.** #586 is `CanonicalMap` accepting a duplicate
-  **map key**; closing it as specified would not touch duplicate array
-  **elements** and would not make this generator fail. The file's module doc
-  cited #586 and described a regeneration tripwire that did not exist. Related:
+  that gap is #600 — not #586.** #586 was `CanonicalMap` accepting a duplicate
+  **map key**; closing it did not touch duplicate array **elements** and did
+  not make this generator fail. The file's module doc cited #586 and described
+  a regeneration tripwire that did not exist. **#586 is now closed in code**
+  (see the `CanonicalMap` paragraph below), and the uniqueness corpus was
+  measured green across the change — which is the distinction between the two
+  issues made by execution rather than by argument. Related:
   §4.2's repeated-value paragraph is a **writer** MUST NOT as well as a reader
   MUST, and `encode_manifest` does not enforce the writer half — so this
   codebase's encoder is formally non-conformant with its own frozen spec until
   #600 lands. That is disclosed, not overlooked.
+
+**`CanonicalMap` rejects duplicate map keys, at ONE choke point (#586).**
+`CanonicalMap` sorts its keys at serialise time and used to accept a
+duplicate silently, so `encode_manifest` could emit — and `sign_manifest`
+sign — a body carrying one key twice: **ambiguous**, in the sense that two
+conformant readers may resolve it differently while both accepting the
+signature. The check lives in `to_canonical_vec`
+(`core/src/vault/canonical/value.rs`), the single point all **four**
+production encode paths funnel through (manifest, record, block, bundle) —
+not on `push`, which would put a `?` on ~30 call sites whose keys are
+provably-unique `KEY_*` literals to catch a condition only the
+forward-compat `unknown` loops can create. Four things worth knowing:
+
+- **`CanonicalValue::Borrowed` is deliberately NOT walked.** A duplicate
+  key inside a forward-compat `unknown` subtree is the documented v1
+  residual (crypto-design §6.2 rules 1 and 5 are scoped to material the
+  reader *interprets*). Walking in would narrow a frozen decoder and red
+  the `*__rule5_duplicate_key` corpus rows, which assert v1 accepts exactly
+  that. `a_duplicate_inside_a_borrowed_unknown_subtree_is_deliberately_allowed`
+  fails first and says so.
+- **No frozen-spec edit was needed, and that was measured, not assumed.**
+  crypto-design §6.2 rule 5 already forbids duplicate map keys flatly and
+  states outright that the reader-side scoping is "not a licence for an
+  encoder". So this makes the encoder conformant with an already-normative
+  rule — the opposite of #600, the array-ELEMENT twin, where §4.2's writer
+  half genuinely had to be raised to MUST NOT.
+- **The reachable shape is narrow.** `Record.fields` and every `unknown`
+  bag are `BTreeMap`s, so the only way to build a duplicate is an
+  `unknown` key colliding with a *known* §4.2 key — which `decode_manifest`
+  never produces (it parses such a key as the known one), so the producer
+  is always a caller building a value in memory. That is what merge,
+  repair and every block-CRUD path do.
+- **`canonical_order` is now shared** between `Serialize` and the check,
+  extracted so the two cannot drift onto different orderings: the check's
+  whole claim is that adjacency in *that* order means equality, which is
+  what makes one adjacent-pair sweep exhaustive rather than O(n²).
 
 **Two frozen-spec edits were made. No byte on disk changes, and both are
 reversible** — but be precise about *whose* behaviour each documents, because

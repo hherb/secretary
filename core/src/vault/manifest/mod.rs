@@ -57,6 +57,7 @@
 
 #![forbid(unsafe_code)]
 
+mod cause;
 mod decode;
 mod encode;
 mod error;
@@ -67,6 +68,7 @@ mod types;
 #[cfg(test)]
 mod test_support;
 
+pub use cause::NonCanonicalCause;
 pub use decode::decode_manifest;
 pub use encode::encode_manifest;
 pub use error::ManifestError;

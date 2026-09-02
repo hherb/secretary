@@ -48,7 +48,81 @@
 
 use std::path::PathBuf;
 
-use secretary_core::vault::manifest::decode_manifest;
+use secretary_core::vault::manifest::{decode_manifest, ManifestError, NonCanonicalCause};
+
+/// Which of the decoder's two independent canonicality mechanisms rejected
+/// a row.
+///
+/// They are not interchangeable, and `decode/mod.rs` carries a standing
+/// warning against conflating them: a normalising parse PRESERVES a float
+/// and re-encodes it identically, so the §4.3 step-4 comparison
+/// structurally cannot see one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mechanism {
+    /// The step-4 re-encode comparison, which #590 gave a cause and a
+    /// byte locator.
+    ReEncode,
+    /// `reject_floats_and_tags`, the whole-body walk that runs first.
+    FloatWalk,
+}
+
+/// Assert that `err` is the rejection `shape` must produce, and say which
+/// mechanism produced it.
+///
+/// **Fail-closed on the shape name**: an unrecognised rejecting shape
+/// panics rather than being waved through, so adding an eighth shape to
+/// `SHAPES` without declaring its mechanism reds this test instead of
+/// silently widening what the corpus tolerates.
+fn assert_rejection_mechanism(label: &str, shape: &str, err: &ManifestError) -> Mechanism {
+    match shape {
+        // Rule 2 and rule 3 are encoding-level departures the parse
+        // normalises away, so the re-encode is the only signal — and #590's
+        // classifier reads the offending head straight out of the input,
+        // which is the one place the evidence survives.
+        "rule2_indefinite_map" => {
+            assert!(
+                matches!(
+                    err,
+                    ManifestError::NonCanonicalEncoding {
+                        cause: NonCanonicalCause::IndefiniteLength,
+                        ..
+                    }
+                ),
+                "row {label:?}: expected an IndefiniteLength cause, got {err}"
+            );
+            Mechanism::ReEncode
+        }
+        "rule3_non_shortest_int" => {
+            assert!(
+                matches!(
+                    err,
+                    ManifestError::NonCanonicalEncoding {
+                        cause: NonCanonicalCause::NonShortestForm,
+                        ..
+                    }
+                ),
+                "row {label:?}: expected a NonShortestForm cause, got {err}"
+            );
+            Mechanism::ReEncode
+        }
+        // Rule 4 never reaches the re-encode. Asserting the NEGATIVE here
+        // is the point: if a future change routed floats through the
+        // comparison instead, this row would still be "rejected" and only
+        // this assertion would notice.
+        "rule4_float" => {
+            assert!(
+                matches!(err, ManifestError::Canonical(_)),
+                "row {label:?}: floats must be caught by reject_floats_and_tags, \
+                 not the re-encode, got {err}"
+            );
+            Mechanism::FloatWalk
+        }
+        other => panic!(
+            "row {label:?}: shape {other:?} rejects but declares no mechanism -- \
+             add it to assert_rejection_mechanism rather than loosening this match"
+        ),
+    }
+}
 
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/manifest_canonicality_kat.json")
@@ -76,12 +150,15 @@ fn manifest_canonicality_kat_replays() {
 
     let mut accepted = 0usize;
     let mut rejected = 0usize;
+    let mut re_encode = 0usize;
+    let mut float_walk = 0usize;
     for row in rows {
         let label = row["label"].as_str().expect("label");
         labels.insert(label.to_string());
         let body = hex::decode(row["manifest_body_hex"].as_str().expect("body")).expect("hex");
         let expect_accept = row["expect_accept"].as_bool().expect("expect_accept");
-        let got = decode_manifest(&body).is_ok();
+        let outcome = decode_manifest(&body);
+        let got = outcome.is_ok();
         assert_eq!(
             got, expect_accept,
             "row {label:?}: expected accept={expect_accept}, got accept={got}"
@@ -90,8 +167,32 @@ fn manifest_canonicality_kat_replays() {
             accepted += 1;
         } else {
             rejected += 1;
+            let shape = label.split_once("__").expect("label is <level>__<shape>").1;
+            match assert_rejection_mechanism(label, shape, outcome.as_ref().unwrap_err()) {
+                Mechanism::ReEncode => re_encode += 1,
+                Mechanism::FloatWalk => float_walk += 1,
+            }
         }
     }
+
+    // The executable form of this module's "two mechanisms" paragraph, and
+    // of a fact three handoff documents carried only in prose: SIX of the
+    // 21 rows land on `NonCanonicalEncoding` (rules 2 and 3, three levels
+    // each), not nine. The other three are caught earlier, by
+    // `reject_floats_and_tags`. Asserting the split by COUNT as well as
+    // per-row is what stops a future change that routed floats through the
+    // re-encode from passing: each row would still be "rejected", and only
+    // these totals would move.
+    assert_eq!(
+        re_encode, 6,
+        "exactly rules 2 and 3, at three levels each, must reach the \
+         re-encode comparison"
+    );
+    assert_eq!(
+        float_walk, 3,
+        "exactly the three rule4_float rows must be caught by \
+         reject_floats_and_tags, BEFORE the re-encode"
+    );
     assert!(
         accepted > 0,
         "corpus has no ACCEPT rows -- it would pass by rejecting everything"

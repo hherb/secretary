@@ -646,6 +646,13 @@ fn canonical_error_to_bundle_error(e: CanonicalError) -> BundleError {
         CanonicalError::FloatRejected { .. } => {
             BundleError::Malformed("float values are not permitted in canonical CBOR")
         }
+        // #586: the value handed in repeats a CBOR map key, which would
+        // encode to an ambiguous body. `index` is discarded for the same
+        // reason the arm below discards `actual`/`bound` — `BundleError::Malformed`
+        // carries only fixed `&'static str` literals by design (#474).
+        CanonicalError::DuplicateKey { .. } => {
+            BundleError::Malformed("duplicate CBOR map key in canonical encoding")
+        }
         CanonicalError::TagRejected { .. } => {
             BundleError::Malformed("CBOR tags are not permitted in canonical CBOR")
         }

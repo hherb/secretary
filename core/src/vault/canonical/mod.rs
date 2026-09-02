@@ -243,6 +243,39 @@ pub enum CanonicalError {
         field: &'static str,
     },
 
+    /// A [`CanonicalMap`] carried the same key twice (#586).
+    ///
+    /// RFC 8949 §5.4 leaves duplicate map keys to the application, and a
+    /// signed manifest, record or block whose body carries one is
+    /// **ambiguous**: two conformant readers may resolve it differently
+    /// while both accept the same signature. `CanonicalMap` sorts at
+    /// serialise time and does not deduplicate, so before #586 an encoder
+    /// could emit — and `sign_manifest` could sign — exactly that.
+    ///
+    /// Checked once at [`to_canonical_vec`], the single choke point all
+    /// four production encode paths (manifest, record, block, bundle)
+    /// funnel through, rather than by making `CanonicalMap::push`
+    /// fallible at ~30 call sites whose keys are provably-unique literals.
+    ///
+    /// **Forward-compat subtrees are deliberately NOT walked.** A
+    /// duplicate key inside a `CanonicalValue::Borrowed` — a v2 client's
+    /// `unknown` extension — is the residual crypto-design §6.2 rules 1
+    /// and 5 are scoped away from, and the
+    /// `*__rule5_duplicate_key` corpus rows exist to red if someone
+    /// "tidies up" that asymmetry into a rejection.
+    ///
+    /// Payload is data-free by construction (#474): `index` is the
+    /// duplicate's ordinal in canonical sort order **within the map it was
+    /// found in**, and no path to that map is carried. The key itself is
+    /// never carried — record field names are decrypted plaintext, which
+    /// is the exact class `RecordError::DuplicateKey` once leaked.
+    #[error("duplicate CBOR map key at canonical entry {index}")]
+    DuplicateKey {
+        /// Ordinal of the second of the two equal keys, in canonical sort
+        /// order, within its own map.
+        index: usize,
+    },
+
     /// `encode_canonical_map`'s output exceeded its pre-reserved capacity.
     /// See the variant doc above — this is a post-hoc tripwire, not a
     /// preventive guarantee: the realloc it reports has already happened by

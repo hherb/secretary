@@ -245,6 +245,24 @@ pub enum RecordError {
     /// bound cannot name, not a routine error path.
     #[error("canonical CBOR encode exceeded its reserved size bound ({actual} > {bound})")]
     CanonicalSizeBoundExceeded { actual: usize, bound: usize },
+
+    /// The in-memory value handed to `to_canonical_vec` carried the same
+    /// CBOR map key twice, so encoding it would have produced an
+    /// **ambiguous** body (#586). Lifted from
+    /// `CanonicalError::DuplicateKey`, an internal `pub(crate)` type not
+    /// reachable from public docs.
+    ///
+    /// Distinct from [`Self::DuplicateKey`], which is the DECODE-side
+    /// condition — "the bytes you gave me repeat a key". This one says
+    /// "the value you asked me to encode repeats one", which is a caller
+    /// bug rather than a corrupt input, and reaching it means a signature
+    /// over an ambiguous body was prevented rather than produced.
+    ///
+    /// `index` is the duplicate's ordinal in canonical sort order within
+    /// its own map; the key itself is never carried, because record field names are
+    /// decrypted plaintext (#474).
+    #[error("canonical CBOR encode rejected a duplicate map key at entry {index}")]
+    CanonicalDuplicateKey { index: usize },
 }
 
 /// Lift a [`CanonicalError`] from the shared
@@ -278,6 +296,7 @@ impl From<CanonicalError> for RecordError {
             CanonicalError::CapacityBoundExceeded { actual, bound } => {
                 RecordError::CanonicalSizeBoundExceeded { actual, bound }
             }
+            CanonicalError::DuplicateKey { index } => RecordError::CanonicalDuplicateKey { index },
         }
     }
 }

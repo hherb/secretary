@@ -148,8 +148,87 @@ impl<'a> CanonicalMap<'a> {
     }
 
     /// Append an entry. Order is not significant — [`Serialize`] sorts.
+    ///
+    /// Infallible **by design**, and duplicate keys are rejected later, at
+    /// [`to_canonical_vec`] (#586). Making this fallible would put a `?` on
+    /// ~30 call sites whose keys are provably-unique `KEY_*` literals, to
+    /// catch a condition only two of them can actually create (the
+    /// forward-compat `unknown` loops, whose keys are runtime data). The
+    /// single choke point catches every construction path, including ones
+    /// nobody has written yet.
     pub(crate) fn push(&mut self, key: &'a str, value: CanonicalValue<'a>) {
         self.0.push((key, value));
+    }
+
+    /// Indices into `self.0` in RFC 8949 §4.2.1 canonical key order.
+    ///
+    /// Specialised to TEXT keys (the only kind this type supports):
+    /// ordering on `(byte length, bytes)` is exactly equivalent to
+    /// ordering on each key's full CBOR encoding, because a CBOR text
+    /// head's length prefix is a monotonic function of the string's byte
+    /// length. The comparator therefore never encodes a key — it reads
+    /// straight through the borrowed `&str`s, materialising nothing but a
+    /// `Vec<usize>` of indices. That matters when the keys are decrypted
+    /// plaintext (record field names): there is no key buffer here to wipe
+    /// because none is ever built.
+    ///
+    /// `.len()` on `&str` is BYTE length, not char count — load-bearing: a
+    /// multi-byte UTF-8 key (e.g. 3-byte "日") must sort by its 3 CBOR
+    /// payload bytes, not by its 1 char, or the order would diverge from
+    /// the real CBOR head.
+    ///
+    /// Extracted from [`Serialize`] in #586 so the duplicate-key check and
+    /// the serialiser cannot drift onto two different orderings — the
+    /// check's whole claim is that adjacency in THIS order means equality.
+    ///
+    /// Both properties above are pinned in this file's own test module:
+    /// `len_then_bytes_matches_full_cbor_encoding_order` (a proptest for
+    /// the general equivalence) and
+    /// `map_key_sort_crosses_head_length_boundary_and_uses_byte_not_char_length`
+    /// (a key pair that sorts the other way under a char-count comparator).
+    fn canonical_order(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.0.len()).collect();
+        order.sort_by(|&a, &b| {
+            let (ka, kb) = (self.0[a].0, self.0[b].0);
+            ka.len()
+                .cmp(&kb.len())
+                .then_with(|| ka.as_bytes().cmp(kb.as_bytes()))
+        });
+        order
+    }
+
+    /// Reject a map that carries the same key twice, at this level or any
+    /// nested [`CanonicalValue::Map`] / [`CanonicalValue::Array`] below it
+    /// (#586).
+    ///
+    /// Equal keys sort adjacently under [`Self::canonical_order`], so one
+    /// pass over consecutive pairs is exhaustive — there is no need to
+    /// compare every pair.
+    ///
+    /// **`CanonicalValue::Borrowed` is deliberately not walked.** That arm
+    /// holds a forward-compat `unknown` subtree from a future format
+    /// version, where a duplicate key is the documented v1 residual
+    /// (crypto-design §6.2 rules 1 and 5 are scoped to material the reader
+    /// *interprets*). Walking into it would narrow a frozen decoder and
+    /// reject the `*__rule5_duplicate_key` corpus rows that v1 accepts by
+    /// design.
+    fn check_no_duplicate_keys(&self) -> Result<(), CanonicalError> {
+        let order = self.canonical_order();
+        for (position, pair) in order.windows(2).enumerate() {
+            if self.0[pair[0]].0 == self.0[pair[1]].0 {
+                // The SECOND of the two, so the ordinal names the entry
+                // that made the map ambiguous rather than the one that was
+                // there first.
+                return Err(CanonicalError::DuplicateKey {
+                    index: position + 1,
+                });
+            }
+        }
+
+        for (_, value) in &self.0 {
+            value.check_no_duplicate_keys()?;
+        }
+        Ok(())
     }
 
     /// Upper bound on this map's CBOR encoding length, for pre-reserving.
@@ -177,6 +256,19 @@ impl<'a> CanonicalMap<'a> {
 }
 
 impl CanonicalValue<'_> {
+    /// Recurse [`CanonicalMap::check_no_duplicate_keys`] through the two
+    /// arms that can contain a map. See that method for why
+    /// [`Self::Borrowed`] is deliberately absent from this walk.
+    fn check_no_duplicate_keys(&self) -> Result<(), CanonicalError> {
+        match self {
+            Self::Map(m) => m.check_no_duplicate_keys(),
+            Self::Array(items) => items.iter().try_for_each(Self::check_no_duplicate_keys),
+            Self::Text(_) | Self::Bytes(_) | Self::Uint(_) | Self::Bool(_) | Self::Borrowed(_) => {
+                Ok(())
+            }
+        }
+    }
+
     /// Upper bound on this value's CBOR encoding length. See
     /// [`CanonicalMap::size_bound`] for the contract and for why this is
     /// module-private, not `pub(crate)`.
@@ -222,13 +314,7 @@ impl Serialize for CanonicalMap<'_> {
         // until the #560 review — a file this branch DELETED when the
         // proof moved in here; the test survived the move, only its home
         // changed.)
-        let mut order: Vec<usize> = (0..self.0.len()).collect();
-        order.sort_by(|&a, &b| {
-            let (ka, kb) = (self.0[a].0, self.0[b].0);
-            ka.len()
-                .cmp(&kb.len())
-                .then_with(|| ka.as_bytes().cmp(kb.as_bytes()))
-        });
+        let order = self.canonical_order();
 
         let mut map = serializer.serialize_map(Some(self.0.len()))?;
         for i in order {
@@ -272,6 +358,14 @@ impl Serialize for CanonicalValue<'_> {
 /// frees the old one **unwiped**, and on the record path that buffer holds
 /// decrypted plaintext.
 pub(crate) fn to_canonical_vec(map: &CanonicalMap<'_>) -> Result<Vec<u8>, CanonicalError> {
+    // #586: reject an ambiguous map BEFORE encoding it, so no duplicate key
+    // can reach a signature. This is the choke point all four production
+    // encode paths (manifest, record, block, bundle) funnel through — see
+    // `CanonicalMap::check_no_duplicate_keys` for why the check lives here
+    // rather than on `push`, and for why forward-compat `Borrowed` subtrees
+    // are deliberately outside the walk.
+    map.check_no_duplicate_keys()?;
+
     let bound = map.size_bound();
     let mut buf = Vec::with_capacity(bound);
     ciborium::ser::into_writer(map, &mut buf)
@@ -299,6 +393,128 @@ pub(crate) fn to_canonical_vec(map: &CanonicalMap<'_>) -> Result<Vec<u8>, Canoni
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------
+    // #586 — duplicate map keys
+    // -----------------------------------------------------------------
+
+    /// The core rejection: a map carrying the same key twice never reaches
+    /// the encoder, so it can never reach a signature.
+    #[test]
+    fn to_canonical_vec_rejects_a_duplicate_key() {
+        let mut map = CanonicalMap::with_capacity(3);
+        map.push("a", CanonicalValue::Uint(1));
+        map.push("b", CanonicalValue::Uint(2));
+        map.push("a", CanonicalValue::Uint(3));
+
+        match to_canonical_vec(&map) {
+            Err(CanonicalError::DuplicateKey { index }) => {
+                // Canonical order is a, a, b — the second "a" sits at 1.
+                assert_eq!(index, 1, "the ordinal must name the SECOND occurrence");
+            }
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
+    }
+
+    /// The duplicate need not be adjacent in PUSH order — the check sorts
+    /// first, which is the only reason a single adjacent-pair sweep is
+    /// exhaustive. A checker that compared consecutive pushed entries would
+    /// pass this.
+    #[test]
+    fn a_duplicate_separated_in_push_order_is_still_caught() {
+        let mut map = CanonicalMap::with_capacity(4);
+        map.push("zz", CanonicalValue::Uint(1));
+        map.push("a", CanonicalValue::Uint(2));
+        map.push("yy", CanonicalValue::Uint(3));
+        map.push("a", CanonicalValue::Uint(4));
+
+        assert!(matches!(
+            to_canonical_vec(&map),
+            Err(CanonicalError::DuplicateKey { .. })
+        ));
+    }
+
+    /// The walk recurses through `Map`, so a duplicate one level down is
+    /// caught too — a top-level-only check would encode this happily.
+    #[test]
+    fn a_duplicate_in_a_nested_map_is_caught() {
+        let mut inner = CanonicalMap::with_capacity(2);
+        inner.push("k", CanonicalValue::Uint(1));
+        inner.push("k", CanonicalValue::Uint(2));
+
+        let mut outer = CanonicalMap::with_capacity(1);
+        outer.push("outer", CanonicalValue::Map(inner));
+
+        assert!(matches!(
+            to_canonical_vec(&outer),
+            Err(CanonicalError::DuplicateKey { .. })
+        ));
+    }
+
+    /// ...and through `Array`, which is how every `blocks` / `trash` /
+    /// `records` entry is reached.
+    #[test]
+    fn a_duplicate_in_a_map_inside_an_array_is_caught() {
+        let mut entry = CanonicalMap::with_capacity(2);
+        entry.push("k", CanonicalValue::Uint(1));
+        entry.push("k", CanonicalValue::Uint(2));
+
+        let mut outer = CanonicalMap::with_capacity(1);
+        outer.push(
+            "items",
+            CanonicalValue::Array(vec![CanonicalValue::Map(entry)]),
+        );
+
+        assert!(matches!(
+            to_canonical_vec(&outer),
+            Err(CanonicalError::DuplicateKey { .. })
+        ));
+    }
+
+    /// **The load-bearing negative.** A duplicate key inside a
+    /// forward-compat `Borrowed` subtree must still ENCODE: that is the
+    /// documented v1 residual (crypto-design §6.2 rules 1 and 5 are scoped
+    /// to material the reader interprets), and the
+    /// `*__rule5_duplicate_key` corpus rows assert v1 accepts exactly this.
+    /// A walk that recursed into `Borrowed` would narrow a frozen decoder
+    /// and red those rows — this test fails first, and says why.
+    #[test]
+    fn a_duplicate_inside_a_borrowed_unknown_subtree_is_deliberately_allowed() {
+        let subtree = Value::Map(vec![
+            (Value::Text("k".into()), Value::Integer(1.into())),
+            (Value::Text("k".into()), Value::Integer(2.into())),
+        ]);
+
+        let mut map = CanonicalMap::with_capacity(1);
+        map.push("ext", CanonicalValue::Borrowed(&subtree));
+
+        to_canonical_vec(&map)
+            .expect("a duplicate inside a forward-compat subtree must round-trip");
+    }
+
+    /// The check must not reject a map whose keys merely SORT adjacently.
+    /// Without the equality test — comparing by sort position alone — every
+    /// map of two or more keys would fail.
+    #[test]
+    fn distinct_keys_that_sort_adjacently_still_encode() {
+        let mut map = CanonicalMap::with_capacity(3);
+        map.push("a", CanonicalValue::Uint(1));
+        map.push("b", CanonicalValue::Uint(2));
+        map.push("c", CanonicalValue::Uint(3));
+
+        to_canonical_vec(&map).expect("distinct keys must encode");
+    }
+
+    /// An empty map and a one-entry map have no pair to compare; the
+    /// `windows(2)` sweep must handle both without panicking.
+    #[test]
+    fn maps_too_small_to_hold_a_duplicate_encode() {
+        to_canonical_vec(&CanonicalMap::with_capacity(0)).expect("empty map");
+
+        let mut one = CanonicalMap::with_capacity(1);
+        one.push("only", CanonicalValue::Uint(1));
+        to_canonical_vec(&one).expect("one-entry map");
+    }
 
     /// `to_canonical_vec` must not grow its output buffer. A realloc copies
     /// to a new block and frees the old one unwiped — the hazard this

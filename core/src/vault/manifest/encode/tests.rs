@@ -5,11 +5,14 @@
 
 use ciborium::Value;
 
+use crate::vault::canonical::CanonicalError;
 use crate::vault::manifest::test_support::{
     entry_bytes_field, find_array, minimal_manifest, parse_to_value_map, populated_manifest,
     UNKNOWN_MAP_NONCANONICAL,
 };
-use crate::vault::manifest::{decode_manifest, BLOCK_FINGERPRINT_LEN};
+use crate::vault::manifest::{
+    decode_manifest, ManifestError, BLOCK_FINGERPRINT_LEN, KEY_BLOCK_NAME, KEY_VAULT_UUID,
+};
 use crate::vault::record::UnknownValue;
 
 // `Value` and `UnknownValue` are imported directly rather than reached
@@ -434,4 +437,86 @@ fn manifest_encode_borrows_block_name_rather_than_cloning_it() {
     // ...and the map must borrow from `m`, which this line proves by
     // construction: `canonical` is still alive and `m` is still borrowed.
     assert_eq!(m.blocks[0].block_name.as_bytes(), name_bytes);
+}
+
+// ---------------------------------------------------------------------------
+// #586 — the encoder can no longer emit an ambiguous body
+// ---------------------------------------------------------------------------
+
+/// **The scenario #586 names.** `Manifest::unknown` is a forward-compat bag
+/// whose keys are runtime data. Nothing stops one from colliding with a
+/// §4.2 known key, and `manifest_to_canonical` pushes both — so before
+/// #586 `encode_manifest` produced a body carrying `vault_uuid` twice,
+/// which `sign_manifest` would then sign. Two conformant readers could
+/// resolve that body differently while both accepting the signature.
+///
+/// `decode_manifest` never creates this state (an unknown key that matches
+/// a known one is parsed as the known one), so the reachable path is a
+/// caller building a `Manifest` in memory — which every merge, repair and
+/// block-CRUD path does.
+#[test]
+fn encode_manifest_rejects_an_unknown_key_colliding_with_a_known_one() {
+    let mut m = populated_manifest();
+    m.unknown.insert(
+        KEY_VAULT_UUID.to_string(),
+        UnknownValue::from_canonical_cbor(&[0x01]).expect("canonical uint 1"),
+    );
+
+    match encode_manifest(&m) {
+        Err(ManifestError::Canonical(CanonicalError::DuplicateKey { .. })) => {}
+        other => panic!(
+            "expected a DuplicateKey rejection, got {}",
+            match other {
+                Ok(_) => "a successfully encoded AMBIGUOUS body".to_string(),
+                Err(e) => format!("{e}"),
+            }
+        ),
+    }
+}
+
+/// The same collision one level down, inside a `blocks` entry's own
+/// forward-compat bag — reached through `CanonicalValue::Array` then
+/// `Map`, so it pins both recursion arms on a real manifest rather than a
+/// hand-built `CanonicalMap`.
+#[test]
+fn encode_manifest_rejects_a_colliding_unknown_key_inside_a_block_entry() {
+    let mut m = populated_manifest();
+    m.blocks[0].unknown.insert(
+        KEY_BLOCK_NAME.to_string(),
+        UnknownValue::from_canonical_cbor(&[0x01]).expect("canonical uint 1"),
+    );
+
+    assert!(
+        matches!(
+            encode_manifest(&m),
+            Err(ManifestError::Canonical(
+                CanonicalError::DuplicateKey { .. }
+            ))
+        ),
+        "a block entry's unknown bag must be walked too"
+    );
+}
+
+/// The control: a NON-colliding unknown key at both levels must still
+/// encode and round-trip. Without this the two tests above would pass
+/// against an encoder that rejected every unknown key.
+#[test]
+fn encode_manifest_still_accepts_non_colliding_unknown_keys() {
+    let mut m = populated_manifest();
+    m.unknown.insert(
+        "x_future_top".to_string(),
+        UnknownValue::from_canonical_cbor(&[0x01]).expect("canonical uint 1"),
+    );
+    m.blocks[0].unknown.insert(
+        "x_future_block".to_string(),
+        UnknownValue::from_canonical_cbor(&[0x02]).expect("canonical uint 2"),
+    );
+
+    let bytes = encode_manifest(&m).expect("non-colliding unknown keys must encode");
+    let decoded = decode_manifest(bytes.expose()).expect("and must decode");
+    assert!(decoded.unknown.contains_key("x_future_top"));
+    assert!(decoded
+        .blocks
+        .iter()
+        .any(|b| b.unknown.contains_key("x_future_block")));
 }
