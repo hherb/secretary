@@ -7,7 +7,7 @@
 //! also drives `encode::encode_manifest` and `decode::decode_manifest` to
 //! get its hand-built duplicate onto the wire.
 
-use crate::vault::manifest::test_support::{dummy_kdf_params, unexpected};
+use crate::vault::manifest::test_support::{dummy_kdf_params, expect_rejected, unexpected};
 use crate::vault::manifest::{
     decode_manifest, encode_manifest, Manifest, FORMAT_VERSION_V1, MANIFEST_VERSION_V1, SUITE_ID_V1,
 };
@@ -45,8 +45,10 @@ fn rejects_duplicate_device_uuid_in_vector_clock() {
         unknown: BTreeMap::new(),
     };
     let bytes = encode_manifest(&m).expect("encode duplicates");
-    let err = decode_manifest(bytes.expose())
-        .expect_err("duplicate device_uuid must be rejected on decode");
+    let err = expect_rejected(
+        decode_manifest(bytes.expose()),
+        "duplicate device_uuid must be rejected on decode",
+    );
     assert!(
         matches!(err, ManifestError::VectorClockDuplicateDevice),
         "expected VectorClockDuplicateDevice, got {err:?}"
@@ -80,8 +82,10 @@ fn rejects_duplicate_block_uuid() {
         unknown: BTreeMap::new(),
     };
     let bytes = encode_manifest(&m).expect("encode duplicates");
-    let err = decode_manifest(bytes.expose())
-        .expect_err("duplicate block_uuid must be rejected on decode");
+    let err = expect_rejected(
+        decode_manifest(bytes.expose()),
+        "duplicate block_uuid must be rejected on decode",
+    );
     assert!(
         matches!(err, ManifestError::DuplicateBlockUuid),
         "expected DuplicateBlockUuid, got {err:?}"
@@ -116,8 +120,10 @@ fn rejects_duplicate_trash_uuid() {
         unknown: BTreeMap::new(),
     };
     let bytes = encode_manifest(&m).expect("encode duplicates");
-    let err = decode_manifest(bytes.expose())
-        .expect_err("duplicate trash block_uuid must be rejected on decode");
+    let err = expect_rejected(
+        decode_manifest(bytes.expose()),
+        "duplicate trash block_uuid must be rejected on decode",
+    );
     assert!(
         matches!(err, ManifestError::DuplicateTrashUuid),
         "expected DuplicateTrashUuid, got {err:?}"
@@ -449,7 +455,7 @@ fn trash_entry_rejects_every_duplicate_key() {
 fn block_entry_rejects_duplicate_unknown_key_without_naming_it() {
     let v = block_entry_value_with_duplicate_unknown("v2_extension_field");
     let expected_index = last_index_of(&v);
-    let err = parse_block_entry(&v).expect_err("must reject");
+    let err = expect_rejected(parse_block_entry(&v), "must reject");
     match &err {
         ManifestError::DuplicateKey { field, index } => {
             assert_eq!(*field, "<unknown>");
@@ -471,7 +477,7 @@ fn block_entry_rejects_duplicate_unknown_key_without_naming_it() {
 fn trash_entry_rejects_duplicate_unknown_key_without_naming_it() {
     let v = trash_entry_value_with_duplicate_unknown("v3_extension_field");
     let expected_index = last_index_of(&v);
-    let err = parse_trash_entry(&v).expect_err("must reject");
+    let err = expect_rejected(parse_trash_entry(&v), "must reject");
     match &err {
         ManifestError::DuplicateKey { field, index } => {
             assert_eq!(*field, "<unknown>");
