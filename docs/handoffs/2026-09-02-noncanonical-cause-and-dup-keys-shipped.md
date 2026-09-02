@@ -265,8 +265,22 @@ before the fix existed). Nothing here closes **#597, #600, #589, #596, #587**.
    more informative and makes the contract uniform (`at` locates, `cause`
    explains). Recorded because it differs from what was approved.
 
-### Three verification traps worth carrying forward
+### Four verification traps worth carrying forward — all one root cause
 
+The root cause in every case below is the same: **judging a command by its
+filtered output instead of its exit status.** Three of the four produced a
+confident green that was wrong, and the fourth was caught only by CI.
+
+- **ANSI colour defeats an anchored `^error` filter — this one reached CI.**
+  `RUSTDOCFLAGS="-D warnings" cargo doc ... 2>&1 | grep -E "^(error|warning)"`
+  matched nothing and the trailing `echo "RUSTDOC EXIT DONE"` printed
+  unconditionally, so the gate read as clean. Cargo colourises when it thinks a
+  terminal is attached, so the line is `\e[1m\e[91merror\e[0m: ...` and does not
+  start with `error`. CI has no TTY, hence no colour, hence a real failure:
+  `unresolved link to \`super::decode::classify\`` — a **public** item's
+  intra-doc link into a **private** module, exactly the #92 gate's job. Fixed by
+  demoting the link to plain code formatting. Re-run the gate by capturing to a
+  file and echoing `$?`.
 - **A `cargo test | grep` pipeline reports GREP's exit code, not cargo's.** The
   first suite run this session appeared to pass at "exit 0" while reporting 40
   binaries against a 99-binary baseline. Redirect to a file and echo `$?`

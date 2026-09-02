@@ -16,7 +16,7 @@ use std::fmt;
 /// byte comparison alone; this type only says *which rule* most likely
 /// explains that rejection, so a misclassification changes a diagnostic
 /// and never an acceptance decision. That is what makes the positional
-/// classification in [`super::decode::classify`] sound to use on the path
+/// classification in `manifest::decode::classify` sound to use on the path
 /// every vault open takes, and it is why [`Self::Unclassified`] is a real
 /// outcome rather than a bug to eliminate.
 ///
