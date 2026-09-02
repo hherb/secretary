@@ -1,8 +1,11 @@
 """Sections MOC and MAS -- manifest-body CANONICALITY.
 
 Outer-map canonicality, and the five §4.2 array sort disciplines. MAS
-reverses each array and requires a rejection: without it `_check_sorted`
-could be made a no-op with the whole suite still green.
+reverses each array and requires a rejection: without it
+`_check_sorted_and_distinct`'s SORTEDNESS half could be made a no-op with
+the whole suite still green. Its distinctness half -- §4.2's separate
+repeated-value rule, which no reversal can exercise -- is pinned by
+section MUQ instead (#594).
 """
 
 from __future__ import annotations
@@ -106,7 +109,8 @@ def section_manifest_body_array_sort_guard() -> tuple[bool, list[str]]:
     the §4.2 reader contract (#572), i.e. exactly what a clean-room
     implementer reading `docs/` alone would get wrong.
 
-    Nothing tested it. `_check_sorted` could be made a no-op and the whole
+    Nothing tested it. `_check_sorted_and_distinct`'s sortedness half could
+    be made a no-op and the whole
     conformance suite stayed green, because until #595 every corpus row had
     `vector_clock`/`recipients`/`vector_clock_summary` EMPTY and at most one
     `blocks`/`trash` entry -- and an array of length 0 or 1 is sorted no
@@ -114,8 +118,8 @@ def section_manifest_body_array_sort_guard() -> tuple[bool, list[str]]:
 
     Note the mechanism this does NOT rely on: `py_encode_manifest` re-emits
     array order verbatim, so a reversed array re-encodes byte-identically
-    and the §4.3 step-4 comparison does not fire. `_check_sorted` is the
-    only thing standing between this decoder and accepting what Rust
+    and the §4.3 step-4 comparison does not fire. `_check_sorted_and_distinct`
+    is the only thing standing between this decoder and accepting what Rust
     rejects, which is why each row below asserts on the message as well as
     on the rejection.
     """

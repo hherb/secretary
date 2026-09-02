@@ -123,14 +123,31 @@ def py_decode_manifest(data: bytes) -> dict:
     # The five §4.2 array sort disciplines. `encode_manifest` sorts all five
     # on output, so an array arriving out of order is rejected -- a WIDER
     # rejection surface than plain canonical CBOR, and deliberate.
-    _check_sorted(out.get("vector_clock", []), "device_uuid", "vector_clock")
-    _check_sorted(out.get("blocks", []), "block_uuid", "blocks")
-    _check_sorted(out.get("trash", []), "block_uuid", "trash")
+    #
+    # Four of the five ALSO forbid a repeated value, which is a separate
+    # §4.2 rule and not a consequence of the sort: `[x, x]` IS sorted, and
+    # the §4.3 step-4 re-encode cannot see a repeat either, because a body
+    # carrying one re-encodes to itself byte for byte. Enforcing sortedness
+    # alone is what made this reader ACCEPT four manifest bodies
+    # `decode_manifest` rejects (#594), so the two checks live in one
+    # function whose NAME carries both -- the four call sites below being
+    # exactly the four positions is not something a caller list can be
+    # relied on to keep true.
+    _check_sorted_and_distinct(out.get("vector_clock", []), "device_uuid", "vector_clock")
+    _check_sorted_and_distinct(out.get("blocks", []), "block_uuid", "blocks")
+    _check_sorted_and_distinct(out.get("trash", []), "block_uuid", "trash")
     for i, blk in enumerate(out.get("blocks", [])):
+        # `recipients` is §4.2's EXPLICIT exception and is checked for
+        # sortedness ONLY: a repeated `contact_uuid` is accepted and
+        # round-trips, since it denotes no additional grant.
+        # `parse_recipients` in `core/src/vault/manifest/decode/entries.rs`
+        # likewise has no uniqueness check. Do not "fix" this asymmetry --
+        # adding one here would reject bodies the v1-frozen Rust decoder
+        # accepts, which is the divergence this reader exists to detect.
         recips = blk.get("recipients", [])
         if recips != sorted(recips):
             raise ValueError(f"blocks[{i}].recipients is not sorted")
-        _check_sorted(
+        _check_sorted_and_distinct(
             blk.get("vector_clock_summary", []),
             "device_uuid",
             f"blocks[{i}].vector_clock_summary",
@@ -259,8 +276,27 @@ def _validate_manifest_shape(out: dict) -> None:
         _check_fixed_bytes(t["tombstoned_by"], f"trash[{i}].tombstoned_by", UUID_LEN)
 
 
-def _check_sorted(rows: list, key: str, label: str) -> None:
-    """Assert `rows` is sorted ascending by `row[key]` (§4.2)."""
+def _check_sorted_and_distinct(rows: list, key: str, label: str) -> None:
+    """Assert `rows` is sorted STRICTLY ascending by `row[key]` (§4.2).
+
+    Two independent §4.2 rules, and both are needed: an array must be
+    sorted, and -- in four of the five arrays -- must not repeat a value.
+    Neither implies the other, and the sortedness half alone is what this
+    reader shipped with until #594, accepting four bodies the Rust decoder
+    rejects (`DuplicateBlockUuid`, `DuplicateTrashUuid`,
+    `VectorClockDuplicateDevice`).
+
+    They are reported separately rather than as one strict-ascending
+    compare so the diagnostic names which rule was broken, and the repeat
+    names the offending id. Checking adjacency is sufficient once
+    sortedness holds: equal values in a sorted list are always adjacent.
+    An `ids != sorted(set(ids))` formulation would be shorter and is
+    deliberately not used -- it collapses the two rules into one verdict
+    and loses the id.
+    """
     ids = [r[key] for r in rows]
     if ids != sorted(ids):
         raise ValueError(f"{label} is not sorted by {key}")
+    for i in range(1, len(ids)):
+        if ids[i] == ids[i - 1]:
+            raise ValueError(f"{label} has a repeated {key}: {ids[i].hex()}")

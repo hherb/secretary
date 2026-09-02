@@ -487,3 +487,63 @@ fn trash_entry_rejects_duplicate_unknown_key_without_naming_it() {
         "the repeated key's text must never reach the error payload"
     );
 }
+
+/// A repeated `contact_uuid` inside one block's `recipients` is ACCEPTED
+/// (vault-format §4.2's one exception to the repeated-value rules).
+///
+/// This is the negative counterpart to the three duplicate-rejection tests
+/// above, and until #594 nothing pinned it. That mattered in a specific
+/// way: §4.2 now states the exception normatively, and a reader "tidying
+/// up" the asymmetry — adding a uniqueness check to `parse_recipients`
+/// beside the three it has — would narrow a v1-FROZEN decoder and start
+/// rejecting manifests this codebase has always been able to emit. The
+/// rule has a reason: a repeated recipient denotes no additional grant, so
+/// unlike a repeated `block_uuid` (two entries claiming one block, which
+/// two conformant readers could resolve differently) it introduces no
+/// ambiguity to resolve.
+///
+/// `conformance.py`'s section MUQ pins the same acceptance from the
+/// clean-room side, via `manifest_uniqueness_kat.json`'s
+/// `recipients__duplicate_contact_uuid` row.
+#[test]
+fn accepts_duplicate_contact_uuid_in_recipients() {
+    let dupe_recipient = [0xc1; UUID_LEN];
+    let m = Manifest {
+        manifest_version: MANIFEST_VERSION_V1,
+        vault_uuid: [0x01; UUID_LEN],
+        format_version: FORMAT_VERSION_V1,
+        suite_id: SUITE_ID_V1,
+        owner_user_uuid: [0x02; UUID_LEN],
+        vector_clock: Vec::new(),
+        blocks: vec![BlockEntry {
+            block_uuid: [0x77; UUID_LEN],
+            block_name: "blk".to_string(),
+            fingerprint: [0x01; BLOCK_FINGERPRINT_LEN],
+            recipients: vec![dupe_recipient, dupe_recipient],
+            vector_clock_summary: Vec::new(),
+            suite_id: SUITE_ID_V1,
+            created_at_ms: 1,
+            last_mod_ms: 2,
+            unknown: BTreeMap::new(),
+        }],
+        trash: Vec::new(),
+        kdf_params: dummy_kdf_params(),
+        unknown: BTreeMap::new(),
+    };
+    let bytes = encode_manifest(&m).expect("encode duplicate recipients");
+    // `unexpected` rather than a bare `{:?}` on the Result: a `Manifest`'s
+    // own Debug prints every `block_name`, which is user-authored
+    // plaintext, and that reaches CI logs on failure (#584 review).
+    let outcome = decode_manifest(bytes.expose());
+    assert!(
+        outcome.is_ok(),
+        "duplicate recipients must be ACCEPTED (§4.2's one exception): {}",
+        unexpected(&outcome)
+    );
+    let decoded = outcome.expect("asserted Ok immediately above");
+    assert_eq!(
+        decoded.blocks[0].recipients,
+        vec![dupe_recipient, dupe_recipient],
+        "the repeat must round-trip verbatim, not be silently deduplicated"
+    );
+}

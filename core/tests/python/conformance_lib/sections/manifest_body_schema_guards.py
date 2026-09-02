@@ -289,7 +289,7 @@ def section_manifest_body_entry_required_fields_guard() -> tuple[bool, list[str]
     present, raising `ValueError` (not `KeyError`) naming the missing
     field. Before this fix, a block entry missing e.g. `block_uuid`
     surfaced only as a raw, uncaught `KeyError` -- verified by execution
-    (mutation-verified below) to come from `_check_sorted`'s `r[key]`
+    (mutation-verified below) to come from `_check_sorted_and_distinct`'s `r[key]`
     indexing inside `py_decode_manifest`'s own array-sort-discipline loop,
     which runs BEFORE the final re-encode-and-compare and so is the
     earliest crash site, not (as an earlier draft of this comment

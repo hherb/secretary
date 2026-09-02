@@ -265,7 +265,8 @@ Writers MUST emit these orders; readers MUST reject a manifest that does not.
 | each block's `recipients` | the `contact_uuid` value itself, 16-byte bytewise compare |
 | `trash` | `block_uuid`, 16-byte bytewise compare |
 
-Repeated values are forbidden in four of the five, and a reader rejects them:
+Repeated values are forbidden in four of the five; writers MUST NOT emit
+them and readers MUST reject them:
 `device_uuid` within `vector_clock` or within any `vector_clock_summary` (a
 vector clock is per-device, so a repeat is nonsensical), `block_uuid` within
 `blocks`, and `block_uuid` within `trash` (§7 tracks only the most-recent
@@ -390,7 +391,12 @@ so every reader enforces rule 4 by a separate whole-body walk).
    Then re-encode the parsed body and reject unless it reproduces the plaintext
    byte for byte — for a reader whose parse normalises encoding-level choices,
    this is what enforces §4.2's map-key order, definite lengths, shortest-form
-   prefixes and array sort disciplines in one step. A reader that instead
+   prefixes and array sort disciplines in one step. It does NOT enforce
+   §4.2's repeated-value rules, for any reader: a body carrying a repeated
+   array element parses to that repeat and re-encodes to it byte for byte, so
+   the comparison never fires — the same reason §4.2's table gives for rule 4
+   (tags and floats) needing a walk of its own. A reader MUST check the four
+   repeated-value rules directly. A reader that instead
    retains raw bytes for an unknown subtree reproduces them unconditionally and
    so gets no enforcement from this step for that subtree; it MUST apply
    §4.2's second requirement to it directly.
