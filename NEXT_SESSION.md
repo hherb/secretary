@@ -1,1 +1,1 @@
-docs/handoffs/2026-09-01-conformance-split-shipped.md
+docs/handoffs/2026-09-02-manifest-uniqueness-parity-shipped.md
