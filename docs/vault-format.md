@@ -392,11 +392,15 @@ so every reader enforces rule 4 by a separate whole-body walk).
    byte for byte — for a reader whose parse normalises encoding-level choices,
    this is what enforces §4.2's map-key order, definite lengths, shortest-form
    prefixes and array sort disciplines in one step. It does NOT enforce
-   §4.2's repeated-value rules, for any reader: a body carrying a repeated
-   array element parses to that repeat and re-encodes to it byte for byte, so
-   the comparison never fires — the same reason §4.2's table gives for rule 4
-   (tags and floats) needing a walk of its own. A reader MUST check the four
-   repeated-value rules directly. A reader that instead
+   §4.2's repeated-value rules, for any reader: an otherwise-canonical body
+   carrying a repeated array element parses to that repeat and re-encodes to
+   it byte for byte, so the comparison never fires — the same reason §4.2's
+   table gives for rule 4 (tags and floats) needing a walk of its own. (A
+   body that is *also* non-canonical some other way — say, the same array
+   out of sort order — is of course still rejected, but for that other
+   reason; a rejection here is never evidence a repeated-value rule was
+   checked.) A reader MUST check the four repeated-value rules directly.
+   A reader that instead
    retains raw bytes for an unknown subtree reproduces them unconditionally and
    so gets no enforcement from this step for that subtree; it MUST apply
    §4.2's second requirement to it directly.

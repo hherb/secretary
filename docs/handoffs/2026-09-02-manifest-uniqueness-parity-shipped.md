@@ -86,7 +86,10 @@ array-level rule. That is not a defect in that corpus; it is a category it never
   the exact false inference `py_decode_manifest` made; it now says so, citing the rule-4
   (tags/floats) precedent for the same standing-apart arrangement. §4.2's repeated-value
   paragraph was raised to **MUST NOT / MUST**, matching the sort-discipline paragraph
-  directly above it.
+  directly above it — **but note where that parallel stops**: the encoder satisfies the
+  writer half for sorting and does *not* for uniqueness, so the uplift makes
+  `encode_manifest` a documented non-conformant writer (#600). Reader behaviour is
+  unchanged either way; no byte on disk moves.
 
 ### Non-vacuity, by execution
 
@@ -143,22 +146,40 @@ MCK's.
   known-answer test. The randomised and seed-bounded coverage around it (Property F,
   differential replay) widen the input space; nothing here establishes agreement on an
   arbitrary manifest body.
-- **It does not close #586.** The fixture bodies are built by handing `encode_manifest` a
-  `Manifest` with duplicate entries — the encoder does not deduplicate, so it emits bodies
-  its own decoder rejects. That is #586, used deliberately as the cheapest correct source
-  of ground-truth bytes and **documented in the generator's module doc**, not overlooked.
-  If #586 is ever closed by validating on the encode side, `generate_manifest_uniqueness_kat`
-  starts failing at the `encode_manifest` call, and the fix is ciborium surgery — the way
+- **It does not close #600, and #600 is not #586.** The fixture bodies are built by handing
+  `encode_manifest` a `Manifest` with duplicate entries — the encoder does not deduplicate,
+  so it emits bodies its own decoder rejects. That is **#600**, filed in the #599 review,
+  used deliberately as the cheapest correct source of ground-truth bytes and **documented in
+  the generator's module doc**, not overlooked. If it is closed by validating on the encode
+  side, `encode_case` starts failing at the `encode_manifest` call — in the generator AND in
+  the replay's rebuild-and-compare — and the fix is ciborium surgery, the way
   `array_sort_disciplines_are_enforced_and_not_vacuous` already builds its bodies.
+  **An earlier draft of this bullet and of the module doc cited #586 instead, and that was
+  wrong in a load-bearing way:** #586 is scoped to `CanonicalMap::push` accepting a duplicate
+  **map key**, and its proposed fix operates on keys only, so closing it exactly as specified
+  would not touch array **elements** and would not make the generator fail. The tripwire the
+  bullet described did not exist under that citation.
+- **`encode_manifest` is formally non-conformant with §4.2's writer half, and this PR made
+  that visible.** The paragraph was raised to "writers MUST NOT emit them", and the encoder
+  does not enforce it — see #600. Disclosed rather than overlooked; the parallel with the
+  sort disciplines does *not* hold there, because the encoder genuinely does sort.
 - **`recipients` remains an accepted repeat, on both sides, by design.** Four positions
   are constrained; the fifth is not. Do not read "the manifest forbids repeats" without
   the exception.
 - **Section MUQ's control is a property of the fixture bytes, not a second decoder.** It
-  asserts each rejecting row is sorted **and** carries a repeat — so only a distinctness
-  check can reject it. That is narrower than MCK's naive-reader control and is the honest
-  description of it.
-- **The `clean-room conformance` job still does not block.** It is not in `main`'s
-  `protect_main` ruleset by name (unchanged since #546). MUQ runs there; it gates nothing.
+  asserts each rejecting row is sorted **and** carries a repeat **and** is rejected by a
+  message naming the repeat. The first two rule out the sort discipline; the third is what
+  rules out every *other* check in the reader. An earlier draft asserted only the first two
+  and concluded "only a distinctness check can reject them" — a non-sequitur, since sorted
+  -with-a-repeat excludes one alternative, not the ~30 others (shape, required-key, outer
+  canonicality, the step-4 re-encode). Still narrower than MCK's naive-reader control.
+- **The `clean-room conformance` job DOES block — this bullet said the opposite and was
+  wrong.** `clean-room conformance` is one of the 24 required contexts in `main`'s
+  `protect_main` ruleset (`gh api repos/hherb/secretary/rules/branches/main`). The claim
+  "unchanged since #546" asserted a re-verification that had not happened; CLAUDE.md carried
+  the same stale sentence and is corrected in the same commit. Section MUQ therefore gates
+  merges — which matters, because it is the half of this corpus that carries the
+  fixture-content control.
 
 ---
 
@@ -167,7 +188,9 @@ MCK's.
 **(a) #597 — the nondeterministic rejection detail.** Small, pre-existing on `main`, and
 worth doing before anyone else takes a byte-exact `--diff-replay` baseline.
 `py_decode_contact_card` reports whichever required key it reaches first while iterating a
-`frozenset`, and CPython salts string hashing per process, so `pre_sig.cbor` alternates
+plain `set` (`KNOWN_CARD_KEYS`, a set literal at `codec/card.py:48`, aliased to
+`REQUIRED_CARD_FIELDS` — an earlier draft said `frozenset`, which is not what is there), and
+CPython salts string hashing per process, so `pre_sig.cbor` alternates
 between `self_sig_ed` and `self_sig_pq` across runs. **Acceptance:** the same input under
 two different `PYTHONHASHSEED` values yields an identical `detail`; verdicts (`status` /
 `error_class`) unchanged. Sorting the required-key set before iterating is the whole fix;
@@ -240,12 +263,12 @@ one citation resolving while another breaks keeps it at 90.
   to a frozen document: `docs/vault-format.md` §4.2 (one paragraph, RFC 2119 keywords) and
   §4.3 step 4 (one clause).
 
-### Housekeeping left undone
+### Housekeeping
 
-Two merged worktrees are still on disk — `.worktrees/conformance-split` and
-`.worktrees/manifest-canonicality-pin`, both on `[gone]` branches with clean trees.
-`git worktree remove` + `git branch -D` was declined by the permission classifier this
-session. Harmless, but `git worktree list` is noisier than it should be.
+Nothing outstanding. An earlier draft asked the next session to remove two merged
+worktrees (`.worktrees/conformance-split`, `.worktrees/manifest-canonicality-pin`); both
+were already gone by the time it was written — `git worktree list` shows neither — so the
+item was a no-op to chase.
 
 ---
 

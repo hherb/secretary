@@ -129,7 +129,7 @@ fn rust_decode(
 /// collapsed into `Err` — and `Err` on both sides is scored as AGREEMENT by
 /// the match in `differential_replay_full_corpus`. A completely
 /// non-functional Python side therefore "agreed" on every input the Rust
-/// decoder rejects, which is 9 of the 21 committed `manifest_body` seeds.
+/// decoder rejects, which is 13 of the 27 committed `manifest_body` seeds.
 /// A harness failure is not a verdict and must never reach that match.
 enum PyOutcome {
     /// The Python decoder accepted, and re-encoded to these bytes.

@@ -19,7 +19,7 @@ for goals and exit criteria.
 
 ### `seeds/manifest_body/` has no fuzz target
 
-`seeds/manifest_body/` holds 21 committed inputs but there is **no
+`seeds/manifest_body/` holds 27 committed inputs but there is **no
 `fuzz_targets/manifest_body.rs` and no `[[bin]]` for it**, so
 `cargo fuzz run manifest_body` fails and `corpus/manifest_body/` is never
 created. Those seeds exist for a different consumer: `manifest_body` is a
@@ -27,10 +27,14 @@ created. Those seeds exist for a different consumer: `manifest_body` is a
 `TARGETS`), which reads `seeds/<target>/` directly.
 
 The practical consequence is that, unlike the seven targets above, its
-replay corpus can never grow beyond the 21 hand-authored rows — no mutation
-ever reaches `decode_manifest`'s body parser through this directory. Adding
-the target is tracked as a follow-up; until then, do not read the presence
-of this seed directory as evidence of fuzz coverage.
+replay corpus only ever grows when someone hand-authors a row — no mutation
+ever reaches `decode_manifest`'s body parser through this directory. (It has
+grown twice: 21 rows from `manifest_canonicality_kat`, then six more from
+`manifest_uniqueness_kat`. An earlier version of this paragraph said the
+corpus "can never grow beyond the 21 hand-authored rows", which conflated
+"no fuzzer grows it" with "nothing grows it".) Adding the target is tracked
+as a follow-up; until then, do not read the presence of this seed directory
+as evidence of fuzz coverage.
 
 ## One-time setup
 

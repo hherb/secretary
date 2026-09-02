@@ -264,7 +264,7 @@ produces no output and no failure — is closed by Section **REG**
 table. Both directions are mutation-proven. Adding a section means one `Section(...)`
 row; forgetting it reds REG.
 
-**It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and never enabled in `test.yml`. The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. Two standing consequences: **(1)** the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking; **(2)** five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
+**It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and never enabled in `test.yml`. The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. **The job now BLOCKS**, which this paragraph denied until the #599 review measured it: `clean-room conformance` is one of the 24 required contexts in `main`'s `protect_main` ruleset (`gh api repos/hherb/secretary/rules/branches/main`). The sentence "the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking" outlived its fact — and a stale claim in this direction is not harmless, because it gets a real gate discounted when someone weighs whether a Python-side-only pin is enough. One standing consequence remains: five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
 
 ### Crypto layering
 
@@ -347,6 +347,32 @@ corpus's `recipients__duplicate_contact_uuid` row exist to red when someone
 tries. **#594's own text is unreliable on the spec half** — it reports these
 rules as absent from `docs/` on the strength of `grep -c "uniq"` → 0, but the
 spec says "Repeated values are forbidden" and has since `e29cb216`.
+
+Three things about that corpus are load-bearing and were **not** true of its
+first version (all three found in the #599 review, all three measured rather
+than argued):
+
+- **Both sides check the fixture, not just the verdict.** The Rust replay
+  rebuilds every row's body from the `CASES` table and requires a byte-identical
+  match, and asserts the specific `ManifestError` variant; Section MUQ requires
+  each rejecting row to be sorted-with-a-repeat *and* rejected by a message
+  naming the repeat. Before that, `is_ok() == expect_accept` was the whole Rust
+  assertion — a fixture whose four reject bodies were the single byte `0x00`
+  passed, as did one with §4.2's only exception row swapped out.
+- **Every array holds THREE entries and repeats are planted at both ends, in
+  more than one block.** With two-element arrays a full adjacent scan and an
+  `ids[0] == ids[1]` check are the same function; with the nested rows all in
+  `blocks[0]`, a reader checking only the first block was conformant against
+  the corpus (`if i == 0:` around the Python check left the suite green).
+- **The generator depends on `encode_manifest` NOT validating uniqueness, and
+  that gap is #600 — not #586.** #586 is `CanonicalMap` accepting a duplicate
+  **map key**; closing it as specified would not touch duplicate array
+  **elements** and would not make this generator fail. The file's module doc
+  cited #586 and described a regeneration tripwire that did not exist. Related:
+  §4.2's repeated-value paragraph is a **writer** MUST NOT as well as a reader
+  MUST, and `encode_manifest` does not enforce the writer half — so this
+  codebase's encoder is formally non-conformant with its own frozen spec until
+  #600 lands. That is disclosed, not overlooked.
 
 **Two frozen-spec edits were made. No byte on disk changes, and both are
 reversible** — but be precise about *whose* behaviour each documents, because
