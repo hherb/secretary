@@ -1070,10 +1070,10 @@ grepping every production (non-`#[cfg(test)]`) call site of
 
 | Root | Call site | Direction |
 |---|---|---|
-| `record.rs` | `record::decode` (`record.rs:663`) | decode |
-| `block.rs` | `block::decode_plaintext` (`block.rs:1049`) | decode |
+| `record.rs` | `record::decode` (`record.rs:683`) | decode |
+| `block.rs` | `block::decode_plaintext` (`block.rs:1061`) | decode |
 | `unlock/bundle.rs` | `IdentityBundle::from_canonical_cbor` (`bundle.rs:398`, `SecretEntries`) | decode |
-| `manifest/` | `decode_manifest` (`manifest/decode/mod.rs:110`) | decode |
+| `manifest/` | `decode_manifest` (`manifest/decode/mod.rs:112`) | decode |
 
 **Line numbers refreshed 2026-08-29 (manifest-closeout slice), each by
 re-reading its enclosing function rather than by re-running a line-number
@@ -1567,7 +1567,7 @@ production call sites at the time of writing — `unlock/bundle.rs` (1),
 **That count is FIVE as of #569 path 2** (manifest-closeout slice), which
 deleted `unknown_value_inner` and with it the manifest module's
 encode-side re-parse; the surviving manifest site is
-`vault/manifest/decode/mod.rs:95`. Note that the grep the `scratch.rs`
+`vault/manifest/decode/mod.rs:97`. Note that the grep the `scratch.rs`
 doc comment names returns SIX rows against five call sites — the sixth
 row is that doc comment itself. Two call sites deliberately stay on
 plain `ciborium::de::from_reader`, each with a comment stating why its
@@ -1838,7 +1838,7 @@ discussion. It was picked up in a follow-up pass while the FFI
 surface had not yet shipped, which kept the cost of the public-API
 change low.
 
-[core/src/vault/record.rs:270-289](../../../core/src/vault/record.rs#L270-L289)
+[core/src/vault/record.rs:407-413](../../../core/src/vault/record.rs#L407-L413)
 now reads:
 
 ```rust

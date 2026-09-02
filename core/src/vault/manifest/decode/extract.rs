@@ -187,7 +187,17 @@ pub(super) fn value_to_unknown(v: &Value) -> Result<UnknownValue, ManifestError>
 /// `RecordError` arms reachable here are `FloatRejected` / `TagRejected`
 /// (raised by `reject_floats_and_tags` inside `from_canonical_cbor`) — a
 /// well-formed CBOR item rejected on semantic (policy) grounds, which is
-/// exactly what [`CborErrorKind::Semantic`] denotes. Every `RecordError`
+/// exactly what [`CborErrorKind::Semantic`] denotes.
+///
+/// `CanonicalDuplicateKey` (#586) joins the same group but is **not**
+/// reachable here, and the distinction is worth stating because it would be
+/// the wrong bucket if it ever became so: it is an ENCODE-side caller bug,
+/// not a decode-side CBOR fault. The only caller of this function is
+/// `value_to_unknown` -> `UnknownValue::from_canonical_cbor`, which never
+/// calls `to_canonical_vec` and so can never construct it. It is listed
+/// because the match is exhaustive by design (see the paragraph below), and
+/// `Semantic` is the least-wrong of the available kinds should the
+/// reachability ever change. Every `RecordError`
 /// variant is itself data-free (§474), so no branch here can leak content;
 /// this only narrows the *type* to match `ManifestError`'s classified
 /// payload.

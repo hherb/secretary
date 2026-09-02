@@ -252,10 +252,19 @@ pub enum CanonicalError {
     /// serialise time and does not deduplicate, so before #586 an encoder
     /// could emit — and `sign_manifest` could sign — exactly that.
     ///
-    /// Checked once at [`to_canonical_vec`], the single choke point all
-    /// four production encode paths (manifest, record, block, bundle)
-    /// funnel through, rather than by making `CanonicalMap::push`
-    /// fallible at ~30 call sites whose keys are provably-unique literals.
+    /// Checked once at [`to_canonical_vec`], the choke point the four
+    /// VAULT-BODY encode paths (manifest, record, block, bundle) funnel
+    /// through, rather than by making `CanonicalMap::push` fallible at 55
+    /// call sites whose keys are provably-unique literals.
+    ///
+    /// **Not every canonical encoder in the crate is covered**, and the
+    /// difference matters because one of the uncovered ones is signed:
+    /// `identity::card`'s `encode_map` (behind `ContactCard::signed_bytes`)
+    /// and `legacy::encode_canonical_map` (behind `pk_bundle_bytes` and
+    /// `sync::state`) do not deduplicate. All three build their keys from
+    /// fixed literals, so nothing is exposed today — see
+    /// `to_canonical_vec`'s own comment for the full scoping, and #602 for
+    /// the follow-up that closes it.
     ///
     /// **Forward-compat subtrees are deliberately NOT walked.** A
     /// duplicate key inside a `CanonicalValue::Borrowed` — a v2 client's

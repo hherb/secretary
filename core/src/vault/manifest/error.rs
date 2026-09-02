@@ -239,9 +239,11 @@ pub enum ManifestError {
     /// this decoder narrowed away from in #572).
     ///
     /// `cause` is **advisory**: the byte comparison alone decides the
-    /// verdict, so a [`NonCanonicalCause::Unclassified`] — or a
-    /// misclassification — changes a diagnostic and never an acceptance.
-    /// See [`NonCanonicalCause`] for what each arm can and cannot prove.
+    /// verdict, so a [`NonCanonicalCause::Unclassified`] changes a
+    /// diagnostic and never an acceptance. Advisory is not the same as
+    /// guessed — every named arm is decisive, read off the parsed
+    /// [`Manifest`] or a full walk of the input rather than off the byte at
+    /// `at`. See [`NonCanonicalCause`] for what each arm proves.
     ///
     /// **Deliberate residual disclosure, inherited from [`CborFault`]'s:**
     /// `at` is an offset into a re-encoding of decrypted plaintext, hence

@@ -444,8 +444,11 @@ pub enum BlockError {
     /// The in-memory value handed to `to_canonical_vec` carried the same
     /// CBOR map key twice, so encoding it would have produced an
     /// **ambiguous** body (#586). Lifted from
-    /// `CanonicalError::DuplicateKey`, an internal `pub(crate)` type not
-    /// reachable from public docs.
+    /// `CanonicalError::DuplicateKey`, which lives in a `pub(crate)` module
+    /// and so is not reachable from public docs. (The type itself is
+    /// declared `pub`; it is the MODULE that is crate-private. The
+    /// neighbouring `CanonicalSizeBoundExceeded` doc has the same slip,
+    /// pre-dating this variant.)
     ///
     /// Distinct from [`Self::DuplicateKey`], which is the DECODE-side
     /// condition — "the bytes you gave me repeat a key". This one says
@@ -3167,5 +3170,53 @@ mod tests {
             }
             other => panic!("expected CanonicalSizeBoundExceeded, got {other:?}"),
         }
+    }
+    /// `From<CanonicalError> for BlockError` must carry `DuplicateKey`'s ordinal
+    /// through unchanged (#586). Same standing as the test above: the
+    /// mapping is ordinary code, and every sibling arm has a
+    /// direct-construction test precisely because a mis-mapped or
+    /// value-dropping arm leaves the whole workspace green.
+    #[test]
+    fn canonical_error_duplicate_key_maps_to_block_error() {
+        match BlockError::from(CanonicalError::DuplicateKey { index: 3 }) {
+            BlockError::CanonicalDuplicateKey { index } => assert_eq!(index, 3),
+            other => panic!("expected CanonicalDuplicateKey, got {other:?}"),
+        }
+    }
+
+    /// **The end-to-end half of #586 on the BLOCK path.** Same reasoning as
+    /// the record twin: `to_canonical_vec` is shared by four encoders, and a
+    /// check only the manifest exercises is one three callers trust on
+    /// someone else's evidence. `BlockPlaintext::unknown` is a
+    /// forward-compat bag whose keys are runtime data, so one colliding with
+    /// a known key is reachable by any caller building a block in memory.
+    #[test]
+    fn block_encode_rejects_an_unknown_key_colliding_with_a_known_one() {
+        let mut rng = rand_core::OsRng;
+        let mut plaintext = random_block_plaintext(&mut rng, 1);
+        plaintext.unknown.insert(
+            KEY_BLOCK_NAME.to_string(),
+            UnknownValue::from_canonical_cbor(&[0x01]).expect("canonical uint 1"),
+        );
+
+        match encode_plaintext(&plaintext) {
+            Err(BlockError::CanonicalDuplicateKey { .. }) => {}
+            other => panic!(
+                "expected CanonicalDuplicateKey, got {}",
+                match other {
+                    Ok(_) => "a successfully encoded AMBIGUOUS body".to_string(),
+                    Err(e) => format!("{e}"),
+                }
+            ),
+        }
+    }
+
+    /// The control: the same fixture, whose `unknown` bag already carries
+    /// three non-colliding runtime keys, must still encode.
+    #[test]
+    fn block_encode_still_accepts_non_colliding_unknown_keys() {
+        let mut rng = rand_core::OsRng;
+        let plaintext = random_block_plaintext(&mut rng, 1);
+        encode_plaintext(&plaintext).expect("non-colliding unknown keys must encode");
     }
 }

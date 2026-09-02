@@ -316,22 +316,32 @@ offset of the first divergence. Three things about it are load-bearing:
 
 - **The cause is ADVISORY; the byte comparison is the verdict.**
   `classify_non_canonical` (`manifest/decode/classify.rs`) runs only once
-  the comparison has already decided to reject, so a misclassification
-  changes a diagnostic and never an acceptance. That is the whole reason a
-  positional classification — "read the CBOR head at the first differing
-  byte" — is acceptable on a security path. Do not promote it into the
+  the comparison has already decided to reject, so even a wrong cause
+  changes a diagnostic and never an acceptance. Do not promote it into the
   decision.
-- **`ArraySortOrder` is the only decisive arm**, and it is checked first:
-  it is read off the parsed `Manifest`, not off a byte position, so a
-  sorted input can never diverge *because of* array order and an unsorted
-  one always does. It is also the cause a clean-room implementer is most
-  likely to hit, since #572 is what narrowed the accepted set for
-  unsorted arrays.
-- **`Unclassified` is a real outcome, not a bug.** Known-key map disorder
-  leaves an ordinary text head at the divergence and cannot be proven from
-  the bytes. Naming a cause there would make the diagnostic worse than
-  silence; `decode_manifest_rejects_a_non_canonical_body` asserts the
-  honest answer so a future "improvement" that guesses reds.
+- **Advisory does NOT mean positional, and the first version's mistake was
+  exactly that.** It read the CBOR head at the first differing byte. That
+  is unsound whenever the divergence lands inside a string payload — which
+  is where map-key disorder always puts it — so an ordinary character in a
+  key (`_` = `0x5F`, `8` = `0x38`, `x` = `0x78`) was read as an
+  indefinite-length or non-shortest-form head. `Manifest::unknown` keys are
+  **wire data**, so a peer could choose which wrong cause a v1 client
+  printed, for a body violating a different rule entirely — strictly worse
+  than the message it replaced, which at least listed "key disorder" among
+  its four candidates. Every arm is now **decisive**: `ArraySortOrder` off
+  the parsed `Manifest`, `IndefiniteLength` / `NonShortestForm` off
+  `find_encoding_violation`, an iterative walk of the whole body that skips
+  string payloads by their declared length. `ArraySortOrder` still runs
+  first, now only because it is cheaper and likelier. Pinned by
+  `a_peer_cannot_choose_the_reported_cause_through_unknown_key_names` and
+  `a_divergence_landing_on_a_payload_byte_is_unclassified`, both
+  mutation-proven against the positional version.
+- **`Unclassified` is a real outcome, not a bug.** Map-key disorder
+  re-encodes to different bytes while every individual head stays
+  canonical, so there is nothing in the body to find. Naming a cause there
+  would make the diagnostic worse than silence;
+  `decode_manifest_rejects_a_non_canonical_body` asserts the honest answer
+  so a future "improvement" that guesses reds.
 
 The `thiserror` derive on `NonCanonicalCause` is **not cosmetic**: the
 payload guard credits an enum carrying `#[error(...)]` in its body as
@@ -340,10 +350,12 @@ allowlist row and no `DATA_FREE_TYPES` entry — which a plain fieldless
 enum WOULD have needed, and which is what `CborFault`, a plain struct, did
 need. The `at` offset is the same deliberate length-oracle disclosure
 `CborFault::offset` already documents. `manifest_canonicality_kat_replays`
-now asserts a cause per row and pins the 6/3 split by count: exactly six of
-the 21 rows reach the re-encode, and the three `rule4_float` rows are
-caught earlier by `reject_floats_and_tags` — a fact three handoffs carried
-only in prose.
+now asserts a cause for each of the **six** rejecting rows that reach the
+re-encode, and pins the 6/3 split by count. Say "six", not "every rejecting
+row": the corpus has **nine** rejects, and the three `rule4_float` ones are
+caught earlier by `reject_floats_and_tags` and deliberately get no cause —
+that negative is the whole point of the `FloatWalk` arm. A fact three
+handoffs carried only in prose.
 
 **The residual, stated exactly, because the obvious wider claim is false.**
 Inside a forward-compat `unknown` subtree the check misses **duplicate map
@@ -421,11 +433,14 @@ duplicate silently, so `encode_manifest` could emit — and `sign_manifest`
 sign — a body carrying one key twice: **ambiguous**, in the sense that two
 conformant readers may resolve it differently while both accepting the
 signature. The check lives in `to_canonical_vec`
-(`core/src/vault/canonical/value.rs`), the single point all **four**
-production encode paths funnel through (manifest, record, block, bundle) —
-not on `push`, which would put a `?` on ~30 call sites whose keys are
-provably-unique `KEY_*` literals to catch a condition only the
-forward-compat `unknown` loops can create. Four things worth knowing:
+(`core/src/vault/canonical/value.rs`), the point the **four vault-body**
+encode paths funnel through (manifest, record, block, bundle) — not on
+`push`, which would put a `?` on **55** production call sites whose keys are
+provably-unique `KEY_*` literals to catch a condition only the other **7**
+can create. (Measured: "~30" and "only two of them" were undercounts of
+~1.8x and ~3x. The 7 are the runtime-keyed pushes in six forward-compat
+`unknown` loops plus `record.rs`'s field-name push.) Five things worth
+knowing:
 
 - **`CanonicalValue::Borrowed` is deliberately NOT walked.** A duplicate
   key inside a forward-compat `unknown` subtree is the documented v1
@@ -440,12 +455,27 @@ forward-compat `unknown` loops can create. Four things worth knowing:
   encoder". So this makes the encoder conformant with an already-normative
   rule — the opposite of #600, the array-ELEMENT twin, where §4.2's writer
   half genuinely had to be raised to MUST NOT.
+- **"All four production encode paths" is NOT "every canonical encoder in
+  the crate", and one of the uncovered ones is signed.**
+  `ContactCard::signed_bytes` — what the §8 hybrid self-signature commits
+  to — goes through `identity::card`'s own private `encode_map`, and
+  `pk_bundle_bytes` / `sync::state::to_canonical_cbor` through
+  `legacy::encode_canonical_map`; neither deduplicates, and card.rs's
+  `encode_map` is deliberately permissive so its own tests can build
+  hostile-peer bytes with a repeated key. Nothing is exposed today — all
+  three build their keys from fixed literals — but that is a property of
+  today's call sites, not of the encoder, which is the posture #586 exists
+  to replace. Tracked as **#602**. A consequence visible in the code:
+  the `CanonicalError::DuplicateKey` arm in `canonical_error_to_card_error`
+  is structurally **dead**, and says so.
 - **The reachable shape is narrow.** `Record.fields` and every `unknown`
   bag are `BTreeMap`s, so the only way to build a duplicate is an
-  `unknown` key colliding with a *known* §4.2 key — which `decode_manifest`
-  never produces (it parses such a key as the known one), so the producer
-  is always a caller building a value in memory. That is what merge,
-  repair and every block-CRUD path do.
+  `unknown` key colliding with a *known* key — §4.2 at the manifest layer,
+  and equally §6.3 one layer down (`record.rs`'s field map, `block.rs`'s
+  plaintext bag). `decode_manifest` never produces one (it parses such a
+  key as the known one), so the producer is always a caller building a
+  value in memory. That is what merge, repair and every block-CRUD path
+  do.
 - **`canonical_order` is now shared** between `Serialize` and the check,
   extracted so the two cannot drift onto different orderings: the check's
   whole claim is that adjacency in *that* order means equality, which is
@@ -478,7 +508,7 @@ the writer and reader halves have different histories:
   row 2 says so); rule 4 is never the re-encode, because a normalising parse
   preserves a tag or a float and re-encodes it identically — it is caught by a
   separate whole-body walk, which in this codebase is
-  `reject_floats_and_tags` at `manifest/decode/mod.rs:114`, run before the
+  `reject_floats_and_tags` at `manifest/decode/mod.rs:116`, run before the
   re-encode. Alongside the table sits the byte-preservation MUST that makes
   re-emission possible, stated as a two-part obligation so that every
   representation is admissible on equal terms.

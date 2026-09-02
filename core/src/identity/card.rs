@@ -585,9 +585,15 @@ fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, CardError> {
 /// [`CanonicalError::CborEncode`] — the four `Value`s it hands in are all
 /// `Value::Bytes`/`Value::Text` built from already-validated card fields, so
 /// [`CanonicalError::FloatRejected`] / [`CanonicalError::TagRejected`] are
-/// structurally unreachable here. The match is still exhaustive (no `_ =>`)
-/// so a change to `CanonicalError`'s variant set forces a conscious decision
-/// at this call site rather than silently falling through a wildcard.
+/// structurally unreachable here. **So is
+/// [`CanonicalError::DuplicateKey`]** (#586, added to this enumeration in
+/// the same slice that introduced it): that variant is constructed only by
+/// `to_canonical_vec`, and no card path calls it — `pk_bundle_bytes` uses
+/// `encode_canonical_map` and `signed_bytes` / `to_canonical_cbor` use this
+/// file's own `encode_map`, neither of which deduplicates. The match is
+/// still exhaustive (no `_ =>`) so a change to `CanonicalError`'s variant
+/// set forces a conscious decision at this call site rather than silently
+/// falling through a wildcard.
 fn canonical_error_to_card_error(e: CanonicalError) -> CardError {
     match e {
         CanonicalError::CborEncode(fault) => CardError::CborEncode(fault),
@@ -595,9 +601,13 @@ fn canonical_error_to_card_error(e: CanonicalError) -> CardError {
             CardError::Malformed("float values are not permitted in canonical CBOR")
         }
         // #586: the value handed in repeats a CBOR map key, which would
-        // encode to an ambiguous body. `index` is discarded for the same
-        // reason the arm below discards `actual`/`bound` — `CardError::Malformed`
-        // carries only fixed `&'static str` literals by design (#474).
+        // encode to an ambiguous body. Unreachable from this file today
+        // (see the enumeration in this function's doc); present so the
+        // exhaustive match keeps forcing a decision. `index` is discarded
+        // because `CardError::Malformed` carries only fixed `&'static str`
+        // literals — a shape constraint of that variant, NOT a #474
+        // plaintext concern: `CanonicalError::DuplicateKey`'s own doc
+        // certifies `index` as data-free by construction.
         CanonicalError::DuplicateKey { .. } => {
             CardError::Malformed("duplicate CBOR map key in canonical encoding")
         }
@@ -1096,6 +1106,22 @@ mod tests {
                     msg,
                     "canonical CBOR encode exceeded its reserved size bound"
                 );
+            }
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    /// #586's arm. Structurally UNREACHABLE from this file — no card path
+    /// calls `to_canonical_vec`, the only constructor of `DuplicateKey` —
+    /// so this constructs the `CanonicalError` directly, exactly as the
+    /// `CapacityBoundExceeded` test above does and for the same reason: the
+    /// mapping is ordinary code with no such excuse.
+    #[test]
+    fn canonical_error_duplicate_key_maps_to_card_error() {
+        let err = CanonicalError::DuplicateKey { index: 2 };
+        match canonical_error_to_card_error(err) {
+            CardError::Malformed(msg) => {
+                assert_eq!(msg, "duplicate CBOR map key in canonical encoding");
             }
             other => panic!("expected Malformed, got {other:?}"),
         }

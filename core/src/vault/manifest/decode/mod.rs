@@ -224,6 +224,13 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
         // (#590) — a diagnostic, never an acceptance decision. Before #590
         // this was a fieldless variant naming four candidate causes with
         // "e.g." and no position at all.
+        //
+        // The cause is DECISIVE, not positional: it comes from the parsed
+        // manifest's array order or from a walk of the whole input, never
+        // from the byte at the divergence. Reading that byte as a CBOR head
+        // — the first version of `classify` — is unsound whenever the
+        // divergence lands inside a string payload, which is exactly where
+        // map-key disorder puts it, and `unknown` keys are peer-supplied.
         let (cause, at) = classify_non_canonical(&manifest, bytes, re_encoded.expose());
         return Err(ManifestError::NonCanonicalEncoding { cause, at });
     }

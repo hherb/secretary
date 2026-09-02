@@ -9,7 +9,7 @@ nondeterminism in a test script. **#586 was folded in on the user's explicit
 instruction** after this session found it closed-as-COMPLETED on the tracker with
 the code unfixed — see §(4).
 
-**No issue was filed this session.** Nothing was found that is not closed here.
+**Three issues were filed during the review round**, all found by it and all deliberately out of this slice: **#602** (`identity::card`'s and `sync::state`'s encoders are outside #586's choke point — including the hybrid-signed contact card), **#603** (`canonical/value.rs` is 1003 lines, past the split threshold), **#604** (the canonicality corpus has no `expect_cause` column, so #590's vocabulary has no cross-language pin).
 
 ---
 
@@ -20,6 +20,8 @@ the code unfixed — see §(4).
 | SHA | What |
 |---|---|
 | `c7b8a68d` | the slice: cause enum, classifier, duplicate-key check, four error folds, tests, ROADMAP + CLAUDE.md |
+| `7be69940` | an unresolved intra-doc link, and the colourised-output filter that hid it |
+| *(review round)* | the classifier made **decisive** (it was positional, and a peer could pick the reported cause); the `>`/`>=` boundary pinned; the choke-point and call-site claims re-measured and scoped; eight new tests |
 | *(this)* | the baton — a commit cannot cite its own SHA, so this row stays symbolic |
 
 `19 files changed, 1393 insertions(+), 30 deletions(-)` at `c7b8a68d` — quoted at the code-bearing commit so this
@@ -59,12 +61,13 @@ both accepting the signature.
 
 - **`NonCanonicalCause`** (`core/src/vault/manifest/cause.rs`) — a fieldless enum
   with four arms (`ArraySortOrder` / `IndefiniteLength` / `NonShortestForm` /
-  `Unclassified`), plus a private `OffsetSuffix` `Display` adapter so the byte
-  locator renders as prose and never as a `Some(41)` debug form.
+  `Unclassified`), plus a module-local (`pub(super)`) `OffsetSuffix` `Display`
+  adapter so the byte locator renders as prose and never as a `Some(41)` debug
+  form.
 - **`ManifestError::NonCanonicalEncoding { cause, at }`** — `at` is the offset of
   the first differing byte, `None` only when one buffer is a strict prefix of the
   other.
-- **`classify_non_canonical`** (`manifest/decode/classify.rs`, 185 lines) — a pure
+- **`classify_non_canonical`** (`manifest/decode/classify.rs`) — a pure
   function over the parsed `Manifest` and the two buffers the check already holds.
 - **`CanonicalError::DuplicateKey { index }`** and
   `CanonicalMap::check_no_duplicate_keys`, called once from `to_canonical_vec`.
@@ -79,19 +82,25 @@ both accepting the signature.
 ### Three design points that are load-bearing, not incidental
 
 1. **The cause is advisory; the byte comparison is the verdict.** `classify_non_canonical`
-   runs *only after* the comparison has decided to reject, so a misclassification
-   changes a diagnostic and never an acceptance. That is the entire reason a
-   positional heuristic — "read the CBOR head at the first differing byte" — is
-   acceptable on a security path. Do not promote it into the decision.
-2. **`ArraySortOrder` is the only decisive arm, and runs first.** It is read off
-   the parsed `Manifest`, not off a byte position: `encode_manifest` sorts all
-   five arrays, so an unsorted input always diverges and a sorted one can never
-   diverge *because of* order. It is also the cause a clean-room implementer is
-   likeliest to hit, since #572's narrowing is exactly about array order.
-3. **`Unclassified` is a real outcome, not a gap to close.** Known-key map
-   disorder leaves an ordinary text head at the divergence, and no cause can be
-   proven from the bytes. `decode_manifest_rejects_a_non_canonical_body` asserts
-   the honest answer, so a future "improvement" that guesses reds.
+   runs *only after* the comparison has decided to reject, so even a wrong cause
+   changes a diagnostic and never an acceptance. Do not promote it into the
+   decision.
+2. **Advisory is NOT positional — and the first implementation of this slice got
+   that wrong.** It read the CBOR head at the first differing byte, which is only
+   sound when that byte is an item boundary. It is not for map-key disorder: the
+   divergence lands *inside* a key's UTF-8 payload, so `_` (`0x5F`) read as an
+   indefinite-length head and `8` (`0x38`) as a non-shortest-form one. Because
+   `Manifest::unknown` keys are **wire data**, a peer could choose which wrong
+   cause a v1 client printed — worse than the message #590 replaced, which at
+   least listed "key disorder" among four candidates. `find_encoding_violation`
+   now walks the whole body iteratively, skipping string payloads by their
+   declared byte length, so all three named arms are **decisive**.
+   `ArraySortOrder` still runs first, now only because it is cheaper and likelier.
+3. **`Unclassified` is a real outcome, not a gap to close.** Map-key disorder
+   re-encodes to different bytes while every individual head stays canonical, so
+   there is nothing anywhere in the body to find.
+   `decode_manifest_rejects_a_non_canonical_body` asserts the honest answer, so a
+   future "improvement" that guesses reds.
 
 ### Two things that did NOT need doing, both measured rather than assumed
 
@@ -105,8 +114,12 @@ both accepting the signature.
   keys flatly, and says outright that the reader-side scoping is "not a licence
   for an encoder". So #586 makes the encoder conformant with an **already
   normative** rule. This is the opposite of #600, the array-**element** twin,
-  where §4.2's writer half genuinely had to be raised to MUST NOT. `git diff
-  main...HEAD -- docs/` is empty.
+  where §4.2's writer half genuinely had to be raised to MUST NOT. No NORMATIVE
+  doc changed — see §(1)'s "Format / fixture invariants" bullet for the exact
+  pathspec, which is not the obvious one.
+  (`docs/` as a whole is **not** — this baton lives under it, and the review round
+  corrected line citations in the memory-hygiene memo. An earlier draft claimed
+  the wider thing, which its own existence falsified.)
 
 ### Non-vacuity, by execution
 
@@ -116,14 +129,16 @@ both accepting the signature.
   (`1aced4e4…dc4b50`), not by `git diff` — `cause.rs` is untracked, which is
   precisely the vacuous-check trap the #593 baton recorded.
 - **The corpus now pins its own split.** `manifest_canonicality_kat_replays`
-  asserts a cause per row *and* the 6/3 count: exactly six of the 21 rows reach
-  the re-encode (rules 2 and 3, three levels each), and the three `rule4_float`
-  rows are caught earlier by `reject_floats_and_tags`. **That fact was carried by
+  asserts a cause for each of the **six** rejecting rows that reach the re-encode
+  *and* the 6/3 count. Not "a cause per row": the corpus has **nine** rejects, and
+  the three `rule4_float` ones are caught earlier by `reject_floats_and_tags` and
+  deliberately get none — that negative is what the `FloatWalk` arm exists for. **That fact was carried by
   three consecutive handoffs in prose and by nothing in code.** Its shape match is
   fail-closed: an unrecognised rejecting shape panics rather than passing.
 - **`expect_rejected` is the broadest pin.** Every caller reverses exactly one
   §4.2 array, so one assertion covers all five sort disciplines; a classifier that
-  fell through to the byte head would report `Unclassified` and red every case.
+  fell through to the encoding scan would report `Unclassified` and red every
+  case.
 - **Three code mutations, every restore verified by sha256.**
 
   | # | Mutation | Result |
@@ -161,19 +176,42 @@ both accepting the signature.
   `main`'s** — diffed in full against a detached `main` worktree, not inferred
   from the count (a count is preserved when one citation resolves and another
   breaks).
-- **Format / fixture invariants — all four empty:** `core/tests/data/`,
-  `core/fuzz/seeds/`, the UDL, and `docs/`.
+- **Format / fixture invariants — three empty:** `core/tests/data/`,
+  `core/fuzz/seeds/` and the UDL. **`docs/` is NOT empty and never could be** —
+  this baton lives under it, and the review round added corrections to the
+  memory-hygiene memo. The invariant that actually holds is the one worth
+  stating: **no NORMATIVE file under `docs/` changed** — no spec, no ADR. The
+  command is
+
+  ```bash
+  git diff main...HEAD --stat -- docs/ ':!docs/handoffs/' ':!docs/manual/'
+  ```
+
+  and it is empty. Two wrong spellings were tried first and are recorded so
+  nobody re-derives them: `-- docs/` is the claim's opposite (it always shows
+  this baton), and `-- docs/*.md docs/adr/` looks right but is not — a git
+  PATHSPEC glob crosses `/`, so `docs/*.md` matches
+  `docs/manual/contributors/*.md` too. Non-vacuity proven by planting a
+  one-line edit in `docs/vault-format.md`: the pathspec above names it, and
+  the restore was sha256-verified.
 
 ---
 
 ## (2) What this slice does **not** claim
 
-- **The cause is a classification, not a proof.** Only `ArraySortOrder` is
-  decisive. `IndefiniteLength` and `NonShortestForm` are read from the CBOR head
-  at the first divergence, which is sound for every shape in the corpus and for
-  every shape anyone has written down — but it is a positional heuristic, and a
-  body whose divergence lands on an unrelated head reports `Unclassified`. That is
-  by design and costs nothing, because the verdict never depends on it.
+- **The cause is advisory, but every named arm is now DECISIVE.** The first
+  implementation of this slice read the CBOR head at the first divergence, and
+  the bullet that stood here claimed "a body whose divergence lands on an
+  unrelated head reports `Unclassified`". That was **false**, and was falsified
+  by execution in review: the divergence for map-key disorder lands *inside* a
+  key's UTF-8 payload, so `_` (`0x5F`) was read as an indefinite-length head and
+  `8` (`0x38`) as a non-shortest-form one. `Manifest::unknown` keys are wire
+  data, so a peer could choose which wrong cause a v1 client printed — strictly
+  worse than the message #590 replaced, which listed "key disorder" among its
+  four candidates. `find_encoding_violation` now walks the whole body, skipping
+  string payloads by their declared length, so a named encoding cause means the
+  body genuinely contains such an item. `Unclassified` remains the honest answer
+  for map-key disorder, which leaves no evidence anywhere in the body.
 - **#586 is closed for map KEYS only.** Duplicate array **elements** are #600 and
   remain open — and the uniqueness KAT generator still **depends** on that gap to
   produce its ground-truth bytes. The two were measured independent: the whole
@@ -183,13 +221,25 @@ both accepting the signature.
   residual, not an oversight.
 - **The reachable producer is narrow.** `Record.fields` and every `unknown` bag are
   `BTreeMap`s, so the only way to build a duplicate is an `unknown` key colliding
-  with a known §4.2 key — which `decode_manifest` never produces (it parses such a
-  key as the known one). The producer is always a caller building a value in
-  memory: merge, repair, block-CRUD.
+  with a known key — §4.2 at the manifest layer, §6.3 one layer down in
+  `record.rs` and `block.rs` — which `decode_manifest` never produces (it parses
+  such a key as the known one). The producer is always a caller building a value
+  in memory: merge, repair, block-CRUD.
+
+- **`to_canonical_vec` is not every canonical encoder in the crate.** The four
+  vault-body paths funnel through it; `identity::card`'s own `encode_map` (behind
+  the hybrid-signed `ContactCard::signed_bytes`) and `legacy::encode_canonical_map`
+  (behind `pk_bundle_bytes` and `sync::state`) do not, and do not deduplicate.
+  No live exposure — all three build their keys from fixed literals, and card.rs's
+  `encode_map` is deliberately permissive so its tests can construct hostile-peer
+  bytes — but "no duplicate key can reach a signature" was stated absolutely and
+  is now scoped. Tracked as **#602**.
 - **The duplicate check adds a second sort per map.** `Serialize` already sorts;
   the check sorts again. Maps here carry ~9 keys, so the cost is negligible, but
   it is a real duplicate of work on a hot path and is disclosed rather than
-  hidden. Folding the check into `Serialize` would lose the typed variant
+  hidden. Note the hot path includes **decode**, not only writes:
+  `decode_manifest` re-encodes on every vault open, so the extra sort and its
+  `Vec<usize>` run once per map per open as well as per save. Folding the check into `Serialize` would lose the typed variant
   (`S::Error` collapses it to a generic serialisation fault), which is why it was
   not done.
 - **#587 stays open and untouched.** `encode_manifest` still validates no v1
@@ -363,7 +413,9 @@ uv run core/tests/python/spec_test_name_freshness.py
 git diff main...HEAD --stat -- core/tests/data/
 git diff main...HEAD --stat -- core/fuzz/seeds/
 git diff main...HEAD -- ffi/secretary-ffi-uniffi/src/secretary.udl
-git diff main...HEAD --stat -- docs/
+# NORMATIVE docs only. A git pathspec glob CROSSES `/`, so `docs/*.md` would
+# also match docs/manual/**; exclude the two non-normative trees by name.
+git diff main...HEAD --stat -- docs/ ':!docs/handoffs/' ':!docs/manual/'
 ```
 
 Re-proving the payload guard is not vacuous (the mutation this slice used):

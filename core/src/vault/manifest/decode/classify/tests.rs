@@ -1,10 +1,12 @@
 //! Unit tests for the §4.3 step-4 divergence classifier (#590).
 //!
-//! Everything under test is a pure function, so these drive the head
-//! classifier and the array-order predicate directly rather than through a
-//! whole manifest decode. The end-to-end pins — that each rejecting row of
-//! the canonicality corpus names its own cause — live in
-//! `core/tests/manifest_noncanonical_cause.rs`, where the real bodies are.
+//! Everything under test is a pure function, so these drive the encoding
+//! scan and the array-order predicate directly rather than through a whole
+//! manifest decode. The end-to-end pins live in
+//! `core/tests/manifest_canonicality_kat.rs` — which asserts a cause for
+//! each of the SIX corpus rows that reach the re-encode, the other three
+//! rejecting rows being caught earlier by `reject_floats_and_tags` — and in
+//! `super::super::tests`, which drives real manifest bodies.
 
 use super::*;
 use crate::vault::manifest::test_support::populated_manifest;
@@ -73,7 +75,75 @@ fn first_divergence_is_none_for_identical_buffers() {
 }
 
 // ---------------------------------------------------------------------------
-// classify_head — indefinite lengths
+// find_encoding_violation — the payload/head distinction (#590 round 2)
+// ---------------------------------------------------------------------------
+
+/// **The regression this scan exists to prevent.** The first version of
+/// this module read the CBOR head at the first divergence offset, which
+/// lands INSIDE a key's UTF-8 payload whenever the defect is map-key
+/// order. `_` is `0x5F` — an indefinite-length byte-string head — and it is
+/// an ordinary character in an identifier-style extension key, so a peer
+/// could pick key names that made a v1 client name a cause the body did not
+/// contain. Skipping a string's payload by its declared byte length is what
+/// closes it.
+#[test]
+fn payload_bytes_that_look_like_heads_are_skipped() {
+    // Text string "aaa_b": the `0x5F` is payload, not a head.
+    assert_eq!(
+        find_encoding_violation(&[0x65, 0x61, 0x61, 0x61, 0x5F, 0x62]),
+        None,
+        "0x5F inside a text payload must not be read as an indefinite head"
+    );
+    // Text string "schema_v8": the `0x38` would read as major 1 / AI 24.
+    assert_eq!(
+        find_encoding_violation(&[0x69, 0x73, 0x63, 0x68, 0x65, 0x6D, 0x61, 0x5F, 0x76, 0x38]),
+        None,
+        "0x38 inside a text payload must not be read as a non-shortest head"
+    );
+    // Byte string carrying every byte that would classify as a head.
+    assert_eq!(
+        find_encoding_violation(&[0x45, 0x5F, 0x7F, 0x9F, 0xBF, 0xFF]),
+        None,
+        "a byte-string payload must be skipped whole"
+    );
+}
+
+/// The scan must still reach a violation nested arbitrarily deep, or
+/// skipping payloads would have traded one blind spot for another.
+#[test]
+fn a_violation_inside_a_container_is_still_found() {
+    // {"a": [ 18 05 ]} — the non-shortest int is two levels down.
+    assert_eq!(
+        find_encoding_violation(&[0xA1, 0x61, 0x61, 0x81, 0x18, 0x05]),
+        Some(NonCanonicalCause::NonShortestForm)
+    );
+    // {"a": {"b": 5F..FF}} — an indefinite byte string two levels down.
+    assert_eq!(
+        find_encoding_violation(&[0xA1, 0x61, 0x61, 0xA1, 0x61, 0x62, 0x5F, 0x41, 0xAA, 0xFF]),
+        Some(NonCanonicalCause::IndefiniteLength)
+    );
+    // A map's argument counts PAIRS: with a `+ argument` instead of
+    // `+ 2 * argument` the walk would stop before this second value.
+    assert_eq!(
+        find_encoding_violation(&[0xA2, 0x61, 0x61, 0x01, 0x61, 0x62, 0x18, 0x05]),
+        Some(NonCanonicalCause::NonShortestForm),
+        "the second pair of a 2-entry map must be visited"
+    );
+}
+
+/// Only the ONE top-level item is walked. `ciborium` does not require EOF,
+/// so trailing bytes can be present — but garbage after the item is a
+/// length divergence, not a canonicality violation OF the item, and
+/// reporting a head found there would be the positional guess this scan
+/// removes.
+#[test]
+fn trailing_bytes_after_the_top_level_item_are_not_scanned() {
+    assert_eq!(find_encoding_violation(&[0x00, 0xBF]), None);
+    assert_eq!(find_encoding_violation(&[0x00, 0xFF]), None);
+}
+
+// ---------------------------------------------------------------------------
+// find_encoding_violation — indefinite lengths
 // ---------------------------------------------------------------------------
 
 /// Major types 2-5 with additional information 31, plus the break code.
@@ -89,7 +159,7 @@ fn indefinite_heads_of_every_admitting_major_type_are_classified() {
         0xFF, // break
     ] {
         assert_eq!(
-            classify_head(&[head]),
+            find_encoding_violation(&[head]),
             Some(NonCanonicalCause::IndefiniteLength),
             "head {head:#04X} was not classified as indefinite-length"
         );
@@ -102,7 +172,7 @@ fn indefinite_heads_of_every_admitting_major_type_are_classified() {
 fn additional_info_31_under_a_non_admitting_major_type_is_not_indefinite() {
     for head in [0x1F, 0x3F] {
         assert_eq!(
-            classify_head(&[head]),
+            find_encoding_violation(&[head]),
             None,
             "head {head:#04X} was wrongly classified as indefinite-length"
         );
@@ -110,12 +180,15 @@ fn additional_info_31_under_a_non_admitting_major_type_is_not_indefinite() {
 }
 
 // ---------------------------------------------------------------------------
-// classify_head — shortest form
+// find_encoding_violation — shortest form
 // ---------------------------------------------------------------------------
 
 /// One case per argument width, each carrying a value that fits the width
-/// below it. `0x18 0x05` is the shape the `*__rule3_non_shortest_int`
-/// corpus rows use.
+/// below it.
+///
+/// The `*__rule3_non_shortest_int` corpus rows use the same CLASS at a
+/// different value — their spliced subtree is `A1 61 61 18 01`, i.e. the
+/// 1-byte-argument case holding 1.
 #[test]
 fn non_shortest_arguments_are_classified_at_every_width() {
     let cases: [(&[u8], &str); 4] = [
@@ -136,15 +209,15 @@ fn non_shortest_arguments_are_classified_at_every_width() {
 
     for (bytes, what) in cases {
         assert_eq!(
-            classify_head(bytes),
+            find_encoding_violation(bytes),
             Some(NonCanonicalCause::NonShortestForm),
             "{what} was not classified as non-shortest-form"
         );
     }
 }
 
-/// The boundary in both directions at every width. A comparator that used
-/// `>=` instead of `>` would misreport each of these as non-shortest.
+/// The smallest value that genuinely NEEDS each width. Guards the
+/// comparator against being tightened.
 #[test]
 fn smallest_value_needing_each_width_is_shortest_form() {
     let cases: [(&[u8], &str); 4] = [
@@ -161,7 +234,47 @@ fn smallest_value_needing_each_width_is_shortest_form() {
     ];
 
     for (bytes, what) in cases {
-        assert_eq!(classify_head(bytes), None, "{what} was wrongly rejected");
+        assert_eq!(
+            find_encoding_violation(bytes),
+            None,
+            "{what} was wrongly rejected"
+        );
+    }
+}
+
+/// **The other half of the boundary, and the only inputs that pin `>`
+/// against `>=`.** These carry the LARGEST value the next width down can
+/// hold, so they are genuine §4.2.1 violations that a `>=` comparator would
+/// wave through as shortest.
+///
+/// Every other input in this file — and in the corpus — agrees under both
+/// comparators, which is why the sibling test above cannot pin this and a
+/// prior version of its doc comment wrongly claimed it did. Verified by
+/// replaying all inputs under both: only these four disagree.
+#[test]
+fn largest_value_fitting_the_next_width_down_is_non_shortest() {
+    let cases: [(&[u8], &str); 4] = [
+        (&[0x18, 0x17], "23 in a 1-byte argument — fits inline"),
+        (
+            &[0x19, 0x00, 0xFF],
+            "255 in a 2-byte argument — fits in one",
+        ),
+        (
+            &[0x1A, 0x00, 0x00, 0xFF, 0xFF],
+            "65_535 in a 4-byte argument — fits in two",
+        ),
+        (
+            &[0x1B, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF],
+            "u32::MAX in an 8-byte argument — fits in four",
+        ),
+    ];
+
+    for (bytes, what) in cases {
+        assert_eq!(
+            find_encoding_violation(bytes),
+            Some(NonCanonicalCause::NonShortestForm),
+            "{what}: a `>=` comparator would wave this through"
+        );
     }
 }
 
@@ -171,7 +284,7 @@ fn smallest_value_needing_each_width_is_shortest_form() {
 fn inline_arguments_are_never_non_shortest() {
     for additional in 0..=AI_MAX_INLINE {
         assert_eq!(
-            classify_head(&[additional]),
+            find_encoding_violation(&[additional]),
             None,
             "inline additional information {additional} was wrongly classified"
         );
@@ -185,31 +298,62 @@ fn inline_arguments_are_never_non_shortest() {
 fn major_type_seven_is_not_classified_as_non_shortest() {
     // 0xF9 is a half-precision float head; 0xF8 0x05 a 1-byte simple value
     // whose argument would look "non-shortest" under the integer rule.
-    assert_eq!(classify_head(&[0xF9, 0x00, 0x00]), None);
-    assert_eq!(classify_head(&[0xF8, 0x05]), None);
+    assert_eq!(find_encoding_violation(&[0xF9, 0x00, 0x00]), None);
+    assert_eq!(find_encoding_violation(&[0xF8, 0x05]), None);
 }
 
 /// Reserved additional-information values are not a shortest-form question.
 #[test]
 fn reserved_additional_information_is_unclassified() {
     for additional in 28..=30u8 {
-        assert_eq!(classify_head(&[additional]), None);
+        assert_eq!(find_encoding_violation(&[additional]), None);
     }
 }
 
-/// A head promising an argument the buffer does not contain must not panic
-/// or guess. Fuzz inputs reach this code path.
+/// A head promising an argument or a payload the buffer does not contain
+/// must not panic or guess. Fuzz inputs reach this code path.
 #[test]
-fn truncated_arguments_are_unclassified_rather_than_a_panic() {
-    assert_eq!(classify_head(&[0x18]), None);
-    assert_eq!(classify_head(&[0x19, 0x00]), None);
-    assert_eq!(classify_head(&[0x1B, 0x00, 0x00]), None);
-    assert_eq!(classify_head(&[]), None);
+fn truncated_input_is_unclassified_rather_than_a_panic() {
+    // Truncated ARGUMENT.
+    assert_eq!(find_encoding_violation(&[0x18]), None);
+    assert_eq!(find_encoding_violation(&[0x19, 0x00]), None);
+    assert_eq!(find_encoding_violation(&[0x1B, 0x00, 0x00]), None);
+    assert_eq!(find_encoding_violation(&[]), None);
+    // Truncated PAYLOAD: text(2) with one byte, byte-string(4) with two.
+    assert_eq!(find_encoding_violation(&[0x62, 0x61]), None);
+    assert_eq!(find_encoding_violation(&[0x44, 0x00, 0x01]), None);
+    // A container promising more children than the buffer holds.
+    assert_eq!(find_encoding_violation(&[0x82, 0x01]), None);
+    // An absurd payload length must not overflow or spin.
+    assert_eq!(
+        find_encoding_violation(&[0x5B, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+        None
+    );
 }
 
 // ---------------------------------------------------------------------------
-// read_argument
+// argument_width / read_argument / is_shortest_form
 // ---------------------------------------------------------------------------
+
+/// `argument_width` is total: every value that is not an argument width
+/// answers `None` rather than underflowing the `additional - 24`
+/// subtraction, which panics under `debug-assertions` (`core/fuzz` sets
+/// it). Its sibling `is_shortest_form` was written to the same standard.
+#[test]
+fn argument_width_is_total_over_every_additional_information_value() {
+    assert_eq!(argument_width(AI_ARG_ONE_BYTE), Some(1));
+    assert_eq!(argument_width(AI_ARG_TWO_BYTE), Some(2));
+    assert_eq!(argument_width(AI_ARG_FOUR_BYTE), Some(4));
+    assert_eq!(argument_width(AI_ARG_EIGHT_BYTE), Some(8));
+
+    for additional in (0..=AI_MAX_INLINE).chain(28..=AI_INDEFINITE) {
+        assert_eq!(
+            argument_width(additional),
+            None,
+            "additional information {additional} is not an argument width"
+        );
+    }
+}
 
 /// Fail-safe on a value that is not an argument width: report "shortest",
 /// so an unexpected head goes to `Unclassified` rather than being announced
@@ -246,6 +390,12 @@ fn read_argument_reads_only_its_own_width() {
         read_argument(&[0x2A, 0xFF, 0xFF], AI_ARG_ONE_BYTE),
         Some(42)
     );
+}
+
+#[test]
+fn read_argument_rejects_a_width_it_was_not_given() {
+    assert_eq!(read_argument(&[0x2A], 0), None);
+    assert_eq!(read_argument(&[0x2A], AI_INDEFINITE), None);
 }
 
 // ---------------------------------------------------------------------------
@@ -312,39 +462,38 @@ fn the_fixture_has_at_least_two_entries_in_every_checked_array() {
 // classify_non_canonical — the composition
 // ---------------------------------------------------------------------------
 
-/// The array check outranks the byte head, and does so even when the byte
-/// at the divergence would classify as something else. Without the
-/// ordering, an unsorted array whose divergence happens to land on an
-/// indefinite head would be reported as the wrong cause.
+/// The array check outranks the encoding scan. Both are decisive so they
+/// cannot contradict each other, but a body can violate both rules at once
+/// and the reported cause must be stable rather than incidental.
 #[test]
-fn array_order_outranks_a_byte_head_that_would_classify_otherwise() {
+fn array_order_outranks_an_encoding_violation() {
     let mut m = sorted_manifest();
     m.blocks.reverse();
 
-    let (cause, at) = classify_non_canonical(&m, &[0x00, 0xBF], &[0x00, 0x00]);
+    let (cause, at) = classify_non_canonical(&m, &[0xBF, 0x00], &[0xA1, 0x00]);
 
     assert_eq!(cause, NonCanonicalCause::ArraySortOrder);
-    assert_eq!(at, Some(1), "the locator is reported whatever the cause");
+    assert_eq!(at, Some(0), "the locator is reported whatever the cause");
 }
 
-/// With every array sorted, the byte head decides.
+/// With every array sorted, the encoding scan decides.
 #[test]
-fn a_sorted_manifest_falls_through_to_the_byte_head() {
+fn a_sorted_manifest_falls_through_to_the_encoding_scan() {
     let m = sorted_manifest();
 
-    let (cause, at) = classify_non_canonical(&m, &[0x00, 0xBF], &[0x00, 0xA1]);
+    let (cause, at) = classify_non_canonical(&m, &[0xBF, 0x00, 0x00, 0xFF], &[0xA1, 0x00, 0x00]);
     assert_eq!(cause, NonCanonicalCause::IndefiniteLength);
-    assert_eq!(at, Some(1));
+    assert_eq!(at, Some(0));
 
     let (cause, at) = classify_non_canonical(&m, &[0x18, 0x05], &[0x05]);
     assert_eq!(cause, NonCanonicalCause::NonShortestForm);
     assert_eq!(at, Some(0));
 }
 
-/// An ordinary head at the divergence is reported honestly rather than
-/// guessed at. This is the arm known-key map disorder lands on.
+/// A body containing no encoding-level violation is reported honestly
+/// rather than guessed at. This is the arm map-key disorder lands on.
 #[test]
-fn an_ordinary_head_at_the_divergence_is_unclassified() {
+fn a_body_with_no_encoding_violation_is_unclassified() {
     let m = sorted_manifest();
 
     let (cause, at) = classify_non_canonical(&m, &[0x61, 0x62], &[0x61, 0x61]);
@@ -353,8 +502,30 @@ fn an_ordinary_head_at_the_divergence_is_unclassified() {
     assert_eq!(at, Some(1));
 }
 
-/// No divergence pair and sorted arrays leaves nothing to classify — and
-/// must not index past either buffer.
+/// **The composition-level form of the payload/head regression.** Two
+/// equal-length text strings differing at a byte that would classify as an
+/// indefinite-length head. The divergence lands there, and the answer must
+/// still be `Unclassified` — the first version of this module reported
+/// `IndefiniteLength`.
+#[test]
+fn a_divergence_landing_on_a_payload_byte_is_unclassified() {
+    let m = sorted_manifest();
+
+    let input = [0x65, 0x61, 0x61, 0x61, 0x5F, 0x62]; // "aaa_b"
+    let re_encoded = [0x65, 0x61, 0x61, 0x61, 0x58, 0x62]; // "aaaXb"
+
+    let (cause, at) = classify_non_canonical(&m, &input, &re_encoded);
+
+    assert_eq!(
+        cause,
+        NonCanonicalCause::Unclassified,
+        "a payload byte must not be read as a head"
+    );
+    assert_eq!(at, Some(4));
+}
+
+/// No divergence pair and no encoding violation leaves nothing to classify
+/// — and must not index past either buffer.
 #[test]
 fn a_prefix_relationship_is_unclassified_with_no_offset() {
     let m = sorted_manifest();

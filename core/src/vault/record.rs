@@ -249,8 +249,11 @@ pub enum RecordError {
     /// The in-memory value handed to `to_canonical_vec` carried the same
     /// CBOR map key twice, so encoding it would have produced an
     /// **ambiguous** body (#586). Lifted from
-    /// `CanonicalError::DuplicateKey`, an internal `pub(crate)` type not
-    /// reachable from public docs.
+    /// `CanonicalError::DuplicateKey`, which lives in a `pub(crate)` module
+    /// and so is not reachable from public docs. (The type itself is
+    /// declared `pub`; it is the MODULE that is crate-private. The
+    /// neighbouring `CanonicalSizeBoundExceeded` doc has the same slip,
+    /// pre-dating this variant.)
     ///
     /// Distinct from [`Self::DuplicateKey`], which is the DECODE-side
     /// condition — "the bytes you gave me repeat a key". This one says
@@ -2979,5 +2982,56 @@ mod tests {
             }
             other => panic!("expected CanonicalSizeBoundExceeded, got {other:?}"),
         }
+    }
+    /// `From<CanonicalError> for RecordError` must carry `DuplicateKey`'s ordinal
+    /// through unchanged (#586). Same standing as the test above: the
+    /// mapping is ordinary code, and every sibling arm has a
+    /// direct-construction test precisely because a mis-mapped or
+    /// value-dropping arm leaves the whole workspace green.
+    #[test]
+    fn canonical_error_duplicate_key_maps_to_record_error() {
+        match RecordError::from(CanonicalError::DuplicateKey { index: 3 }) {
+            RecordError::CanonicalDuplicateKey { index } => assert_eq!(index, 3),
+            other => panic!("expected CanonicalDuplicateKey, got {other:?}"),
+        }
+    }
+
+    /// **The end-to-end half of #586 on the RECORD path.** `to_canonical_vec`
+    /// is shared by four encoders; a check that only the manifest exercises
+    /// is a check three callers are trusting on someone else's evidence.
+    /// `Record::unknown` is a forward-compat bag whose keys are runtime
+    /// data, so one colliding with a known §6.3 key is the same reachable
+    /// shape the manifest test drives — and `record::encode` runs per record
+    /// per save, so this arm reaches the FFI record-edit surface.
+    #[test]
+    fn record_encode_rejects_an_unknown_key_colliding_with_a_known_one() {
+        let mut record = sample_record();
+        record.unknown.insert(
+            KEY_RECORD_UUID.to_string(),
+            UnknownValue::from_canonical_cbor(&[0x01]).expect("canonical uint 1"),
+        );
+
+        match encode(&record) {
+            Err(RecordError::CanonicalDuplicateKey { .. }) => {}
+            other => panic!(
+                "expected CanonicalDuplicateKey, got {}",
+                match other {
+                    Ok(_) => "a successfully encoded AMBIGUOUS body".to_string(),
+                    Err(e) => format!("{e}"),
+                }
+            ),
+        }
+    }
+
+    /// The control: `sample_record` itself must still encode, or the test
+    /// above would pass against an encoder that rejected every record.
+    #[test]
+    fn record_encode_still_accepts_a_non_colliding_unknown_key() {
+        let mut record = sample_record();
+        record.unknown.insert(
+            "x_future".to_string(),
+            UnknownValue::from_canonical_cbor(&[0x01]).expect("canonical uint 1"),
+        );
+        encode(&record).expect("a non-colliding unknown key must encode");
     }
 }

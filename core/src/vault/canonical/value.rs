@@ -151,11 +151,15 @@ impl<'a> CanonicalMap<'a> {
     ///
     /// Infallible **by design**, and duplicate keys are rejected later, at
     /// [`to_canonical_vec`] (#586). Making this fallible would put a `?` on
-    /// ~30 call sites whose keys are provably-unique `KEY_*` literals, to
-    /// catch a condition only two of them can actually create (the
-    /// forward-compat `unknown` loops, whose keys are runtime data). The
-    /// single choke point catches every construction path, including ones
-    /// nobody has written yet.
+    /// **55** production call sites whose keys are provably-unique `KEY_*`
+    /// literals, to catch a condition only the other **7** can create —
+    /// the runtime-keyed pushes in six forward-compat `unknown` loops
+    /// (`manifest/encode.rs` x3, `record.rs` x2, `block.rs` x1) plus
+    /// `record.rs`'s field-name push. The single choke point catches every
+    /// construction path, including ones nobody has written yet.
+    ///
+    /// (Counts measured, not estimated: a prior version of this comment
+    /// said "~30" and "only two of them", undercounting by ~1.8x and ~3x.)
     pub(crate) fn push(&mut self, key: &'a str, value: CanonicalValue<'a>) {
         self.0.push((key, value));
     }
@@ -359,11 +363,23 @@ impl Serialize for CanonicalValue<'_> {
 /// decrypted plaintext.
 pub(crate) fn to_canonical_vec(map: &CanonicalMap<'_>) -> Result<Vec<u8>, CanonicalError> {
     // #586: reject an ambiguous map BEFORE encoding it, so no duplicate key
-    // can reach a signature. This is the choke point all four production
-    // encode paths (manifest, record, block, bundle) funnel through — see
-    // `CanonicalMap::check_no_duplicate_keys` for why the check lives here
-    // rather than on `push`, and for why forward-compat `Borrowed` subtrees
-    // are deliberately outside the walk.
+    // can reach a signature over a VAULT BODY. This is the choke point the
+    // four vault-body encode paths (manifest, record, block, bundle) funnel
+    // through — see `CanonicalMap::check_no_duplicate_keys` for why the
+    // check lives here rather than on `push`, and for why forward-compat
+    // `Borrowed` subtrees are deliberately outside the walk.
+    //
+    // Scope it exactly, because the wider claim is false: `identity::card`
+    // and `sync::state` do NOT funnel through here and are NOT covered.
+    // `ContactCard::signed_bytes` — the byte string the §8 hybrid
+    // self-signature commits to — encodes via card.rs's own private
+    // `encode_map`, and `pk_bundle_bytes` / `SyncState::to_canonical_cbor`
+    // via `legacy::encode_canonical_map`; neither deduplicates. There is no
+    // live exposure (all three build their keys from fixed `&'static str`
+    // literals, and card.rs's `encode_map` is deliberately permissive so
+    // its tests can build hostile-peer bytes), but that is a property of
+    // today's call sites, not of the encoder — which is the posture #586
+    // exists to replace. Tracked as #602 rather than fixed here.
     map.check_no_duplicate_keys()?;
 
     let bound = map.size_bound();
@@ -428,10 +444,13 @@ mod tests {
         map.push("yy", CanonicalValue::Uint(3));
         map.push("a", CanonicalValue::Uint(4));
 
-        assert!(matches!(
-            to_canonical_vec(&map),
-            Err(CanonicalError::DuplicateKey { .. })
-        ));
+        match to_canonical_vec(&map) {
+            // Canonical order is a, a, yy, zz — the second "a" sits at 1.
+            // Asserted rather than `{ .. }`-waved so a checker that reported
+            // a PUSH-order ordinal (3) reds here.
+            Err(CanonicalError::DuplicateKey { index }) => assert_eq!(index, 1),
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
     }
 
     /// The walk recurses through `Map`, so a duplicate one level down is
@@ -445,10 +464,38 @@ mod tests {
         let mut outer = CanonicalMap::with_capacity(1);
         outer.push("outer", CanonicalValue::Map(inner));
 
-        assert!(matches!(
-            to_canonical_vec(&outer),
-            Err(CanonicalError::DuplicateKey { .. })
-        ));
+        match to_canonical_vec(&outer) {
+            // The ordinal is scoped to the map it was FOUND in, per
+            // `CanonicalError::DuplicateKey`'s doc — not a running count
+            // across the walk. The inner map's canonical order is k, k, z,
+            // so the answer is 1 whatever the outer map contains.
+            Err(CanonicalError::DuplicateKey { index }) => assert_eq!(index, 1),
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
+    }
+
+    /// The ordinal must not accumulate across the walk. A global counter
+    /// would report 3 here (two outer entries visited first); a per-map one
+    /// reports 1. Nothing else in this file distinguishes the two.
+    #[test]
+    fn the_nested_ordinal_is_scoped_to_its_own_map() {
+        let mut inner = CanonicalMap::with_capacity(3);
+        inner.push("z", CanonicalValue::Uint(0));
+        inner.push("k", CanonicalValue::Uint(1));
+        inner.push("k", CanonicalValue::Uint(2));
+
+        let mut outer = CanonicalMap::with_capacity(3);
+        outer.push("aa", CanonicalValue::Uint(1));
+        outer.push("bb", CanonicalValue::Uint(2));
+        outer.push("cc", CanonicalValue::Map(inner));
+
+        match to_canonical_vec(&outer) {
+            Err(CanonicalError::DuplicateKey { index }) => assert_eq!(
+                index, 1,
+                "the ordinal must be the inner map's, not a global count"
+            ),
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
     }
 
     /// ...and through `Array`, which is how every `blocks` / `trash` /
@@ -465,10 +512,10 @@ mod tests {
             CanonicalValue::Array(vec![CanonicalValue::Map(entry)]),
         );
 
-        assert!(matches!(
-            to_canonical_vec(&outer),
-            Err(CanonicalError::DuplicateKey { .. })
-        ));
+        match to_canonical_vec(&outer) {
+            Err(CanonicalError::DuplicateKey { index }) => assert_eq!(index, 1),
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
     }
 
     /// **The load-bearing negative.** A duplicate key inside a

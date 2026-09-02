@@ -13,12 +13,17 @@ use std::fmt;
 /// the §4.3 step-4 re-encode comparison.
 ///
 /// **Advisory, not the verdict.** [`decode_manifest`] still rejects on the
-/// byte comparison alone; this type only says *which rule* most likely
-/// explains that rejection, so a misclassification changes a diagnostic
-/// and never an acceptance decision. That is what makes the positional
-/// classification in `manifest::decode::classify` sound to use on the path
-/// every vault open takes, and it is why [`Self::Unclassified`] is a real
-/// outcome rather than a bug to eliminate.
+/// byte comparison alone; this type only says which rule explains that
+/// rejection, so even a wrong answer changes a diagnostic and never an
+/// acceptance decision.
+///
+/// Advisory does not mean guessed. Every named arm is **decisive**: it is
+/// read off the parsed [`Manifest`] or off a full walk of the input, never
+/// off whatever byte happens to sit at the divergence. The first version of
+/// `manifest::decode::classify` did read that byte as a CBOR head, which
+/// let a peer choose the reported cause through `unknown` key names — see
+/// that module's own doc. [`Self::Unclassified`] is the residue that
+/// honesty leaves behind, not a bug to eliminate.
 ///
 /// **Fieldless by construction (#474):** every variant is a compile-time
 /// constant, so no decrypted manifest content — a `block_name`, an unknown
@@ -30,17 +35,20 @@ use std::fmt;
 /// struct, required — nor an allowlist row.
 ///
 /// [`decode_manifest`]: super::decode_manifest
+/// [`Manifest`]: super::Manifest
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum NonCanonicalCause {
     /// One of the five arrays `docs/vault-format.md` §4.2 fixes an order
     /// for did not arrive in it: `vector_clock`, `blocks`, `trash`, a
     /// block's `recipients`, or a block's `vector_clock_summary`.
     ///
-    /// Decisive in both directions, unlike the byte-head causes below,
-    /// because it is read off the *parsed* [`Manifest`] rather than off a
-    /// divergence position: `encode_manifest` sorts all five on output, so
-    /// an unsorted input always diverges, and an input in which all five
-    /// are sorted can never diverge *because of* array order.
+    /// Decisive in both directions, because it is read off the *parsed*
+    /// [`Manifest`] rather than off a divergence position:
+    /// `encode_manifest` sorts all five on output, so an unsorted input
+    /// always diverges, and an input in which all five are sorted can never
+    /// diverge *because of* array order. Checked first — not because the
+    /// others are weaker (they are decisive too, from a whole-input walk)
+    /// but because it is the cheaper check and the likelier cause.
     ///
     /// This is the cause a clean-room implementer is most likely to hit —
     /// the sort disciplines were enforced by the encoder from the first
@@ -56,29 +64,39 @@ pub enum NonCanonicalCause {
     /// `ciborium`'s `Value` reader collapses these on parse, so the input
     /// bytes are the only place the evidence survives — which is why this
     /// is classified from the input rather than from the parsed value.
+    ///
+    /// Decisive: reported only when a walk of the whole body actually finds
+    /// such an item, never because the byte at the divergence resembled
+    /// one. A body containing one is guaranteed to have diverged, precisely
+    /// because the parse normalised it away.
     #[error("an indefinite-length item")]
     IndefiniteLength,
 
     /// A non-shortest-form integer or length prefix: an argument encoded
     /// in more bytes than RFC 8949 §4.2.1 permits for its value.
+    ///
+    /// Decisive on the same terms as [`Self::IndefiniteLength`]: found by
+    /// walking the body, not by reading the divergence byte.
     #[error("a non-shortest-form integer or length prefix")]
     NonShortestForm,
 
     /// The divergence is real but not attributable to any cause above.
     ///
-    /// Reached when the first differing byte is an ordinary head — most
-    /// often map keys among the *known* key set arriving out of canonical
-    /// order, which re-encodes to the canonical order and diverges without
-    /// leaving a distinguishing byte at the divergence point. Reported
-    /// honestly rather than guessed: naming a cause that cannot be proven
-    /// from the bytes would make the diagnostic worse than silence.
+    /// Reached when the body contains no encoding-level violation at all —
+    /// most often map keys arriving out of canonical order, which
+    /// re-encodes to the canonical order while every individual head stays
+    /// perfectly canonical. Reported honestly rather than guessed: naming a
+    /// cause that cannot be proven from the body would make the diagnostic
+    /// worse than silence, and the message this variant replaced at least
+    /// listed key disorder among its candidates.
     #[error("cause not determined")]
     Unclassified,
 }
 
 /// Renders a `NonCanonicalEncoding` byte locator as a message suffix.
 ///
-/// A private [`fmt::Display`] adapter rather than a `format!` inside the
+/// A module-local [`fmt::Display`] adapter (`pub(super)`, so it is visible
+/// across `vault::manifest` but not beyond) rather than a `format!` inside the
 /// `#[error]` attribute: it allocates nothing, and it keeps the "no
 /// offset was available" case from rendering as a bare `Some(41)` /
 /// `None` debug form. Mirrors the shape [`crate::cbor::CborFault`]'s own

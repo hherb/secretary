@@ -647,9 +647,15 @@ fn canonical_error_to_bundle_error(e: CanonicalError) -> BundleError {
             BundleError::Malformed("float values are not permitted in canonical CBOR")
         }
         // #586: the value handed in repeats a CBOR map key, which would
-        // encode to an ambiguous body. `index` is discarded for the same
-        // reason the arm below discards `actual`/`bound` — `BundleError::Malformed`
-        // carries only fixed `&'static str` literals by design (#474).
+        // encode to an ambiguous body. Unreachable in practice —
+        // `to_canonical_cbor` pushes eleven fixed `KEY_*` literals and this
+        // type has no forward-compat `unknown` bag — but the bundle DOES go
+        // through `to_canonical_vec`, so unlike card.rs's twin this arm is
+        // structurally live. `index` is discarded because
+        // `BundleError::Malformed` carries only fixed `&'static str`
+        // literals — a shape constraint of that variant, NOT a #474
+        // plaintext concern: `CanonicalError::DuplicateKey`'s own doc
+        // certifies `index` as data-free by construction.
         CanonicalError::DuplicateKey { .. } => {
             BundleError::Malformed("duplicate CBOR map key in canonical encoding")
         }
@@ -1545,6 +1551,23 @@ mod tests {
                     msg,
                     "canonical CBOR encode exceeded its reserved size bound"
                 );
+            }
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    /// #586's arm, which unlike its `card.rs` twin is structurally LIVE:
+    /// `IdentityBundle::to_canonical_cbor` really does route through
+    /// `to_canonical_vec`. Unreachable in practice only because all eleven
+    /// of its keys are fixed literals — a property of today's call site,
+    /// not of the mapping, which is why it gets the same
+    /// direct-construction test every sibling arm has.
+    #[test]
+    fn canonical_error_duplicate_key_maps_to_bundle_error() {
+        let err = CanonicalError::DuplicateKey { index: 2 };
+        match canonical_error_to_bundle_error(err) {
+            BundleError::Malformed(msg) => {
+                assert_eq!(msg, "duplicate CBOR map key in canonical encoding");
             }
             other => panic!("expected Malformed, got {other:?}"),
         }
