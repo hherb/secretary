@@ -138,6 +138,20 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
     // ("Array element order is normative") fixes for it, because
     // `encode_manifest` sorts all five on output.
     //
+    // It does NOT catch §4.2's OTHER array-level rule — the four
+    // repeated-value prohibitions — and the sort clause above is exactly
+    // the sentence that invites the opposite inference. Sortedness and
+    // distinctness are independent (`[x, x]` IS sorted), and a body
+    // carrying a repeat re-encodes to itself byte for byte, so this
+    // comparison never fires on one. They are enforced EARLIER, by the
+    // adjacent-equality scans in `entries.rs`
+    // (`DuplicateBlockUuid` / `DuplicateTrashUuid` /
+    // `VectorClockDuplicateDevice`) — the same standing-apart-from-the-
+    // re-encode arrangement `reject_floats_and_tags` has for rule 4. Do
+    // not delete one of those scans as redundant with this check; the
+    // clean-room Python reader made precisely that inference and accepted
+    // four bodies this decoder rejects (#594).
+    //
     // What this does NOT catch, stated exactly, because the obvious
     // wider claim is FALSE: **duplicate keys and map key ORDER** inside
     // a forward-compat `unknown` subtree. Nothing else — of what still

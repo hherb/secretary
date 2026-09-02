@@ -249,6 +249,20 @@ pub(super) fn unexpected<T, E: core::fmt::Debug>(outcome: &Result<T, E>) -> Stri
     }
 }
 
+/// `Result::expect_err`, without rendering the `Ok` payload.
+///
+/// `expect_err` prints `{:?}` of the `Ok` value on failure, and for these
+/// decoders that value is a `Manifest` or a `BlockEntry` — whose `Debug`
+/// includes every `block_name`, i.e. user-authored plaintext, straight into
+/// CI logs (#584 review). Same reasoning as [`unexpected`]; this is the form
+/// for the common case where the test wants the error and nothing else.
+pub(super) fn expect_rejected<T, E: core::fmt::Debug>(outcome: Result<T, E>, what: &str) -> E {
+    match outcome {
+        Err(e) => e,
+        Ok(_) => panic!("{what}: got Ok(<decoded — payload withheld>)"),
+    }
+}
+
 /// Re-parse encoded bytes to a `ciborium::Value` map for raw
 /// inspection of array order.
 pub(super) fn parse_to_value_map(bytes: &[u8]) -> Vec<(Value, Value)> {

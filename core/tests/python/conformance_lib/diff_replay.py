@@ -43,7 +43,7 @@ def run_diff_replay(target: str, input_path: str) -> int:
     exit 0 -- a `NameError` from a typo, a `RecursionError` on a deeply
     nested subtree, a `cbor2` API break, a missing input file. The Rust
     caller (`core/tests/differential_replay.rs`) scores reject-vs-reject as
-    AGREEMENT, and 9 of the 21 committed `manifest_body` seeds are
+    AGREEMENT, and 13 of the 27 committed `manifest_body` seeds are
     Rust-reject rows -- so an internal bug in this script became a green
     differential test on exactly the inputs whose decode paths are most
     interesting. Only the exception types the decoders raise DELIBERATELY

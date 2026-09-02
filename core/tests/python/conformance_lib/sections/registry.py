@@ -46,6 +46,9 @@ from conformance_lib.sections.manifest_body_shape_guards import (
 from conformance_lib.sections.manifest_canonicality_kat import (
     section_manifest_canonicality_kat,
 )
+from conformance_lib.sections.manifest_uniqueness_kat import (
+    section_manifest_uniqueness_kat,
+)
 from conformance_lib.sections.ml_dsa_regression import (
     section3_ml_dsa_65_verify_regression,
 )
@@ -129,6 +132,8 @@ SECTIONS: tuple[Section, ...] = (
             section_manifest_body_array_sort_guard),
     Section("MCK", "manifest_canonicality_kat.json §4.2 per-rule corpus replay",
             " (#583, #592)", section_manifest_canonicality_kat),
+    Section("MUQ", "manifest_uniqueness_kat.json §4.2 repeated-value replay",
+            " (#594)", section_manifest_uniqueness_kat),
     Section("RC", "record unknown-subtree canonicality, both nesting levels",
             " (#592)", section_record_unknown_subtree_canonicality),
     # Last on purpose: it reports on the table above, so it reads as a summary
