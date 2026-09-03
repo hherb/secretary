@@ -19,7 +19,7 @@ use crate::vault::manifest::test_support::{
     UNKNOWN_MAP_NONCANONICAL_BLOCK, UNKNOWN_MAP_NONCANONICAL_TRASH,
 };
 use crate::vault::manifest::{
-    KEY_COUNTER, KEY_DEVICE_UUID, KEY_RECIPIENTS, KEY_VECTOR_CLOCK_SUMMARY,
+    NonCanonicalCause, KEY_COUNTER, KEY_DEVICE_UUID, KEY_RECIPIENTS, KEY_VECTOR_CLOCK_SUMMARY,
 };
 
 use super::*;
@@ -457,8 +457,114 @@ fn decode_manifest_rejects_a_non_canonical_body() {
     // than assumed: the only difference is key order, and the canonical
     // form decodes fine (`decode_manifest_wipes_the_parser_scratch_buffer`
     // above drives exactly that).
+    // Reordering KNOWN keys leaves every §4.2 array sorted and puts an
+    // ordinary text-string head at the divergence, so #590's classifier has
+    // nothing to prove a cause from. `Unclassified` is the correct, honest
+    // answer here — asserted rather than waved through with `{ .. }` so a
+    // future classifier that starts GUESSING a cause for this shape reds.
     match decode_manifest(&scrambled) {
-        Err(ManifestError::NonCanonicalEncoding) => {}
+        Err(ManifestError::NonCanonicalEncoding { cause, at }) => {
+            assert_eq!(cause, NonCanonicalCause::Unclassified);
+            assert!(at.is_some(), "a byte locator must be reported");
+        }
+        other => panic!("expected NonCanonicalEncoding, got {}", unexpected(&other)),
+    }
+}
+
+/// **#590 round 2 — a peer must not be able to choose the reported cause.**
+///
+/// The first version of the classifier read the CBOR head at the first
+/// differing byte. `Manifest::unknown` keys are wire data, so a peer that
+/// picked two equal-length extension keys differing at `_` (`0x5F`, an
+/// indefinite-length byte-string head) made a v1 client print
+/// "an indefinite-length item" for a body containing none — while the
+/// message #590 replaced had at least listed "key disorder" among its
+/// candidates.
+///
+/// The two keys are the same length so canonical order is decided by their
+/// bytes alone, which puts the divergence squarely inside a key's UTF-8
+/// payload rather than on any head. `Unclassified` is the only honest
+/// answer, and this test reds if the scan ever goes back to reading a byte
+/// at a position it cannot prove is an item boundary.
+#[test]
+fn a_peer_cannot_choose_the_reported_cause_through_unknown_key_names() {
+    let mut m = populated_manifest();
+    m.unknown.insert(
+        "aaaXb".to_string(),
+        UnknownValue::from_canonical_cbor(&[0x01]).expect("canonical uint 1"),
+    );
+    m.unknown.insert(
+        "aaa_b".to_string(),
+        UnknownValue::from_canonical_cbor(&[0x02]).expect("canonical uint 2"),
+    );
+
+    let canonical = encode_manifest(&m).expect("encode");
+    let mut entries = parse_to_value_map(canonical.expose());
+
+    // Swap the two adjacent unknown keys out of canonical order. Nothing
+    // else about the body changes.
+    let x = entries
+        .iter()
+        .position(|(k, _)| matches!(k, Value::Text(t) if t == "aaaXb"))
+        .expect("aaaXb present");
+    let u = entries
+        .iter()
+        .position(|(k, _)| matches!(k, Value::Text(t) if t == "aaa_b"))
+        .expect("aaa_b present");
+    entries.swap(x, u);
+
+    let mut reordered = Vec::new();
+    ciborium::ser::into_writer(&Value::Map(entries), &mut reordered).expect("serialize");
+    assert_ne!(
+        reordered,
+        canonical.expose(),
+        "the swap must actually change the bytes, or this test is vacuous"
+    );
+
+    match decode_manifest(&reordered) {
+        Err(ManifestError::NonCanonicalEncoding { cause, at }) => {
+            let at = at.expect("a byte locator must be reported");
+            assert_eq!(
+                reordered[at], 0x5F,
+                "the divergence must land on the `_` byte, or the case no \
+                 longer exercises the regression"
+            );
+            assert_eq!(
+                cause,
+                NonCanonicalCause::Unclassified,
+                "a payload byte must never be read as a CBOR head"
+            );
+        }
+        other => panic!("expected NonCanonicalEncoding, got {}", unexpected(&other)),
+    }
+}
+
+/// **The `at: None` arm, end to end.** `ciborium::de::from_reader` does not
+/// require EOF, so a body carrying trailing bytes parses; the re-encoding is
+/// then a strict PREFIX of the input, `zip` finds no differing pair, and the
+/// locator is legitimately absent. `OffsetSuffix` must then contribute
+/// nothing to the message rather than rendering `None`.
+///
+/// Unit-tested at `classify::tests::a_prefix_relationship_is_unclassified_with_no_offset`;
+/// this is the reachable path that produces it on a real vault body.
+#[test]
+fn trailing_bytes_yield_a_rejection_with_no_locator() {
+    let m = populated_manifest();
+    let canonical = encode_manifest(&m).expect("encode");
+
+    let mut trailing = canonical.expose().to_vec();
+    trailing.push(0x00);
+
+    match decode_manifest(&trailing) {
+        Err(ManifestError::NonCanonicalEncoding { cause, at }) => {
+            assert_eq!(at, None, "a strict prefix has no differing byte pair");
+            assert_eq!(cause, NonCanonicalCause::Unclassified);
+            let rendered = ManifestError::NonCanonicalEncoding { cause, at }.to_string();
+            assert!(
+                !rendered.contains("offset") && !rendered.contains("None"),
+                "an absent locator must contribute nothing: {rendered}"
+            );
+        }
         other => panic!("expected NonCanonicalEncoding, got {}", unexpected(&other)),
     }
 }
@@ -707,7 +813,14 @@ fn non_canonical_shapes_are_each_rejected() {
     let mut non_shortest = body.clone();
     non_shortest.splice(value_at..value_at + 1, [0x18u8, MANIFEST_VERSION_V1]);
     match decode_manifest(&non_shortest) {
-        Err(ManifestError::NonCanonicalEncoding) => {}
+        Err(ManifestError::NonCanonicalEncoding { cause, at }) => {
+            assert_eq!(cause, NonCanonicalCause::NonShortestForm);
+            assert_eq!(
+                at,
+                Some(value_at),
+                "the locator must name the spliced head, not some later byte"
+            );
+        }
         other => panic!(
             "non-shortest-form integer: expected NonCanonicalEncoding, got {}",
             unexpected(&other)
@@ -720,7 +833,10 @@ fn non_canonical_shapes_are_each_rejected() {
     indefinite.extend_from_slice(&body[1..]);
     indefinite.push(0xFF);
     match decode_manifest(&indefinite) {
-        Err(ManifestError::NonCanonicalEncoding) => {}
+        Err(ManifestError::NonCanonicalEncoding { cause, at }) => {
+            assert_eq!(cause, NonCanonicalCause::IndefiniteLength);
+            assert_eq!(at, Some(0), "the 0xBF head is byte 0");
+        }
         other => panic!(
             "indefinite-length map: expected NonCanonicalEncoding, got {}",
             unexpected(&other)
@@ -755,7 +871,9 @@ fn non_canonical_shapes_are_each_rejected() {
         "the reversal must actually change the bytes"
     );
     match decode_manifest(&unsorted) {
-        Err(ManifestError::NonCanonicalEncoding) => {}
+        Err(ManifestError::NonCanonicalEncoding { cause, .. }) => {
+            assert_eq!(cause, NonCanonicalCause::ArraySortOrder);
+        }
         other => panic!(
             "unsorted vector_clock: expected NonCanonicalEncoding, got {}",
             unexpected(&other)
@@ -806,8 +924,19 @@ fn every_array_sort_discipline_is_rejected_out_of_order_on_decode() {
             perturbed, canonical,
             "{label}: reversing must actually change the bytes, or the case is vacuous"
         );
+        // Every caller of this helper reverses exactly one §4.2 array, so
+        // the cause is determinate — which makes this the broadest pin on
+        // #590's `ArraySortOrder` arm: one assertion covering all five
+        // disciplines. A classifier that fell through to the byte head
+        // would report `Unclassified` here and red every case.
         match decode_manifest(perturbed) {
-            Err(ManifestError::NonCanonicalEncoding) => {}
+            Err(ManifestError::NonCanonicalEncoding { cause, .. }) => {
+                assert_eq!(
+                    cause,
+                    NonCanonicalCause::ArraySortOrder,
+                    "{label}: wrong cause for an out-of-order array"
+                );
+            }
             other => panic!(
                 "{label}: expected NonCanonicalEncoding, got {}",
                 unexpected(&other)
@@ -937,26 +1066,36 @@ fn unknown_subtree_tolerates_key_order_and_duplicates_but_not_encoding() {
 
     // REJECTED: every encoding-level departure from the deterministic
     // profile, at any CBOR major type the subtree can hold.
-    for (what, repl) in [
+    //
+    // Each row also names the cause #590 must report for it. That third
+    // column is what turns this table from "all six reject identically"
+    // into a per-shape pin: the two families differ only in the head byte
+    // at the divergence, which is exactly what `classify_head` reads.
+    for (what, repl, expected) in [
         (
             "indefinite-length map",
             &[0xBFu8, 0x61, b'a', 0x01, 0xFF][..],
+            NonCanonicalCause::IndefiniteLength,
         ),
         (
             "non-shortest-form integer",
             &[0xA1u8, 0x61, b'a', 0x18, 0x01][..],
+            NonCanonicalCause::NonShortestForm,
         ),
         (
             "indefinite-length text string",
             &[0xA1u8, 0x61, b'a', 0x7F, 0x61, b'x', 0xFF][..],
+            NonCanonicalCause::IndefiniteLength,
         ),
         (
             "indefinite-length byte string",
             &[0xA1u8, 0x61, b'a', 0x5F, 0x41, 0xAA, 0xFF][..],
+            NonCanonicalCause::IndefiniteLength,
         ),
         (
             "indefinite-length array",
             &[0xA1u8, 0x61, b'a', 0x9F, 0x01, 0xFF][..],
+            NonCanonicalCause::IndefiniteLength,
         ),
         // A non-shortest LENGTH prefix, as distinct from a non-shortest
         // integer VALUE above: `B8 01` is a 1-entry map written with a
@@ -964,10 +1103,14 @@ fn unknown_subtree_tolerates_key_order_and_duplicates_but_not_encoding() {
         (
             "non-shortest-form map length",
             &[0xB8u8, 0x01, 0x61, b'a', 0x01][..],
+            NonCanonicalCause::NonShortestForm,
         ),
     ] {
         match decode_manifest(&splice(repl)) {
-            Err(ManifestError::NonCanonicalEncoding) => {}
+            Err(ManifestError::NonCanonicalEncoding { cause, at }) => {
+                assert_eq!(cause, expected, "{what} inside an unknown subtree");
+                assert!(at.is_some(), "{what}: a byte locator must be reported");
+            }
             other => panic!(
                 "{what} inside an unknown subtree: expected NonCanonicalEncoding, got {}",
                 unexpected(&other)

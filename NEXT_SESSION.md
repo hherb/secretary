@@ -1,1 +1,1 @@
-docs/handoffs/2026-09-02-manifest-uniqueness-parity-shipped.md
+docs/handoffs/2026-09-02-noncanonical-cause-and-dup-keys-shipped.md

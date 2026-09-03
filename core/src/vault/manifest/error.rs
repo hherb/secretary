@@ -1,5 +1,6 @@
 //! Manifest layer-local error enum (`docs/vault-format.md` §4).
 
+use super::cause::{NonCanonicalCause, OffsetSuffix};
 use crate::cbor::CborFault;
 use crate::crypto::sig::SigError;
 use crate::vault::canonical::CanonicalError;
@@ -229,12 +230,38 @@ pub enum ManifestError {
     /// [`RecordError::NonCanonicalEncoding`]: crate::vault::record::RecordError::NonCanonicalEncoding
     /// [`BlockError::NonCanonicalEncoding`]: crate::vault::block::BlockError::NonCanonicalEncoding
     /// [`Manifest`]: crate::vault::manifest::Manifest
-    #[error(
-        "non-canonical CBOR encoding in manifest body (e.g. indefinite-length \
-         item, key disorder, non-shortest length, or an array not in its \
-         §4.2 sort order)"
-    )]
-    NonCanonicalEncoding,
+    /// **The two payload fields answer different questions (#590).** `cause`
+    /// classifies; `at` locates, whatever the cause. Before #590 this
+    /// variant was fieldless and its message named four candidate causes
+    /// with "e.g.", so a user whose vault stopped opening had no way to
+    /// tell which — on the path every vault open takes, for the reader
+    /// most likely to hit it (a peer or clean-room client whose encoder
+    /// this decoder narrowed away from in #572).
+    ///
+    /// `cause` is **advisory**: the byte comparison alone decides the
+    /// verdict, so a [`NonCanonicalCause::Unclassified`] changes a
+    /// diagnostic and never an acceptance. Advisory is not the same as
+    /// guessed — every named arm is decisive, read off the parsed
+    /// [`Manifest`] or a full walk of the input rather than off the byte at
+    /// `at`. See [`NonCanonicalCause`] for what each arm proves.
+    ///
+    /// **Deliberate residual disclosure, inherited from [`CborFault`]'s:**
+    /// `at` is an offset into a re-encoding of decrypted plaintext, hence
+    /// a weak length oracle — it narrows the possible lengths of whatever
+    /// precedes the divergence, `block_name` included. Accepted on the
+    /// same grounds `CborFault::offset` records: the threat model already
+    /// treats plaintext *size* as disclosed, because vault file sizes are
+    /// visible on disk to anyone who can read the folder. Recorded so the
+    /// trade stays explicit rather than assumed.
+    #[error("non-canonical CBOR encoding in manifest body: {cause}{}", OffsetSuffix(*at))]
+    NonCanonicalEncoding {
+        /// Which canonical-form rule most likely explains the divergence.
+        cause: NonCanonicalCause,
+        /// Offset of the first byte at which the re-encoding differs from
+        /// the input. `None` when neither buffer differs within its
+        /// length — i.e. one is a strict prefix of the other.
+        at: Option<usize>,
+    },
 
     /// Manifest binary header (§4.1) `magic` field did not match
     /// [`crate::version::MAGIC`] (`"SECR"` big-endian). The `expected`
