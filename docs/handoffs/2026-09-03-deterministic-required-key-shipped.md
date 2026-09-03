@@ -341,10 +341,12 @@ for that expectation is
 
 ### Housekeeping
 
-`.worktrees/` holds `d5-macos-mutation`, `d5-macos-trash-settings`,
-`noncanonical-cause` (merged as #601 — removable) and this slice's. The scratchpad
-also holds a detached `main` worktree used for the baseline diffs; remove it with
-`git worktree remove --force <path>` if `git worktree list` still shows it.
+**Done, not pending.** `.worktrees/noncanonical-cause` (merged as #601) and the
+throwaway detached `main` worktree used for the baseline diffs were both removed
+this session; `git worktree list` now shows only the repo, two `.claude/worktrees/`
+checkouts this session did not create, and this slice's. Nothing outstanding —
+this section exists to say so, rather than to leave the next session chasing a
+no-op the way the #594 baton recorded.
 
 ---
 
