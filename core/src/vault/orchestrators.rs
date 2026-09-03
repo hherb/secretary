@@ -741,6 +741,46 @@ pub(crate) fn verify_block_fingerprints(
     Ok(())
 }
 
+/// SECURITY (VL-2): read one block file and bind it to the authenticated
+/// manifest entry before its bytes are trusted for a read or a re-key.
+///
+/// [`verify_block_fingerprints`] runs once inside [`open_vault`], but the
+/// resulting [`OpenVault`] handle lives for the whole session. A hostile
+/// cloud-folder host (threat-model §2.1) can replace `blocks/<uuid>.cbor.enc`
+/// with an older but genuinely owner-signed version *after* the open — every
+/// later read or re-key would otherwise trust the stale bytes, and a re-key
+/// (`share_block`, `revoke_block_recipient`) would re-encrypt and re-sign them
+/// as current, laundering a block-level rollback (a rotated-back password, a
+/// resurrected revocation) into a freshly signed manifest. Requiring the
+/// on-disk bytes to hash to the manifest's committed BLAKE3 fingerprint binds
+/// every read to exactly what the authenticated manifest attests; a post-open
+/// swap is rejected with [`VaultError::BlockFingerprintMismatch`]. The
+/// fingerprint covers the complete file (the §6.1 header included), so the
+/// block's own `block_uuid` and `vault_uuid` are transitively bound too.
+///
+/// This is the single verified-read choke-point every re-key/read path must
+/// use; a plain `fs::read` + `decode_block_file` skips the freshness binding.
+fn read_verified_block_file(
+    folder: &Path,
+    entry: &BlockEntry,
+    context: &'static str,
+) -> Result<block::BlockFile, VaultError> {
+    let uuid_hex = format_uuid_hyphenated(&entry.block_uuid);
+    let block_path = folder
+        .join(BLOCKS_SUBDIR)
+        .join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}"));
+    let bytes = std::fs::read(&block_path).map_err(|e| VaultError::Io { context, source: e })?;
+    let got = *blake3_hash(&bytes).as_bytes();
+    if got != entry.fingerprint {
+        return Err(VaultError::BlockFingerprintMismatch {
+            block_uuid: entry.block_uuid,
+            expected: entry.fingerprint,
+            got,
+        });
+    }
+    Ok(block::decode_block_file(&bytes)?)
+}
+
 /// Shared helper for [`open_vault`] and [`read_vault_manifest`].
 ///
 /// Inputs: the vault folder, pre-read `vault.toml` bytes, the unlocked
@@ -810,6 +850,27 @@ pub(crate) fn read_and_verify_manifest(
             vault: unlocked.identity.user_uuid,
             found: owner_card.contact_uuid,
         });
+    }
+
+    // SECURITY (VL-1): bind the on-disk owner card to the AEAD-authenticated
+    // Identity Bundle. `contacts/<owner>.card` sits in the attacker-writable
+    // vault folder and is only self-signed, so a hostile cloud host can
+    // substitute a card that carries the owner's `contact_uuid` but the
+    // attacker's own public keys and re-sign the (unauthenticated) manifest
+    // signature suffix under those keys — `verify_self` and the
+    // `author_fingerprint` check below both pass for such a card. Requiring
+    // every public key to equal the bundle's (the bundle is decrypted under
+    // the caller's credential and cannot be forged by the host) means the
+    // manifest signature is only ever trusted against the genuine owner keys,
+    // and the card cannot become an attacker-controlled KEM recipient for
+    // subsequent block writes. These are public keys, so a constant-time
+    // compare is unnecessary. See `docs/vault-format.md` §4.3.
+    if owner_card.x25519_pk != unlocked.identity.x25519_pk
+        || owner_card.ml_kem_768_pk != unlocked.identity.ml_kem_768_pk
+        || owner_card.ed25519_pk != unlocked.identity.ed25519_pk
+        || owner_card.ml_dsa_65_pk != unlocked.identity.ml_dsa_65_pk
+    {
+        return Err(VaultError::OwnerCardKeyMismatch);
     }
 
     // Sanity: manifest envelope's author_fingerprint matches the
@@ -1692,14 +1753,10 @@ pub fn share_block(
         .ok_or(VaultError::BlockNotFound { block_uuid })?;
 
     // Step 2: read the on-disk block file and decode the §6.1 envelope.
-    let blocks_dir = folder.join(BLOCKS_SUBDIR);
-    let block_uuid_hex = format_uuid_hyphenated(&block_uuid);
-    let block_path = blocks_dir.join(format!("{block_uuid_hex}.cbor.enc"));
-    let block_file_bytes = std::fs::read(&block_path).map_err(|e| VaultError::Io {
-        context: "failed to read block file for share_block",
-        source: e,
-    })?;
-    let block_file = block::decode_block_file(&block_file_bytes)?;
+    // VL-2: bind the bytes to the manifest's committed fingerprint so a
+    // post-open rollback of blocks/<uuid> cannot be re-signed as current.
+    let block_file =
+        read_verified_block_file(folder, &open.manifest.blocks[entry_idx], "share_block")?;
 
     // Step 3: author check. The on-disk `author_fingerprint` is the
     // BLAKE3-derived 16-byte fingerprint of the author's canonical
@@ -1908,15 +1965,13 @@ pub fn revoke_block_recipient(
         .ok_or(VaultError::BlockNotFound { block_uuid })?;
 
     // Step 2: read the on-disk block file and decode the §6.1 envelope
-    // (mirror share_block step 2, revoke-specific Io context string).
-    let blocks_dir = folder.join(BLOCKS_SUBDIR);
-    let block_uuid_hex = format_uuid_hyphenated(&block_uuid);
-    let block_path = blocks_dir.join(format!("{block_uuid_hex}.cbor.enc"));
-    let block_file_bytes = std::fs::read(&block_path).map_err(|e| VaultError::Io {
-        context: "failed to read block file for revoke_block_recipient",
-        source: e,
-    })?;
-    let block_file = block::decode_block_file(&block_file_bytes)?;
+    // (mirror share_block step 2). VL-2: same manifest-fingerprint binding
+    // so a rolled-back block cannot be laundered through a revoke re-key.
+    let block_file = read_verified_block_file(
+        folder,
+        &open.manifest.blocks[entry_idx],
+        "revoke_block_recipient",
+    )?;
 
     // Step 3 (author check, part 1 of 2): re-derive author fingerprint,
     // compare to the on-disk `author_fingerprint` (mirror share_block's

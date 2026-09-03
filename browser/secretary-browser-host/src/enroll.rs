@@ -87,25 +87,39 @@ fn write_config_file(path: &Path, config: &HostConfig) -> std::io::Result<()> {
     std::fs::write(path, config.to_json())
 }
 
-/// Write the dev secret file, `0600` on Unix (best-effort; not a security
-/// boundary, the file holds the secret in cleartext regardless).
+/// Write the dev secret file owner-only (`0600`) from the moment it exists
+/// (best-effort; not a security boundary, the file holds the secret in
+/// cleartext regardless).
+///
+/// The mode is set at `open(2)` time rather than by a `set_permissions` after
+/// `fs::write`: the create-then-chmod order left a window in which the file
+/// carried the process umask's permissions (typically `0644`) while already
+/// holding the secret, and `set_permissions` on a path follows a symlink an
+/// attacker could plant at that name.
 fn write_secret_file(path: &Path, hex_bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, hex_bytes)?;
-    set_owner_only(path)
+    let mut file = owner_only_create(path)?;
+    file.write_all(hex_bytes)?;
+    file.sync_all()
 }
 
 #[cfg(unix)]
-fn set_owner_only(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+fn owner_only_create(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
 }
 
 #[cfg(not(unix))]
-fn set_owner_only(_path: &Path) -> std::io::Result<()> {
-    Ok(())
+fn owner_only_create(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::create(path)
 }
 
 /// Scrub a secret-bearing `String`: move its (same-allocation) buffer out,
@@ -152,7 +166,7 @@ mod tests {
         // per-fill path the host uses at runtime.
         let loaded = HostConfig::load(&config_path).unwrap();
         assert_eq!(loaded, config);
-        let source = loaded.build_secret_source();
+        let source = loaded.build_secret_source().unwrap();
         let count = per_fill_count(&loaded, source.as_ref()).unwrap();
         // Golden vault has at least one block; just assert the open succeeded.
         let _ = count;

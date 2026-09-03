@@ -65,7 +65,7 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Clippy (lib + tests, deny warnings)
-        run: cargo clippy --release --workspace --tests -- -D warnings
+        run: cargo clippy --release --locked --workspace --tests -- -D warnings
 
   doc:
     name: cargo doc (deny warnings)
@@ -99,7 +99,7 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: cargo doc --no-deps --workspace
-        run: cargo doc --no-deps --workspace
+        run: cargo doc --no-deps --locked --workspace
 
   lean-binding:
     name: lean mobile-binding boundary

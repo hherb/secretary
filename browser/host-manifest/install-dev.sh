@@ -90,10 +90,14 @@ if [ "$UNINSTALL" -eq 1 ]; then
   exit 0
 fi
 
-# Validate the extension ID (Chrome ids are 32 chars, a–p).
+# Validate the extension ID (Chrome ids are 32 chars, a–p). This is FATAL, not
+# a warning: the id is interpolated unquoted into the JSON manifest below, so
+# a crafted value such as `abc/", "chrome-extension://evil/` would inject a
+# second `allowed_origins` entry and let another extension talk to the host
+# (audit BR-8). The strict character class makes injection unrepresentable.
 [ -n "$EXT_ID" ] || die "missing required --ext-id <EXTENSION_ID> (see chrome://extensions)"
 if ! printf '%s' "$EXT_ID" | grep -Eq '^[a-p]{32}$'; then
-  echo "install-dev.sh: warning: '$EXT_ID' does not look like a 32-char Chrome extension id" >&2
+  die "'$EXT_ID' is not a 32-char Chrome extension id ([a-p]{32}); refusing to write the manifest"
 fi
 
 # Build the host binary unless skipped.

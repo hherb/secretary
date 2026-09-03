@@ -11,9 +11,6 @@ import { createVault, probeCreateTarget } from '../src/lib/ipc';
 // FolderStep uses PathPicker, which invokes backend pick_* commands
 // directly via `@tauri-apps/api/core` (#353).
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
-vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({
-  writeText: vi.fn().mockResolvedValue(undefined)
-}));
 
 const PHRASE = Array.from({ length: 24 }, (_, i) => `word${i + 1}`).join(' ');
 

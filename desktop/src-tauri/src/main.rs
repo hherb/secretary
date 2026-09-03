@@ -21,12 +21,46 @@ use secretary_desktop::commands::lock::{
     vault_locked_payload, LOCK_REASON_AUTO, VAULT_LOCKED_EVENT,
 };
 use secretary_desktop::commands::{
-    browse, contacts, create, delete, edit, lock, pick, presence, reauth, recent, repair,
-    retention, settings, sync, unlock, vault,
+    browse, clipboard, contacts, create, delete, edit, lock, pick, presence, reauth, recent,
+    repair, retention, settings, sync, unlock, vault,
 };
 use secretary_desktop::constants::AUTO_LOCK_TICK_MS;
 use secretary_desktop::session::VaultSession;
 use secretary_desktop::timer::{poison_should_log, tick, TickOutcome};
+
+/// Whether `url` is an origin the webview is allowed to navigate to.
+///
+/// The bundled frontend is served from the Tauri custom protocol
+/// (`tauri://localhost` on macOS/Linux, `http://tauri.localhost` on
+/// Windows). In debug builds the frontend comes from the Vite dev server
+/// (`devUrl` in `tauri.conf.json`, `http://localhost:1420`). Everything
+/// else — including `https:` to any remote host, `file:`, `data:`,
+/// `javascript:` and `blob:` — is refused so plaintext revealed into the
+/// webview cannot leave it via a top-level navigation.
+fn is_app_origin(url: &tauri::Url) -> bool {
+    match url.scheme() {
+        "tauri" => true,
+        "http" | "https" => {
+            let host = url.host_str().unwrap_or("");
+            if host == "tauri.localhost" {
+                return true;
+            }
+            // Vite dev server; never reachable in a release build.
+            cfg!(debug_assertions) && host == "localhost" && url.port() == Some(1420)
+        }
+        _ => false,
+    }
+}
+
+/// The navigation guard as a Tauri plugin: `on_navigation` is consulted for
+/// every top-level navigation of every webview and returning `false` cancels
+/// it. Registered before any other plugin so it applies to the main window
+/// from its first load.
+fn navigation_guard_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("secretary-navigation-guard")
+        .on_navigation(|_webview, url| is_app_origin(url))
+        .build()
+}
 
 fn main() {
     // Init `tracing` subscriber for structured logs on stderr. Developer-
@@ -58,6 +92,15 @@ fn main() {
     );
 
     tauri::Builder::default()
+        // SECURITY (DT-1): pin webview navigation to the app's own origin.
+        // Tauri 2 allows navigation to any URL by default and the CSP's
+        // `connect-src`/`form-action` do not govern top-level navigation, so
+        // a script running in the (potentially compromised) webview could
+        // `reveal_record` everything and then `location.href` the plaintext
+        // to an attacker origin — bypassing path binding, the write-only
+        // clipboard and every IPC gate. Only the bundled app origin (and the
+        // Vite dev server in debug builds) is ever navigable.
+        .plugin(navigation_guard_plugin())
         // The dialog plugin is now driven by the Rust backend `pick_*` commands
         // (`commands::pick`, #353) via `DialogExt`. The webview no longer opens
         // dialogs directly; the `dialog:allow-open` capability has been removed.
@@ -84,6 +127,8 @@ fn main() {
             lock::notify_activity,
             browse::read_block,
             browse::reveal_field,
+            clipboard::copy_secret_text,
+            clipboard::clear_clipboard,
             create::create_vault,
             create::probe_create_target,
             pick::pick_vault_folder,

@@ -439,10 +439,15 @@ impl OpenVaultManifest {
     )> {
         lock_or_recover(&self.inner).as_ref().map(|i| {
             // Clone the IBK by copying its 32 bytes into a fresh
-            // Sensitive slot. The `*expose()` deref produces a temporary
-            // [u8; 32] that's immediately moved into Sensitive::new; the
-            // source slot's bytes stay live and zeroize on its own drop.
-            let ibk = Sensitive::new(*i.identity_block_key.expose());
+            // Sensitive slot. `[u8; 32]` is `Copy`, so the deref leaves a
+            // stack copy behind after the move into `Sensitive::new`; bind
+            // it by name and wipe it (the adjacent-copy trailing-wipe form
+            // the memory-hygiene memo prescribes — audit FF-6). The source
+            // slot's bytes stay live and zeroize on its own drop.
+            use zeroize::Zeroize as _;
+            let mut ibk_bytes = *i.identity_block_key.expose();
+            let ibk = Sensitive::new(ibk_bytes);
+            ibk_bytes.zeroize();
             (
                 i.manifest.clone(),
                 i.manifest_file.clone(),

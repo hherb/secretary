@@ -131,6 +131,13 @@ tauri-plugin-dialog = "2"
 # same reason as `tauri-plugin-dialog`: no secret bytes cross this seam, so
 # no security-critical guarantee rides on a specific 2.x patch version.
 tauri-plugin-clipboard-manager = "2"
+# Audit DT-2: secret copies now go through `commands::clipboard` in Rust so the
+# platform concealment flags (Windows `ExcludeClipboardContentFromMonitorProcessing`
+# / `CanIncludeInClipboardHistory`, macOS `org.nspasteboard.ConcealedType`) are
+# set — the plugin's plain `set_text` cannot express them. Same crate the plugin
+# already pulls in (version unified through the lockfile); `default-features =
+# false` so no extra clipboard formats are enabled beyond what the plugin needs.
+arboard = { version = "3", default-features = false }
 
 [lints]
 workspace = true

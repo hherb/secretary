@@ -15,6 +15,10 @@
 //! D.4.4; real origin matching is D.4.3.
 
 pub mod config;
+/// Dev-only enrollment (writes the device secret to a CLEARTEXT file). Gated
+/// with the `dev-secret-source` feature so it is never in a release build
+/// (audit BR-1).
+#[cfg(feature = "dev-secret-source")]
 pub mod enroll;
 pub mod frame;
 pub mod origin;
@@ -69,7 +73,10 @@ impl Context {
     pub fn from_default_config() -> Result<Self, ConfigError> {
         match HostConfig::load_default()? {
             Some(config) => {
-                let source = config.build_secret_source();
+                // A config naming a source this build lacks (every source, in
+                // a release build — audit BR-1) is a hard error, never a
+                // silent fall-back to a weaker source.
+                let source = config.build_secret_source()?;
                 Ok(Self::new(config, source))
             }
             None => Ok(Self::not_enrolled()),

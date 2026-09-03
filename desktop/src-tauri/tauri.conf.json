@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: tauri:; script-src 'self'"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: tauri:; script-src 'self'; form-action 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'"
     }
   },
   "bundle": {

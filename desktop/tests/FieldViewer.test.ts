@@ -3,7 +3,6 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
-vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({ writeText: vi.fn() }));
 
 import FieldViewer from '../src/components/FieldViewer.svelte';
 import type { BlockSummaryDto, RecordDto } from '../src/lib/ipc';

@@ -409,6 +409,16 @@ so every reader enforces rule 4 by a separate whole-body walk).
 7. Look up author_fingerprint:
     - If it matches the owner's own card fingerprint, use the Identity Bundle's pubkeys.
     - Otherwise, look in contacts/<author_uuid>.card; on miss, reject (unknown signer).
+   The owner's identity keys used for verification MUST come from the
+   AEAD-authenticated Identity Bundle, never from a card read out of the
+   (attacker-writable) vault folder. If an implementation loads the owner's
+   card from contacts/ for any reason, it MUST reject unless the card's four
+   public keys (x25519, ml_kem_768, ed25519, ml_dsa_65) equal the Bundle's;
+   otherwise a cloud-folder host can substitute a self-signed card carrying
+   the owner's contact_uuid but the attacker's keys and re-sign the
+   (unauthenticated) signature suffix under those keys — the manifest
+   signature would then verify against attacker-chosen keys, and the same
+   card becomes the owner's KEM recipient identity for subsequent writes.
 8. Reconstruct signed_message = "secretary-v1-manifest-sig" || header_bytes_through_aead_tag
 9. Hybrid-verify (sig_ed, sig_pq) against the author's pubkeys. Reject on failure.
 10. Compare manifest_body.vector_clock against the OS-local "highest seen" for this vault_uuid:

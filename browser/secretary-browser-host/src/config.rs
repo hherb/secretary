@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::secret_source::{DevFileSecretSource, DeviceSecretSource};
+#[cfg(feature = "dev-secret-source")]
+use crate::secret_source::DevFileSecretSource;
+use crate::secret_source::DeviceSecretSource;
 
 /// Environment variable overriding the config-file location.
 pub const CONFIG_ENV: &str = "SECRETARY_BROWSER_HOST_CONFIG";
@@ -41,6 +43,13 @@ pub enum ConfigError {
     /// `device_uuid` was not 16 bytes of lowercase hex.
     #[error("config device_uuid must be {DEVICE_UUID_LEN} bytes of hex: {0}")]
     BadDeviceUuid(String),
+    /// The config names a secret source this build does not include. The
+    /// only source that exists today (`dev_file`, a CLEARTEXT secret on disk)
+    /// is compiled under the `dev-secret-source` feature for tests only; a
+    /// release host has no secret source and fails closed as "not
+    /// enrollable" until the OS-keystore adapters land (audit BR-1).
+    #[error("config names a secret source that is not available in this build")]
+    SecretSourceUnavailable,
 }
 
 /// Where the host fetches the device secret. Tagged on `type` so future
@@ -118,11 +127,19 @@ impl HostConfig {
     }
 
     /// Build the concrete [`DeviceSecretSource`] this config describes.
-    pub fn build_secret_source(&self) -> Box<dyn DeviceSecretSource> {
+    ///
+    /// Fails with [`ConfigError::SecretSourceUnavailable`] when the config
+    /// names a source this build does not compile in — today that is every
+    /// source in a release build (audit BR-1), so a release host is never
+    /// silently pointed at a cleartext secret file.
+    pub fn build_secret_source(&self) -> Result<Box<dyn DeviceSecretSource>, ConfigError> {
         match &self.secret_source {
+            #[cfg(feature = "dev-secret-source")]
             SecretSourceConfig::DevFile { path } => {
-                Box::new(DevFileSecretSource::new(path.clone()))
+                Ok(Box::new(DevFileSecretSource::new(path.clone())))
             }
+            #[cfg(not(feature = "dev-secret-source"))]
+            SecretSourceConfig::DevFile { .. } => Err(ConfigError::SecretSourceUnavailable),
         }
     }
 }

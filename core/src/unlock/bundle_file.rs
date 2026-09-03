@@ -158,7 +158,13 @@ pub fn decode(bytes: &[u8]) -> Result<BundleFile, BundleFileError> {
     let total = bundle_ct_len
         .checked_add(16)
         .ok_or(BundleFileError::Truncated { offset: pos })?;
-    if pos + total > bytes.len() {
+    // `checked_add`: on a 32-bit `usize` an attacker-supplied `bundle_ct_len`
+    // near `u32::MAX` would wrap `pos + total` below `bytes.len()` and turn the
+    // bounds check into an out-of-range slice panic instead of a typed error.
+    let end = pos
+        .checked_add(total)
+        .ok_or(BundleFileError::Truncated { offset: pos })?;
+    if end > bytes.len() {
         return Err(BundleFileError::Truncated { offset: pos });
     }
     let bundle_ct_with_tag = bytes[pos..pos + total].to_vec();

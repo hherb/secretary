@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { writeText } from '@tauri-apps/plugin-clipboard-manager';
+  import { copySecretText, clearClipboard } from '../../lib/ipc';
   import { groupMnemonicWords } from '../../lib/create';
   import { CLIPBOARD_CLEAR_MS } from '../../lib/constants';
 
@@ -13,11 +13,13 @@
   let clearTimer: ReturnType<typeof setTimeout> | null = null;
 
   async function copy(): Promise<void> {
-    await writeText(mnemonic);
+    // Rust-side write with OS concealment flags (audit DT-2): the 24-word
+    // recovery phrase must never be recorded by clipboard history / sync.
+    await copySecretText(mnemonic);
     copied = true;
     if (clearTimer) clearTimeout(clearTimer);
     clearTimer = setTimeout(() => {
-      void writeText('');
+      void clearClipboard();
       copied = false;
     }, CLIPBOARD_CLEAR_MS);
   }
@@ -31,7 +33,7 @@
   onDestroy(() => {
     if (clearTimer) {
       clearTimeout(clearTimer);
-      void writeText('');
+      void clearClipboard();
     }
   });
 </script>

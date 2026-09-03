@@ -3909,6 +3909,7 @@ dependencies = [
  "idna",
  "psl",
  "rand_core 0.6.4",
+ "secretary-browser-host",
  "secretary-core",
  "secretary-test-utils",
  "serde",
@@ -3982,6 +3983,7 @@ dependencies = [
 name = "secretary-desktop"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "base64 0.22.1",
  "dirs 5.0.1",
  "hex",

@@ -185,14 +185,26 @@ impl UnlockedIdentity {
         let guard = lock_or_recover(&self.inner);
         let id = guard.as_ref()?;
         let b = &id.identity;
+        // The two 32-byte secret keys are `Copy`: `*expose()` leaves a stack
+        // copy behind after the move into `Sensitive::new`. Bind each by name
+        // and wipe it (memory-hygiene memo trailing-wipe form; audit FF-6).
+        // The `Vec`-backed keys are MOVED (`to_vec()` allocates the new
+        // buffer directly), so they leave no such copy.
+        use zeroize::Zeroize as _;
+        let mut x_sk_bytes = *b.x25519_sk.expose();
+        let x25519_sk = Sensitive::new(x_sk_bytes);
+        x_sk_bytes.zeroize();
+        let mut ed_sk_bytes = *b.ed25519_sk.expose();
+        let ed25519_sk = Sensitive::new(ed_sk_bytes);
+        ed_sk_bytes.zeroize();
         Some(IdentityBundle {
             user_uuid: b.user_uuid,
             display_name: b.display_name.clone(),
-            x25519_sk: Sensitive::new(*b.x25519_sk.expose()),
+            x25519_sk,
             x25519_pk: b.x25519_pk,
             ml_kem_768_sk: Sensitive::new(b.ml_kem_768_sk.expose().to_vec()),
             ml_kem_768_pk: b.ml_kem_768_pk.clone(),
-            ed25519_sk: Sensitive::new(*b.ed25519_sk.expose()),
+            ed25519_sk,
             ed25519_pk: b.ed25519_pk,
             ml_dsa_65_sk: Sensitive::new(b.ml_dsa_65_sk.expose().to_vec()),
             ml_dsa_65_pk: b.ml_dsa_65_pk.clone(),

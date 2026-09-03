@@ -162,7 +162,21 @@ fn origins_match(a: &ParsedOrigin, b: &ParsedOrigin, binding: OriginBinding) -> 
 
 /// The registrable domain (eTLD+1) of an ASCII host, via the embedded PSL.
 /// `None` for a bare IP or a host whose TLD is not in the list.
+///
+/// SECURITY: `psl::domain_str` alone is NOT sufficient. The PSL algorithm's
+/// prevailing rule for an unlisted suffix is `*` ("the last label is the
+/// public suffix"), so `psl::domain_str("1.2.3.4")` returns `Some("3.4")` and
+/// `psl::domain_str("foo.bar.internal")` returns `Some("bar.internal")` —
+/// which would make two DIFFERENT IPv4 hosts (`1.2.3.4` / `5.6.3.4`) or two
+/// hosts under an unknown TLD "the same site" and cross-fill under
+/// [`OriginBinding::RegistrableDomain`]. Gate on `Suffix::is_known()` so only
+/// a suffix that is actually in the list yields a registrable domain; every
+/// other host falls back to the exact-host comparison in `origins_match`.
 fn registrable_domain(host: &str) -> Option<&str> {
+    let suffix = psl::suffix(host.as_bytes())?;
+    if !suffix.is_known() {
+        return None;
+    }
     psl::domain_str(host)
 }
 
