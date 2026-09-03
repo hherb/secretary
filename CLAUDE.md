@@ -20,7 +20,7 @@ core/tests/          — integration tests; tests/data/ holds KATs and fuzz regr
 core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (136 lines; the PEP
                                              723 header is the sole dependency declaration).
                                              `conformance.py:NNN` citations predating #593 are
-                                             stale — the verifier is now a 53-file package.
+                                             stale — the verifier is now a 56-file package.
 core/tests/python/conformance_lib/         — DIRECTORY module (#593), the verifier itself: no
                                              dependency on `secretary-core`; proves the spec is
                                              implementable from `docs/` alone. `wire/` parses to
@@ -239,9 +239,10 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 136, over a 53-file package whose largest module is 383
-lines (52 files at the #593 split; #594 added `sections/manifest_uniqueness_kat.py`). Two properties are load-bearing and a change that breaks either defeats the
-point of the split:
+was 6849 lines; it is now 136, over a 56-file package whose largest module is still
+`merge/records.py` at 383 lines (52 files at the #593 split; #594 added
+`sections/manifest_uniqueness_kat.py`; #597 added three). Two properties are
+load-bearing and a change that breaks either defeats the point of the split:
 
 - **The PEP 723 header in `conformance.py` is the SOLE dependency declaration.** There
   is no `pyproject.toml` and the package declares nothing of its own. Adding one would
@@ -263,6 +264,32 @@ produces no output and no failure — is closed by Section **REG**
 (`sections/completeness.py`), which discovers drivers by SHAPE and compares against the
 table. Both directions are mutation-proven. Adding a section means one `Section(...)`
 row; forgetting it reds REG.
+
+**A rejection detail is deterministic, and that is now a section rather than a
+convention (#597).** **Three** of the seven required-key presence checks in
+`codec/` were `for k in SOME_REQUIRED_SET: if k not in decoded: raise`, and a set
+of strings iterates in hash order — salted once per PROCESS — so an input missing
+more than one required key named a different one from run to run. The other four
+already wrote `sorted(...)` by hand, which is what a hand-copied rule looks like
+after a while: not one rule with a gap, seven independent copies of which three
+were wrong. Only the
+`detail` text moved (`status` / `error_class` were stable, and
+`differential_replay.rs` scores reject-vs-reject as agreement without comparing
+`detail`), so no gate was flaky; what it cost was a byte-exact `--diff-replay`
+baseline, which needs `PYTHONHASHSEED` pinned — a trap for the one task that
+wants such a baseline, proving a refactor changed nothing. All seven sites now
+route through `codec/required_keys.py`'s `first_missing_key_in_sorted_order`,
+which names the rule so a caller list does not have to remember it, and Section
+**DET** pins three things: byte-identical probe output across eight
+`PYTHONHASHSEED` values (spawned as subprocesses — a hash salt cannot be varied
+from inside one interpreter), the lex-first choice with a per-case ambiguity
+control (restoring the reported key must move the rejection onto the next one,
+so the fixture's ambiguity is demonstrated by the DECODER rather than asserted
+by its table), and both structural directions — every helper call site under
+`codec/` has a case, and no `codec/` loop iterates a required-key set directly.
+The structural half scans `codec/` only and matches by name shape, so a decoder
+placed elsewhere is invisible to it; `wire/card.py` deliberately does not use
+the helper, reporting the whole sorted missing set instead.
 
 **It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and never enabled in `test.yml`. The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. **The job now BLOCKS**, which this paragraph denied until the #599 review measured it: `clean-room conformance` is one of the 24 required contexts in `main`'s `protect_main` ruleset (`gh api repos/hherb/secretary/rules/branches/main`). The sentence "the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking" outlived its fact — and a stale claim in this direction is not harmless, because it gets a real gate discounted when someone weighs whether a Python-side-only pin is enough. One standing consequence remains: five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
 
