@@ -29,7 +29,13 @@ fi
 # must NEVER reach a distributable build. When a real vault-picker/browse UI lands
 # in a later D.5 slice, remove this staging (and the MacVaultProvisioning bundle
 # lookup) so no fixture — and no password — is ever embedded in a shipped app.
-echo "==> stage golden_vault_001 fixture into the app bundle (Fixtures/)"
+# SECURITY (audit SC-2): enforce the "must NEVER reach a distributable build"
+# rule above instead of relying on the comment — refuse a Release configuration.
+if [[ "${CONFIGURATION:-Debug}" == "Release" ]]; then
+    echo "ERROR: refusing to stage golden_vault_001 (public password + mnemonic) into a Release build" >&2
+    exit 1
+fi
+echo "==> stage golden_vault_001 fixture into the app bundle (Fixtures/) — DEBUG ONLY"
 rm -rf "$RES_DIR"; mkdir -p "$RES_DIR"
 cp -R "$REPO_ROOT/core/tests/data/golden_vault_001" "$RES_DIR/golden_vault_001"
 cp "$REPO_ROOT/core/tests/data/golden_vault_001_inputs.json" "$RES_DIR/golden_vault_001_inputs.json"

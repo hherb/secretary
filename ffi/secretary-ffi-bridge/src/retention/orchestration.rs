@@ -77,6 +77,18 @@ impl From<secretary_core::vault::RetentionPurgeReport> for RetentionPurgeReport 
     }
 }
 
+/// SECURITY (audit FF-5): the settings path enforces the one-day retention
+/// floor (`RETENTION_WINDOW_MIN_MS`), but these two entry points took any
+/// caller-supplied `window_ms` verbatim, so a platform bug (or any caller
+/// bypassing settings) could permanently purge blocks trashed seconds ago.
+/// Enforce the floor here, in the trust boundary: a sub-floor window is
+/// raised to the floor rather than rejected (no new error surface, no API
+/// change), and the effective value is what flows into the core call and the
+/// report, so a zero-count report stays self-describing.
+fn clamp_to_retention_floor(window_ms: u64) -> u64 {
+    window_ms.max(crate::settings::schema::RETENTION_WINDOW_MIN_MS)
+}
+
 /// Pure, side-effect-free preview of the entries retention auto-purge would
 /// permanently remove for `(window_ms, now_ms)`. Reads only the manifest; no
 /// identity, no I/O. Returns an empty vec on a wiped handle (safe-default
@@ -86,6 +98,7 @@ pub fn expired_trash_entries(
     window_ms: u64,
     now_ms: u64,
 ) -> Vec<ExpiredEntry> {
+    let window_ms = clamp_to_retention_floor(window_ms);
     match manifest.manifest_body() {
         Some(body) => secretary_core::vault::expired_trash_entries(&body, window_ms, now_ms)
             .into_iter()
@@ -117,6 +130,7 @@ pub fn auto_purge_expired(
     now_ms: u64,
     device_uuid: [u8; 16],
 ) -> Result<RetentionPurgeReport, FfiVaultError> {
+    let window_ms = clamp_to_retention_floor(window_ms);
     // Step 1: snapshot manifest (5-tuple) under one lock acquisition.
     let (manifest_body, manifest_file, owner_card, ibk, vault_folder) = manifest
         .snapshot_for_save_block()
@@ -186,6 +200,7 @@ fn map_core_vault_error_retention(e: VaultError) -> FfiVaultError {
         | VaultError::Sig(_)
         | VaultError::OwnerUuidMismatch { .. }
         | VaultError::ManifestAuthorMismatch
+        | VaultError::OwnerCardKeyMismatch
         | VaultError::ManifestVaultUuidMismatch { .. }
         | VaultError::KdfParamsMismatch
         | VaultError::ClockOverflow { .. }

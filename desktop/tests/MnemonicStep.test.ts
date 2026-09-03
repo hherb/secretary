@@ -1,16 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
-import MnemonicStep from '../src/components/create/MnemonicStep.svelte';
 
-vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({
-  writeText: vi.fn().mockResolvedValue(undefined)
-}));
-import { writeText } from '@tauri-apps/plugin-clipboard-manager';
+// Audit DT-2: the copy affordance goes through the Rust `copy_secret_text` /
+// `clear_clipboard` commands (OS concealment flags), never the webview
+// clipboard plugin — so the seam under test is `invoke`, not `writeText`.
+const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
+
+import MnemonicStep from '../src/components/create/MnemonicStep.svelte';
 
 const PHRASE = Array.from({ length: 24 }, (_, i) => `word${i + 1}`).join(' ');
 
+function lastCommand(): unknown {
+  return invokeMock.mock.calls.at(-1)?.[0];
+}
+
 describe('MnemonicStep', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(undefined);
+  });
 
   it('renders 24 numbered words and gates Continue on acknowledge', async () => {
     const onDone = vi.fn();
@@ -28,10 +37,10 @@ describe('MnemonicStep', () => {
     expect(onDone).toHaveBeenCalled();
   });
 
-  it('copy button writes the phrase to the clipboard', async () => {
+  it('copy button writes the phrase through the Rust concealed-clipboard command', async () => {
     const { getByRole } = render(MnemonicStep, { props: { mnemonic: PHRASE, onDone: vi.fn() } });
     await fireEvent.click(getByRole('button', { name: /copy/i }));
-    expect(writeText).toHaveBeenCalledWith(PHRASE);
+    expect(invokeMock).toHaveBeenCalledWith('copy_secret_text', { text: PHRASE });
   });
 
   // Security regression: a copied recovery phrase must not outlive the wizard step.
@@ -45,12 +54,12 @@ describe('MnemonicStep', () => {
         props: { mnemonic: PHRASE, onDone: vi.fn() }
       });
       await fireEvent.click(getByRole('button', { name: /copy/i }));
-      await vi.advanceTimersByTimeAsync(0); // flush writeText(PHRASE) promise
-      expect(writeText).toHaveBeenCalledWith(PHRASE);
+      await vi.advanceTimersByTimeAsync(0); // flush the copy promise
+      expect(invokeMock).toHaveBeenCalledWith('copy_secret_text', { text: PHRASE });
       // Unmount before the 30s auto-clear fires (simulates user clicking Continue quickly).
       unmount();
       // The clear must have been fired eagerly, not stranded in the clipboard.
-      expect(writeText).toHaveBeenLastCalledWith('');
+      expect(lastCommand()).toBe('clear_clipboard');
     } finally {
       vi.useRealTimers();
     }
@@ -64,7 +73,7 @@ describe('MnemonicStep', () => {
       });
       // Unmount without ever clicking Copy.
       unmount();
-      expect(writeText).not.toHaveBeenCalled();
+      expect(invokeMock).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

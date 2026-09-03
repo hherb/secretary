@@ -67,6 +67,16 @@ pub fn create_vault_impl(
     created_at_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<CreateVaultDto, AppError> {
+    // SECURITY (audit DT-4): an empty master password was accepted here and
+    // only refused by the UI, so a script in the webview (or any caller
+    // bypassing the wizard) could create a vault whose Argon2id-stretched KEK
+    // is derived from nothing. Enforce it in the trust boundary, not the UI.
+    if password.expose().is_empty() {
+        return Err(AppError::InvalidArgument {
+            detail: "master password must not be empty".to_string(),
+        });
+    }
+
     let folder = Path::new(folder_path);
     // #353/#378: the target must be the folder the user picked FOR CREATION
     // (via `pick_create_folder` → the `CreateParent` slot) or a subfolder of

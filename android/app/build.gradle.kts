@@ -111,14 +111,22 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
-// --- Production golden-vault asset staging ---------------------------------
+// --- DEBUG-ONLY golden-vault asset staging ------------------------------------
 //
 // Stage golden_vault_001 (+ its inputs JSON) from the canonical core/tests/data location
-// into the app's MAIN assets so the runnable demo bundles a vault to open. The destination
+// into the app's DEBUG assets so the runnable demo bundles a vault to open. The destination
 // is gitignored: the tracked fixture stays the single source of truth (no committed duplicate
 // of a frozen KAT), mirroring :kit's androidTest staging and iOS's bundle staging. `.DS_Store`
 // is excluded so a macOS finder artifact never ships in the APK. `Copy` tracks from/into as
 // inputs/outputs, so Gradle skips the copy when the fixture is unchanged.
+//
+// SECURITY (audit SC-2): `golden_vault_001_inputs.json` carries the fixture vault's master
+// PASSWORD, its 24-word RECOVERY MNEMONIC, every identity's SECRET KEYS, a device-slot secret
+// and sub-floor KDF parameters — all published on GitHub. It used to be staged into
+// `src/main/assets` and wired to BOTH `mergeDebugAssets` and `mergeReleaseAssets`, so a release
+// APK self-provisioned a vault whose credentials are public. Staging is now confined to the
+// `debug` source set and the release asset merge asserts the fixture is ABSENT (see the
+// tripwire below) so a shipped build can never contain it.
 val stageGoldenVaultForApp by tasks.registering(Copy::class) {
     val fixtureRoot = repoRoot.resolve("core/tests/data")
     from(fixtureRoot.resolve("golden_vault_001")) {
@@ -126,10 +134,32 @@ val stageGoldenVaultForApp by tasks.registering(Copy::class) {
         exclude("**/.DS_Store")
     }
     from(fixtureRoot.resolve("golden_vault_001_inputs.json"))
-    into(layout.projectDirectory.dir("src/main/assets"))
+    into(layout.projectDirectory.dir("src/debug/assets"))
 }
 
-// The main asset merge (both debug and release) must see the staged fixture.
-tasks.matching { it.name == "mergeDebugAssets" || it.name == "mergeReleaseAssets" }.configureEach {
+// Only the DEBUG asset merge sees the staged fixture.
+tasks.matching { it.name == "mergeDebugAssets" }.configureEach {
     dependsOn(stageGoldenVaultForApp)
+}
+
+// Release tripwire: fail the build loudly if the fixture (or its secret-bearing inputs JSON)
+// is ever present in a source set the release merge consumes. A comment saying "must never
+// ship" is not a safeguard; this is.
+tasks.matching { it.name == "mergeReleaseAssets" }.configureEach {
+    // Resolved at configuration time as plain Files so the execution-time action
+    // captures no Project state (configuration-cache safe).
+    val forbidden = listOf(
+        layout.projectDirectory.dir("src/main/assets/golden_vault_001").asFile,
+        layout.projectDirectory.file("src/main/assets/golden_vault_001_inputs.json").asFile,
+        layout.projectDirectory.dir("src/release/assets/golden_vault_001").asFile,
+        layout.projectDirectory.file("src/release/assets/golden_vault_001_inputs.json").asFile,
+    )
+    doFirst {
+        val present = forbidden.filter { it.exists() }
+        check(present.isEmpty()) {
+            "SECURITY: golden_vault_001 fixture (public password + recovery mnemonic + secret " +
+                "keys) must never be bundled into a RELEASE build; remove: " +
+                present.joinToString { it.path }
+        }
+    }
 }

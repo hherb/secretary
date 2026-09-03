@@ -145,6 +145,11 @@ export const COMMAND_CLASSIFICATION: Record<string, CommandClass> = {
   read_block: { kind: 'read' },
   reveal_field: { kind: 'read' },
   reveal_record: { kind: 'read' },
+  // Audit DT-2: OS-clipboard commands (concealed copy + clear). They mutate no
+  // vault state; `copy_secret_text` is reachable only after a reveal, which is
+  // itself classified `read`, and `clear_clipboard` only ever removes content.
+  copy_secret_text: { kind: 'read' },
+  clear_clipboard: { kind: 'read' },
   list_trashed_blocks: { kind: 'read' },
   list_contacts: { kind: 'read' },
   export_contact_card: { kind: 'read' },

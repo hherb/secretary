@@ -24,7 +24,9 @@ use rand_core::RngCore;
 
 use secretary_core::crypto::kdf::Argon2idParams;
 use secretary_core::crypto::secret::SecretBytes;
-use secretary_core::crypto::sig::{MlDsa65Secret, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN};
+use secretary_core::crypto::sig::{
+    self, MlDsa65Secret, SigRole, ED25519_SIG_LEN, ML_DSA_65_SIG_LEN,
+};
 use secretary_core::identity::card::{ContactCard, CARD_VERSION_V1};
 use secretary_core::identity::fingerprint;
 use secretary_core::unlock::{
@@ -435,5 +437,89 @@ fn open_vault_kdf_params_mismatch_rejected() {
     assert!(
         matches!(err, VaultError::KdfParamsMismatch),
         "expected KdfParamsMismatch, got {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 5. OwnerCardKeyMismatch (VL-1): a hostile cloud-folder host replaces
+//    `contacts/<owner>.card` with its OWN self-signed card carrying the
+//    victim's `contact_uuid` but the attacker's public keys, then re-signs
+//    the (unchanged) manifest ciphertext under the attacker's keys — the
+//    manifest signature suffix sits OUTSIDE both the AEAD AAD and the §8
+//    signed range, so no victim secret is needed. Before the VL-1 fix,
+//    `open_vault` accepted this and thereafter used the attacker card as the
+//    owner's KEM recipient identity, wrapping every freshly generated Block
+//    Content Key to the attacker. This test asserts the four-key cross-check
+//    against the AEAD-authenticated Identity Bundle rejects the swap on the
+//    password unlock path.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn open_vault_substituted_owner_card_key_mismatch_rejected() {
+    let (dir, _mnemonic, pw) = make_fast_vault(7, b"hunter2", "Owner");
+
+    // The attacker (cloud host) holds no victim secret. It generates its own
+    // identity and forges a self-signed card under the victim's contact_uuid.
+    let mut arng = ChaCha20Rng::from_seed([0x5a; 32]);
+    let attacker = bundle::generate("Mallory", 1_700_000_000_000, &mut arng);
+    let attacker_pq_sk = MlDsa65Secret::from_bytes(attacker.ml_dsa_65_sk.expose()).unwrap();
+
+    let contacts_dir = dir.path().join("contacts");
+    let owner_card_path = fs::read_dir(&contacts_dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().and_then(|s| s.to_str()) == Some("card"))
+        .expect("fixture wrote exactly one owner card");
+    let victim_card =
+        ContactCard::from_canonical_cbor(&fs::read(&owner_card_path).unwrap()).unwrap();
+
+    let mut evil = ContactCard {
+        card_version: CARD_VERSION_V1,
+        contact_uuid: victim_card.contact_uuid, // keep the victim's uuid
+        display_name: victim_card.display_name.clone(),
+        x25519_pk: attacker.x25519_pk,
+        ml_kem_768_pk: attacker.ml_kem_768_pk.clone(),
+        ed25519_pk: attacker.ed25519_pk,
+        ml_dsa_65_pk: attacker.ml_dsa_65_pk.clone(),
+        created_at_ms: victim_card.created_at_ms,
+        self_sig_ed: [0u8; ED25519_SIG_LEN],
+        self_sig_pq: vec![0u8; ML_DSA_65_SIG_LEN],
+    };
+    evil.sign(&attacker.ed25519_sk, &attacker_pq_sk).unwrap();
+    let evil_bytes = evil.to_canonical_cbor().unwrap();
+    fs::write(&owner_card_path, &evil_bytes).unwrap();
+
+    // Re-sign the manifest: keep header/nonce/ct/tag byte-for-byte (the
+    // attacker cannot decrypt the body), swap author_fingerprint + both
+    // signature halves to the attacker's. This mirrors the exact bytes the
+    // §8 verifier covers (magic..aead_tag inclusive).
+    let manifest_path = dir.path().join("manifest.cbor.enc");
+    let mut mf = decode_manifest_file(&fs::read(&manifest_path).unwrap()).unwrap();
+    let mut signed = Vec::new();
+    signed.extend_from_slice(&mf.header.encode());
+    signed.extend_from_slice(&mf.aead_nonce);
+    signed.extend_from_slice(&(mf.aead_ct.len() as u32).to_be_bytes());
+    signed.extend_from_slice(&mf.aead_ct);
+    signed.extend_from_slice(&mf.aead_tag);
+    let hybrid = sig::sign(
+        SigRole::Manifest,
+        &signed,
+        &attacker.ed25519_sk,
+        &attacker_pq_sk,
+    )
+    .unwrap();
+    mf.author_fingerprint = fingerprint::fingerprint(&evil_bytes);
+    mf.sig_ed = hybrid.sig_ed;
+    mf.sig_pq = hybrid.sig_pq;
+    fs::write(&manifest_path, encode_manifest_file(&mf).unwrap()).unwrap();
+
+    // Sanity: the forged card really does carry different keys than the bundle.
+    assert_ne!(evil.ed25519_pk, victim_card.ed25519_pk);
+
+    let err = open_vault(dir.path(), Unlocker::Password(&pw), None)
+        .expect_err("substituted owner card must reject");
+    assert!(
+        matches!(err, VaultError::OwnerCardKeyMismatch),
+        "expected OwnerCardKeyMismatch, got {err:?}"
     );
 }

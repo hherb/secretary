@@ -550,7 +550,7 @@ fn lww_picks_local(l: &RecordField, r: &RecordField) -> bool {
             Ordering::Equal => {
                 // Full tie. Lex-larger value bytes wins (deterministic
                 // corner-case rule; see merge_fields_lww docs).
-                value_lex_bytes(&l.value) >= value_lex_bytes(&r.value)
+                value_lex_cmp(&l.value, &r.value) != Ordering::Less
             }
         },
     }
@@ -561,20 +561,21 @@ fn lww_picks_local(l: &RecordField, r: &RecordField) -> bool {
 /// Prefixes a one-byte variant tag (`0x00` for `Text`, `0x01` for
 /// `Bytes`) so the same string-vs-bytes content cannot accidentally
 /// compare equal across the two variants.
-fn value_lex_bytes(v: &RecordFieldValue) -> Vec<u8> {
-    match v {
-        RecordFieldValue::Text(s) => {
-            let mut out = Vec::with_capacity(1 + s.len());
-            out.push(0x00);
-            out.extend_from_slice(s.expose().as_bytes());
-            out
+///
+/// Compares IN PLACE through the zeroize-typed wrappers rather than
+/// materialising the two values into plain `Vec<u8>`s: an earlier version
+/// copied every tied field's decrypted content into un-wiped heap buffers on
+/// each LWW tie (memory-hygiene audit VL-6). The ordering is identical to
+/// comparing the old prefixed encodings: the tag decides first (`Text` <
+/// `Bytes`), then the raw content bytes lexicographically.
+fn value_lex_cmp(a: &RecordFieldValue, b: &RecordFieldValue) -> Ordering {
+    match (a, b) {
+        (RecordFieldValue::Text(x), RecordFieldValue::Text(y)) => {
+            x.expose().as_bytes().cmp(y.expose().as_bytes())
         }
-        RecordFieldValue::Bytes(b) => {
-            let mut out = Vec::with_capacity(1 + b.len());
-            out.push(0x01);
-            out.extend_from_slice(b.expose());
-            out
-        }
+        (RecordFieldValue::Bytes(x), RecordFieldValue::Bytes(y)) => x.expose().cmp(y.expose()),
+        (RecordFieldValue::Text(_), RecordFieldValue::Bytes(_)) => Ordering::Less,
+        (RecordFieldValue::Bytes(_), RecordFieldValue::Text(_)) => Ordering::Greater,
     }
 }
 

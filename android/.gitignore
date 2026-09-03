@@ -13,3 +13,7 @@ kit/src/androidTest/assets/
 # from core/tests/data (single source of truth — never committed).
 app/src/main/assets/golden_vault_001/
 app/src/main/assets/golden_vault_001_inputs.json
+# Audit SC-2: the fixture is now staged into the DEBUG source set only (never
+# release); the staged copy is build output, never committed.
+app/src/debug/assets/golden_vault_001/
+app/src/debug/assets/golden_vault_001_inputs.json

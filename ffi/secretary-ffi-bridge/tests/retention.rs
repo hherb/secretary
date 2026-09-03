@@ -32,12 +32,16 @@ const FRESH_BLOCK_UUID: [u8; 16] = [0xF2; 16];
 fn auto_purge_expired_purges_old_spares_fresh() {
     let (_tmp, identity, manifest) = fresh_writable_vault();
 
-    const WINDOW_MS: u64 = 10_000;
+    // One day — the bridge clamps any smaller window up to the retention floor
+    // (`RETENTION_WINDOW_MIN_MS`, audit FF-5), so the test window is the floor
+    // itself and the block ages are measured in days, not seconds.
+    const WINDOW_MS: u64 = 86_400_000;
     let old_tombstoned_at_ms = NOW_MS_BASE + 1_000;
-    let fresh_tombstoned_at_ms = NOW_MS_BASE + 100_000;
-    let now_ms = NOW_MS_BASE + 101_000;
+    let fresh_tombstoned_at_ms = NOW_MS_BASE + 100_000_000;
+    let now_ms = NOW_MS_BASE + 101_000_000;
 
-    // OLD block: save + trash. Age at `now_ms` = 100_000, well past WINDOW_MS.
+    // OLD block: save + trash. Age at `now_ms` = 100_999_000 (~1.17 days),
+    // past WINDOW_MS.
     save_one_record_block(
         &identity,
         &manifest,
@@ -56,7 +60,8 @@ fn auto_purge_expired_purges_old_spares_fresh() {
     )
     .expect("trash old block");
 
-    // FRESH block: save + trash. Age at `now_ms` = 1_000, under WINDOW_MS.
+    // FRESH block: save + trash. Age at `now_ms` = 1_000_000 (~17 min), under
+    // WINDOW_MS.
     save_one_record_block(
         &identity,
         &manifest,
@@ -85,7 +90,16 @@ fn auto_purge_expired_purges_old_spares_fresh() {
     );
     assert_eq!(preview[0].block_uuid, OLD_BLOCK_UUID);
     assert_eq!(preview[0].tombstoned_at_ms, old_tombstoned_at_ms);
-    assert_eq!(preview[0].age_ms, 100_000);
+    assert_eq!(preview[0].age_ms, 100_999_000);
+
+    // FF-5 floor clamp: a 10-second window is raised to the one-day floor, so
+    // the ~17-minute-old FRESH block is still spared. Without the clamp both
+    // blocks would be eligible here (2, not 1).
+    assert_eq!(
+        expired_trash_entries(&manifest, 10_000, now_ms).len(),
+        1,
+        "a sub-floor window must be clamped to the retention floor, never purge fresh trash"
+    );
 
     // Commit: purge everything past WINDOW_MS as of now_ms.
     let report = auto_purge_expired(&identity, &manifest, WINDOW_MS, now_ms, DEVICE_UUID)

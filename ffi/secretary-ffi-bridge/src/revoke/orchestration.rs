@@ -210,6 +210,7 @@ fn map_core_vault_error_revoke(e: VaultError) -> FfiVaultError {
         | VaultError::Sig(_)
         | VaultError::OwnerUuidMismatch { .. }
         | VaultError::ManifestAuthorMismatch
+        | VaultError::OwnerCardKeyMismatch
         | VaultError::ManifestVaultUuidMismatch { .. }
         | VaultError::KdfParamsMismatch
         | VaultError::ClockOverflow { .. }

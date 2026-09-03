@@ -149,13 +149,14 @@ pub(crate) fn decrypt_block_plaintext(
         .ok_or_else(handle_wiped)?;
 
     // Locate the manifest BlockEntry. Trash entries are not considered.
-    let _entry = manifest_body
+    let entry = manifest_body
         .blocks
         .iter()
         .find(|b| b.block_uuid == *block_uuid)
         .ok_or_else(|| FfiVaultError::BlockNotFound {
             uuid_hex: detail::uuid_hex(block_uuid),
         })?;
+    let committed_fingerprint = entry.fingerprint;
 
     // Resolve the block file path using the standard 8-4-4-4-12 UUID
     // textual form — same convention core::vault::io uses for block files.
@@ -177,6 +178,23 @@ pub(crate) fn decrypt_block_plaintext(
             });
         }
     };
+
+    // SECURITY (VL-2): bind the on-disk bytes to the manifest's committed
+    // BLAKE3 fingerprint before decrypting. `verify_block_fingerprints` runs
+    // once inside `open_vault`, but this `manifest` handle lives for the whole
+    // session; a hostile cloud-folder host (threat-model §2.1) can replace
+    // `blocks/<uuid>.cbor.enc` with an older, genuinely owner-signed version
+    // after the open. Without this check every later read — and every edit,
+    // which reads through this path before re-saving — would trust the stale
+    // bytes and re-commit them as current, laundering a block-level rollback.
+    let got = *secretary_core::crypto::hash::hash(&bytes).as_bytes();
+    if got != committed_fingerprint {
+        return Err(FfiVaultError::CorruptVault {
+            detail: detail::literal(
+                "block file does not match the authenticated manifest fingerprint",
+            ),
+        });
+    }
 
     decrypt_block_file_bytes(identity, &owner_card, &bytes)
 }

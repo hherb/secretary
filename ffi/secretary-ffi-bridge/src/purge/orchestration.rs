@@ -174,6 +174,7 @@ fn map_core_vault_error_purge(e: VaultError) -> FfiVaultError {
         | VaultError::Sig(_)
         | VaultError::OwnerUuidMismatch { .. }
         | VaultError::ManifestAuthorMismatch
+        | VaultError::OwnerCardKeyMismatch
         | VaultError::ManifestVaultUuidMismatch { .. }
         | VaultError::KdfParamsMismatch
         | VaultError::ClockOverflow { .. }
@@ -346,6 +347,7 @@ fn map_core_vault_error_empty_trash(e: VaultError) -> FfiVaultError {
         | VaultError::Sig(_)
         | VaultError::OwnerUuidMismatch { .. }
         | VaultError::ManifestAuthorMismatch
+        | VaultError::OwnerCardKeyMismatch
         | VaultError::ManifestVaultUuidMismatch { .. }
         | VaultError::KdfParamsMismatch
         | VaultError::ClockOverflow { .. }

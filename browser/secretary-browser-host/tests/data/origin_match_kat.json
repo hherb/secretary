@@ -217,6 +217,42 @@
       "binding": "exact_origin",
       "expect_fill": false,
       "expect_reason": "unparseable_stored_origin"
+    },
+    {
+      "name": "registrable/two different IPv4 literals sharing trailing octets do NOT cross-fill (PSL unknown-suffix `*` rule must not apply; audit BR-2)",
+      "top_origin": "https://1.2.3.4",
+      "frame_origin": "https://1.2.3.4",
+      "stored_origin": "https://5.6.3.4",
+      "binding": "registrable_domain",
+      "expect_fill": false,
+      "expect_reason": "origin_mismatch"
+    },
+    {
+      "name": "registrable/cross-origin iframe between two IPv4 literals sharing trailing octets is refused (audit BR-2, rule 2)",
+      "top_origin": "https://5.6.3.4",
+      "frame_origin": "https://1.2.3.4",
+      "stored_origin": "https://1.2.3.4",
+      "binding": "registrable_domain",
+      "expect_fill": false,
+      "expect_reason": "cross_origin_iframe"
+    },
+    {
+      "name": "registrable/siblings under an unknown TLD fall back to exact host and do NOT cross-fill (audit BR-4)",
+      "top_origin": "https://foo.bar.internal",
+      "frame_origin": "https://foo.bar.internal",
+      "stored_origin": "https://baz.bar.internal",
+      "binding": "registrable_domain",
+      "expect_fill": false,
+      "expect_reason": "origin_mismatch"
+    },
+    {
+      "name": "registrable/same exact host under an unknown TLD still fills",
+      "top_origin": "https://foo.bar.internal",
+      "frame_origin": "https://foo.bar.internal",
+      "stored_origin": "https://foo.bar.internal",
+      "binding": "registrable_domain",
+      "expect_fill": true,
+      "expect_reason": "fill"
     }
   ]
 }

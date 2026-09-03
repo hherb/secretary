@@ -22,6 +22,7 @@
 //! format via the DTO serde tests in [`crate::dtos`].
 
 pub mod browse;
+pub mod clipboard;
 pub mod contacts;
 pub mod create;
 pub mod delete;

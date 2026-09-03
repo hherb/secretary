@@ -485,6 +485,21 @@ export async function lock(): Promise<void> {
   return call<void>('lock');
 }
 
+/**
+ * Copy a secret to the OS clipboard through the Rust backend, which sets the
+ * platform concealment flags (Windows clipboard-history / cloud-clipboard
+ * exclusion, macOS `ConcealedType`) that the webview clipboard API cannot
+ * (audit DT-2). Pair with `clearClipboard()` on the auto-clear timer.
+ */
+export async function copySecretText(text: string): Promise<void> {
+  return call<void>('copy_secret_text', { text });
+}
+
+/** Clear the OS clipboard (the timed / on-unmount clear after a secret copy). */
+export async function clearClipboard(): Promise<void> {
+  return call<void>('clear_clipboard');
+}
+
 export async function notifyActivity(): Promise<void> {
   return call<void>('notify_activity');
 }
