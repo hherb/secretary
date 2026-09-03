@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
-use rand_core::RngCore;
+use rand_core::{OsRng, RngCore};
 
 use secretary_core::crypto::kdf::Argon2idParams;
 use secretary_core::crypto::secret::SecretBytes;
@@ -456,7 +456,13 @@ fn open_vault_kdf_params_mismatch_rejected() {
 
 #[test]
 fn open_vault_substituted_owner_card_key_mismatch_rejected() {
-    let (dir, _mnemonic, pw) = make_fast_vault(7, b"hunter2", "Owner");
+    // Password bytes drawn directly from OS entropy — no constant buffer flows
+    // into the KDF (a literal reaching the password trips CodeQL's
+    // hard-coded-cryptographic-value; see feedback_test_crypto_random_not_hardcoded).
+    let pw_bytes: Vec<u8> = std::iter::repeat_with(|| (OsRng.next_u32() & 0xff) as u8)
+        .take(24)
+        .collect();
+    let (dir, _mnemonic, pw) = make_fast_vault(7, &pw_bytes, "Owner");
 
     // The attacker (cloud host) holds no victim secret. It generates its own
     // identity and forges a self-signed card under the victim's contact_uuid.
@@ -518,8 +524,11 @@ fn open_vault_substituted_owner_card_key_mismatch_rejected() {
 
     let err = open_vault(dir.path(), Unlocker::Password(&pw), None)
         .expect_err("substituted owner card must reject");
+    // The message deliberately does not interpolate `err`: a `VaultError`
+    // Debug can carry uuids/key material and CodeQL flags the formatting as
+    // cleartext logging; the `matches!` is the precise assertion.
     assert!(
         matches!(err, VaultError::OwnerCardKeyMismatch),
-        "expected OwnerCardKeyMismatch, got {err:?}"
+        "expected OwnerCardKeyMismatch"
     );
 }

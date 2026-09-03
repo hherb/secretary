@@ -998,7 +998,13 @@ fn _unused() {
 
 #[test]
 fn share_block_rejects_post_open_block_rollback() {
-    let (dir, _mnemonic, pw) = make_fast_vault(7, b"hunter2", "Owner");
+    // Password bytes drawn directly from OS entropy — no constant buffer flows
+    // into the KDF (a literal reaching the password trips CodeQL's
+    // hard-coded-cryptographic-value; see feedback_test_crypto_random_not_hardcoded).
+    let pw_bytes: Vec<u8> = std::iter::repeat_with(|| (OsRng.next_u32() & 0xff) as u8)
+        .take(24)
+        .collect();
+    let (dir, _mnemonic, pw) = make_fast_vault(7, &pw_bytes, "Owner");
     let mut rng = ChaCha20Rng::from_seed([0xc7; 32]);
 
     let mut open = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
@@ -1064,9 +1070,12 @@ fn share_block_rejects_post_open_block_rollback() {
         &mut rng,
     )
     .expect_err("share_block must refuse a rolled-back block file");
+    // The messages below deliberately do not interpolate the error values: a
+    // `VaultError` Debug can carry uuids/key material and CodeQL flags the
+    // formatting as cleartext logging; the `matches!` is the precise assertion.
     assert!(
         matches!(err, VaultError::BlockFingerprintMismatch { .. }),
-        "expected BlockFingerprintMismatch, got {err:?}"
+        "expected BlockFingerprintMismatch"
     );
 
     // Nothing was laundered: the on-disk manifest still commits v2's
@@ -1077,7 +1086,7 @@ fn share_block_rejects_post_open_block_rollback() {
     let reopen = open_vault(dir.path(), Unlocker::Password(&pw), None);
     assert!(
         matches!(reopen, Err(VaultError::BlockFingerprintMismatch { .. })),
-        "reopen must still detect the rolled-back file, got {reopen:?}"
+        "reopen must still detect the rolled-back file"
     );
     std::fs::write(&block_path, &v2_bytes).unwrap();
     open_vault(dir.path(), Unlocker::Password(&pw), None)
