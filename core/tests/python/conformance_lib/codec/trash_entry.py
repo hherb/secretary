@@ -12,6 +12,7 @@ from typing import Any
 
 from conformance_lib.canonical import encode_canonical_map
 from conformance_lib.codec.record import _reject_floats_and_tags_py
+from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
 from conformance_lib.constants import BLOCK_UUID_LEN, DEVICE_UUID_LEN
 
 # ---------------------------------------------------------------------------
@@ -58,9 +59,9 @@ def py_decode_trash_entry(data: bytes) -> dict:
         raise ValueError("TrashEntry top-level CBOR is not a map")
 
     REQUIRED = {"block_uuid", "tombstoned_at_ms", "tombstoned_by"}
-    for f in REQUIRED:
-        if f not in decoded:
-            raise KeyError(f"TrashEntry missing required field: {f!r}")
+    absent = first_missing_key_in_sorted_order(decoded, REQUIRED)
+    if absent is not None:
+        raise KeyError(f"TrashEntry missing required field: {absent!r}")
 
     block_uuid = decoded["block_uuid"]
     if not isinstance(block_uuid, bytes) or len(block_uuid) != BLOCK_UUID_LEN:

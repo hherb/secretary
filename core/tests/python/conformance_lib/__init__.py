@@ -20,6 +20,8 @@ Layout
   rejection      which exception types are rejection VERDICTS
   tamper         the shared byte-flip mutation helper
   diff_replay    `--diff-replay` mode (a CONTRACT -- see the module docstring)
+  required_key_probe  the inputs Section DET re-decodes under several hash seeds
+                      (spawned as a subprocess -- see its own docstring for why)
 
   wire/          §4.1/§6.1 binary envelope parsers + the golden-vault verify
   codec/         the strict decode/encode ROUND-TRIP pairs behind --diff-replay

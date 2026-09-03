@@ -16,6 +16,7 @@ from typing import Any
 
 from conformance_lib.codec.manifest_encode import py_encode_manifest
 from conformance_lib.codec.manifest_schema import BLOCK_ENTRY_KNOWN_KEYS, BLOCK_ENTRY_REQUIRED_KEYS, BLOCK_FINGERPRINT_LEN, KDF_PARAMS_KNOWN_KEYS, KDF_PARAMS_REQUIRED_KEYS, MANIFEST_KNOWN_KEYS, MANIFEST_REQUIRED_KEYS, MANIFEST_VERSION_V1, SALT_LEN, TRASH_ENTRY_KNOWN_KEYS, TRASH_ENTRY_REQUIRED_KEYS, UUID_LEN, VECTOR_CLOCK_ENTRY_KNOWN_KEYS, VECTOR_CLOCK_ENTRY_REQUIRED_KEYS, _decode_manifest_array, _decode_strict_array, _decode_strict_entry_map
+from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
 from conformance_lib.codec.scanner import _check_canonical_item, _decode_head, _scan_map_entries
 from conformance_lib.constants import FORMAT_VERSION, SUITE_ID
 
@@ -110,9 +111,9 @@ def py_decode_manifest(data: bytes) -> dict:
         else:
             unknown[key] = data[vs:ve]
 
-    for required in sorted(MANIFEST_REQUIRED_KEYS):
-        if required not in out:
-            raise ValueError(f"manifest missing required field: {required!r}")
+    absent = first_missing_key_in_sorted_order(out, MANIFEST_REQUIRED_KEYS)
+    if absent is not None:
+        raise ValueError(f"manifest missing required field: {absent!r}")
 
     # Type/range/version checks on every known field. Must run AFTER the
     # presence loop above (it indexes `out` unconditionally) and BEFORE the

@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from conformance_lib.canonical import encode_canonical_map
+from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
 
 def py_decode_contact_card(data: bytes) -> dict:
     """Strict §6 contact card decoder matching card.rs::from_canonical_cbor.
@@ -55,9 +56,9 @@ def py_decode_contact_card(data: bytes) -> dict:
             raise ValueError(f"contact_card unknown field: {k!r}")
 
     REQUIRED_CARD_FIELDS = KNOWN_CARD_KEYS  # all 10 are required
-    for f in REQUIRED_CARD_FIELDS:
-        if f not in decoded:
-            raise KeyError(f"contact_card missing required field: {f!r}")
+    absent = first_missing_key_in_sorted_order(decoded, REQUIRED_CARD_FIELDS)
+    if absent is not None:
+        raise KeyError(f"contact_card missing required field: {absent!r}")
 
     cv = decoded["card_version"]
     if not isinstance(cv, int) or cv != 1:

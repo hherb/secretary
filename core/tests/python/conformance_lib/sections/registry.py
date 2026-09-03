@@ -56,6 +56,9 @@ from conformance_lib.sections.purge import section_purge_scenario
 from conformance_lib.sections.record_canonicality import (
     section_record_unknown_subtree_canonicality,
 )
+from conformance_lib.sections.required_key_determinism import (
+    section_required_key_determinism,
+)
 from conformance_lib.sections.revoke import section_revoke_kat
 from conformance_lib.sections.sync_pass import section_sync_pass_kat
 from conformance_lib.sections.unknown_map import (
@@ -136,6 +139,8 @@ SECTIONS: tuple[Section, ...] = (
             " (#594)", section_manifest_uniqueness_kat),
     Section("RC", "record unknown-subtree canonicality, both nesting levels",
             " (#592)", section_record_unknown_subtree_canonicality),
+    Section("DET", "required-key rejection determinism across hash seeds",
+            " (#597)", section_required_key_determinism),
     # Last on purpose: it reports on the table above, so it reads as a summary
     # of the run rather than as a precondition for it.
     Section("REG", "section registry completeness", " (#593)",

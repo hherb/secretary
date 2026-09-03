@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from conformance_lib.canonical import encode_canonical_map_raw
+from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
 from conformance_lib.codec.scanner import _check_canonical_item, _decode_head, _scan_map_entries
 
 # ---------------------------------------------------------------------------
@@ -185,9 +186,9 @@ def py_decode_record(data: bytes) -> dict:
         else:
             unknown[key] = data[vs:ve]
 
-    for required in sorted(RECORD_REQUIRED_KEYS):
-        if required not in out:
-            raise KeyError(f"record missing required field: {required!r}")
+    absent = first_missing_key_in_sorted_order(out, RECORD_REQUIRED_KEYS)
+    if absent is not None:
+        raise KeyError(f"record missing required field: {absent!r}")
 
     rec_uuid = out["record_uuid"]
     if not isinstance(rec_uuid, bytes) or len(rec_uuid) != 16:
@@ -258,9 +259,9 @@ def py_decode_record(data: bytes) -> dict:
 def _validate_record_field(fname: str, fval: dict) -> None:
     """Validate a single §6.3 RecordField sub-map."""
     REQUIRED_FIELD_KEYS = {"value", "last_mod", "device_uuid"}
-    for k in REQUIRED_FIELD_KEYS:
-        if k not in fval:
-            raise KeyError(f"record field {fname!r} missing {k!r}")
+    absent = first_missing_key_in_sorted_order(fval, REQUIRED_FIELD_KEYS)
+    if absent is not None:
+        raise KeyError(f"record field {fname!r} missing {absent!r}")
     v = fval["value"]
     if not isinstance(v, (str, bytes)):
         raise ValueError(f"field {fname!r} value must be tstr or bstr")
