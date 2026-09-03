@@ -599,6 +599,11 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             | VE::Sig(_)
             | VE::OwnerUuidMismatch { .. }
             | VE::ManifestAuthorMismatch
+            // VL-1: the on-disk owner card's public keys do not match the
+            // AEAD-authenticated identity bundle — a substituted owner card
+            // in the (attacker-writable) vault folder. "Data on disk doesn't
+            // match what we authenticated" → fold to CorruptVault.
+            | VE::OwnerCardKeyMismatch
             | VE::ManifestVaultUuidMismatch { .. }
             | VE::KdfParamsMismatch
             | VE::ClockOverflow { .. }

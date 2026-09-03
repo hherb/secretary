@@ -1,16 +1,19 @@
 //! The device-secret source — a **port** the host fetches the casual vault's
 //! 32-byte device secret through, just before a per-fill open.
 //!
-//! D.4.2 ships **one** provider, [`DevFileSecretSource`], which is
-//! **development-only**. Real OS-keystore adapters (macOS Keychain, Linux
-//! Secret Service), optionally behind a biometric gate, land behind this same
-//! trait in a follow-up — the split mirrors the iOS B.3 pure-core-port /
-//! real-adapter design (CLAUDE.md "iOS device unlock").
+//! D.4.2 ships **one** provider, `DevFileSecretSource`, which is
+//! **development-only** and compiled only under the `dev-secret-source` cargo
+//! feature (audit BR-1; a release build has NO secret source and fails closed
+//! as not-enrollable). Real OS-keystore adapters (macOS Keychain, Linux Secret
+//! Service), optionally behind a biometric gate, land behind this same trait in
+//! a follow-up — the split mirrors the iOS B.3 pure-core-port / real-adapter
+//! design (CLAUDE.md "iOS device unlock").
 //!
 //! The fetched secret is returned as a [`SecretBytes`] (zeroize-on-drop). The
 //! caller (the per-fill open) drops it immediately after `open_vault`, so the
 //! host never holds key material between fills (design §12 invariant 1).
 
+#[cfg(feature = "dev-secret-source")]
 use std::path::PathBuf;
 
 use secretary_core::crypto::secret::SecretBytes;
@@ -55,10 +58,18 @@ pub trait DeviceSecretSource {
 /// anyone who can read the file can open the casual vault. It exists solely so
 /// D.4.2's per-fill open is CI-testable without a platform keystore. The enroll
 /// tool writes the file `0600`; that is a courtesy, not a security boundary.
+///
+/// SECURITY (audit BR-1): compiled ONLY under the `dev-secret-source` cargo
+/// feature, which is off by default and enabled for this crate's tests through
+/// a self dev-dependency. A release build therefore contains no code path that
+/// reads a device secret from a plaintext file, and a config that names one
+/// fails closed (`ConfigError::SecretSourceUnavailable`).
+#[cfg(feature = "dev-secret-source")]
 pub struct DevFileSecretSource {
     path: PathBuf,
 }
 
+#[cfg(feature = "dev-secret-source")]
 impl DevFileSecretSource {
     /// Create a dev source reading from `path`.
     pub fn new(path: PathBuf) -> Self {
@@ -71,6 +82,7 @@ impl DevFileSecretSource {
     }
 }
 
+#[cfg(feature = "dev-secret-source")]
 impl DeviceSecretSource for DevFileSecretSource {
     fn device_secret(&self) -> Result<SecretBytes, SecretSourceError> {
         let raw = match std::fs::read_to_string(&self.path) {
@@ -100,6 +112,7 @@ impl DeviceSecretSource for DevFileSecretSource {
 
 /// Overwrite a byte buffer in place. `SecretBytes` itself is zeroize-on-drop;
 /// this scrubs the *transient* decode buffer before it is freed.
+#[cfg(feature = "dev-secret-source")]
 fn zeroize_vec(buf: &mut [u8]) {
     for b in buf.iter_mut() {
         // `write_volatile` would need `unsafe`; the crate is `forbid(unsafe)`.
@@ -109,7 +122,7 @@ fn zeroize_vec(buf: &mut [u8]) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "dev-secret-source"))]
 mod tests {
     use super::*;
     use std::io::Write;

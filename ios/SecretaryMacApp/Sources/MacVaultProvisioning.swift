@@ -14,7 +14,14 @@ enum MacVaultProvisioning {
     }
 
     /// Returns the path to the writable staged vault, copying it on first call.
+    ///
+    /// SECURITY (audit SC-2): enforces the "a shipped app must embed no fixture
+    /// (and no password)" rule above in code — a Release build refuses to
+    /// self-provision the public fixture regardless of what was bundled.
     static func stageGoldenVault() throws -> URL {
+        #if !DEBUG
+        throw ProvisioningError(message: "golden_vault_001 self-provisioning is debug-only; a release build must open a user-chosen vault")
+        #endif
         let fm = FileManager.default
         let support = try fm.url(for: .applicationSupportDirectory,
                                  in: .userDomainMask, appropriateFor: nil, create: true)
@@ -34,6 +41,9 @@ enum MacVaultProvisioning {
     /// post-open check (`session.vaultUuidHex == enrolledVaultId`) passes, and as
     /// the on-screen happy-path assertion.
     static func pinnedVaultUuidHex() throws -> String {
+        #if !DEBUG
+        throw ProvisioningError(message: "golden_vault_001 inputs are debug-only")
+        #endif
         guard let url = Bundle.main.url(forResource: "golden_vault_001_inputs",
                                         withExtension: "json",
                                         subdirectory: "Fixtures") else {

@@ -26,10 +26,28 @@ path = "src/main.rs"
 
 # DEV-ONLY enrollment CLI (D.4.2 task 4): mints a browser-helper device slot on
 # a casual vault and writes the helper config + dev secret file. Stand-in for
-# the design's native-app enrollment until the desktop UI lands.
+# the design's native-app enrollment until the desktop UI lands. Built ONLY
+# when the `dev-secret-source` feature is on (see [features]); a plain
+# `cargo build --release` does not produce it.
 [[bin]]
 name = "secretary-browser-enroll"
 path = "src/bin/enroll.rs"
+required-features = ["dev-secret-source"]
+
+[features]
+# SECURITY (audit BR-1): `DevFileSecretSource` reads the casual vault's 32-byte
+# device secret from a CLEARTEXT hex file. It exists so the per-fill open is
+# CI-testable without a platform keystore and must never be selectable in a
+# shipped host: a release binary that can be pointed (via its config file) at
+# a plaintext secret on disk turns the ADR 0009 keystore posture into
+# "whoever can read ~/.config opens the casual vault". The feature is OFF by
+# default, so `cargo build --release` compiles a host with NO secret source —
+# it fails closed as "not enrollable" until the real OS-keystore adapters land
+# behind the same `DeviceSecretSource` port. It is enabled for tests only,
+# through the self dev-dependency below (resolver v2 does not unify a
+# dev-dependency's features into a non-test build — the same placement the
+# bridge crate uses for its `test-support` feature).
+dev-secret-source = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -77,6 +95,11 @@ idna = "1"
 psl = "=2.1.137"
 
 [dev-dependencies]
+# Enable the dev-only cleartext secret source for THIS crate's own tests
+# (unit tests in `secret_source.rs`/`enroll.rs`, the enroll binary's tests).
+# A self dev-dependency is the sanctioned way to turn a feature on for `cargo
+# test` while keeping it out of `cargo build --release` (resolver v2).
+secretary-browser-host = { path = ".", features = ["dev-secret-source"] }
 # `tempfile` for tests that write a dev secret file / copy the golden vault.
 # Exact-pinned to match `core` / `cli` / bridge (CLAUDE.md atomic-write
 # contract); a security-critical-path crate stays exact-pinned even in dev use.

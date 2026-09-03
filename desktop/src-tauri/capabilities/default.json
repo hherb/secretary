@@ -1,10 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2.0.0/capability",
   "identifier": "default",
-  "description": "Default capabilities for the secretary-desktop main window. Grants Tauri core (event listening, IPC invoke) and clipboard WRITE for the copy-secret affordance. Dialogs are opened by the Rust backend (pick_* commands, #353), so the webview is NOT granted dialog:allow-open. Clipboard read is intentionally NOT granted.",
+  "description": "Default capabilities for the secretary-desktop main window. Grants Tauri core (event listening, IPC invoke) only. Dialogs are opened by the Rust backend (pick_* commands, #353), so the webview is NOT granted dialog:allow-open. Clipboard access is NOT granted in either direction (audit DT-2): the copy-secret affordance goes through the Rust `copy_secret_text` / `clear_clipboard` commands, which set the OS concealment flags the plugin cannot; a compromised webview therefore cannot write arbitrary clipboard content, and never read it.",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "clipboard-manager:allow-write-text"
+    "core:default"
   ]
 }

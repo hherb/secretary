@@ -2,10 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { REVEAL_AUTO_HIDE_MS, CLIPBOARD_CLEAR_MS } from '../src/lib/constants';
 
+// Audit DT-2: copy/clear go through the Rust `copy_secret_text` /
+// `clear_clipboard` commands (OS concealment flags), never the webview
+// clipboard plugin — so the seam under test is `invoke`. Reveal and copy are
+// sequential `invoke` calls, so per-call `mockResolvedValueOnce` ordering is
+// reveal first, then copy.
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
-const { writeTextMock } = vi.hoisted(() => ({ writeTextMock: vi.fn() }));
-vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({ writeText: writeTextMock }));
 
 import FieldRow from '../src/components/FieldRow.svelte';
 import type { FieldMetaDto } from '../src/lib/ipc';
@@ -14,8 +17,13 @@ const FIELD: FieldMetaDto = { name: 'password', lastModMs: 2, isText: true, isBy
 const BLOCK_HEX = 'ab';
 const REC_HEX = 'cd';
 
+const copyCalls = () => invokeMock.mock.calls.filter((c) => c[0] === 'copy_secret_text');
+const clearCalls = () => invokeMock.mock.calls.filter((c) => c[0] === 'clear_clipboard');
+
 describe('FieldRow', () => {
-  beforeEach(() => { invokeMock.mockReset(); writeTextMock.mockReset(); });
+  beforeEach(() => {
+    invokeMock.mockReset();
+  });
 
   it('is masked initially and reveals plaintext on click', async () => {
     invokeMock.mockResolvedValueOnce({ isText: true, value: 'hunter2' });
@@ -38,14 +46,14 @@ describe('FieldRow', () => {
     expect(queryByText('hunter2')).toBeNull();
   });
 
-  it('copy writes the revealed value to the clipboard', async () => {
+  it('copy writes the revealed value through the Rust concealed-clipboard command', async () => {
     invokeMock.mockResolvedValueOnce({ isText: true, value: 'hunter2' });
-    writeTextMock.mockResolvedValue(undefined);
     const { getByLabelText } =
       render(FieldRow, { props: { blockUuidHex: BLOCK_HEX, recordUuidHex: REC_HEX, field: FIELD } });
     await fireEvent.click(getByLabelText(/reveal password/i));
     await fireEvent.click(getByLabelText(/copy password/i));
-    await waitFor(() => expect(writeTextMock).toHaveBeenCalledWith('hunter2'));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith('copy_secret_text', { text: 'hunter2' }));
   });
 
   it('auto-hides the revealed value after REVEAL_AUTO_HIDE_MS', async () => {
@@ -68,17 +76,16 @@ describe('FieldRow', () => {
     vi.useFakeTimers();
     try {
       invokeMock.mockResolvedValueOnce({ isText: true, value: 'hunter2' });
-      writeTextMock.mockResolvedValue(undefined);
       const { getByLabelText } =
         render(FieldRow, { props: { blockUuidHex: BLOCK_HEX, recordUuidHex: REC_HEX, field: FIELD } });
       await fireEvent.click(getByLabelText(/reveal password/i));
       await vi.advanceTimersByTimeAsync(0);
       await fireEvent.click(getByLabelText(/copy password/i));
-      await vi.advanceTimersByTimeAsync(0); // flush the writeText(value) promise
-      expect(writeTextMock).toHaveBeenCalledWith('hunter2');
-      writeTextMock.mockClear();
+      await vi.advanceTimersByTimeAsync(0); // flush the copy promise
+      expect(copyCalls()).toHaveLength(1);
+      expect(clearCalls()).toHaveLength(0);
       await vi.advanceTimersByTimeAsync(CLIPBOARD_CLEAR_MS);
-      expect(writeTextMock).toHaveBeenCalledWith(''); // best-effort clear fired
+      expect(clearCalls()).toHaveLength(1); // best-effort clear fired
     } finally {
       vi.useRealTimers();
     }
@@ -91,17 +98,16 @@ describe('FieldRow', () => {
     vi.useFakeTimers();
     try {
       invokeMock.mockResolvedValueOnce({ isText: true, value: 'hunter2' });
-      writeTextMock.mockResolvedValue(undefined);
       const { getByLabelText, unmount } =
         render(FieldRow, { props: { blockUuidHex: BLOCK_HEX, recordUuidHex: REC_HEX, field: FIELD } });
       await fireEvent.click(getByLabelText(/reveal password/i));
       await vi.advanceTimersByTimeAsync(0); // flush reveal
       await fireEvent.click(getByLabelText(/copy password/i));
-      await vi.advanceTimersByTimeAsync(0); // flush writeText(value) + schedule clear
-      expect(writeTextMock).toHaveBeenCalledWith('hunter2');
-      writeTextMock.mockClear();
+      await vi.advanceTimersByTimeAsync(0); // flush copy + schedule clear
+      expect(copyCalls()).toHaveLength(1);
+      expect(clearCalls()).toHaveLength(0);
       unmount(); // lock/navigate teardown, well before CLIPBOARD_CLEAR_MS elapses
-      expect(writeTextMock).toHaveBeenCalledWith(''); // cleared eagerly, not stranded
+      expect(clearCalls()).toHaveLength(1); // cleared eagerly, not stranded
     } finally {
       vi.useRealTimers();
     }
@@ -116,7 +122,8 @@ describe('FieldRow', () => {
       await fireEvent.click(getByLabelText(/reveal password/i)); // reveal but never copy
       await vi.advanceTimersByTimeAsync(0);
       unmount();
-      expect(writeTextMock).not.toHaveBeenCalled();
+      expect(copyCalls()).toHaveLength(0);
+      expect(clearCalls()).toHaveLength(0);
     } finally {
       vi.useRealTimers();
     }
@@ -125,18 +132,18 @@ describe('FieldRow', () => {
   it('surfaces a failure and schedules no clear when the clipboard write rejects', async () => {
     vi.useFakeTimers();
     try {
-      invokeMock.mockResolvedValueOnce({ isText: true, value: 'hunter2' });
-      writeTextMock.mockRejectedValue(new Error('clipboard busy'));
+      invokeMock
+        .mockResolvedValueOnce({ isText: true, value: 'hunter2' }) // reveal_field
+        .mockRejectedValueOnce(new Error('clipboard busy')); // copy_secret_text
       const { getByLabelText, queryByText } =
         render(FieldRow, { props: { blockUuidHex: BLOCK_HEX, recordUuidHex: REC_HEX, field: FIELD } });
       await fireEvent.click(getByLabelText(/reveal password/i));
       await vi.advanceTimersByTimeAsync(0);
       await fireEvent.click(getByLabelText(/copy password/i));
-      await vi.advanceTimersByTimeAsync(0); // flush the rejected writeText promise
+      await vi.advanceTimersByTimeAsync(0); // flush the rejected copy promise
       expect(queryByText(/Couldn't copy/i)).toBeTruthy();
-      writeTextMock.mockClear();
       await vi.advanceTimersByTimeAsync(CLIPBOARD_CLEAR_MS);
-      expect(writeTextMock).not.toHaveBeenCalled(); // failed copy schedules no clear
+      expect(clearCalls()).toHaveLength(0); // failed copy schedules no clear
     } finally {
       vi.useRealTimers();
     }

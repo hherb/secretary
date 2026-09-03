@@ -983,3 +983,112 @@ fn share_block_rejects_recipient_card_that_fails_self_verify() {
 fn _unused() {
     let _: Option<MlKem768Public> = None;
 }
+
+// ---------------------------------------------------------------------------
+// 7. VL-2 regression: a post-open block-level rollback must NOT be laundered
+//    through a re-key. `verify_block_fingerprints` runs once at open; the
+//    `OpenVault` handle then lives for the whole session. A hostile cloud host
+//    can replace `blocks/<uuid>.cbor.enc` with an OLDER, genuinely
+//    owner-signed version after the open. Before the fix, `share_block` read
+//    the stale bytes, re-encrypted them, and committed `blake3(new bytes)`
+//    under a fresh owner signature — persisting the rollback (a rotated-back
+//    password, a resurrected revocation). The re-key path must bind the
+//    on-disk bytes to the manifest's committed fingerprint and refuse.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn share_block_rejects_post_open_block_rollback() {
+    // Password bytes drawn directly from OS entropy — no constant buffer flows
+    // into the KDF (a literal reaching the password trips CodeQL's
+    // hard-coded-cryptographic-value; see feedback_test_crypto_random_not_hardcoded).
+    let pw_bytes: Vec<u8> = std::iter::repeat_with(|| (OsRng.next_u32() & 0xff) as u8)
+        .take(24)
+        .collect();
+    let (dir, _mnemonic, pw) = make_fast_vault(7, &pw_bytes, "Owner");
+    let mut rng = ChaCha20Rng::from_seed([0xc7; 32]);
+
+    let mut open = open_vault(dir.path(), Unlocker::Password(&pw), None).unwrap();
+    let owner_card = open.owner_card.clone();
+
+    let block_uuid = [0x77u8; 16];
+    let device_uuid = [0xd7u8; 16];
+    let block_uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let block_path = dir
+        .path()
+        .join("blocks")
+        .join(format!("{block_uuid_hex}.cbor.enc"));
+
+    // v1: the OLD content the attacker wants to resurrect.
+    save_block(
+        dir.path(),
+        &mut open,
+        make_simple_plaintext(block_uuid, "v1-OLD-password"),
+        std::slice::from_ref(&owner_card),
+        device_uuid,
+        1_714_060_900_000,
+        &mut rng,
+    )
+    .unwrap();
+    let v1_bytes = std::fs::read(&block_path).unwrap();
+
+    // v2: the CURRENT content the manifest commits to.
+    save_block(
+        dir.path(),
+        &mut open,
+        make_simple_plaintext(block_uuid, "v2-NEW-password"),
+        std::slice::from_ref(&owner_card),
+        device_uuid,
+        1_714_060_901_000,
+        &mut rng,
+    )
+    .unwrap();
+    let v2_bytes = std::fs::read(&block_path).unwrap();
+    assert_ne!(v1_bytes, v2_bytes, "the two saves must differ on disk");
+
+    // ATTACK (cloud host, version history): roll the block file back to the
+    // genuinely owner-signed v1 while the session's manifest still commits v2.
+    std::fs::write(&block_path, &v1_bytes).unwrap();
+
+    // A re-key on the rolled-back file must be refused, not laundered.
+    let mut alice_rng = ChaCha20Rng::from_seed([0xb7; 32]);
+    let alice_id = unlock::bundle::generate("Alice", 1_714_060_800_000, &mut alice_rng);
+    let alice_card = make_signed_card(&alice_id);
+    let owner_sk_ed: Ed25519Secret = Sensitive::new(*open.identity.ed25519_sk.expose());
+    let owner_sk_pq = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose()).unwrap();
+
+    let err = share_block(
+        dir.path(),
+        &mut open,
+        BlockUuid::new(block_uuid),
+        &owner_card,
+        &owner_sk_ed,
+        &owner_sk_pq,
+        std::slice::from_ref(&owner_card),
+        &alice_card,
+        DeviceUuid::new(device_uuid),
+        1_714_060_910_000,
+        &mut rng,
+    )
+    .expect_err("share_block must refuse a rolled-back block file");
+    // The messages below deliberately do not interpolate the error values: a
+    // `VaultError` Debug can carry uuids/key material and CodeQL flags the
+    // formatting as cleartext logging; the `matches!` is the precise assertion.
+    assert!(
+        matches!(err, VaultError::BlockFingerprintMismatch { .. }),
+        "expected BlockFingerprintMismatch"
+    );
+
+    // Nothing was laundered: the on-disk manifest still commits v2's
+    // fingerprint (no re-key wrote a fresh signature over v1 content), and the
+    // vault refuses to open until the file is restored — a rollback surfaces
+    // loudly rather than becoming the new signed truth.
+    drop(open);
+    let reopen = open_vault(dir.path(), Unlocker::Password(&pw), None);
+    assert!(
+        matches!(reopen, Err(VaultError::BlockFingerprintMismatch { .. })),
+        "reopen must still detect the rolled-back file"
+    );
+    std::fs::write(&block_path, &v2_bytes).unwrap();
+    open_vault(dir.path(), Unlocker::Password(&pw), None)
+        .expect("restoring the committed bytes makes the vault open again");
+}

@@ -76,12 +76,12 @@ jobs:
       # type-checks its bodies too. Only a non-test build catches what
       # `cargo test` / `cargo clippy --tests` miss.
       - name: cargo build --release --workspace
-        run: cargo build --release --workspace
+        run: cargo build --release --locked --workspace
       # Mirrors the documented local command in CLAUDE.md. The
       # differential-replay tests (which also shell out to `uv`) are behind an
       # opt-in Cargo feature and stay off here.
       - name: cargo test --release --workspace
-        run: cargo test --release --workspace
+        run: cargo test --release --locked --workspace
 
   desktop-test:
     name: desktop vitest

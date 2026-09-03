@@ -21,7 +21,16 @@ if [[ ! -d "$XCFRAMEWORK" ]]; then
     bash "$SCRIPT_DIR/build-xcframework.sh"
 fi
 
-echo "==> stage golden_vault_001 fixture into the app bundle (Fixtures/)"
+# SECURITY (audit SC-2): the fixture's inputs JSON carries the golden vault's
+# master password, 24-word recovery mnemonic, secret keys and device-slot
+# secret — all public on GitHub. It is staged ONLY for Debug (simulator /
+# dev-device) builds; a Release configuration must never contain it. This
+# script always builds Debug, but refuse loudly if anyone overrides that.
+if [[ "${CONFIGURATION:-Debug}" == "Release" ]]; then
+    echo "ERROR: refusing to stage golden_vault_001 (public password + mnemonic) into a Release build" >&2
+    exit 1
+fi
+echo "==> stage golden_vault_001 fixture into the app bundle (Fixtures/) — DEBUG ONLY"
 rm -rf "$RES_DIR"
 mkdir -p "$RES_DIR"
 cp -R "$REPO_ROOT/core/tests/data/golden_vault_001" "$RES_DIR/golden_vault_001"

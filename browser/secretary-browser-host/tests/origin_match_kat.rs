@@ -43,9 +43,13 @@ fn replay_origin_match_kat() {
     // Exact count: the KAT is the contract — a silently dropped vector must
     // fail, not pass. Bump this deliberately when adding vectors (and the diff
     // is human-reviewed, per CLAUDE.md "Spec is normative").
+    // 24 at D.4.3 task 4; +4 in the 2026-09 security audit (BR-2/BR-4: IPv4
+    // literals and unknown-TLD hosts must not cross-fill under
+    // `registrable_domain` — the PSL unknown-suffix `*` rule is now gated on
+    // `Suffix::is_known()`).
     assert_eq!(
         corpus.vectors.len(),
-        24,
+        28,
         "unexpected corpus size (vectors added/removed without updating the count?)"
     );
 

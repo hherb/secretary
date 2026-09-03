@@ -183,6 +183,27 @@ pub enum VaultError {
     #[error("manifest author_fingerprint does not match owner card fingerprint")]
     ManifestAuthorMismatch,
 
+    /// Security check failed during [`open_vault`]: the owner contact card
+    /// read from `contacts/<owner-uuid>.card` carries at least one public
+    /// key that does not match the corresponding key in the unlocked,
+    /// AEAD-authenticated Identity Bundle.
+    ///
+    /// The bundle is decrypted from `identity.bundle.enc` under the
+    /// password/recovery/device-derived KEK, so its four public keys are the
+    /// only owner-identity material a cloud-folder host cannot forge. The
+    /// owner card, by contrast, lives in the (attacker-writable) vault folder
+    /// and is only self-signed — a hostile host can replace it with a card
+    /// carrying the owner's `contact_uuid` but the attacker's own keys and
+    /// re-sign the (unauthenticated) manifest signature suffix under those
+    /// keys. Because the manifest signature is verified against the card's
+    /// keys and the card is then used as the owner's KEM recipient identity
+    /// for every subsequent block write, an accepted substitution would wrap
+    /// freshly generated Block Content Keys to the attacker. This check binds
+    /// the card to the bundle so a substituted card is rejected before any
+    /// signature is trusted. See `docs/vault-format.md` §4.3 read order.
+    #[error("owner contact card public keys do not match the identity bundle")]
+    OwnerCardKeyMismatch,
+
     /// `docs/vault-format.md` §4.3 step 5 cross-check failed: the
     /// `vault_uuid` inside the encrypted+signed manifest body does not
     /// match the `vault_uuid` in the (AAD-bound) binary header. The

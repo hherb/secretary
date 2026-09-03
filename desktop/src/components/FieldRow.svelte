@@ -1,8 +1,13 @@
 <script lang="ts">
   import Eye from './icons/Eye.svelte';
   import EyeOff from './icons/EyeOff.svelte';
-  import { writeText } from '@tauri-apps/plugin-clipboard-manager';
-  import { revealField, isAppError, type FieldMetaDto } from '../lib/ipc';
+  import {
+    revealField,
+    copySecretText,
+    clearClipboard,
+    isAppError,
+    type FieldMetaDto
+  } from '../lib/ipc';
   import { createAutoHideTimer } from '../lib/reveal';
   import { REVEAL_AUTO_HIDE_MS, CLIPBOARD_CLEAR_MS } from '../lib/constants';
 
@@ -53,9 +58,11 @@
     const value = revealed;
     copyFailed = false;
     try {
-      await writeText(value);
+      // Rust-side write with OS concealment flags (audit DT-2) — never the
+      // webview clipboard API, which cannot mark the entry transient.
+      await copySecretText(value);
     } catch (e) {
-      // The plugin write can fail (OS clipboard busy / permission). Surface
+      // The write can fail (OS clipboard busy / permission). Surface
       // it inline rather than swallowing into an unhandled rejection, and
       // do NOT schedule a clear — nothing was written.
       copyFailed = true;
@@ -68,7 +75,7 @@
     clearClipboardClear();
     clipboardClearHandle = setTimeout(() => {
       clipboardClearHandle = null;
-      void writeText('');
+      void clearClipboard();
     }, CLIPBOARD_CLEAR_MS);
   }
 
@@ -83,7 +90,7 @@
     hideTimer.cancel();
     if (clipboardClearHandle !== null) {
       clearClipboardClear();
-      void writeText('');
+      void clearClipboard();
     }
   });
 </script>
