@@ -9,8 +9,11 @@ reproduction in #597. `section_required_key_determinism` therefore spawns this
 module (`python -m conformance_lib.required_key_probe`) once per seed and
 compares the JSON it prints.
 
-WHAT A CASE IS. One case per required-key presence check in the verifier --
-seven, listed in `CASES`. Each declares `missing`: two or more required keys
+WHAT A CASE IS. One case per required-key presence check in `codec/` -- seven,
+listed in `CASES`. Not "in the verifier": there is an EIGHTH, `wire/card.py`,
+deliberately outside this table and outside the helper, because it reports the
+whole missing set already sorted and so has no first-key choice to make.
+Section DET's own docstring records that exclusion. Each declares `missing`: two or more required keys
 its input deliberately omits. Fewer than two would make the case VACUOUS, not
 merely weak: with a single absent key there is only one key the decoder could
 possibly name, so it reports the same thing under every hash seed whether or

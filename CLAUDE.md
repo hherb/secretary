@@ -287,9 +287,18 @@ control (restoring the reported key must move the rejection onto the next one,
 so the fixture's ambiguity is demonstrated by the DECODER rather than asserted
 by its table), and both structural directions — every helper call site under
 `codec/` has a case, and no `codec/` loop iterates a required-key set directly.
-The structural half scans `codec/` only and matches by name shape, so a decoder
-placed elsewhere is invisible to it; `wire/card.py` deliberately does not use
-the helper, reporting the whole sorted missing set instead.
+**What the structural half does NOT cover**, since a summary that names only
+the easy limit is the failure mode this file keeps re-finding: it scans
+`codec/` (recursively, so a future directory-module split stays covered) and
+nowhere else, so a decoder placed in `wire/` or `merge/` is invisible to it;
+it matches a required-key set by NAME SHAPE — case-insensitively, and
+`REQUIRED` / `*_KEYS` / `*_FIELDS` only — so a set bound to some other name
+is invisible too; and it reads TEXT through `ast`, never resolved identities.
+The census is a two-way set comparison keyed by enclosing function, not a
+count: a count balanced by a duplicate case scored a tree with an uncovered
+site GREEN, and all three of these were found by review measuring them rather
+than by argument. `wire/card.py` is the one required-key check deliberately
+outside the helper, reporting the whole sorted missing set instead.
 
 **It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and never enabled in `test.yml`. The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. **The job now BLOCKS**, which this paragraph denied until the #599 review measured it: `clean-room conformance` is one of the 24 required contexts in `main`'s `protect_main` ruleset (`gh api repos/hherb/secretary/rules/branches/main`). The sentence "the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking" outlived its fact — and a stale claim in this direction is not harmless, because it gets a real gate discounted when someone weighs whether a Python-side-only pin is enough. One standing consequence remains: five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
 

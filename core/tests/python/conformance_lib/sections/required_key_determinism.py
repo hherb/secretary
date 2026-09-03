@@ -74,7 +74,12 @@ _HELPER = "first_missing_key_in_sorted_order"
 # the definition does not count as a use.
 _HELPER_MODULE = "required_keys.py"
 # A `for` target whose name matches one of these is a required-key set being
-# iterated raw -- the shape the defect had.
+# iterated raw -- the shape the defect had. Matched CASE-INSENSITIVELY: two of
+# the seven live sites bind their required set to the lowercase PARAMETER
+# `required_keys` (`manifest_schema.py`), so a case-sensitive matcher would miss
+# the ordinary-Python-naming half of the very shape it exists to catch. Verified
+# by execution: a new decoder written as `required_keys = {...}` /
+# `for required in required_keys:` scanned GREEN before this.
 _REQUIRED_SET_MARKERS = ("REQUIRED",)
 _REQUIRED_SET_SUFFIXES = ("_KEYS", "_FIELDS")
 
@@ -110,28 +115,72 @@ def _run_probe_under(seed: str) -> tuple[str, str | None]:
 def _codec_modules() -> list[Path]:
     """The `codec/` modules both structural checks read.
 
+    `rglob`, not `glob`: this repo splits a module into a DIRECTORY module once
+    it passes 500 lines (`codec/record.py` is already 355), and a non-recursive
+    glob would make the first such split silently invisible to both checks.
+    Verified by execution -- a `codec/sub/thing.py` carrying the verbatim #597
+    shape scanned GREEN, and the PASS line counted 13 modules against a
+    14-module tree.
+
     Returned rather than re-globbed per check so the two cannot end up
     scanning different sets, and so an EMPTY result is visible to the caller:
     a glob that matches nothing would let both checks report "no violations"
     having read no source at all.
     """
-    return sorted(_CODEC_DIR.glob("*.py"))
+    return sorted(_CODEC_DIR.rglob("*.py"))
 
 
-def _helper_call_sites(modules: list[Path]) -> list[str]:
-    """Every `codec/` line calling the helper, as `file:line`."""
-    hits: list[str] = []
+def _enclosing_function_names(tree: ast.AST) -> dict[ast.AST, str | None]:
+    """Each node's nearest enclosing `def` name, or `None` at module level."""
+    enclosing: dict[ast.AST, str | None] = {}
+
+    def visit(node: ast.AST, current: str | None) -> None:
+        for child in ast.iter_child_nodes(node):
+            inner = (
+                child.name
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                else current
+            )
+            enclosing[child] = inner
+            visit(child, inner)
+
+    visit(tree, None)
+    return enclosing
+
+
+def _helper_call_sites(modules: list[Path]) -> dict[str, list[int]]:
+    """Every `codec/` call of the helper, keyed `codec/<path>::<function>`.
+
+    Keyed by ENCLOSING FUNCTION rather than counted, because a count is not a
+    mapping: with `len(call_sites) != len(CASES)` as the whole check, adding an
+    eighth call site no case exercises AND an eighth case duplicating an
+    existing one scanned GREEN, under a PASS line reading "8 call sites, one
+    case each" that was false in that state (verified by execution). The key
+    matches `Case.site`'s spelling so the two sets can be compared directly.
+
+    Read through `ast`, not by line matching, so a comment or docstring naming
+    the helper cannot inflate the count into a false red either.
+    """
+    hits: dict[str, list[int]] = {}
     for path in modules:
         if path.name == _HELPER_MODULE:
             continue
-        for number, line in enumerate(path.read_text().splitlines(), 1):
-            if f"{_HELPER}(" in line:
-                hits.append(f"codec/{path.name}:{number}")
+        tree = ast.parse(path.read_text())
+        enclosing = _enclosing_function_names(tree)
+        relative = path.relative_to(_CODEC_DIR)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not (isinstance(node.func, ast.Name) and node.func.id == _HELPER):
+                continue
+            function = enclosing.get(node) or "<module>"
+            hits.setdefault(f"codec/{relative}::{function}", []).append(node.lineno)
     return hits
 
 
 def _is_required_set_name(name: str) -> bool:
-    return any(m in name for m in _REQUIRED_SET_MARKERS) or name.endswith(
+    upper = name.upper()
+    return any(m in upper for m in _REQUIRED_SET_MARKERS) or upper.endswith(
         _REQUIRED_SET_SUFFIXES
     )
 
@@ -149,10 +198,11 @@ def _raw_required_set_iterations(modules: list[Path]) -> list[str]:
             if not isinstance(node, ast.For):
                 continue
             iterated = node.iter
+            relative = path.relative_to(_CODEC_DIR)
             if isinstance(iterated, (ast.Set, ast.SetComp)):
-                hits.append(f"codec/{path.name}:{node.lineno} (set literal)")
+                hits.append(f"codec/{relative}:{node.lineno} (set literal)")
             elif isinstance(iterated, ast.Name) and _is_required_set_name(iterated.id):
-                hits.append(f"codec/{path.name}:{node.lineno} ({iterated.id})")
+                hits.append(f"codec/{relative}:{node.lineno} ({iterated.id})")
     return hits
 
 
@@ -269,16 +319,31 @@ def section_required_key_determinism() -> tuple[bool, list[str]]:
         )
 
     call_sites = _helper_call_sites(modules)
-    if len(call_sites) != len(CASES):
+    declared = [case.site for case in CASES]
+    duplicates = sorted({s for s in declared if declared.count(s) > 1})
+    for duplicate in duplicates:
         issues.append(
-            f"{len(call_sites)} `{_HELPER}` call site(s) under codec/ but "
-            f"{len(CASES)} case(s): {call_sites} -- every required-key check "
-            "needs a case, or this section stops covering it"
+            f"two or more cases declare site {duplicate!r} -- a duplicate hides "
+            "an uncovered site behind a set comparison that still balances"
         )
-    else:
+
+    uncovered = sorted(set(call_sites) - set(declared))
+    for site in uncovered:
+        issues.append(
+            f"{site} calls `{_HELPER}` (line(s) {call_sites[site]}) but no case "
+            "exercises it -- a new required-key check this section does not cover"
+        )
+    orphaned = sorted(set(declared) - set(call_sites))
+    for site in orphaned:
+        issues.append(
+            f"a case declares site {site!r}, which no longer calls `{_HELPER}` "
+            "-- the case has drifted off the check it was written for"
+        )
+
+    if not (duplicates or uncovered or orphaned):
         lines.append(
             f"PASS  {len(call_sites)} required-key call sites under codec/, "
-            f"one case each"
+            f"each matched to its own case by enclosing function"
         )
 
     raw = _raw_required_set_iterations(modules)
