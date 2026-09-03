@@ -29,10 +29,18 @@ in fact required, the second decode would accept, or reject naming something
 else, and the section reds. A table-only `len(missing) >= 2` assertion would
 have been satisfied by a wrong table.
 
-Values here are structural placeholders, not cryptographic material: every
-required-key presence check in this verifier runs BEFORE that decoder's
-value-shape checks, so a card's `x25519_pk` never has to be 32 bytes to reach
-the rejection this module is about.
+Values here are structural placeholders, not cryptographic material -- but
+"placeholder" does not mean "any width will do", and the obvious wider claim is
+false. A decoder reaches its own required-key check before its own value-shape
+checks, so a card's `x25519_pk` never has to be 32 bytes. It does NOT follow
+that nothing here is load-bearing: the three NESTED cases (`record_field`,
+`manifest_block_entry`, `manifest_kdf_params`) are reached through a decoder one
+level up, whose shape checks run first. `_UUID` must therefore be a real 16
+bytes -- narrowed to one byte, `record_field` stops reaching its check at all
+and rejects with `record_uuid must be 16-byte bstr`. `_SALT` and the block
+entry's `fingerprint`, by contrast, are never presented to a decoder by any
+case (every key that would carry them is in that case's `missing`), so their
+widths are documentation of the position rather than a constraint.
 """
 
 from __future__ import annotations
@@ -40,7 +48,16 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
+
+# THE CROSS-PROCESS CONTRACT, declared once. Section DET imports these rather
+# than spelling the keys again at its end, so the two cannot drift into a
+# `KeyError` that takes the whole verifier down with a traceback.
+PACKAGE_KEY = "package"
+ROWS_KEY = "rows"
+ROW_KEYS = frozenset({"label", "base", "restored"})
+OUTCOME_KEYS = frozenset({"error_class", "detail"})
 
 # Structural placeholder for any 16-byte uuid position.
 _UUID = b"\x11" * 16
@@ -64,13 +81,28 @@ class Case:
     decode: Callable[[frozenset[str]], None]
 
 
+def _body_minus_absent(body: dict[str, Any], missing: tuple[str, ...],
+                       restore: frozenset[str]) -> dict[str, Any]:
+    """`body` with every key in `missing` dropped, except those in `restore`.
+
+    THE ONE PLACE a case's absent keys are turned into an input. The three
+    nested decoders used to build their sub-map as `{k: v for k, v in B.items()
+    if k in restore}`, which never reads `missing` at all and only coincided
+    with it while `missing == set(B)`. Dropping one key from
+    `_BLOCK_ENTRY_MISSING` therefore left Section DET green while it printed
+    `PASS manifest_block_entry: 7 absent` for an input omitting eight -- a
+    fixture lying about itself, in the module whose whole job is being a
+    truthful fixture.
+    """
+    return {k: v for k, v in body.items() if k in restore or k not in missing}
+
+
 def _decode_flat(decoder: Callable[[bytes], Any], body: dict[str, Any],
                  missing: tuple[str, ...], restore: frozenset[str]) -> None:
     """Encode `body` minus (`missing` minus `restore`) and hand it to `decoder`."""
     import cbor2
 
-    dropped = {k: v for k, v in body.items() if k in restore or k not in missing}
-    decoder(cbor2.dumps(dropped, canonical=True))
+    decoder(cbor2.dumps(_body_minus_absent(body, missing, restore), canonical=True))
 
 
 _CARD_BODY: dict[str, Any] = {
@@ -113,7 +145,7 @@ def _decode_record_field(restore: frozenset[str]) -> None:
 
     from conformance_lib.codec.record import py_decode_record
 
-    field = {k: v for k, v in _RECORD_FIELD.items() if k in restore}
+    field = _body_minus_absent(_RECORD_FIELD, _RECORD_FIELD_MISSING, restore)
     body = dict(_RECORD_BODY, fields={"f": field})
     py_decode_record(cbor2.dumps(body, canonical=True))
 
@@ -167,7 +199,7 @@ def _decode_block_entry(restore: frozenset[str]) -> None:
 
     from conformance_lib.codec.manifest_decode import py_decode_manifest
 
-    entry = {k: v for k, v in _BLOCK_ENTRY.items() if k in restore}
+    entry = _body_minus_absent(_BLOCK_ENTRY, _BLOCK_ENTRY_MISSING, restore)
     py_decode_manifest(cbor2.dumps({"blocks": [entry]}, canonical=True))
 
 
@@ -184,7 +216,7 @@ def _decode_kdf_params(restore: frozenset[str]) -> None:
 
     from conformance_lib.codec.manifest_decode import py_decode_manifest
 
-    params = {k: v for k, v in _KDF_PARAMS.items() if k in restore}
+    params = _body_minus_absent(_KDF_PARAMS, _KDF_PARAMS_MISSING, restore)
     py_decode_manifest(cbor2.dumps({"kdf_params": params}, canonical=True))
 
 
@@ -217,9 +249,11 @@ def _run_one(case: Case, restore: frozenset[str]) -> dict[str, str]:
     signal a wire-format violation with several types (`KeyError` here,
     `ValueError` for the manifest ones) and an unexpected one is still a datum
     the section should compare across seeds. `BaseException` would additionally
-    swallow `KeyboardInterrupt`/`SystemExit`, which are not outcomes -- letting
-    them propagate makes the probe exit non-zero, which the section reports as
-    a probe failure rather than scoring as agreement.
+    swallow `KeyboardInterrupt`/`SystemExit`, which are not outcomes. Letting
+    those propagate is right, but be precise about what catches them: a bare
+    `sys.exit()` exits ZERO with empty stdout, so it is the section's JSON
+    parse that reports it, not the exit code. Only `sys.exit(<non-zero>)` and
+    `KeyboardInterrupt` are caught by the returncode branch.
     """
     try:
         case.decode(restore)
@@ -242,7 +276,22 @@ def run_probe() -> list[dict[str, Any]]:
 
 
 def main() -> int:
-    json.dump(run_probe(), sys.stdout, sort_keys=True, indent=1)
+    # `package` is not decoration: it is how Section DET proves the child
+    # imported the same tree the section's structural scans read. `python -m`
+    # puts the child's CWD on `sys.path[0]` ahead of `PYTHONPATH`, so without
+    # this the two halves of that section can silently measure different code.
+    # It is constant across hash seeds, so it does not disturb check 1.
+    #
+    # CONSEQUENCE: this stdout now embeds an ABSOLUTE PATH and so differs
+    # between checkouts. That is fine for every consumer there is -- the
+    # section only ever compares runs of one tree against each other, and
+    # `--diff-replay` does not go through this module at all -- but do not
+    # snapshot it as a golden file.
+    payload = {
+        PACKAGE_KEY: str(Path(__file__).resolve().parent),
+        ROWS_KEY: run_probe(),
+    }
+    json.dump(payload, sys.stdout, sort_keys=True, indent=1)
     sys.stdout.write("\n")
     return 0
 

@@ -43,7 +43,12 @@ import pkgutil
 # Modules that legitimately define no drivers. Listed for the reader's benefit
 # only -- discovery does not consult this, so forgetting to update it cannot
 # cause a section to be missed.
-_NON_DRIVER_MODULES = ("registry", "completeness", "manifest_body_fixtures")
+_NON_DRIVER_MODULES = (
+    "registry",
+    "completeness",
+    "manifest_body_fixtures",
+    "required_key_structure",
+)
 
 
 def discover_drivers() -> dict[str, object]:

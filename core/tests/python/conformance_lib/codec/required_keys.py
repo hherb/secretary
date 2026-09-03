@@ -23,7 +23,20 @@ sites already sorted and three did not, which is what a hand-copied rule looks
 like after a while.
 
 Section DET pins both halves -- that the reported key is stable across hash
-seeds, and that no `codec/` loop iterates a required-key set directly again.
+seeds, and that no `codec/` construct selects from a required-key set without
+imposing an order first.
+
+THE TWO LANGUAGES NOW CHOOSE DIFFERENTLY, and that is recorded here rather than
+reconciled. Rust names the FIRST MISSING FIELD IN SOURCE ORDER -- its manifest
+decoder is a chain of `ok_or(MissingField { .. })?` over a struct literal
+(`core/src/vault/manifest/decode/mod.rs`), with no `HashSet`/`HashMap` anywhere
+on that path -- so for a manifest missing everything Rust says `manifest_version`
+while this side now says `blocks`. Both are deterministic, which is all #597
+asked for, and nothing compares them: `core/tests/differential_replay.rs` scores
+`(Err(_), Reject(_))` as agreement without reading `detail`. But that call site's
+own comment says the classes could be tightened "if we standardize them", and if
+anyone acts on it these two selection rules have to be reconciled first. Only one
+of them was written down before this.
 """
 
 from __future__ import annotations

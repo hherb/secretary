@@ -66,7 +66,7 @@ comparisons whose failure text is already sorted.
 
 ### What landed
 
-- **`codec/required_keys.py`** (54 lines) — `first_missing_key_in_sorted_order`,
+- **`codec/required_keys.py`** (67 lines) — `first_missing_key_in_sorted_order`,
   returning the lexicographically first absent key or `None`. Callers keep their
   own exception type and message, because they deliberately differ (`KeyError` for
   the record/card/trash decoders, `ValueError` for the manifest ones) and unifying
@@ -75,12 +75,15 @@ comparisons whose failure text is already sorted.
   That is the point rather than churn: **four sorted and three did not**, which is
   what a hand-copied rule looks like after a while. The rule now lives in one
   NAME, the way `_check_sorted_and_distinct` (#594) put both of its rules in one.
-- **`required_key_probe.py`** (248 lines) — a spawnable module holding one `Case`
+- **`required_key_probe.py`** (294 lines) — a spawnable module holding one `Case`
   per required-key site, each declaring two or more deliberately-absent keys, and
   decoding **twice**: once omitting all of them, once with only `missing[0]`
   restored.
-- **Section DET** (`sections/required_key_determinism.py`, 285 lines) — one
-  registry row; REG goes 24 → 25 drivers.
+- **Section DET** (`sections/required_key_determinism.py`, 382 lines, over
+  `sections/required_key_structure.py`, 284) — one registry row; REG goes
+  24 → 25 drivers. **Line counts in this document have already rotted once**:
+  they read 248 and 285 when first written, and 285 matched no commit on the
+  branch at any point (298 at `8241a6fc`). Prefer `wc -l` over this list.
 
 ### The review round, and why check 3 needed it
 
@@ -429,3 +432,95 @@ shasum -a 256 core/tests/python/conformance_lib/codec/required_keys.py
 `docs/handoffs/2026-09-03-deterministic-required-key-shipped.md`. This file is the
 single authored baton — do not create a second copy at the root, and do not sync it
 to `main` during a pause window (that produces an add/add conflict).
+
+---
+
+## Review round 2 (the `/pr-review-toolkit:review-pr` pass on #605)
+
+Five specialist agents plus a controller pass. **Every finding was in Section
+DET's own wiring or in check 3's matcher — none in the fix.** Nine were
+reproduced by execution before being believed, and each is now pinned by a
+mutation that reds.
+
+**Four scored a tree carrying the verbatim #597 defect as GREEN:**
+
+| Shape | What DET printed |
+|---|---|
+| probe emits `[]` | `PASS`, 3 lines — check 2 skipped entirely, no issue, no diagnostic |
+| verifier run from a CWD holding another `conformance_lib` | `PASS`, all 8 lines — the probe measured a different tree from the scans |
+| `absent = REQUIRED - set(d)` then `.pop()` | `PASS` — and this is `wire/card.py`'s own idiom, minus its `sorted(...)` |
+| genexp / listcomp / `frozenset(X)` / `list(X)` / `mod.REQUIRED_KEYS` / `async for` | `PASS` — check 3b walked `ast.For` over `Set`-or-`Name` only |
+
+**Three had the census understate its own coverage** — the PASS line asserting a
+mapping the code did not establish: an attribute-spelled or aliased helper call
+(9 sites, printed 7); a *second* helper call inside an already-covered function
+(8 sites, printed 7 — per-function parity is still parity); and a live call site
+in `codec/<sub>/required_keys.py`, dropped by a BASENAME skip whose stated
+rationale ("so the definition does not count as a use") was false, since a `def`
+is not an `ast.Call`.
+
+**Two more:** `Case.missing` was the drop set for only four of seven cases — the
+three nested decoders filtered on `restore` alone, so dropping `suite_id` from
+`_BLOCK_ENTRY_MISSING` printed `PASS manifest_block_entry: 7 absent` for an input
+omitting **eight**. And `_HASH_SEEDS = ("0",)` passed, printing "byte-identical
+across 1 PYTHONHASHSEED values".
+
+**What was corrected in the review rather than accepted from it.** Two agent
+claims did not survive measurement, and are recorded because the same reasoning
+would otherwise be repeated:
+
+- "Check 1 becomes vacuous, passing over arbitrarily broken decoders" — only
+  half true. With the salt not varying, check 2 still catches the defect
+  independently. It is a lost check, not a standalone fail-open; it becomes one
+  only composed with the empty-report or CWD holes.
+- "Every other guard in this repo ships `--self-test`" — that compares against
+  the six standalone hygiene SCRIPTS. Section REG, the closest analogue and the
+  other structural section, ships none either. The positive control was added on
+  its own merits, not for parity.
+
+**Structure.** The AST scans moved into `sections/required_key_structure.py`
+(284 lines) so the rules and their LIMITS block live in one file. The section
+driver keeps the three checks. The two files' docstrings are now the only
+authoritative statement of what is and is not covered; `CLAUDE.md` points at
+them instead of restating them, which is what let the two drift in round 1.
+
+**Also recorded, not fixed:** Rust and Python now name *different* keys for the
+same multi-missing input (Rust `manifest_version`, by source order over a chain
+of `ok_or(MissingField)?`; Python `blocks`, lex-first). Both deterministic;
+nothing compares them, since `differential_replay.rs` scores reject-vs-reject
+without reading `detail`. Written down in `codec/required_keys.py` because only
+one of the two rules was written down before.
+
+### Round-2 mutation recipes
+
+Round 1 claimed non-vacuity and left no artifact, which is the one criticism of
+it that had no answer. Each row below is a single edit to a scratch **copy** of
+`core/tests/python/` (never the tree — cf. #516); run Section DET against the
+copy and it must report FAIL. The two controls must report PASS.
+
+| # | Edit | Closes |
+|---|---|---|
+| N0 | none | control — PASS |
+| N1 | none, but run from a cwd holding another `conformance_lib` | control — PASS |
+| F1 | `run_probe()` → `return []` | empty report skipped check 2 |
+| F2 | a decoder names a fixed wrong key; run from a shadowing cwd | probe measured another tree |
+| F2b | `main()` reports a bogus `package` | the identity assertion itself |
+| F3 | new `codec/` decoder: `REQUIRED - set(d)` then `.pop()` | set-difference idiom |
+| F4 | new `codec/` decoder: genexp, `frozenset(X)`, `list(X)`, `mod.REQUIRED_KEYS` | four loop spellings |
+| F5 | new `codec/` decoder calling `required_keys.first_missing_key_in_sorted_order(...)` | attribute-spelled call |
+| F6 | a second helper call inside `py_decode_trash_entry` | two checks, one case |
+| F7 | `codec/sub/required_keys.py` with a helper call | basename skip |
+| F9 | `_HASH_SEEDS = ("0",)` | no salt-variation control |
+| F10 | `codec/broken.py` containing `def broken(:` | traceback instead of `FAIL:` |
+| F11 | probe emits `"baseline"` instead of `"base"` | row-shape drift |
+| F12 | `_run_one` drops `"detail"` from its return | outcome-shape drift |
+| F13 | new `codec/` decoder: `for k in REQUIRED_A \| REQUIRED_B:` | set algebra |
+
+**F8 is deliberately not in that table**, and the reason is worth keeping: the
+fix makes its old symptom impossible rather than detectable. Dropping
+`"suite_id"` from `_BLOCK_ENTRY_MISSING` used to yield a body omitting **eight**
+keys under a `PASS ... 7 absent` line; now `missing` IS the drop set, so the same
+edit yields a body omitting **seven** and the line is true. Verified by
+inspecting the constructed body on both trees, not by the verdict — a green run
+is the correct outcome here and would prove nothing on its own.
+
