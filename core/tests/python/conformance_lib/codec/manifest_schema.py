@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
 from conformance_lib.codec.scanner import _check_canonical_item, _decode_head, _scan_array_items, _scan_map_entries
 
 # ---------------------------------------------------------------------------
@@ -151,9 +152,9 @@ def _decode_strict_entry_map(
 
         out[key] = cbor2.loads(data[vs:ve])
 
-    for required in sorted(required_keys):
-        if required not in out:
-            raise ValueError(f"{label} entry missing required field: {required!r}")
+    absent = first_missing_key_in_sorted_order(out, required_keys)
+    if absent is not None:
+        raise ValueError(f"{label} entry missing required field: {absent!r}")
     return out
 
 
@@ -257,9 +258,9 @@ def _decode_manifest_entry_map(
         else:
             unknown[key] = data[vs:ve]
 
-    for required in sorted(required_keys):
-        if required not in out:
-            raise ValueError(f"{label} entry missing required field: {required!r}")
+    absent = first_missing_key_in_sorted_order(out, required_keys)
+    if absent is not None:
+        raise ValueError(f"{label} entry missing required field: {absent!r}")
 
     out["unknown"] = unknown
     return out
