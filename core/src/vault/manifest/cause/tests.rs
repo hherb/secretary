@@ -7,10 +7,16 @@ use super::*;
 /// rather than by a hand-maintained list.
 ///
 /// A bare `[A, B, C, D]` array silently under-covers when a fifth arm is
-/// added — which is the opposite standard from
-/// `assert_rejection_mechanism`'s fail-closed `other => panic!` in
-/// `core/tests/manifest_canonicality_kat.rs`. The `match` below makes a new
-/// variant a COMPILE error here, so the two agree.
+/// added. The `match` below makes a new variant a COMPILE error here
+/// instead.
+///
+/// The integration corpus reaches the same standard by a different route:
+/// `core/tests/manifest_canonicality_kat.rs`'s `cause_name` is an
+/// exhaustive `match` too, and `cause_names_are_distinct` there pins the
+/// half exhaustiveness cannot — that no two variants share one spelling.
+/// (It cited that file's `assert_rejection_mechanism` and its fail-closed
+/// `other => panic!` arm until #604 removed both; the arm matched on a
+/// SHAPE NAME, which is a different axis from variant coverage.)
 const ALL_CAUSES: [NonCanonicalCause; 4] = [
     NonCanonicalCause::ArraySortOrder,
     NonCanonicalCause::IndefiniteLength,
@@ -37,8 +43,7 @@ fn discriminant_name(cause: NonCanonicalCause) -> &'static str {
 
 /// Adding a `NonCanonicalCause` variant fails to COMPILE in
 /// [`discriminant_name`]; adding it there but not to [`ALL_CAUSES`] reds
-/// here. Between them the list cannot silently under-cover, which is the
-/// standard `assert_rejection_mechanism` already holds itself to.
+/// here. Between them the list cannot silently under-cover.
 #[test]
 fn every_variant_is_listed_in_all_causes() {
     let listed: Vec<&str> = ALL_CAUSES.iter().copied().map(discriminant_name).collect();

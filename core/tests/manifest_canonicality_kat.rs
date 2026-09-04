@@ -14,11 +14,12 @@
 //! compared row by row rather than asserted to match in prose (#583,
 //! #592). It is also written out as raw seed files under
 //! `core/fuzz/seeds/manifest_body/`, so `core/tests/differential_replay.rs`
-//! exercises the same 21 bodies. The `manifest_body` target is NEW in this
-//! change -- it was added one commit ahead of this corpus, so it never
-//! existed on `main` and never "passed vacuously" there; without these
-//! seeds it would have replayed zero inputs, which is what the seeds and
-//! `differential_replay.rs`'s own per-target input floor now prevent.
+//! exercises the same 21 bodies. The `manifest_body`
+//! DIFFERENTIAL-REPLAY target was introduced alongside this corpus
+//! (#592/#595), so it never "passed vacuously" on an older `main`;
+//! without these seeds it would replay zero inputs, which the seeds and
+//! `differential_replay.rs`'s own per-target input floor prevent. It is
+//! not one of the seven `cargo-fuzz` targets -- #596 tracks that.
 //!
 //! The seven shapes' expected verdicts are the SPECIFICATION (vault-format
 //! §4.2's five-row table), not an observed decoder behaviour: rules 1
@@ -75,9 +76,13 @@ enum Mechanism {
 /// `manifest_canonicality_kat.json` and read back by both languages.
 ///
 /// **Exhaustive on purpose.** A fifth `NonCanonicalCause` variant fails to
-/// COMPILE here rather than silently acquiring no fixture spelling — the
-/// same fail-closed property the `other => panic!` arm this function
-/// replaced gave the shape names, moved to where the compiler enforces it.
+/// COMPILE here rather than silently acquiring no fixture spelling.
+///
+/// That is a DIFFERENT axis from the `other => panic!` arm this function
+/// replaced, which was fail-closed on an unrecognised SHAPES entry. That
+/// axis is still covered, just elsewhere: `Shape::verdict` is a required
+/// field, and the replay asserts both `rows.len() == 21` and
+/// `labels == Level::ALL x SHAPES`. Nothing about this match protects it.
 fn cause_name(cause: NonCanonicalCause) -> &'static str {
     match cause {
         NonCanonicalCause::ArraySortOrder => "ArraySortOrder",
@@ -127,21 +132,68 @@ fn assert_rejection_mechanism(
             );
             Mechanism::ReEncode
         }
-        // A null cause means "rejected BEFORE the re-encode". The only v1
-        // mechanism that does so is `reject_floats_and_tags`, and pinning
-        // that specifically is deliberately stronger than the column can
-        // express: the column says which cause, this says by which
-        // mechanism, and conflating the two is the error `decode/mod.rs`
-        // carries a standing warning against.
+        // A null cause means "rejected BEFORE the re-encode produced a
+        // NonCanonicalEncoding". `reject_floats_and_tags`
+        // (`decode/mod.rs:116`) is the only mechanism that reaches this
+        // arm for any body this corpus builds.
+        //
+        // LIMIT, stated because the obvious wider claim is false and an
+        // earlier version of this comment made it: this asserts the error
+        // VARIANT FAMILY, not the mechanism. `ManifestError::Canonical`
+        // is `#[from] CanonicalError`, so it also spans `DuplicateKey`,
+        // `CapacityBoundExceeded` and `CborEncode` -- which
+        // `encode_manifest` can raise AT the step-4 re-encode, i.e. the
+        // opposite mechanism, and which would be miscounted as FloatWalk
+        // here. The tight form
+        // `Canonical(CanonicalError::FloatRejected { .. })` is what
+        // `manifest/decode/tests.rs`'s `rejects_float_in_unknown_value`
+        // asserts (at `decode/tests.rs:258`); it
+        // is unavailable HERE because `vault::canonical` is
+        // `pub(crate)` (`core/src/vault/mod.rs:24`) and this is an
+        // integration test, i.e. a separate crate. The mechanism is
+        // therefore pinned in-crate and the family pinned here; do not
+        // read this arm as doing both.
         None => {
             assert!(
                 matches!(err, ManifestError::Canonical(_)),
-                "row {label:?}: corpus declares no cause, so this row must be caught by \
-                 reject_floats_and_tags BEFORE the re-encode, got {err}"
+                "row {label:?}: corpus declares no cause, so this row must be caught \
+                 before the re-encode produces a NonCanonicalEncoding -- for this \
+                 corpus that means reject_floats_and_tags, got {err}"
             );
             Mechanism::FloatWalk
         }
     }
+}
+
+/// `cause_name` must be INJECTIVE: two variants sharing a fixture
+/// spelling would be indistinguishable to `conformance.py`.
+///
+/// The exhaustive `match` in `cause_name` stops a variant having NO
+/// spelling; nothing in it stops two arms having the SAME one, and a
+/// copy-paste is the likely way that happens. Today's corpus reaches only
+/// two of the four variants, so no row would notice.
+///
+/// The array below is the one place a fifth variant is not a compile
+/// error. That axis is covered in-crate by `manifest/cause/tests.rs`'s
+/// `every_variant_is_listed_in_all_causes`, which an integration test
+/// cannot reach (`--cfg test` is not propagated to dependencies).
+#[test]
+fn cause_names_are_distinct() {
+    let all = [
+        NonCanonicalCause::ArraySortOrder,
+        NonCanonicalCause::IndefiniteLength,
+        NonCanonicalCause::NonShortestForm,
+        NonCanonicalCause::Unclassified,
+    ];
+    let names: std::collections::BTreeSet<&'static str> =
+        all.iter().copied().map(cause_name).collect();
+    assert_eq!(
+        names.len(),
+        all.len(),
+        "cause_name must be injective -- the fixture vocabulary is the cross-language \
+         contract, and two causes sharing a spelling makes them indistinguishable to \
+         conformance.py, got {names:?}"
+    );
 }
 
 fn fixture_path() -> PathBuf {
@@ -212,22 +264,51 @@ fn manifest_canonicality_kat_replays() {
             };
 
         // The corpus must agree with the SHAPES table it was generated
-        // from. Without this, a hand-edited `expect_cause` would simply
-        // become the new contract and both languages would agree with the
-        // edit -- the fixture would be self-certifying. This is the
-        // "both sides check the FIXTURE, not just the verdict" discipline
-        // #599's review put on the uniqueness corpus.
-        let shape_name = label.split_once("__").expect("label is <level>__<shape>").1;
-        let declared_by_table = generate::SHAPES
+        // from -- in its BYTES as well as its columns. Without this, a
+        // hand-edited row would simply become the new contract and both
+        // languages would agree with the edit; the fixture would be
+        // self-certifying. This is the "both sides check the FIXTURE, not
+        // just the verdict" discipline #599's review put on the
+        // uniqueness corpus.
+        let (level_name, shape_name) = label.split_once("__").expect("label is <level>__<shape>");
+        let level = generate::Level::from_label(level_name)
+            .unwrap_or_else(|| panic!("row {label:?}: no Level named {level_name:?}"));
+        let shape = generate::SHAPES
             .iter()
             .find(|s| s.label == shape_name)
-            .unwrap_or_else(|| panic!("row {label:?}: no SHAPES entry named {shape_name:?}"))
-            .expect_cause
-            .map(cause_name);
+            .unwrap_or_else(|| panic!("row {label:?}: no SHAPES entry named {shape_name:?}"));
+
+        // Bind the row's BYTES to its LABEL. Every other assertion in this
+        // loop is derived from the label or the columns, so before this
+        // the body itself was unconstrained: swapping all six
+        // `block__`/`trash__` rejecting bodies for their `top__`
+        // counterparts left this replay AND all 26 `conformance.py`
+        // sections green, collapsing a corpus whose stated premise is
+        // "7 shapes x 3 levels" down to one level with nothing objecting
+        // (#614 review). `body_for` is the same splice the generator
+        // writes with, so the two cannot drift.
+        let rebuilt = generate::body_for(level, shape);
+        assert_eq!(
+            hex::encode(&body),
+            hex::encode(&rebuilt),
+            "row {label:?}: committed manifest_body_hex is not what splicing shape \
+             {shape_name:?} into a {level_name:?}-level `unknown` bag produces -- the \
+             fixture was hand-edited, or SHAPES/base_manifest changed without \
+             regenerating it"
+        );
+
+        let declared_by_table = shape.verdict.cause().map(cause_name);
         assert_eq!(
             expect_cause, declared_by_table,
             "row {label:?}: fixture declares cause {expect_cause:?} but the SHAPES table \
              declares {declared_by_table:?} -- one of the two was hand-edited"
+        );
+        assert_eq!(
+            expect_accept,
+            shape.verdict.accepts(),
+            "row {label:?}: fixture declares expect_accept={expect_accept} but the \
+             SHAPES table declares {} -- one of the two was hand-edited",
+            shape.verdict.accepts()
         );
 
         if expect_accept {
@@ -275,9 +356,17 @@ fn manifest_canonicality_kat_replays() {
     // both stay pinned by Rust unit tests with no cross-language
     // agreement (#613).
     //
-    // Asserting the SET is a deliberate speed bump: widening the corpus to
-    // a third cause reds here, so the gap above cannot quietly stop being
-    // true while this comment still claims it.
+    // Asserting the SET is a deliberate speed bump so the gap above
+    // cannot quietly stop being true while this comment still claims it.
+    //
+    // Be precise about what reaches it, because "widening the corpus reds
+    // here" was wrong: ADDING an eighth shape trips `rows.len() == 21`
+    // far above, whose message says nothing about #613. This fires when a
+    // shape is REPLACED by one carrying a third cause -- and it is
+    // defence in depth either way, the one property on this corpus that
+    // was not shown to fire by mutation, because every mutation
+    // constructible against today's fixture trips an earlier per-row
+    // assertion first.
     assert_eq!(
         causes_seen,
         ["IndefiniteLength", "NonShortestForm"]
@@ -423,34 +512,67 @@ mod generate {
     };
     use secretary_core::vault::UnknownValue;
 
+    /// What `decode_manifest` MUST do with a manifest carrying one of the
+    /// seven subtree shapes -- the specification, not an observed value.
+    ///
+    /// **One enum rather than a `bool` plus an `Option`.** That is the
+    /// shape #608's review removed from `manifest_uniqueness_kat.rs`'s
+    /// `Case` for making two invalid states representable, and this
+    /// corpus is read as that one's pair. Both states are unrepresentable
+    /// here: an ACCEPTED shape cannot carry a cause, and a shape rejected
+    /// before the re-encode cannot carry one either. The accept-plus-cause
+    /// combination in particular was previously invisible to the
+    /// GENERATOR -- its cause assertion sat behind `if let Err(..)`, so a
+    /// mistyped table entry was written into the fixture and the fuzz
+    /// seeds before anything objected (#614 review).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum Verdict {
+        /// The decoder must accept a body carrying this subtree.
+        Accept,
+        /// Rejected BY the §4.3 step-4 re-encode comparison, which #590
+        /// gave a cause and a byte locator.
+        RejectAtReEncode(NonCanonicalCause),
+        /// Rejected BEFORE that comparison ever runs. Today the only such
+        /// mechanism is `reject_floats_and_tags`. Naming the state is the
+        /// point: as a bare `None` it was indistinguishable from "this
+        /// shape accepts, so there is no rejection to explain".
+        RejectBeforeReEncode,
+    }
+
+    impl Verdict {
+        /// DERIVED, never stored -- which is what stops it disagreeing
+        /// with the cause. Same treatment `Case::accepts()` gives the
+        /// sibling corpus.
+        pub(super) fn accepts(self) -> bool {
+            matches!(self, Verdict::Accept)
+        }
+
+        /// This shape's `expect_cause` column value: `Some` only for a
+        /// rejection the re-encode comparison itself produced.
+        pub(super) fn cause(self) -> Option<NonCanonicalCause> {
+            match self {
+                Verdict::RejectAtReEncode(c) => Some(c),
+                Verdict::Accept | Verdict::RejectBeforeReEncode => None,
+            }
+        }
+    }
+
     /// One of the seven canonical-CBOR-profile shapes from vault-format
     /// §4.2's per-rule table, plus the verdict the spec assigns it.
     pub(super) struct Shape {
         pub(super) label: &'static str,
         /// Raw CBOR bytes of the subtree to splice into an `unknown` bag.
         pub(super) bytes: &'static [u8],
-        /// What `decode_manifest` MUST do with a manifest carrying this
-        /// subtree -- the specification, not an observed value. See
-        /// `generate_manifest_canonicality_kat`'s doc for why the
+        /// See `generate_manifest_canonicality_kat`'s doc for why the
         /// generator asserts this rather than recording whatever comes
         /// out.
-        pub(super) expect_accept: bool,
-        /// Which [`NonCanonicalCause`] the §4.3 step-4 re-encode
-        /// comparison must report for this shape (#604), or `None` if the
-        /// shape never reaches that comparison.
-        ///
-        /// `None` carries two different meanings that the `expect_accept`
-        /// column disambiguates: on an ACCEPTED shape there is no
-        /// rejection to explain, and on a REJECTED one it asserts the
-        /// NEGATIVE — that some earlier mechanism caught the body first.
-        /// Today the only such mechanism is `reject_floats_and_tags`.
         ///
         /// Only two of the four `NonCanonicalCause` variants are reachable
         /// from this corpus. `ArraySortOrder` and `Unclassified` need
         /// bodies that are not `unknown`-subtree splices at all, so they
         /// stay pinned by Rust unit tests only, with no cross-language
-        /// agreement — tracked separately rather than left unrecorded.
-        pub(super) expect_cause: Option<NonCanonicalCause>,
+        /// agreement -- tracked as #613 rather than left unrecorded.
+        pub(super) verdict: Verdict,
     }
 
     pub(super) const SHAPES: &[Shape] = &[
@@ -460,16 +582,14 @@ mod generate {
             // head (A1), definite-length 1-byte text key (61 = text(1),
             // 61 = 'a'), shortest-form uint 1 (01).
             bytes: &[0xA1, 0x61, 0x61, 0x01],
-            expect_accept: true,
-            expect_cause: None,
+            verdict: Verdict::Accept,
         },
         Shape {
             label: "control_array",
             // array(2) [1, 2] -- fully canonical: definite-length array
             // head (82), two shortest-form uints (01, 02).
             bytes: &[0x82, 0x01, 0x02],
-            expect_accept: true,
-            expect_cause: None,
+            verdict: Verdict::Accept,
         },
         Shape {
             label: "rule1_key_order",
@@ -479,8 +599,7 @@ mod generate {
             // `ciborium::Value::Map` is an ordered Vec of pairs, so entry
             // order survives the parse and re-encodes byte-identically.
             bytes: &[0xA2, 0x62, 0x7A, 0x7A, 0x01, 0x61, 0x61, 0x02],
-            expect_accept: true,
-            expect_cause: None,
+            verdict: Verdict::Accept,
         },
         Shape {
             label: "rule5_duplicate_key",
@@ -489,8 +608,7 @@ mod generate {
             // does not deduplicate, so the repeat survives the round
             // trip.
             bytes: &[0xA2, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02],
-            expect_accept: true,
-            expect_cause: None,
+            verdict: Verdict::Accept,
         },
         Shape {
             label: "rule2_indefinite_map",
@@ -500,8 +618,7 @@ mod generate {
             // `Value::Map` on the way in, so the re-encode emits A1 and
             // differs from the indefinite-length input.
             bytes: &[0xBF, 0x61, 0x61, 0x01, 0xFF],
-            expect_accept: false,
-            expect_cause: Some(NonCanonicalCause::IndefiniteLength),
+            verdict: Verdict::RejectAtReEncode(NonCanonicalCause::IndefiniteLength),
         },
         Shape {
             label: "rule3_non_shortest_int",
@@ -511,8 +628,7 @@ mod generate {
             // parses the value as the integer 1 and re-encodes it in
             // shortest form, differing from the non-shortest input.
             bytes: &[0xA1, 0x61, 0x61, 0x18, 0x01],
-            expect_accept: false,
-            expect_cause: Some(NonCanonicalCause::NonShortestForm),
+            verdict: Verdict::RejectAtReEncode(NonCanonicalCause::NonShortestForm),
         },
         Shape {
             label: "rule4_float",
@@ -522,8 +638,7 @@ mod generate {
             // anywhere in the body, caught by `reject_floats_and_tags`
             // before the re-encode ever runs.
             bytes: &[0xA1, 0x61, 0x61, 0xFA, 0x3F, 0xC0, 0x00, 0x00],
-            expect_accept: false,
-            expect_cause: None,
+            verdict: Verdict::RejectBeforeReEncode,
         },
     ];
 
@@ -533,7 +648,7 @@ mod generate {
     /// at a genuinely decoder-accepted position to splice over. Same
     /// splice-over-a-needle technique as
     /// `core/src/vault/manifest/decode/tests.rs::unknown_subtree_tolerates_key_order_and_duplicates_but_not_encoding`.
-    const NEEDLE: &[u8] = &[0xA1, 0x61, 0x61, 0x01];
+    pub(super) const NEEDLE: &[u8] = &[0xA1, 0x61, 0x61, 0x01];
 
     #[derive(Clone, Copy)]
     pub(super) enum Level {
@@ -551,6 +666,15 @@ mod generate {
                 Level::Block => "block",
                 Level::Trash => "trash",
             }
+        }
+
+        /// Inverse of [`Level::label`], for reading a row label back.
+        ///
+        /// Exhaustive on purpose, like `cause_name`: a fourth `Level`
+        /// fails to compile here rather than silently making every row
+        /// at that level unrebuildable.
+        pub(super) fn from_label(label: &str) -> Option<Level> {
+            Level::ALL.into_iter().find(|lvl| lvl.label() == label)
         }
     }
 
@@ -688,6 +812,31 @@ mod generate {
         hits[0]
     }
 
+    /// Rebuild one row's manifest body from the `SHAPES` table.
+    ///
+    /// **The single implementation of the splice**, used by BOTH the
+    /// generator and the replay's rebuild-and-compare, so the bytes a row
+    /// is checked against cannot drift from the bytes that produced it.
+    ///
+    /// The replay comparison this exists for binds a row's BYTES to its
+    /// LABEL, which nothing did before (#614 review). The corpus's whole
+    /// premise is "7 shapes x 3 levels", and the level dimension was
+    /// unpinned: replacing all six `block__`/`trash__` rejecting bodies
+    /// with their `top__` counterparts left the Rust replay AND all 26
+    /// `conformance.py` sections green -- a corpus silently collapsed to
+    /// one nesting level while reporting PASS. Same rebuild-and-compare
+    /// discipline #599's review put on `manifest_uniqueness_kat.rs`.
+    pub(super) fn body_for(level: Level, shape: &Shape) -> Vec<u8> {
+        let base = encode_manifest(&base_manifest(level))
+            .expect("encode base manifest")
+            .expose()
+            .to_vec();
+        let at = locate_needle(&base, level);
+        let mut spliced = base;
+        spliced.splice(at..at + NEEDLE.len(), shape.bytes.iter().copied());
+        spliced
+    }
+
     /// Regenerates `core/tests/data/manifest_canonicality_kat.json` and
     /// the `core/fuzz/seeds/manifest_body/` seed corpus.
     ///
@@ -719,26 +868,29 @@ mod generate {
         std::fs::create_dir_all(&seeds_dir)
             .unwrap_or_else(|e| panic!("create {}: {e}", seeds_dir.display()));
 
+        // Nothing is written until every (level, shape) pair has been
+        // asserted. The seed write used to sit INSIDE this loop while the
+        // JSON was written after it, so a mid-loop panic left the two
+        // outputs disagreeing -- and the claim "panics, fixture left
+        // untouched" was true of the JSON only (#614 review).
+        let mut seeds: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+
         for level in Level::ALL {
-            let m = base_manifest(level);
-            let base_bytes = encode_manifest(&m)
+            let base_bytes = encode_manifest(&base_manifest(level))
                 .expect("encode base manifest")
                 .expose()
                 .to_vec();
             decode_manifest(&base_bytes)
                 .expect("baseline manifest (before any splice) must decode");
 
-            let at = locate_needle(&base_bytes, level);
-
             for shape in SHAPES {
-                let mut spliced = base_bytes.clone();
-                spliced.splice(at..at + NEEDLE.len(), shape.bytes.iter().copied());
+                let spliced = body_for(level, shape);
 
                 let outcome = decode_manifest(&spliced);
                 let got_accept = outcome.is_ok();
                 assert_eq!(
                     got_accept,
-                    shape.expect_accept,
+                    shape.verdict.accepts(),
                     "GENERATOR MUST NOT LAUNDER THE SPEC: level={} shape={} table \
                      says expect_accept={}, decoder actually returned accept={}. \
                      This is either a decoder regression or a deliberate, reviewed \
@@ -746,7 +898,7 @@ mod generate {
                      silently absorbed by regenerating the fixture.",
                     level.label(),
                     shape.label,
-                    shape.expect_accept,
+                    shape.verdict.accepts(),
                     got_accept
                 );
 
@@ -758,24 +910,36 @@ mod generate {
                 // single implementation of that comparison, so the
                 // generator and the replay cannot drift onto two readings
                 // of one column -- and it is fail-closed in both arms.
-                if let Err(err) = &outcome {
-                    super::assert_rejection_mechanism(
-                        &label,
-                        shape.expect_cause.map(super::cause_name),
-                        err,
-                    );
+                //
+                // BOTH arms are asserted. The `Ok` arm is not vacuous: it
+                // is the one combination `Verdict` alone cannot make
+                // unrepresentable at the point the decoder disagrees with
+                // the table, and behind the old `if let Err(..)` it was
+                // checked nowhere in the generator at all.
+                match &outcome {
+                    Err(err) => {
+                        super::assert_rejection_mechanism(
+                            &label,
+                            shape.verdict.cause().map(super::cause_name),
+                            err,
+                        );
+                    }
+                    Ok(_) => assert!(
+                        shape.verdict.cause().is_none(),
+                        "row {label:?}: shape is ACCEPTED by the decoder but its \
+                         table entry declares a rejection cause -- a body that \
+                         decodes has no rejection to explain"
+                    ),
                 }
 
                 rows.push(serde_json::json!({
                     "label": label,
                     "manifest_body_hex": hex::encode(&spliced),
-                    "expect_accept": shape.expect_accept,
-                    "expect_cause": shape.expect_cause.map(super::cause_name),
+                    "expect_accept": shape.verdict.accepts(),
+                    "expect_cause": shape.verdict.cause().map(super::cause_name),
                 }));
 
-                let seed_path = seeds_dir.join(format!("{label}.bin"));
-                std::fs::write(&seed_path, &spliced)
-                    .unwrap_or_else(|e| panic!("write seed {}: {e}", seed_path.display()));
+                seeds.push((seeds_dir.join(format!("{label}.bin")), spliced));
             }
         }
 
@@ -784,5 +948,9 @@ mod generate {
         let doc = serde_json::json!({ "rows": rows });
         let json = serde_json::to_string_pretty(&doc).expect("serialize fixture");
         std::fs::write(super::fixture_path(), json).expect("write fixture");
+        for (seed_path, bytes) in &seeds {
+            std::fs::write(seed_path, bytes)
+                .unwrap_or_else(|e| panic!("write seed {}: {e}", seed_path.display()));
+        }
     }
 }

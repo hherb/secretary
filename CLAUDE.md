@@ -251,7 +251,9 @@ fourth; #600 added `codec/array_uniqueness.py`, and its review round
 `sections/manifest_canonicality_cause.py`). Re-measured at #604: the ranking
 above still holds, and `sections/manifest_uniqueness_kat.py` — 425 lines and
 top of the list at #600 — is back down to 340 after the #608 review split its
-writer half out, so it is now FIFTH.
+writer half out, so it is now fifth-EQUAL (tied with
+`sections/manifest_body_schema_guards.py`, also 340). A rank stated where
+there is a tie is how the next measurement reads as drift.
 
 **Re-measure before citing those numbers.** The sentence above read "largest
 module is still `merge/records.py` at 383 — by ONE line over
@@ -483,7 +485,31 @@ author. Four things about it:
 - **The generator asserts the cause; it does not record it.** It routes
   through the same `assert_rejection_mechanism` the replay uses, so the
   two cannot drift onto two readings of one column, and a wrong `SHAPES`
-  entry panics with the fixture left untouched (verified by execution).
+  entry panics with the fixture AND the seeds left untouched (verified by
+  execution). Both halves of that sentence needed the #614 review: the
+  seed write sat INSIDE the per-shape loop while the JSON was written
+  after it, so a mid-loop panic left the two outputs disagreeing and
+  "fixture left untouched" was true of the JSON only. Both are now
+  buffered and written after every pair has been asserted. The cause
+  assertion also sat behind `if let Err(..)`, so the one combination it
+  could not see — an ACCEPTING shape carrying a cause — was written
+  straight into the fixture; `Shape` now carries a single
+  `Verdict::{Accept, RejectAtReEncode(cause), RejectBeforeReEncode}`
+  which makes that unrepresentable, the same move #608's review made on
+  `manifest_uniqueness_kat.rs`'s `Case` and for the same reason.
+- **The replay binds a row's BYTES to its LABEL (#614 review), and
+  before that the corpus's own premise was unpinned.** Every other
+  assertion is derived from the label or the columns, so the body was
+  unconstrained: replacing all six `block__`/`trash__` rejecting bodies
+  with their `top__` counterparts left the Rust replay AND all 26
+  `conformance.py` sections GREEN — a corpus whose stated premise is
+  "7 shapes x 3 levels" silently collapsed to one level while reporting
+  PASS (measured, both directions). `generate::body_for` is now the
+  single implementation of the splice, used by the generator and by the
+  replay's rebuild-and-compare, so the bytes a row is checked against
+  cannot drift from the bytes that produced it. Section MCC gained the
+  Python counterpart: a label floor requiring a full `<level>__<shape>`
+  product, without which 21 rows drawn from one nesting level passed.
 - **The two implementations agree on the RULE, not the mechanism, and the
   asymmetry is normative rather than incidental.** Rust reaches rules 2
   and 3 through the re-encode plus #590's classifier; `conformance.py`'s
@@ -495,10 +521,23 @@ author. Four things about it:
   walk, so a `null` cause and "§6.2 rule 4" are one statement seen from
   two sides. Section MCC discriminates on a typed `NonCanonicalItem.rule`
   attribute, never on message text — the substring trap #608's review
-  found on this corpus family's encoder side.
-
-A fact three
-handoffs carried only in prose.
+  found on this corpus family's encoder side. That attribute is
+  read-only and the type round-trips through `copy`/`pickle`: the
+  default `BaseException.__reduce__` returns `(cls, self.args)`, and
+  `args` here is the one COMPOSED message, so without an explicit
+  `__reduce__` any exception whose `__init__` takes more than that
+  message cannot be reconstructed (#614 review).
+- **The rule NUMBERS follow vault-format §4.2's table, not
+  crypto-design §6.2's prose, and the two genuinely differ on the point
+  this scanner raises most.** §6.2 rule 4 reads "No tags, no floats, **no
+  indefinite-length items**", so by §6.2's own text an indefinite item
+  violates rules 2 AND 4; §4.2's table row 4 is spelled "no tags, no
+  floats" and leaves indefinite lengths to row 2. Both `scanner.py` and
+  `_CAUSE_TO_RULE` say so in source, because without it a clean-room
+  implementer reading §6.2 literally would classify an indefinite item
+  as rule 4 and Section MCC would report a divergence against a
+  CONFORMANT reader — on the section whose entire audience is that
+  implementer (#614 review).
 
 **The residual, stated exactly, because the obvious wider claim is false.**
 Inside a forward-compat `unknown` subtree the check misses **duplicate map

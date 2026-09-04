@@ -31,12 +31,15 @@ no marker of any kind.
 | SHA | What |
 |---|---|
 | `0c8a851c` | the slice — `expect_cause` column, `assert_rejection_mechanism` rewrite, `NonCanonicalItem`, Section MCC, CLAUDE.md + ROADMAP |
+| *(review)* | the #614 review round — `Verdict` enum, replay rebuild-and-compare, MCC label floor, Section CS rule assertions, three fail-loud row-shape guards, doc corrections |
 | *(this)* | the baton — a commit cannot cite its own SHA, so this row stays symbolic |
 
 ### The defect
 
 #590 gave `ManifestError::NonCanonicalEncoding` a `NonCanonicalCause`, and
-`manifest_canonicality_kat_replays` asserted one per rejecting row.
+`manifest_canonicality_kat_replays` asserted one for each of the SIX
+rejecting rows that reach the §4.3 step-4 re-encode (six, not nine — the
+three `rule4_float` rows are caught earlier and deliberately get no cause).
 **That assertion lived only in Rust.** `manifest_canonicality_kat.json` carried
 `label`, `manifest_body_hex` and `expect_accept` — no cause — and the
 label→cause mapping was hard-coded in one Rust test function's `match shape`.
@@ -95,7 +98,13 @@ restore by **sha256** — `manifest_canonicality_cause.py` is untracked, so
 | R3 | `SHAPES` table cause drifts from the fixture | **Rust red** |
 | R1''' | classifier's `ai==31` arm → `NonShortestForm` | **Rust red** — the corpus catches a real classifier regression |
 | R1'' | `classify_non_canonical` always `Unclassified` | **Rust red** |
-| R5 | wrong `SHAPES` cause, run the **generator** | **panics, fixture left untouched** — no laundering |
+| R5 | wrong `SHAPES` cause, run the **generator** | **panics, fixture AND seeds left untouched** — no laundering |
+| V1 | six `block__`/`trash__` rejecting bodies swapped for their `top__` twins | **Rust red** at the rebuild-and-compare, naming row, shape and level. Before the review round this was **green in both languages** — the corpus's "7 shapes x 3 levels" premise silently collapsed to one level |
+| V2 | every label rewritten to the `top` level | **MCC red** twice — duplicate labels, and levels `['top']` != `['block','top','trash']` |
+| V3 | `NonCanonicalItem(4, "CBOR tag")` → rule 2 | **Section CS red**. Before the review round this left the **entire suite at exit 0, all 26 sections green** — the rule number was prose in a label |
+| V4 | `class NonCanonicalItem(Exception)` (drop the `ValueError` base) | **Section CS red** with a clean issue line. Before, this aborted the run at CS with a raw traceback and no `FAIL:`, skipping all 14 later sections including REG |
+| V5 | one row's `manifest_body_hex` corrupted to non-hex | **MCK and MCC both red** naming it a FIXTURE defect. Before, a traceback out of `main()`; and had it reached MCC it would have read *"the reader rejected …"* — the vocabulary reserved for a real cross-language disagreement |
+| V6 | `expect_cause` set to a JSON list | **MCC red** (`must be a string or null`). Before, `TypeError: unhashable type` out of `main()` |
 
 **Two mutations came back green and neither was a finding.** Recording them
 because telling the two apart is the whole skill:
@@ -111,25 +120,43 @@ because telling the two apart is the whole skill:
 
 ### The measured result
 
-- **`cargo test --release --workspace`: 99 binaries, 2083 passed, 0 failed, 21
-  ignored.** Test **name set** diffed against an `origin/main` baseline built
-  this session in a throwaway detached worktree: **2029 names both sides, 0
-  added, 0 removed.** This slice strengthens existing assertions and adds no
-  test functions.
+- **`cargo test --release --workspace`: 99 binaries, 2084 passed, 0 failed, 21
+  ignored.** Test **name set** measured against an `origin/main` baseline built
+  in a throwaway detached worktree: **2030 names on the branch vs 2029 on
+  `main` — exactly ONE added, none removed.** The slice as first written added
+  no test functions; the #614 review round added `cause_names_are_distinct`
+  (`cause_name` must be injective — the exhaustive `match` stops a variant
+  having no fixture spelling, nothing stopped two variants sharing one).
+  Every other change strengthens an existing assertion.
 - **The previous baton's "2081" is stale for post-merge `main`** and cost ten
-  minutes to chase. Both trees enumerate **2104** entries (2083 passed + 21
-  ignored); 2081 was measured on the feature branch *before* #608's review
-  round added tests. A count that moves when your diff adds no tests is worth
-  the name-set diff every time.
+  minutes to chase. `main` enumerates **2104** entries (2083 passed + 21
+  ignored) and this branch **2105**; 2081 was measured on the feature branch
+  *before* #608's review round added tests. A count that moves when your diff
+  adds no tests is worth the name-set diff every time — and this paragraph is
+  its own example: it read "2029 both sides, 0 added" until the review round
+  added one test and the figure had to be re-measured rather than re-asserted.
 - `cargo fmt --all --check`, `cargo build --release --workspace` (run
   separately from the test run on purpose) and
   `cargo clippy --release --workspace --tests -- -D warnings` all clean.
 - `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` clean, forced
   non-cached with `touch core/src/lib.rs` first.
+- **KNOWN FLAKE, unrelated to this slice: [#616](https://github.com/hherb/secretary/issues/616).**
+  Every test in the tree that waits on a real `notify` watcher flakes under
+  load — `cli/tests/notify_quirk.rs` (4 tests) and
+  `cli/src/watcher/notify_driver.rs`'s
+  `writing_a_file_surfaces_a_sync_candidate`. Observed from ONE commit: 4/4
+  passing, 2/4 failing, 0/4 passing, and the driver unit test failing alone.
+  They are wall-clock budgeted against the watcher (`WATCHER_SETTLE` 100 ms,
+  `POLL_TIMEOUT` 2 s). **This branch touches zero files under `cli/`**, and the
+  flake reproduces on the merge-base too — a one-shot branch-vs-base comparison
+  pointed the wrong way (base green, branch red, same minute) purely because of
+  when each ran, so alternate the two before concluding anything. For a clean
+  signal: `cargo test --release --workspace -- --skip raw_notify` (99 binaries,
+  2080 passed, 0 failed).
 - **`conformance.py` exit 0**, 26 sections, REG `26 drivers discovered, 26
   registered`. `pyflakes` clean over entrypoint and package.
 - **Both gates no CI job covers:** `--features differential-replay` clean (99
-  binaries, 2084 passed, 0 failed) and `core/fuzz` checks under the pinned
+  binaries, 2085 passed, 0 failed) and `core/fuzz` checks under the pinned
   nightly. `manifest_body` still holds **27** seeds.
 - **All six hygiene guards pass, each `--self-test` first.** No probe residue.
 - **`spec_test_name_freshness.py` = 90, byte-identical to `origin/main`** —
@@ -170,9 +197,16 @@ or the cause vocabulary. `ROADMAP.md` and `CLAUDE.md` both changed.
   existing normative asymmetry executable, it does not introduce one.
 - **`manifest_canonicality_kat.rs` is now 788 lines** (was 652), past the
   500-line threshold — the same complaint #612 files against its sibling
-  `manifest_uniqueness_kat.rs`. Not split here: the generator and the replay
-  must share `SHAPES`, `cause_name` and `assert_rejection_mechanism`, and an
-  integration test cannot reach a `#[cfg(test)]` module. **#612 was widened
+  `manifest_uniqueness_kat.rs`. Not split here because it is not worth the
+  churn in this slice, and that is the whole reason: the generator and the
+  replay share `SHAPES`, `cause_name`, `Verdict` and `body_for`, but a
+  shared `tests/<dir>/mod.rs` helper module would carry all four without a
+  second test binary, and `core/tests/` already holds six such directories
+  (`common/`, `fixtures/`, `conformance_kat_helpers/`, `sync_helpers/`,
+  `sync_merge_proptest_helpers/`, `convergence_helpers/`). An
+  earlier draft justified the decision with "an integration test cannot
+  reach a `#[cfg(test)]` module", which is true and irrelevant — nothing
+  here proposes putting them in one (#614 review). **#612 was widened
   to cover both files** by a comment on the issue rather than a second issue
   being filed — and that comment also corrects #612's own headline figure,
   which is stale: `manifest_uniqueness_kat.rs` is **848** lines today, not
@@ -310,7 +344,7 @@ cargo build --release --workspace                # separate from the test run ON
 # Redirect, then echo $? — a `| grep` pipeline reports GREP's exit code:
 cargo test --release --workspace > /tmp/suite.txt 2>&1; echo "CARGO EXIT: $?"
 grep -E "^test result" /tmp/suite.txt | \
-  awk '{p+=$4; f+=$6; i+=$8} END {print NR, p, f, i}'   # expect 99 2083 0 21
+  awk '{p+=$4; f+=$6; i+=$8} END {print NR, p, f, i}'   # expect 99 2084 0 21
 cargo clippy --release --workspace --tests -- -D warnings
 touch core/src/lib.rs   # rustdoc caches; a ~5s run did nothing
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace

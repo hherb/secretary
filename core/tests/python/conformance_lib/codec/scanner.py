@@ -35,32 +35,69 @@ class NonCanonicalItem(ValueError):
     `_check_canonical_item`.
 
     Carries the rule number as a STRUCTURED attribute so a caller
-    discriminates on `.rule` rather than on the message text (#604).  The
-    message-substring alternative is the exact fragility #608's review
-    diagnosed on the encoder side: a caller matching `"rule 2:"` keeps
-    passing when the message is reworded, and keeps passing when a
-    DIFFERENT check grows a message containing the same fragment.
+    discriminates on `.rule` rather than on the message text (#604).  A
+    substring match on `"rule 2:"` is blind to everything AROUND the
+    fragment: it keeps passing when the message is reworded into something
+    that no longer means rule 2, and keeps passing when a DIFFERENT check
+    grows a message containing the same fragment.  That is the fragility
+    #608's review diagnosed on the encoder side.
+
+    **Which document numbers these rules.**  The numbers follow
+    `docs/vault-format.md` §4.2's per-rule table, NOT crypto-design §6.2's
+    prose, and the two differ on exactly the point this scanner raises
+    most.  §6.2 rule 4 reads "No tags, no floats, **no indefinite-length
+    items**", so by §6.2's own text an indefinite item violates rules 2
+    AND 4; §4.2's table row 4 is spelled "no tags, no floats" and leaves
+    indefinite lengths to row 2.  This class follows the TABLE, because
+    the table is what states the per-rule enforcement split a reader
+    implements.  Without this paragraph a clean-room implementer reading
+    §6.2 literally would classify an indefinite item as rule 4 and Section
+    MCC would report a divergence against a CONFORMANT reader (#614
+    review).
 
     Defined in this module, beside its raise sites, so the number in the
-    attribute and the number in the rendered message cannot drift -- the
-    message is composed FROM the attribute, so `rule` appears once per
-    raise.
+    attribute and the number in the rendered message are composed from one
+    source at construction and `rule` appears once per raise.  `.rule` is
+    read-only for the same reason: a data descriptor wins over the
+    instance `__dict__` every `BaseException` carries, so `e.rule = 9`
+    raises rather than drifting from the message this class built from it.
 
     Subclasses `ValueError` deliberately: `conformance_lib.rejection`'s
     allowlist already admits `ValueError` as "this input is
     non-conformant", so every existing caller keeps scoring these as a
-    verdict rather than as a harness failure.
+    verdict rather than as a harness failure.  That base class is a
+    cross-cutting contract -- `diff_replay.py`'s reject-vs-error split
+    keys on it too -- and Section CS asserts it, because losing it turns
+    every scanner rejection into a harness failure.
 
-    Only the five NUMBERED-rule raises use this type.  The three raises
-    for ordinary CBOR well-formedness properties -- invalid UTF-8, a
-    major-7 value outside {false, true, null}, a string length overrunning
-    the buffer -- stay plain `ValueError`, because they are not among
-    §6.2's five rules and have no number to carry.
+    Only the five NUMBERED-rule raises use this type.  Inside
+    `_check_canonical_item` the remaining three raises stay plain
+    `ValueError`: the two well-formedness properties named in that
+    function's own docstring (invalid UTF-8; a major-7 value outside
+    {false, true, null}) plus a buffer-bounds check.  None is among §6.2's
+    five rules, so none has a number to carry.  Other `raise ValueError`
+    sites in this module belong to `_scan_item`, which is structure-only
+    by design and enforces no §6.2 rule.
     """
 
     def __init__(self, rule: int, detail: str) -> None:
         super().__init__(f"rule {rule}: {detail}")
-        self.rule = rule
+        self._rule = rule
+        self._detail = detail
+
+    @property
+    def rule(self) -> int:
+        """The §4.2-table rule number, read-only (see the class docstring)."""
+        return self._rule
+
+    def __reduce__(self):
+        # `BaseException.__reduce__` returns `(cls, self.args)`, and
+        # `self.args` here is the single COMPOSED message -- so the default
+        # breaks `copy` and `pickle` for any exception whose `__init__`
+        # takes more than that message.  No consumer crosses a process
+        # boundary with one of these today (Section DET's subprocesses
+        # marshal JSON text), but this package does spawn subprocesses.
+        return (type(self), (self._rule, self._detail))
 
 
 def _decode_head(buf: bytes, pos: int) -> tuple[int, int, int | None, int]:
@@ -253,7 +290,8 @@ def _check_canonical_item(buf: bytes, pos: int) -> int:
     floats, no tags).  Returns the offset one past the item; raises
     `NonCanonicalItem` -- a `ValueError` subclass carrying the rule NUMBER
     as `.rule` -- on any numbered-rule violation, and a plain `ValueError`
-    on the three well-formedness properties that carry no §6.2 number.
+    on the two well-formedness properties named above plus the
+    buffer-bounds check, none of which carries a §6.2 number.
 
     Rules 1 and 5 -- map-key order and duplicate keys -- are deliberately
     NOT checked.  `docs/vault-format.md` §4.2's table marks both unenforced
