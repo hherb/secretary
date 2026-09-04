@@ -145,7 +145,7 @@ exactly that no-op**, caught only because the sha256 check failed.
 | M1 | `has_repeat` → always `false` | **16 red** — 4 encode, 3 **decode**, 8 unit, 1 surgery |
 | M2 | drop `check_no_repeated_array_values(manifest)?` from `encode_manifest` | **4 red** (the encode tests only — the unit tests still pass, correctly) |
 | M3 | per-block walk scoped to `blocks[0]` | **2 red**, both the non-first-block tests |
-| M4 | `recipients` "tidied up" into a fifth rule | **3 red**, including the pre-existing decoder test |
+| M4 | `recipients` "tidied up" into a fifth rule | **3 red** in the lib target, including the pre-existing decoder test, **plus the corpus row** — measured in a separate run, see below |
 | M5 | drop the `sort_unstable` | **2 red** — the only two tests whose input order separates the repeat |
 | M6 | a `plant` drifted from its `mutate` | **1 red**, by the ACCEPT cross-check, message naming the drift |
 | M7 | `expect_encode_err` swapped for the decode variant | **1 red** |
@@ -293,6 +293,23 @@ has already rejected such a body, so the check is observably a no-op in the
 existing suite. That is also why Section MUQ exercises it **directly** rather
 than through a corpus row — a body the writer must refuse is, by construction,
 a body the writer cannot produce for a fixture.
+
+### A THIRD claim, corrected the same way, and the cargo trap under it
+
+"Three Rust tests, one Python writer case and the corpus row exist to red if
+someone folds `recipients` in, and M4/P4b prove all of them fire." The Rust and
+Python halves were measured; **the corpus row was not**. M4 had been run as
+`cargo test --release -p secretary-core --lib manifest:: --test
+manifest_uniqueness_kat`, and the positional filter `manifest::` applies to
+**every** target named — the corpus test is `manifest_uniqueness_kat_replays`,
+which does not contain that substring, so it was silently filtered out. The run
+reported 3 red and looked complete.
+
+**A `cargo test` positional filter applies across all `--lib` / `--test`
+targets, so a filter tuned to lib module paths can run ZERO integration tests
+while exiting normally.** Re-run alone (`--test manifest_uniqueness_kat`, no
+filter), the corpus row does red. The claim was right; the evidence for it did
+not exist until it was re-measured.
 
 ### The review round: two claims in the first commit were FALSE
 

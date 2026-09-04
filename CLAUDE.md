@@ -505,8 +505,12 @@ non-conformant with `docs/`. Four things about the fix:
   them would leave a caller unable to tell a corrupt file from a malformed
   in-memory manifest.
 - **`recipients` is still the exception, on both sides.** Four rules, not
-  five. Three tests plus the corpus row red if someone folds it in — verified
-  by mutation in Rust *and* Python.
+  five. Three Rust tests (one of them the pre-existing decoder test), the
+  corpus row, and a Python writer case all red if someone folds it in —
+  each verified by mutation. The corpus row needs its own run to see:
+  a `cargo test --lib <filter> --test <name>` positional filter applies to
+  BOTH targets, so a lib-shaped filter silently runs zero integration
+  tests.
 - **No fixture was regenerated, and that is the load-bearing evidence.**
   `encode_manifest` can no longer build the corpus's four rejecting bodies,
   so they are now built by post-hoc `ciborium` surgery — and every row's
