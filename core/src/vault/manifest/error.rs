@@ -160,6 +160,55 @@ pub enum ManifestError {
     #[error("trash array contains duplicate block_uuid")]
     DuplicateTrashUuid,
 
+    /// The [`Manifest`] handed to [`encode_manifest`] carried two or more
+    /// `blocks` entries with the same `block_uuid` (#600).
+    ///
+    /// **The WRITER-side twin of [`Self::DuplicateBlockUuid`], and a
+    /// deliberately separate variant.** §4.2 states the rule in both
+    /// directions — "writers MUST NOT emit them and readers MUST reject
+    /// them" — but the two conditions are not the same event: this one
+    /// says *the value you asked me to encode repeats a uuid*, where the
+    /// decode-side variant says *the bytes you gave me do*. One is a bug
+    /// in this process, reachable only by a caller building a `Manifest`
+    /// in memory (merge, repair, block CRUD); the other is a statement
+    /// about a file, which may have come from a peer. Collapsing them
+    /// would make a caller unable to tell "my own in-memory manifest is
+    /// malformed" from "the vault I just read is". Same ruling #586 took
+    /// one slice earlier for the map-key twin, where
+    /// `RecordError::CanonicalDuplicateKey` stands apart from
+    /// `RecordError::DuplicateKey` for exactly this reason.
+    ///
+    /// [`Manifest`]: super::Manifest
+    /// [`encode_manifest`]: super::encode_manifest
+    #[error("cannot encode: blocks array contains duplicate block_uuid")]
+    EncodeDuplicateBlockUuid,
+
+    /// The [`Manifest`] handed to [`encode_manifest`] carried two or more
+    /// `trash` entries with the same `block_uuid` (#600). Writer-side twin
+    /// of [`Self::DuplicateTrashUuid`]; see
+    /// [`Self::EncodeDuplicateBlockUuid`] for why the two directions get
+    /// separate variants.
+    ///
+    /// [`Manifest`]: super::Manifest
+    /// [`encode_manifest`]: super::encode_manifest
+    #[error("cannot encode: trash array contains duplicate block_uuid")]
+    EncodeDuplicateTrashUuid,
+
+    /// The [`Manifest`] handed to [`encode_manifest`] carried two or more
+    /// entries with the same `device_uuid` in `vector_clock`, or in some
+    /// block's `vector_clock_summary` (#600).
+    ///
+    /// One variant for both arrays, mirroring
+    /// [`Self::VectorClockDuplicateDevice`] on the read side — which is
+    /// likewise shared, because `parse_vector_clock` serves both. Writer-
+    /// side twin; see [`Self::EncodeDuplicateBlockUuid`] for why the two
+    /// directions get separate variants.
+    ///
+    /// [`Manifest`]: super::Manifest
+    /// [`encode_manifest`]: super::encode_manifest
+    #[error("cannot encode: vector clock contains duplicate device_uuid")]
+    EncodeVectorClockDuplicateDevice,
+
     /// A canonical-CBOR rule was violated (float, tag, …). Lifted from
     /// the shared `crate::vault::canonical` helpers.
     #[error("canonical CBOR violation: {0}")]

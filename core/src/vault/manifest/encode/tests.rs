@@ -7,8 +7,8 @@ use ciborium::Value;
 
 use crate::vault::canonical::CanonicalError;
 use crate::vault::manifest::test_support::{
-    entry_bytes_field, find_array, minimal_manifest, parse_to_value_map, populated_manifest,
-    UNKNOWN_MAP_NONCANONICAL,
+    entry_bytes_field, expect_rejected, find_array, minimal_manifest, parse_to_value_map,
+    populated_manifest, UNKNOWN_MAP_NONCANONICAL,
 };
 use crate::vault::manifest::{
     decode_manifest, ManifestError, BLOCK_FINGERPRINT_LEN, KEY_BLOCK_NAME, KEY_VAULT_UUID,
@@ -519,4 +519,102 @@ fn encode_manifest_still_accepts_non_colliding_unknown_keys() {
         .blocks
         .iter()
         .any(|b| b.unknown.contains_key("x_future_block")));
+}
+
+// ---- §4.2 repeated-array-value rules, WRITER side (#600) -------------
+//
+// `docs/vault-format.md` §4.2: "Repeated values are forbidden in four of
+// the five; writers MUST NOT emit them and readers MUST reject them."
+// `decode_manifest` has enforced the reader half since v1; the writer
+// half was unenforced until #600, so `encode_manifest` could produce —
+// and `sign_manifest` sign — a body this codebase's own decoder refuses
+// to open. Availability, not confidentiality: the manifest is
+// owner-signed, so the producer is a caller in this process. But for a
+// format frozen for decades with a clean-room mandate, an encoder that
+// emits a signed document its own decoder rejects is a real defect.
+//
+// Each rejecting test below asserts the specific variant, not merely
+// `is_err()`: the four rules share one code path, so a test satisfied by
+// any error would stay green if the wrong rule fired.
+
+#[test]
+fn encode_manifest_rejects_a_duplicate_block_uuid() {
+    let mut m = populated_manifest();
+    m.blocks[1].block_uuid = m.blocks[0].block_uuid;
+
+    let err = expect_rejected(encode_manifest(&m), "duplicate block_uuid");
+    assert!(
+        matches!(err, ManifestError::EncodeDuplicateBlockUuid),
+        "expected EncodeDuplicateBlockUuid, got {err:?}"
+    );
+}
+
+#[test]
+fn encode_manifest_rejects_a_duplicate_trash_block_uuid() {
+    let mut m = populated_manifest();
+    let dup = m.trash[0].clone();
+    m.trash.push(dup);
+
+    let err = expect_rejected(encode_manifest(&m), "duplicate trash block_uuid");
+    assert!(
+        matches!(err, ManifestError::EncodeDuplicateTrashUuid),
+        "expected EncodeDuplicateTrashUuid, got {err:?}"
+    );
+}
+
+#[test]
+fn encode_manifest_rejects_a_duplicate_vector_clock_device_uuid() {
+    let mut m = populated_manifest();
+    m.vector_clock[1].device_uuid = m.vector_clock[0].device_uuid;
+
+    let err = expect_rejected(encode_manifest(&m), "duplicate vector_clock device_uuid");
+    assert!(
+        matches!(err, ManifestError::EncodeVectorClockDuplicateDevice),
+        "expected EncodeVectorClockDuplicateDevice, got {err:?}"
+    );
+}
+
+#[test]
+fn encode_manifest_rejects_a_duplicate_device_uuid_in_a_non_first_block_summary() {
+    // Planted in `blocks[1]`: §4.2 constrains "**each** block's" summary,
+    // so a walk that stops after the first block passes a `blocks[0]`
+    // fixture and diverges from the decoder on this one.
+    let mut m = populated_manifest();
+    let first = m.blocks[1].vector_clock_summary[0].device_uuid;
+    m.blocks[1].vector_clock_summary[1].device_uuid = first;
+
+    let err = expect_rejected(encode_manifest(&m), "duplicate summary device_uuid");
+    assert!(
+        matches!(err, ManifestError::EncodeVectorClockDuplicateDevice),
+        "expected EncodeVectorClockDuplicateDevice, got {err:?}"
+    );
+}
+
+/// §4.2's ONE exception, on the writer side (#600).
+///
+/// A repeated `contact_uuid` denotes no additional grant, so it is
+/// accepted and round-trips — the read side has always accepted it
+/// (`accepts_duplicate_contact_uuid_in_recipients`) and the writer must
+/// not narrow that. This is the control that stops the four rejections
+/// above from being satisfied by an encoder that refuses any repeat
+/// anywhere, and the test that reds if someone "tidies up" the
+/// asymmetry.
+#[test]
+fn encode_manifest_accepts_a_duplicate_contact_uuid_in_recipients() {
+    let mut m = populated_manifest();
+    m.blocks[1].recipients[1] = m.blocks[1].recipients[0];
+
+    let bytes = encode_manifest(&m).expect("a repeated contact_uuid is §4.2's exception");
+    let decoded = decode_manifest(bytes.expose()).expect("and the reader accepts it too");
+    assert_eq!(
+        decoded
+            .blocks
+            .iter()
+            .find(|b| b.block_uuid == m.blocks[1].block_uuid)
+            .expect("the mutated block")
+            .recipients
+            .len(),
+        2,
+        "the repeat must round-trip, not be silently deduplicated"
+    );
 }

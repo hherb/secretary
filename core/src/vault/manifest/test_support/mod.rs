@@ -436,3 +436,7 @@ mod tests {
         assert_eq!(mine, theirs, "fixture bytes must be unchanged by #569");
     }
 }
+
+mod surgery;
+
+pub(super) use surgery::{copy_entry_field, BodyArray};

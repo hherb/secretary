@@ -33,17 +33,32 @@
 //! sort disciplines, ended with the re-encode, and accepted all four
 //! repeat shapes that `decode_manifest` rejects (#594).
 //!
-//! **Fixture bodies are built by `encode_manifest`, which does not
-//! deduplicate.** Handing it a `Manifest` with two identical `block_uuid`s
-//! yields a well-formed, sorted body its own decoder then rejects — used
-//! deliberately here as the cheapest correct source of ground-truth bytes,
-//! not overlooked. That gap is **#600**. If it is ever closed by validating
-//! on the encode side, `encode_case` starts failing at the
-//! `encode_manifest` call — in the generator AND in
-//! `manifest_uniqueness_kat_replays`'s rebuild-and-compare — and the fix is
-//! to build these four bodies by post-hoc `ciborium` surgery, the way
-//! `array_sort_disciplines_are_enforced_and_not_vacuous` already builds its
-//! out-of-order bodies.
+//! **Fixture bodies are built by post-hoc `ciborium` surgery (#600 is
+//! CLOSED).** They used to be built by handing `encode_manifest` a
+//! `Manifest` carrying the repeat — the cheapest correct source of
+//! ground-truth bytes while the encoder declined to enforce §4.2's writer
+//! half. The tripwire the paragraph here used to describe then fired
+//! exactly as written: `encode_case` panicked at its `encode_manifest`
+//! call, in the generator AND in `manifest_uniqueness_kat_replays`'s
+//! rebuild-and-compare. The four rejecting bodies are now produced the way
+//! a non-conformant peer would have to produce them — encode the
+//! all-distinct baseline, then edit one field in the bytes — following
+//! `array_sort_disciplines_are_enforced_and_not_vacuous`, which does the
+//! same for the sort disciplines and for the same reason.
+//!
+//! **The fixture did not change.** Every row's bytes are byte-identical to
+//! the ones #594 generated; `manifest_uniqueness_kat_replays` asserts that
+//! against the committed JSON on every run, and the two ACCEPT rows
+//! additionally assert that surgery and `encode_manifest` agree byte for
+//! byte, which is what stops the surgery path from quietly redefining what
+//! the corpus contains.
+//!
+//! **The corpus pins BOTH directions now.** §4.2's repeated-value
+//! paragraph is a writer obligation as well as a reader one ("writers MUST
+//! NOT emit them and readers MUST reject them"), so every row asserts the
+//! encoder's verdict alongside the decoder's, each against its own
+//! [`ManifestError`] variant — the encode side has its own
+//! `Encode*` variants, deliberately (see their docs).
 //!
 //! **Do not cite #586 for this.** An earlier version of this comment did,
 //! and it was wrong in a way that mattered: #586 is scoped to
@@ -159,6 +174,43 @@ fn manifest_uniqueness_kat_replays() {
                 ));
             }
         }
+
+        // ---- the WRITER half of the same rule (#600) ----------------
+        //
+        // §4.2 binds writers as well as readers, and until #600 this
+        // codebase enforced only the reader half — `encode_manifest`
+        // would emit, and `sign_manifest` sign, every one of the four
+        // bodies above. Asserting it here rather than in a separate
+        // test keeps one table as the single statement of what §4.2
+        // requires in both directions.
+        let mut mutated = generate::base_manifest();
+        (case.mutate)(&mut mutated);
+        let encoded = secretary_core::vault::manifest::encode_manifest(&mutated);
+        if encoded.is_ok() != expect_accept {
+            issues.push(format!(
+                "row {label:?}: encode_manifest returned accept={}, expected {expect_accept} \
+                 -- §4.2 binds writers as well as readers",
+                encoded.is_ok()
+            ));
+        }
+        match (case.expect_encode_err, &encoded) {
+            (Some(pred), Err(e)) if !pred(e) => issues.push(format!(
+                "row {label:?}: encode_manifest rejected for the WRONG reason ({e:?})"
+            )),
+            // The ACCEPT rows carry the cross-check that keeps the
+            // surgery path honest: where the encoder CAN still emit the
+            // body, it must agree with what surgery produced, byte for
+            // byte. Without it, `plant` could silently drift from
+            // `mutate` and the corpus would pin whatever surgery
+            // happened to build.
+            (None, Ok(bytes)) if bytes.expose() != rebuilt.as_slice() => issues.push(format!(
+                "row {label:?}: surgery and encode_manifest disagree ({} vs {} bytes) -- \
+                 the `plant` closure has drifted from its `mutate`",
+                rebuilt.len(),
+                bytes.expose().len()
+            )),
+            _ => {}
+        }
     }
 
     // Both floors, for the reason the sibling corpus states: a reject-only
@@ -203,6 +255,7 @@ mod generate {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
+    use ciborium::Value;
     use secretary_core::vault::manifest::{
         decode_manifest, encode_manifest, BlockEntry, KdfParamsRef, Manifest, ManifestError,
         TrashEntry, VectorClockEntry,
@@ -213,7 +266,27 @@ mod generate {
     pub(super) struct Case {
         pub(super) label: &'static str,
         /// Applied to a fresh [`base_manifest`]. A no-op for the control.
+        ///
+        /// Since #600 this no longer builds the fixture bytes — [`plant`]
+        /// does. It drives the WRITER-side assertion instead: what
+        /// `encode_manifest` must do when handed this manifest. Keeping
+        /// both is what makes §4.2's two halves executable from one table.
+        ///
+        /// [`plant`]: Self::plant
         pub(super) mutate: fn(&mut Manifest),
+        /// Applied to the PARSED baseline body, and the sole source of
+        /// this row's fixture bytes.
+        ///
+        /// Expresses the same edit as [`mutate`] one layer down, on CBOR
+        /// rather than on the typed struct, because `encode_manifest` now
+        /// refuses to emit four of the six (#600). The two cannot be
+        /// cross-checked on a REJECT row — the encoder produces nothing to
+        /// compare against — so each `plant` is written to mirror its
+        /// `mutate` and the ACCEPT rows carry the cross-check for the
+        /// mechanism.
+        ///
+        /// [`mutate`]: Self::mutate
+        pub(super) plant: fn(&mut Value),
         /// What `decode_manifest` MUST do — the specification, not an
         /// observed value. See `generate_manifest_uniqueness_kat`'s doc.
         pub(super) expect_accept: bool,
@@ -227,6 +300,21 @@ mod generate {
         /// unrelated reason — a malformed body, a missing field — and the
         /// corpus would still report the uniqueness rule as pinned.
         pub(super) expect_err: Option<fn(&ManifestError) -> bool>,
+        /// The same, for the WRITER (#600): which [`ManifestError`]
+        /// `encode_manifest` must return when handed [`mutate`]'s output.
+        /// `None` for the two ACCEPT cases.
+        ///
+        /// A separate column rather than a reuse of [`expect_err`],
+        /// because the two variants genuinely differ — the encode side
+        /// reports `EncodeDuplicateBlockUuid` where the decode side
+        /// reports `DuplicateBlockUuid`. Asserting the encode verdict
+        /// against the DECODE variant would pass only if the two were
+        /// collapsed, which is the design this codebase deliberately
+        /// rejected.
+        ///
+        /// [`mutate`]: Self::mutate
+        /// [`expect_err`]: Self::expect_err
+        pub(super) expect_encode_err: Option<fn(&ManifestError) -> bool>,
     }
 
     /// Where in its array each case plants its repeat, and in which block.
@@ -257,8 +345,10 @@ mod generate {
             // the four reject rows below and prove nothing.
             label: "control__all_distinct",
             mutate: |_m| {},
+            plant: |_v| {},
             expect_accept: true,
             expect_err: None,
+            expect_encode_err: None,
         },
         Case {
             // Two `blocks[]` entries claiming the same block with DIFFERENT
@@ -269,8 +359,10 @@ mod generate {
             // Repeat on the LAST adjacent pair (indices 1,2).
             label: "blocks__duplicate_block_uuid",
             mutate: |m| m.blocks[2].block_uuid = m.blocks[1].block_uuid,
+            plant: |v| copy_field(v, Array::Top("blocks"), 1, 2, "block_uuid"),
             expect_accept: false,
             expect_err: Some(|e| matches!(e, ManifestError::DuplicateBlockUuid)),
+            expect_encode_err: Some(|e| matches!(e, ManifestError::EncodeDuplicateBlockUuid)),
         },
         Case {
             // §7 tracks only the most-recent tombstone per block, so two
@@ -279,8 +371,10 @@ mod generate {
             // Repeat on the FIRST adjacent pair (indices 0,1).
             label: "trash__duplicate_block_uuid",
             mutate: |m| m.trash[1].block_uuid = m.trash[0].block_uuid,
+            plant: |v| copy_field(v, Array::Top("trash"), 0, 1, "block_uuid"),
             expect_accept: false,
             expect_err: Some(|e| matches!(e, ManifestError::DuplicateTrashUuid)),
+            expect_encode_err: Some(|e| matches!(e, ManifestError::EncodeDuplicateTrashUuid)),
         },
         Case {
             // A vector clock is per-device: two counters for one device is
@@ -289,8 +383,12 @@ mod generate {
             // Repeat on the LAST adjacent pair (indices 1,2).
             label: "vector_clock__duplicate_device_uuid",
             mutate: |m| m.vector_clock[2].device_uuid = m.vector_clock[1].device_uuid,
+            plant: |v| copy_field(v, Array::Top("vector_clock"), 1, 2, "device_uuid"),
             expect_accept: false,
             expect_err: Some(|e| matches!(e, ManifestError::VectorClockDuplicateDevice)),
+            expect_encode_err: Some(|e| {
+                matches!(e, ManifestError::EncodeVectorClockDuplicateDevice)
+            }),
         },
         Case {
             // The same rule one level down, and in the SECOND block. That
@@ -305,8 +403,20 @@ mod generate {
                 let first = m.blocks[1].vector_clock_summary[0].device_uuid;
                 m.blocks[1].vector_clock_summary[1].device_uuid = first;
             },
+            plant: |v| {
+                copy_field(
+                    v,
+                    Array::InBlock(1, "vector_clock_summary"),
+                    0,
+                    1,
+                    "device_uuid",
+                )
+            },
             expect_accept: false,
             expect_err: Some(|e| matches!(e, ManifestError::VectorClockDuplicateDevice)),
+            expect_encode_err: Some(|e| {
+                matches!(e, ManifestError::EncodeVectorClockDuplicateDevice)
+            }),
         },
         Case {
             // THE DOCUMENTED EXCEPTION (§4.2). A repeated `contact_uuid`
@@ -323,8 +433,10 @@ mod generate {
                 let second = m.blocks[1].recipients[1];
                 m.blocks[1].recipients[2] = second;
             },
+            plant: |v| copy_element(v, Array::InBlock(1, "recipients"), 1, 2),
             expect_accept: true,
             expect_err: None,
+            expect_encode_err: None,
         },
     ];
 
@@ -493,6 +605,32 @@ mod generate {
                 );
             }
 
+            // The writer half, asserted in the generator for the same
+            // reason as the reader half: a fixture must not be minted
+            // from a tree whose encoder disagrees with the table.
+            let mut mutated = base_manifest();
+            (case.mutate)(&mut mutated);
+            let encoded = encode_manifest(&mutated);
+            assert_eq!(
+                encoded.is_ok(),
+                case.expect_accept,
+                "GENERATOR MUST NOT LAUNDER THE SPEC: case={} table says \
+                 expect_accept={}, encode_manifest actually returned accept={}. \
+                 §4.2 binds writers as well as readers.",
+                case.label,
+                case.expect_accept,
+                encoded.is_ok()
+            );
+            if let (Some(pred), Err(e)) = (case.expect_encode_err, &encoded) {
+                assert!(
+                    pred(e),
+                    "GENERATOR MUST NOT LAUNDER THE SPEC: case={} was refused by the \
+                     encoder for a DIFFERENT reason than the §4.2 repeated-value rule \
+                     it is named for ({e:?}).",
+                    case.label
+                );
+            }
+
             rows.push(serde_json::json!({
                 "label": case.label,
                 "manifest_body_hex": hex::encode(&body),
@@ -537,26 +675,136 @@ mod generate {
         }
     }
 
-    /// The canonical body for one case: the baseline, mutated, encoded.
+    /// The canonical body for one case: the all-distinct baseline,
+    /// encoded, then edited in the bytes.
     ///
     /// Shared by the generator and by `manifest_uniqueness_kat_replays`'s
     /// rebuild-and-compare, so the fixture the corpus replays and the
     /// bytes the table describes cannot drift apart.
+    ///
+    /// **The baseline goes through `encode_manifest`; the repeat does
+    /// not** (#600). Four of the six rows carry a body the encoder now
+    /// refuses to emit, which is the whole of #600 — so the repeat is
+    /// planted in the CBOR afterwards. Two properties make that
+    /// substitution byte-exact rather than merely plausible:
+    ///
+    /// 1. `ciborium`'s parse/re-encode is the identity on a canonical
+    ///    body (it normalises on parse and keeps map entries as an
+    ///    ordered `Vec`), so the control row — whose `plant` is a no-op —
+    ///    reproduces `encode_manifest`'s bytes exactly, and
+    ///    `manifest_uniqueness_kat_replays` compares it against the
+    ///    frozen fixture.
+    /// 2. Every `plant` overwrites one fixed-width field with another
+    ///    element's value of the same field, and the §4.2 sorts are
+    ///    STABLE, so the mutated manifest would have sorted into the same
+    ///    positions the baseline did. That is why the fixture did not
+    ///    change when the bodies stopped coming from the encoder.
     pub(super) fn encode_case(case: &Case) -> Vec<u8> {
-        let mut m = base_manifest();
-        (case.mutate)(&mut m);
-        encode_manifest(&m)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "case {}: encode_manifest refused to emit the body ({e:?}). \
-                     See this file's module doc: the four rejecting bodies rely on \
-                     the encoder NOT validating array-element uniqueness (#600). \
-                     If that has been closed, build them by ciborium surgery \
-                     instead.",
-                    case.label
-                )
-            })
+        let baseline = encode_manifest(&base_manifest())
+            .expect("the all-distinct baseline must encode")
             .expose()
-            .to_vec()
+            .to_vec();
+        let mut v: Value = ciborium::de::from_reader(&baseline[..]).expect("parse baseline");
+        (case.plant)(&mut v);
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&v, &mut out).expect("re-encode");
+        out
+    }
+
+    // -----------------------------------------------------------------
+    // Body surgery
+    // -----------------------------------------------------------------
+    //
+    // `core/src/vault/manifest/test_support/surgery.rs` does the same job
+    // for the manifest module's own unit tests. The duplication is a
+    // crate-boundary consequence, not an oversight: an integration test
+    // sees only `secretary_core`'s PUBLIC API, and promoting test-only
+    // manifest surgery onto the shipped surface to spare thirty lines
+    // here would be the worse trade. `manifest_canonicality_kat.rs`
+    // carries a third, for the same reason.
+
+    /// Which array inside a manifest body a plant targets.
+    pub(super) enum Array {
+        /// A top-level array key — `vector_clock`, `blocks` or `trash`.
+        Top(&'static str),
+        /// An array inside one `blocks` entry — `recipients` or
+        /// `vector_clock_summary`. The index is into `blocks` AS ENCODED,
+        /// i.e. after the §4.2 ascending-`block_uuid` sort.
+        InBlock(usize, &'static str),
+    }
+
+    /// Copy `field` from element `from` onto element `to`, planting a
+    /// repeated value in a `map`-element array.
+    pub(super) fn copy_field(v: &mut Value, array: Array, from: usize, to: usize, field: &str) {
+        let items = array_mut(v, array);
+        let source = entry_field(&items[from], field).clone();
+        assert_ne!(
+            &source,
+            entry_field(&items[to], field),
+            "elements {from} and {to} already share {field:?} -- the case would be vacuous"
+        );
+        *entry_field_mut(&mut items[to], field) = source;
+    }
+
+    /// Copy a whole element from `from` onto `to`, for an array whose
+    /// elements are scalars rather than maps (`recipients`).
+    pub(super) fn copy_element(v: &mut Value, array: Array, from: usize, to: usize) {
+        let items = array_mut(v, array);
+        let source = items[from].clone();
+        assert_ne!(
+            &source, &items[to],
+            "elements {from} and {to} are already equal -- the case would be vacuous"
+        );
+        items[to] = source;
+    }
+
+    fn array_mut(v: &mut Value, array: Array) -> &mut Vec<Value> {
+        match array {
+            Array::Top(key) => key_array_mut(v, key),
+            Array::InBlock(index, key) => {
+                let block = key_array_mut(v, "blocks")
+                    .get_mut(index)
+                    .unwrap_or_else(|| panic!("blocks[{index}] does not exist"));
+                key_array_mut(block, key)
+            }
+        }
+    }
+
+    fn key_array_mut<'a>(v: &'a mut Value, key: &str) -> &'a mut Vec<Value> {
+        let entries = match v {
+            Value::Map(m) => m,
+            other => panic!("expected a map, got {other:?}"),
+        };
+        let slot = entries
+            .iter_mut()
+            .find(|(k, _)| k.as_text() == Some(key))
+            .map(|(_, val)| val)
+            .unwrap_or_else(|| panic!("key {key:?} not found"));
+        match slot {
+            Value::Array(a) => a,
+            other => panic!("key {key:?} is not an array: {other:?}"),
+        }
+    }
+
+    fn entry_field<'a>(entry: &'a Value, field: &str) -> &'a Value {
+        match entry {
+            Value::Map(m) => m
+                .iter()
+                .find(|(k, _)| k.as_text() == Some(field))
+                .map(|(_, val)| val)
+                .unwrap_or_else(|| panic!("entry has no field {field:?}")),
+            other => panic!("array element is not a map: {other:?}"),
+        }
+    }
+
+    fn entry_field_mut<'a>(entry: &'a mut Value, field: &str) -> &'a mut Value {
+        match entry {
+            Value::Map(m) => m
+                .iter_mut()
+                .find(|(k, _)| k.as_text() == Some(field))
+                .map(|(_, val)| val)
+                .unwrap_or_else(|| panic!("entry has no field {field:?}")),
+            other => panic!("array element is not a map: {other:?}"),
+        }
     }
 }

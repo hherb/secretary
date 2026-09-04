@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from conformance_lib.codec.manifest_encode import py_encode_manifest
+from conformance_lib.codec.array_uniqueness import first_repeated_value
 from conformance_lib.codec.manifest_schema import BLOCK_ENTRY_KNOWN_KEYS, BLOCK_ENTRY_REQUIRED_KEYS, BLOCK_FINGERPRINT_LEN, KDF_PARAMS_KNOWN_KEYS, KDF_PARAMS_REQUIRED_KEYS, MANIFEST_KNOWN_KEYS, MANIFEST_REQUIRED_KEYS, MANIFEST_VERSION_V1, SALT_LEN, TRASH_ENTRY_KNOWN_KEYS, TRASH_ENTRY_REQUIRED_KEYS, UUID_LEN, VECTOR_CLOCK_ENTRY_KNOWN_KEYS, VECTOR_CLOCK_ENTRY_REQUIRED_KEYS, _decode_manifest_array, _decode_strict_array, _decode_strict_entry_map
 from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
 from conformance_lib.codec.scanner import _check_canonical_item, _decode_head, _scan_map_entries
@@ -289,15 +290,20 @@ def _check_sorted_and_distinct(rows: list, key: str, label: str) -> None:
 
     They are reported separately rather than as one strict-ascending
     compare so the diagnostic names which rule was broken, and the repeat
-    names the offending id. Checking adjacency is sufficient once
-    sortedness holds: equal values in a sorted list are always adjacent.
-    An `ids != sorted(set(ids))` formulation would be shorter and is
-    deliberately not used -- it collapses the two rules into one verdict
-    and loses the id.
+    names the offending id. An `ids != sorted(set(ids))` formulation would
+    be shorter and is deliberately not used -- it collapses the two rules
+    into one verdict and loses the id.
+
+    The distinctness half is `first_repeated_value`, shared with the
+    ENCODER (#600): §4.2 binds writers as well as readers, and the writer
+    half of this rule was missing from this package until then. Sharing
+    the function is what stops the two directions from drifting -- which
+    is precisely what had happened on the Rust side, and what #594 had
+    already had to repair between this reader and that one.
     """
     ids = [r[key] for r in rows]
     if ids != sorted(ids):
         raise ValueError(f"{label} is not sorted by {key}")
-    for i in range(1, len(ids)):
-        if ids[i] == ids[i - 1]:
-            raise ValueError(f"{label} has a repeated {key}: {ids[i].hex()}")
+    repeat = first_repeated_value(ids)
+    if repeat is not None:
+        raise ValueError(f"{label} has a repeated {key}: {repeat.hex()}")

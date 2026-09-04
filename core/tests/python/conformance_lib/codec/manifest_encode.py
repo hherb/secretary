@@ -9,6 +9,52 @@ REJECTION rather than a silent normalisation.
 from __future__ import annotations
 
 from conformance_lib.canonical import encode_canonical_map_raw
+from conformance_lib.codec.array_uniqueness import first_repeated_value
+
+
+# The four arrays §4.2 forbids a repeat in, as (array key, id key) pairs.
+# `recipients` is the EXPLICIT exception and is absent by design -- a
+# repeated `contact_uuid` denotes no additional grant, is accepted by both
+# decoders, and round-trips. Adding it here would make this encoder refuse
+# a body the v1-frozen Rust encoder emits, which is the divergence this
+# package exists to detect, pointing the wrong way.
+_FLAT_UNIQUE_ARRAYS: tuple[tuple[str, str], ...] = (
+    ("vector_clock", "device_uuid"),
+    ("blocks", "block_uuid"),
+    ("trash", "block_uuid"),
+)
+
+
+def check_no_repeated_array_values(parsed: dict) -> None:
+    """Reject a manifest whose §4.2-constrained arrays repeat a value.
+
+    §4.2's repeated-value paragraph binds BOTH directions -- "writers MUST
+    NOT emit them and readers MUST reject them" -- and this package
+    enforced only the reader half until #600, exactly as `core`'s
+    `encode_manifest` did. An encoder that can emit a body its own decoder
+    refuses is a divergence a clean-room implementation should not have to
+    discover for itself.
+
+    Mirrors `core/src/vault/manifest/uniqueness.rs`'s
+    `check_no_repeated_array_values`, including the per-block walk: §4.2
+    constrains "**each** block's" `vector_clock_summary`, so a writer that
+    checked only `blocks[0]` would diverge on the corpus row that plants
+    its repeat in `blocks[1]`.
+    """
+    for array, id_key in _FLAT_UNIQUE_ARRAYS:
+        repeat = first_repeated_value([row[id_key] for row in parsed.get(array, [])])
+        if repeat is not None:
+            raise ValueError(
+                f"cannot encode: {array} has a repeated {id_key}: {repeat.hex()}"
+            )
+    for i, blk in enumerate(parsed.get("blocks", [])):
+        summary = blk.get("vector_clock_summary", [])
+        repeat = first_repeated_value([row["device_uuid"] for row in summary])
+        if repeat is not None:
+            raise ValueError(
+                f"cannot encode: blocks[{i}].vector_clock_summary has a "
+                f"repeated device_uuid: {repeat.hex()}"
+            )
 
 def _encode_array_header(n: int) -> bytes:
     """RFC 8949 §3.1: major type 4 (array) head byte is `0x80 |
@@ -96,8 +142,19 @@ def py_encode_manifest(parsed: dict) -> bytes:
     from its retained raw bytes rather than collapsed through `cbor2`
     (#585 fix round 1, Finding 1). Top-level unknown subtrees are spliced
     from their retained bytes the same way, never re-encoded.
+
+    Refuses a manifest violating §4.2's repeated-value rules before
+    emitting anything (#600) -- see `check_no_repeated_array_values`.
+    Observably a no-op for every caller in this package today: the only
+    routes here are `py_decode_manifest`'s §4.3 step-4 re-encode and
+    `--diff-replay`'s accept path, and both run AFTER the reader has
+    already rejected such a body. It is the writer half of a normative
+    rule, not a check on the decode path, and Section MUQ exercises it
+    directly for that reason.
     """
     import cbor2
+
+    check_no_repeated_array_values(parsed)
 
     entries: list[tuple[str, bytes]] = []
     for k, v in parsed.items():

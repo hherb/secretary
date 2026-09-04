@@ -2,6 +2,7 @@
 
 use crate::crypto::secret::SecretBytes;
 use crate::vault::canonical::{to_canonical_vec, CanonicalMap, CanonicalValue};
+use crate::vault::manifest::uniqueness::check_no_repeated_array_values;
 
 use super::{
     BlockEntry, KdfParamsRef, Manifest, ManifestError, TrashEntry, VectorClockEntry, KEY_BLOCKS,
@@ -50,6 +51,7 @@ use super::{
 /// `unlock::bundle::IdentityBundle::to_canonical_cbor` (#569 path 1)
 /// already made.
 pub fn encode_manifest(manifest: &Manifest) -> Result<SecretBytes, ManifestError> {
+    check_no_repeated_array_values(manifest)?;
     Ok(SecretBytes::new(to_canonical_vec(&manifest_to_canonical(
         manifest,
     ))?))

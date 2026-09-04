@@ -15,13 +15,24 @@ this decoder can reject a body (shape, required-key, outer canonicality, the
 be out of order, or malformed in some unrelated way, would pass here against
 a reader that implements no distinctness check at all -- which is exactly
 the reader `py_decode_manifest` was until #594.
+
+Since #600 it also carries the WRITER half. §4.2 states the rule in both
+directions -- "writers MUST NOT emit them and readers MUST reject them" --
+and neither this package's `py_encode_manifest` nor `core`'s
+`encode_manifest` enforced it, so both could emit a body their own decoders
+refuse. Those cases cannot be corpus rows by construction (a body the
+writer must refuse is one the writer cannot produce), so they are driven
+off the control row's decoded manifest instead; see `_WRITER_CASES`.
 """
 
 from __future__ import annotations
 
 from typing import Callable
 
+import copy
+
 from conformance_lib.codec.manifest_decode import py_decode_manifest
+from conformance_lib.codec.manifest_encode import py_encode_manifest
 from conformance_lib.fixtures import load_json_fixture, manifest_uniqueness_kat_path
 from conformance_lib.rejection import _REJECTION_EXCEPTIONS
 
@@ -117,6 +128,126 @@ def _has_repeat(ids: list) -> bool:
     return any(a == b for a, b in zip(ids, ids[1:]))
 
 
+# ---------------------------------------------------------------------------
+# The WRITER half (#600)
+# ---------------------------------------------------------------------------
+#
+# §4.2's repeated-value paragraph binds both directions -- "writers MUST NOT
+# emit them and readers MUST reject them" -- and until #600 neither this
+# package nor `core` enforced the writer half. The rows above pin the reader
+# on frozen bytes; these pin the writer on the manifest those bytes decode
+# to, which is the only way to state the rule at all (a body the writer must
+# refuse is, by construction, a body the writer cannot produce for a
+# fixture).
+#
+# Mirrors the Rust corpus's `mutate` / `expect_encode_err` columns exactly:
+# the same five edits, applied to the decoded CONTROL manifest.
+
+
+def _repeat_block_uuid(m: dict) -> None:
+    m["blocks"][2]["block_uuid"] = m["blocks"][1]["block_uuid"]
+
+
+def _repeat_trash_uuid(m: dict) -> None:
+    m["trash"][1]["block_uuid"] = m["trash"][0]["block_uuid"]
+
+
+def _repeat_vector_clock_device(m: dict) -> None:
+    m["vector_clock"][2]["device_uuid"] = m["vector_clock"][1]["device_uuid"]
+
+
+def _repeat_summary_device(m: dict) -> None:
+    # `blocks[1]`, not `blocks[0]` -- same reasoning as the reader row.
+    summary = m["blocks"][1]["vector_clock_summary"]
+    summary[1]["device_uuid"] = summary[0]["device_uuid"]
+
+
+def _repeat_recipient(m: dict) -> None:
+    recipients = m["blocks"][1]["recipients"]
+    recipients[2] = recipients[1]
+
+
+# (where, edit, message fragment the refusal must carry -- or None if §4.2
+# requires the writer to EMIT it).
+_WRITER_CASES: tuple[tuple[str, Callable[[dict], None], str | None], ...] = (
+    ("blocks[].block_uuid", _repeat_block_uuid, "blocks has a repeated block_uuid"),
+    ("trash[].block_uuid", _repeat_trash_uuid, "trash has a repeated block_uuid"),
+    (
+        "vector_clock[].device_uuid",
+        _repeat_vector_clock_device,
+        "vector_clock has a repeated device_uuid",
+    ),
+    (
+        "blocks[1].vector_clock_summary[].device_uuid",
+        _repeat_summary_device,
+        "blocks[1].vector_clock_summary has a repeated device_uuid",
+    ),
+    # §4.2's EXPLICIT exception, and the row that stops the four above from
+    # being satisfied by a writer that refuses every repeat anywhere.
+    ("blocks[1].recipients", _repeat_recipient, None),
+)
+
+
+def _writer_half_issues(control_body: bytes) -> list[str]:
+    """Assert the ENCODER applies the same four rules, and the exception.
+
+    Driven off the control row's bytes rather than off a hand-built dict so
+    the manifest under test is the same one the reader rows replay -- a
+    writer case built from its own fixture could drift from the corpus
+    without anything noticing.
+    """
+    try:
+        base = py_decode_manifest(control_body)
+    except _REJECTION_EXCEPTIONS as e:
+        return [
+            f"writer half: the all-distinct control row does not decode "
+            f"({type(e).__name__}: {e}), so no writer case can be built from it"
+        ]
+
+    issues: list[str] = []
+    try:
+        py_encode_manifest(base)
+    except _REJECTION_EXCEPTIONS as e:
+        issues.append(
+            f"writer half: the all-distinct control must ENCODE, got "
+            f"{type(e).__name__}: {e} -- every case below would then pass "
+            "against a writer that refuses everything"
+        )
+
+    for where, edit, want in _WRITER_CASES:
+        mutated = copy.deepcopy(base)
+        edit(mutated)
+        if mutated == base:
+            # The trap this repo keeps re-finding: a mutation that did not
+            # apply is indistinguishable from a mutation nothing caught.
+            issues.append(f"writer half: the edit for {where} planted nothing")
+            continue
+        try:
+            py_encode_manifest(mutated)
+            emitted, detail = True, ""
+        except _REJECTION_EXCEPTIONS as e:
+            emitted, detail = False, str(e)
+
+        if want is None:
+            if not emitted:
+                issues.append(
+                    f"writer half: a repeat in {where} is §4.2's documented "
+                    f"exception, but the encoder refused it ({detail!r}) -- that "
+                    "narrows the set of bodies a v1 writer may emit"
+                )
+        elif emitted:
+            issues.append(
+                f"writer half: the encoder EMITTED a body repeating {where}, which "
+                "its own decoder rejects -- §4.2 binds writers as well as readers"
+            )
+        elif want not in detail:
+            issues.append(
+                f"writer half: {where} was refused, but not by the repeated-value "
+                f"rule -- expected a message naming {want!r}, got {detail!r}"
+            )
+    return issues
+
+
 def section_manifest_uniqueness_kat() -> tuple[bool, list[str]]:
     """Replay `manifest_uniqueness_kat.json` -- §4.2's repeated-value rules.
 
@@ -136,6 +267,10 @@ def section_manifest_uniqueness_kat() -> tuple[bool, list[str]]:
     3. The two accepting rows are what they claim: the `recipients` row
        carries a real repeat (so §4.2's exception is exercised rather than
        assumed), and the control carries none in any array of any block.
+
+    4. The WRITER applies the same four rules and the same exception
+       (#600), asserted against the control row's decoded manifest rather
+       than against fixture bytes -- see `_WRITER_CASES`.
 
     §4.3 step 4's re-encode cannot see any of this. A body carrying
     `[x, x]` parses to `[x, x]` and re-encodes to `[x, x]` byte for byte,
@@ -263,6 +398,19 @@ def section_manifest_uniqueness_kat() -> tuple[bool, list[str]]:
             )
             continue
 
+    # The WRITER half of the same rules (#600), driven off the control row.
+    control = next((r for r in rows if r["label"] == _CONTROL_ROW), None)
+    if control is None:
+        # Label-set equality above reports the missing row; say explicitly
+        # that the writer cases did not run, so a reader of the output does
+        # not read their silence as a pass.
+        issues.append(
+            f"writer half: SKIPPED -- the corpus has no {_CONTROL_ROW!r} row to "
+            "build the writer cases from"
+        )
+    else:
+        issues.extend(_writer_half_issues(bytes.fromhex(control["manifest_body_hex"])))
+
     if issues:
         return False, issues
     return True, [
@@ -270,5 +418,8 @@ def section_manifest_uniqueness_kat() -> tuple[bool, list[str]]:
         f"({n_accept} accept / {n_reject} reject); all {len(_REPEAT_POSITIONS)} "
         "rejecting rows are sorted-with-a-repeat and rejected by a message naming "
         "the repeat, so neither the sort discipline nor any other check can "
-        "account for them"
+        "account for them",
+        f"PASS  §4.2 writer half: {len(_WRITER_CASES)} cases -- the encoder refuses "
+        f"all {sum(1 for c in _WRITER_CASES if c[2] is not None)} forbidden repeats "
+        "by name and still emits the recipients exception",
     ]
