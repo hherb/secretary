@@ -43,6 +43,9 @@ from conformance_lib.sections.manifest_body_shape_guards import (
     section_manifest_body_shape_guard,
     section_manifest_body_strict_subshapes_guard,
 )
+from conformance_lib.sections.manifest_canonicality_cause import (
+    section_manifest_canonicality_cause,
+)
 from conformance_lib.sections.manifest_canonicality_kat import (
     section_manifest_canonicality_kat,
 )
@@ -135,6 +138,8 @@ SECTIONS: tuple[Section, ...] = (
             section_manifest_body_array_sort_guard),
     Section("MCK", "manifest_canonicality_kat.json §4.2 per-rule corpus replay",
             " (#583, #592)", section_manifest_canonicality_kat),
+    Section("MCC", "manifest_canonicality_kat.json expect_cause cross-language pin",
+            " (#590, #604)", section_manifest_canonicality_cause),
     Section("MUQ", "manifest_uniqueness_kat.json §4.2 repeated-value replay",
             " (#594, #600)", section_manifest_uniqueness_kat),
     Section("RC", "record unknown-subtree canonicality, both nesting levels",

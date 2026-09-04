@@ -23,7 +23,7 @@ core/tests/          — integration tests; tests/data/ holds KATs and fuzz regr
 core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (136 lines; the PEP
                                              723 header is the sole dependency declaration).
                                              `conformance.py:NNN` citations predating #593 are
-                                             stale — the verifier is now a 58-file package.
+                                             stale — the verifier is now a 60-file package.
 core/tests/python/conformance_lib/         — DIRECTORY module (#593), the verifier itself: no
                                              dependency on `secretary-core`; proves the spec is
                                              implementable from `docs/` alone. `wire/` parses to
@@ -242,12 +242,16 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 136, over a **59**-file package whose largest module is
+was 6849 lines; it is now 136, over a **60**-file package whose largest module is
 `sections/required_key_determinism.py` at **390** lines, ahead of
 `merge/records.py` at 383 (52 files at the #593 split; #594 added
 `sections/manifest_uniqueness_kat.py`; #597 added three, and its review round a
 fourth; #600 added `codec/array_uniqueness.py`, and its review round
-`sections/manifest_uniqueness_writer.py`).
+`sections/manifest_uniqueness_writer.py`; #604 added
+`sections/manifest_canonicality_cause.py`). Re-measured at #604: the ranking
+above still holds, and `sections/manifest_uniqueness_kat.py` — 425 lines and
+top of the list at #600 — is back down to 340 after the #608 review split its
+writer half out, so it is now FIFTH.
 
 **Re-measure before citing those numbers.** The sentence above read "largest
 module is still `merge/records.py` at 383 — by ONE line over
@@ -448,7 +452,52 @@ now asserts a cause for each of the **six** rejecting rows that reach the
 re-encode, and pins the 6/3 split by count. Say "six", not "every rejecting
 row": the corpus has **nine** rejects, and the three `rule4_float` ones are
 caught earlier by `reject_floats_and_tags` and deliberately get no cause —
-that negative is the whole point of the `FloatWalk` arm. A fact three
+that negative is the whole point of the `FloatWalk` arm.
+
+**Since #604 the expectation lives in the FIXTURE, not in the Rust test,
+and both languages read it.** `manifest_canonicality_kat.json` carries an
+`expect_cause` column — `"IndefiniteLength"` / `"NonShortestForm"` on the
+six re-encode rows, `null` on the three `rule4_float` ones — and
+`assert_rejection_mechanism` reads it instead of matching on the label
+suffix, so the Rust test is a CONSUMER of the contract rather than its sole
+author. Four things about it:
+
+- **The corpus reaches two of the four cause variants.**
+  `ArraySortOrder` and `Unclassified` need bodies that are not
+  `unknown`-subtree splices, which is the only shape the generator builds,
+  so they stay Rust-unit-test-only with no cross-language agreement
+  (**#613**). The gap carries a TRIPWIRE rather than only prose: a
+  `causes_seen` set assertion reds the moment a row declaring a third
+  cause is added, so #613's own fix cannot land while this paragraph
+  still claims two. Describe it as defence in depth and nothing more —
+  every mutation constructible against TODAY's corpus trips an earlier
+  per-row assertion first (the fixture-vs-`SHAPES` cross-check, or the
+  decoder comparison), so it was NOT shown to fire by mutation the way
+  the other three properties here were. `Unclassified` is the arm that
+  matters most — it is the one #590's first implementation got wrong in
+  the direction a peer could *choose*.
+- **The fixture is cross-checked against the `SHAPES` table it was
+  generated from**, so a hand-edited `expect_cause` reds rather than
+  silently becoming the new contract. Without it the fixture would be
+  self-certifying and both languages would agree with the edit.
+- **The generator asserts the cause; it does not record it.** It routes
+  through the same `assert_rejection_mechanism` the replay uses, so the
+  two cannot drift onto two readings of one column, and a wrong `SHAPES`
+  entry panics with the fixture left untouched (verified by execution).
+- **The two implementations agree on the RULE, not the mechanism, and the
+  asymmetry is normative rather than incidental.** Rust reaches rules 2
+  and 3 through the re-encode plus #590's classifier; `conformance.py`'s
+  byte-retaining reader reaches them directly in `_check_canonical_item`.
+  vault-format §4.2 requires exactly that ("a byte-retaining reader
+  reproduces its input unconditionally … and it must therefore check
+  crypto-design §6.2 rules 2, 3 and 4 itself"). Rule 4 is not asymmetric
+  at all: §4.2 says **every** reader enforces it by a separate whole-body
+  walk, so a `null` cause and "§6.2 rule 4" are one statement seen from
+  two sides. Section MCC discriminates on a typed `NonCanonicalItem.rule`
+  attribute, never on message text — the substring trap #608's review
+  found on this corpus family's encoder side.
+
+A fact three
 handoffs carried only in prose.
 
 **The residual, stated exactly, because the obvious wider claim is false.**

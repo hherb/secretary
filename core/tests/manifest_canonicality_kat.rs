@@ -66,61 +66,81 @@ enum Mechanism {
     FloatWalk,
 }
 
-/// Assert that `err` is the rejection `shape` must produce, and say which
-/// mechanism produced it.
+/// The fixture's spelling of a [`NonCanonicalCause`].
 ///
-/// **Fail-closed on the shape name**: an unrecognised rejecting shape
-/// panics rather than being waved through, so adding an eighth shape to
-/// `SHAPES` without declaring its mechanism reds this test instead of
-/// silently widening what the corpus tolerates.
-fn assert_rejection_mechanism(label: &str, shape: &str, err: &ManifestError) -> Mechanism {
-    match shape {
+/// This is the cross-language vocabulary #604 exists to establish: before
+/// it, the label-suffix -> cause mapping lived in this file's
+/// `assert_rejection_mechanism` and nowhere else, so `conformance.py` had
+/// nothing to agree with. The names are now recorded per row in
+/// `manifest_canonicality_kat.json` and read back by both languages.
+///
+/// **Exhaustive on purpose.** A fifth `NonCanonicalCause` variant fails to
+/// COMPILE here rather than silently acquiring no fixture spelling — the
+/// same fail-closed property the `other => panic!` arm this function
+/// replaced gave the shape names, moved to where the compiler enforces it.
+fn cause_name(cause: NonCanonicalCause) -> &'static str {
+    match cause {
+        NonCanonicalCause::ArraySortOrder => "ArraySortOrder",
+        NonCanonicalCause::IndefiniteLength => "IndefiniteLength",
+        NonCanonicalCause::NonShortestForm => "NonShortestForm",
+        NonCanonicalCause::Unclassified => "Unclassified",
+    }
+}
+
+/// Assert that `err` is the rejection the corpus row DECLARES, and say
+/// which mechanism produced it.
+///
+/// `expect_cause` is the row's `expect_cause` column: `Some(name)` for a
+/// row the §4.3 step-4 re-encode comparison catches, `None` for one
+/// rejected before that comparison ever runs. **The fixture is the source
+/// of truth** — this function no longer matches on the label suffix, so
+/// the Rust test is a consumer of the cross-language contract rather than
+/// its sole author (#604).
+///
+/// Fail-closed in both arms. A cause spelling no `NonCanonicalCause`
+/// produces can never match, so a typo'd or invented fixture value panics
+/// naming both sides. And `None` asserts a NEGATIVE — that the row did not
+/// reach the re-encode at all — which is the assertion that would catch a
+/// future change routing floats through the comparison: such a row would
+/// still be "rejected", and only this would notice.
+fn assert_rejection_mechanism(
+    label: &str,
+    expect_cause: Option<&str>,
+    err: &ManifestError,
+) -> Mechanism {
+    match expect_cause {
         // Rule 2 and rule 3 are encoding-level departures the parse
         // normalises away, so the re-encode is the only signal — and #590's
-        // classifier reads the offending head straight out of the input,
-        // which is the one place the evidence survives.
-        "rule2_indefinite_map" => {
-            assert!(
-                matches!(
-                    err,
-                    ManifestError::NonCanonicalEncoding {
-                        cause: NonCanonicalCause::IndefiniteLength,
-                        ..
-                    }
+        // classifier walks the whole input, which is the one place the
+        // evidence survives.
+        Some(want) => {
+            let got = match err {
+                ManifestError::NonCanonicalEncoding { cause, .. } => cause_name(*cause),
+                other => panic!(
+                    "row {label:?}: corpus declares cause {want:?}, so this row must be \
+                     rejected by the §4.3 step-4 re-encode comparison -- got {other}"
                 ),
-                "row {label:?}: expected an IndefiniteLength cause, got {err}"
+            };
+            assert_eq!(
+                got, want,
+                "row {label:?}: corpus declares cause {want:?}, decoder produced {got:?}"
             );
             Mechanism::ReEncode
         }
-        "rule3_non_shortest_int" => {
-            assert!(
-                matches!(
-                    err,
-                    ManifestError::NonCanonicalEncoding {
-                        cause: NonCanonicalCause::NonShortestForm,
-                        ..
-                    }
-                ),
-                "row {label:?}: expected a NonShortestForm cause, got {err}"
-            );
-            Mechanism::ReEncode
-        }
-        // Rule 4 never reaches the re-encode. Asserting the NEGATIVE here
-        // is the point: if a future change routed floats through the
-        // comparison instead, this row would still be "rejected" and only
-        // this assertion would notice.
-        "rule4_float" => {
+        // A null cause means "rejected BEFORE the re-encode". The only v1
+        // mechanism that does so is `reject_floats_and_tags`, and pinning
+        // that specifically is deliberately stronger than the column can
+        // express: the column says which cause, this says by which
+        // mechanism, and conflating the two is the error `decode/mod.rs`
+        // carries a standing warning against.
+        None => {
             assert!(
                 matches!(err, ManifestError::Canonical(_)),
-                "row {label:?}: floats must be caught by reject_floats_and_tags, \
-                 not the re-encode, got {err}"
+                "row {label:?}: corpus declares no cause, so this row must be caught by \
+                 reject_floats_and_tags BEFORE the re-encode, got {err}"
             );
             Mechanism::FloatWalk
         }
-        other => panic!(
-            "row {label:?}: shape {other:?} rejects but declares no mechanism -- \
-             add it to assert_rejection_mechanism rather than loosening this match"
-        ),
     }
 }
 
@@ -152,6 +172,7 @@ fn manifest_canonicality_kat_replays() {
     let mut rejected = 0usize;
     let mut re_encode = 0usize;
     let mut float_walk = 0usize;
+    let mut causes_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for row in rows {
         let label = row["label"].as_str().expect("label");
         labels.insert(label.to_string());
@@ -163,12 +184,64 @@ fn manifest_canonicality_kat_replays() {
             got, expect_accept,
             "row {label:?}: expected accept={expect_accept}, got accept={got}"
         );
+        // Absent column => PANIC, never a default. A fixture stripped of
+        // `expect_cause` must fail LOUDLY: read with a default, every
+        // rejecting row would score as "declares no cause" and quietly
+        // demand the FloatWalk mechanism -- a green run proving the
+        // opposite of what it claims. Same fail-open shape #608's review
+        // found in `parsed.get(array, [])`.
+        //
+        // `.get()` rather than the `[]` index is what makes that
+        // distinction possible at all: `serde_json`'s `[]` returns
+        // `Value::Null` for a key that is simply absent, and `null` is a
+        // MEANINGFUL value in this column, so after indexing the two are
+        // indistinguishable.
+        let declared = row.get("expect_cause").unwrap_or_else(|| {
+            panic!(
+                "row {label:?}: fixture has no `expect_cause` column -- regenerate it with \
+                 `cargo test --release --workspace -- --ignored generate_manifest_canonicality_kat`"
+            )
+        });
+        let expect_cause: Option<&str> =
+            if declared.is_null() {
+                None
+            } else {
+                Some(declared.as_str().unwrap_or_else(|| {
+                    panic!("row {label:?}: expect_cause must be a string or null")
+                }))
+            };
+
+        // The corpus must agree with the SHAPES table it was generated
+        // from. Without this, a hand-edited `expect_cause` would simply
+        // become the new contract and both languages would agree with the
+        // edit -- the fixture would be self-certifying. This is the
+        // "both sides check the FIXTURE, not just the verdict" discipline
+        // #599's review put on the uniqueness corpus.
+        let shape_name = label.split_once("__").expect("label is <level>__<shape>").1;
+        let declared_by_table = generate::SHAPES
+            .iter()
+            .find(|s| s.label == shape_name)
+            .unwrap_or_else(|| panic!("row {label:?}: no SHAPES entry named {shape_name:?}"))
+            .expect_cause
+            .map(cause_name);
+        assert_eq!(
+            expect_cause, declared_by_table,
+            "row {label:?}: fixture declares cause {expect_cause:?} but the SHAPES table \
+             declares {declared_by_table:?} -- one of the two was hand-edited"
+        );
+
         if expect_accept {
+            assert!(
+                expect_cause.is_none(),
+                "row {label:?}: an ACCEPTED row cannot declare a rejection cause"
+            );
             accepted += 1;
         } else {
             rejected += 1;
-            let shape = label.split_once("__").expect("label is <level>__<shape>").1;
-            match assert_rejection_mechanism(label, shape, outcome.as_ref().unwrap_err()) {
+            if let Some(name) = expect_cause {
+                causes_seen.insert(name.to_string());
+            }
+            match assert_rejection_mechanism(label, expect_cause, outcome.as_ref().unwrap_err()) {
                 Mechanism::ReEncode => re_encode += 1,
                 Mechanism::FloatWalk => float_walk += 1,
             }
@@ -192,6 +265,27 @@ fn manifest_canonicality_kat_replays() {
         float_walk, 3,
         "exactly the three rule4_float rows must be caught by \
          reject_floats_and_tags, BEFORE the re-encode"
+    );
+
+    // #604's coverage gap, made EXECUTABLE rather than left in prose.
+    // `NonCanonicalCause` has four variants; this corpus reaches two.
+    // `ArraySortOrder` needs an out-of-order array and `Unclassified`
+    // needs outer-map key disorder -- neither is an `unknown`-subtree
+    // splice, which is the only shape this corpus's generator builds, so
+    // both stay pinned by Rust unit tests with no cross-language
+    // agreement (#613).
+    //
+    // Asserting the SET is a deliberate speed bump: widening the corpus to
+    // a third cause reds here, so the gap above cannot quietly stop being
+    // true while this comment still claims it.
+    assert_eq!(
+        causes_seen,
+        ["IndefiniteLength", "NonShortestForm"]
+            .into_iter()
+            .map(String::from)
+            .collect::<std::collections::BTreeSet<String>>(),
+        "the set of causes this corpus exercises has changed -- update the \
+         #613 coverage note above rather than only this assertion"
     );
     assert!(
         accepted > 0,
@@ -324,8 +418,8 @@ mod generate {
     use std::path::PathBuf;
 
     use secretary_core::vault::manifest::{
-        decode_manifest, encode_manifest, BlockEntry, KdfParamsRef, Manifest, TrashEntry,
-        VectorClockEntry,
+        decode_manifest, encode_manifest, BlockEntry, KdfParamsRef, Manifest, NonCanonicalCause,
+        TrashEntry, VectorClockEntry,
     };
     use secretary_core::vault::UnknownValue;
 
@@ -341,6 +435,22 @@ mod generate {
         /// generator asserts this rather than recording whatever comes
         /// out.
         pub(super) expect_accept: bool,
+        /// Which [`NonCanonicalCause`] the §4.3 step-4 re-encode
+        /// comparison must report for this shape (#604), or `None` if the
+        /// shape never reaches that comparison.
+        ///
+        /// `None` carries two different meanings that the `expect_accept`
+        /// column disambiguates: on an ACCEPTED shape there is no
+        /// rejection to explain, and on a REJECTED one it asserts the
+        /// NEGATIVE — that some earlier mechanism caught the body first.
+        /// Today the only such mechanism is `reject_floats_and_tags`.
+        ///
+        /// Only two of the four `NonCanonicalCause` variants are reachable
+        /// from this corpus. `ArraySortOrder` and `Unclassified` need
+        /// bodies that are not `unknown`-subtree splices at all, so they
+        /// stay pinned by Rust unit tests only, with no cross-language
+        /// agreement — tracked separately rather than left unrecorded.
+        pub(super) expect_cause: Option<NonCanonicalCause>,
     }
 
     pub(super) const SHAPES: &[Shape] = &[
@@ -351,6 +461,7 @@ mod generate {
             // 61 = 'a'), shortest-form uint 1 (01).
             bytes: &[0xA1, 0x61, 0x61, 0x01],
             expect_accept: true,
+            expect_cause: None,
         },
         Shape {
             label: "control_array",
@@ -358,6 +469,7 @@ mod generate {
             // head (82), two shortest-form uints (01, 02).
             bytes: &[0x82, 0x01, 0x02],
             expect_accept: true,
+            expect_cause: None,
         },
         Shape {
             label: "rule1_key_order",
@@ -368,6 +480,7 @@ mod generate {
             // order survives the parse and re-encodes byte-identically.
             bytes: &[0xA2, 0x62, 0x7A, 0x7A, 0x01, 0x61, 0x61, 0x02],
             expect_accept: true,
+            expect_cause: None,
         },
         Shape {
             label: "rule5_duplicate_key",
@@ -377,6 +490,7 @@ mod generate {
             // trip.
             bytes: &[0xA2, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02],
             expect_accept: true,
+            expect_cause: None,
         },
         Shape {
             label: "rule2_indefinite_map",
@@ -387,6 +501,7 @@ mod generate {
             // differs from the indefinite-length input.
             bytes: &[0xBF, 0x61, 0x61, 0x01, 0xFF],
             expect_accept: false,
+            expect_cause: Some(NonCanonicalCause::IndefiniteLength),
         },
         Shape {
             label: "rule3_non_shortest_int",
@@ -397,6 +512,7 @@ mod generate {
             // shortest form, differing from the non-shortest input.
             bytes: &[0xA1, 0x61, 0x61, 0x18, 0x01],
             expect_accept: false,
+            expect_cause: Some(NonCanonicalCause::NonShortestForm),
         },
         Shape {
             label: "rule4_float",
@@ -407,6 +523,7 @@ mod generate {
             // before the re-encode ever runs.
             bytes: &[0xA1, 0x61, 0x61, 0xFA, 0x3F, 0xC0, 0x00, 0x00],
             expect_accept: false,
+            expect_cause: None,
         },
     ];
 
@@ -580,8 +697,11 @@ mod generate {
     ///
     /// **This generator asserts the specification; it does not launder
     /// it.** For every (level, shape) pair it compares `decode_manifest`'s
-    /// ACTUAL verdict against `Shape::expect_accept` and panics on a
-    /// mismatch instead of recording whatever the decoder happened to do.
+    /// ACTUAL verdict against `Shape::expect_accept` -- and, for a
+    /// rejecting pair, its actual rejection against `Shape::expect_cause`
+    /// through the same `assert_rejection_mechanism` the replay uses
+    /// (#604) -- panicking on a mismatch instead of recording whatever the
+    /// decoder happened to do.
     /// A generator that wrote down the observed verdict would make
     /// `manifest_canonicality_kat_replays` vacuous -- it would pass no
     /// matter how the decoder's behaviour changed, because the fixture
@@ -614,7 +734,8 @@ mod generate {
                 let mut spliced = base_bytes.clone();
                 spliced.splice(at..at + NEEDLE.len(), shape.bytes.iter().copied());
 
-                let got_accept = decode_manifest(&spliced).is_ok();
+                let outcome = decode_manifest(&spliced);
+                let got_accept = outcome.is_ok();
                 assert_eq!(
                     got_accept,
                     shape.expect_accept,
@@ -631,10 +752,25 @@ mod generate {
 
                 let label = format!("{}__{}", level.label(), shape.label);
 
+                // The cause column gets the SAME treatment as
+                // `expect_accept`: asserted against the decoder, never
+                // recorded from it. `assert_rejection_mechanism` is the
+                // single implementation of that comparison, so the
+                // generator and the replay cannot drift onto two readings
+                // of one column -- and it is fail-closed in both arms.
+                if let Err(err) = &outcome {
+                    super::assert_rejection_mechanism(
+                        &label,
+                        shape.expect_cause.map(super::cause_name),
+                        err,
+                    );
+                }
+
                 rows.push(serde_json::json!({
                     "label": label,
                     "manifest_body_hex": hex::encode(&spliced),
                     "expect_accept": shape.expect_accept,
+                    "expect_cause": shape.expect_cause.map(super::cause_name),
                 }));
 
                 let seed_path = seeds_dir.join(format!("{label}.bin"));

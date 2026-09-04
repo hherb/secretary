@@ -30,6 +30,39 @@ CBOR_BREAK = 0xFF          # RFC 8949 §3.2.1: the "break" stop code.
 CBOR_AI_INDEFINITE = 31    # RFC 8949 §3: additional info 31 == indefinite.
 
 
+class NonCanonicalItem(ValueError):
+    """A crypto-design §6.2 NUMBERED-rule violation found by
+    `_check_canonical_item`.
+
+    Carries the rule number as a STRUCTURED attribute so a caller
+    discriminates on `.rule` rather than on the message text (#604).  The
+    message-substring alternative is the exact fragility #608's review
+    diagnosed on the encoder side: a caller matching `"rule 2:"` keeps
+    passing when the message is reworded, and keeps passing when a
+    DIFFERENT check grows a message containing the same fragment.
+
+    Defined in this module, beside its raise sites, so the number in the
+    attribute and the number in the rendered message cannot drift -- the
+    message is composed FROM the attribute, so `rule` appears once per
+    raise.
+
+    Subclasses `ValueError` deliberately: `conformance_lib.rejection`'s
+    allowlist already admits `ValueError` as "this input is
+    non-conformant", so every existing caller keeps scoring these as a
+    verdict rather than as a harness failure.
+
+    Only the five NUMBERED-rule raises use this type.  The three raises
+    for ordinary CBOR well-formedness properties -- invalid UTF-8, a
+    major-7 value outside {false, true, null}, a string length overrunning
+    the buffer -- stay plain `ValueError`, because they are not among
+    §6.2's five rules and have no number to carry.
+    """
+
+    def __init__(self, rule: int, detail: str) -> None:
+        super().__init__(f"rule {rule}: {detail}")
+        self.rule = rule
+
+
 def _decode_head(buf: bytes, pos: int) -> tuple[int, int, int | None, int]:
     """Decode the CBOR head at `pos` (RFC 8949 §3).
 
@@ -218,7 +251,9 @@ def _check_canonical_item(buf: bytes, pos: int) -> int:
 
     Rule 2 (definite lengths), rule 3 (shortest-form heads), rule 4 (no
     floats, no tags).  Returns the offset one past the item; raises
-    `ValueError` naming the rule and offset on any violation.
+    `NonCanonicalItem` -- a `ValueError` subclass carrying the rule NUMBER
+    as `.rule` -- on any numbered-rule violation, and a plain `ValueError`
+    on the three well-formedness properties that carry no §6.2 number.
 
     Rules 1 and 5 -- map-key order and duplicate keys -- are deliberately
     NOT checked.  `docs/vault-format.md` §4.2's table marks both unenforced
@@ -230,19 +265,19 @@ def _check_canonical_item(buf: bytes, pos: int) -> int:
     """
     major, ai, arg, head = _decode_head(buf, pos)
     if ai == CBOR_AI_INDEFINITE:
-        raise ValueError(f"rule 2: indefinite-length item at offset {pos}")
+        raise NonCanonicalItem(2, f"indefinite-length item at offset {pos}")
     if major == 6:
-        raise ValueError(f"rule 4: CBOR tag at offset {pos}")
+        raise NonCanonicalItem(4, f"CBOR tag at offset {pos}")
     if major == 7:
         if ai in (25, 26, 27):        # float16 / float32 / float64
-            raise ValueError(f"rule 4: float at offset {pos}")
+            raise NonCanonicalItem(4, f"float at offset {pos}")
         if ai > 24:
             # Unreachable: ai in (28, 29, 30) is rejected by `_decode_head`
             # itself (reserved additional-info), and ai == 31 is caught by
             # the rule-2 check above -- so by the time control reaches
             # here, ai is always <= 24. Kept as defence in depth so this
             # primitive does not depend on a caller's validation.
-            raise ValueError(f"rule 3: non-shortest simple value at offset {pos}")
+            raise NonCanonicalItem(3, f"non-shortest simple value at offset {pos}")
         if ai not in (20, 21, 22):     # RFC 8949 §3.3: false(20)/true(21)/null(22) only
             raise ValueError(
                 f"RFC 8949 §3.3: major-7 value outside {{false, true, null}} "
@@ -250,7 +285,7 @@ def _check_canonical_item(buf: bytes, pos: int) -> int:
             )
         return pos + head
     if ai != _shortest_ai(arg):
-        raise ValueError(f"rule 3: non-shortest-form head at offset {pos} (ai={ai})")
+        raise NonCanonicalItem(3, f"non-shortest-form head at offset {pos} (ai={ai})")
     p = pos + head
     if major in (0, 1):
         return p
