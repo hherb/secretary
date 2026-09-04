@@ -28,7 +28,10 @@ Three checks, all fail-closed:
 
 DISCOVERY IS DEFINED BY SHAPE, NOT BY A NAME LIST. A driver is a top-level
 function whose name starts with `section`, defined in the module being scanned
-(not imported into it). Every one of the 22 drivers returns `(ok, lines)`; if a
+(not imported into it). Every driver returns `(ok, lines)` -- there are 25 as of
+#600's review round, a count deliberately not written into this sentence again
+since the previous one said 22 and outlived three slices; Section REG reports the
+live number on every run. If a
 future helper adopts the `section` prefix without that shape it will be
 reported here as unregistered, which is the fail-CLOSED direction -- noisy
 rather than silent.
@@ -48,6 +51,7 @@ _NON_DRIVER_MODULES = (
     "completeness",
     "manifest_body_fixtures",
     "required_key_structure",
+    "manifest_uniqueness_writer",
 )
 
 

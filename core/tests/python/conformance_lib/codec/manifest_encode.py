@@ -18,6 +18,18 @@ from conformance_lib.codec.array_uniqueness import first_repeated_value
 # decoders, and round-trips. Adding it here would make this encoder refuse
 # a body the v1-frozen Rust encoder emits, which is the divergence this
 # package exists to detect, pointing the wrong way.
+# The prefix every §4.2 refusal from THIS module carries.
+#
+# Exported because Section MUQ keys on it in both directions, and it must
+# not drift from the messages below: `py_decode_manifest` re-encodes
+# through `py_encode_manifest` for the §4.3 step-4 comparison, so this
+# encoder BACKSTOPS the reader. The reader half of that section rejects
+# this prefix (a rejection carrying it did not come from the reader, and
+# crediting it to the reader is what made that half vacuous -- #608
+# review); the writer half requires it.
+ENCODER_REFUSAL_PREFIX = "cannot encode:"
+
+
 _FLAT_UNIQUE_ARRAYS: tuple[tuple[str, str], ...] = (
     ("vector_clock", "device_uuid"),
     ("blocks", "block_uuid"),
@@ -41,20 +53,29 @@ def check_no_repeated_array_values(parsed: dict) -> None:
     checked only `blocks[0]` would diverge on the corpus row that plants
     its repeat in `blocks[1]`.
     """
+    # Hard-indexed, not `.get(array, [])`: a MISSING key would check
+    # nothing and report nothing, while the `row[id_key]` one token later
+    # is fail-loud -- two different failure stances inside one expression
+    # (#608 review). All three arrays are in `MANIFEST_REQUIRED_KEYS` and
+    # `Manifest`'s Rust twin holds typed `Vec`s, where absence is not
+    # representable at all; a `KeyError` here is the honest report that
+    # this function was handed something that is not a decoded manifest.
     for array, id_key in _FLAT_UNIQUE_ARRAYS:
-        repeat = first_repeated_value([row[id_key] for row in parsed.get(array, [])])
+        repeat = first_repeated_value([row[id_key] for row in parsed[array]])
         if repeat is not None:
             raise ValueError(
-                f"cannot encode: {array} has a repeated {id_key}: {repeat.hex()}"
+                f"{ENCODER_REFUSAL_PREFIX} {array} has a repeated {id_key}: "
+                f"{repeat.hex()}"
             )
-    for i, blk in enumerate(parsed.get("blocks", [])):
-        summary = blk.get("vector_clock_summary", [])
+    for i, blk in enumerate(parsed["blocks"]):
+        summary = blk["vector_clock_summary"]
         repeat = first_repeated_value([row["device_uuid"] for row in summary])
         if repeat is not None:
             raise ValueError(
-                f"cannot encode: blocks[{i}].vector_clock_summary has a "
-                f"repeated device_uuid: {repeat.hex()}"
+                f"{ENCODER_REFUSAL_PREFIX} blocks[{i}].vector_clock_summary has "
+                f"a repeated device_uuid: {repeat.hex()}"
             )
+
 
 def _encode_array_header(n: int) -> bytes:
     """RFC 8949 §3.1: major type 4 (array) head byte is `0x80 |
@@ -145,12 +166,29 @@ def py_encode_manifest(parsed: dict) -> bytes:
 
     Refuses a manifest violating §4.2's repeated-value rules before
     emitting anything (#600) -- see `check_no_repeated_array_values`.
-    Observably a no-op for every caller in this package today: the only
-    routes here are `py_decode_manifest`'s §4.3 step-4 re-encode and
-    `--diff-replay`'s accept path, and both run AFTER the reader has
-    already rejected such a body. It is the writer half of a normative
-    rule, not a check on the decode path, and Section MUQ exercises it
-    directly for that reason.
+
+    Observably a no-op for every caller that PRE-DATES #600. There are
+    seven of them, not the two an earlier version of this docstring named
+    (#608 review): `manifest_decode.py`'s §4.3 step-4 re-encode,
+    `diff_replay.py`'s accept path, `manifest_body_schema_guards.py` (x2),
+    `manifest_body_shape_guards.py`, and `wire/golden_vault_verify.py`.
+    Every one of them passes a `py_decode_manifest` result, so the reader
+    has already rejected any body this check could refuse -- which is the
+    substance, and is why the enumeration being short did not make it
+    harmless: the two-caller claim is exactly what a reader would use to
+    reason about whether this check can fire, and it is what Section MUQ's
+    `_ENCODER_PREFIX` had to be added to handle.
+
+    Section MUQ is the EXCEPTION and the reason this is not dead code: it
+    calls this function directly on a mutated manifest and requires it to
+    raise. It is the writer half of a normative rule.
+
+    **It also backstops the reader**, which is a consequence rather than a
+    goal. Because `py_decode_manifest` re-encodes through here, deleting
+    the decoder's own distinctness check no longer makes a repeat-carrying
+    body decode `Ok` -- this refuses it one step later. Section MUQ
+    distinguishes the two by the `cannot encode:` prefix; without that, its
+    reader half would credit these rejections to the reader and go vacuous.
     """
     import cbor2
 

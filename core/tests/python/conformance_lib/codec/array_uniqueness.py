@@ -10,9 +10,10 @@ them and readers MUST reject them"), so it has two call sites in this
 package rather than one: `manifest_decode.py`'s
 `_check_sorted_and_distinct` and `manifest_encode.py`'s
 `check_no_repeated_array_values`. Naming the rule once is the same move
-`required_keys.py` makes for #597's -- there, four of seven hand-copies
-had drifted, and here the writer half was simply missing, which is the
-Rust-side defect #600 records.
+`required_keys.py` makes for #597's -- there, seven hand-copies of one
+rule and THREE of them had drifted (four already sorted; see that
+module's own docstring), and here the writer half was simply missing,
+which is the Rust-side defect #600 records.
 
 **Sortedness and distinctness are independent**, which is why this rule
 needs its own function at all: `[x, x]` *is* sorted, so neither the §4.2

@@ -53,8 +53,8 @@ pub(in crate::vault::manifest) enum BodyArray<'a> {
 /// normalises indefinite lengths and non-shortest heads on parse, and
 /// `Value::Map` keeps its entries as an ordered `Vec`, so a body that was
 /// already canonical round-trips unchanged. The property is not assumed —
-/// `surgery_is_byte_preserving_when_it_plants_nothing` asserts it
-/// directly, and `manifest_uniqueness_kat_replays` asserts it again
+/// `parse_and_reencode_is_byte_preserving_for_a_canonical_body` asserts
+/// it directly, and `manifest_uniqueness_kat_replays` asserts it again
 /// end-to-end against a frozen fixture.
 ///
 /// Panics rather than returning a `Result`: every caller is a test

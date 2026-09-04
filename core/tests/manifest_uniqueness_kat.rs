@@ -76,6 +76,8 @@ use std::path::PathBuf;
 
 use secretary_core::vault::manifest::decode_manifest;
 
+use generate::Verdict;
+
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/manifest_uniqueness_kat.json")
 }
@@ -149,10 +151,10 @@ fn manifest_uniqueness_kat_replays() {
             // rather than indexing into a table that has no such row.
             continue;
         };
-        if case.expect_accept != expect_accept {
+        if case.verdict.accepts() != expect_accept {
             issues.push(format!(
                 "row {label:?}: fixture says expect_accept={expect_accept}, CASES says {}",
-                case.expect_accept
+                case.verdict.accepts()
             ));
         }
         let rebuilt = generate::encode_case(case);
@@ -165,8 +167,8 @@ fn manifest_uniqueness_kat_replays() {
                 rebuilt.len()
             ));
         }
-        if let (Some(pred), Err(e)) = (case.expect_err, &outcome) {
-            if !pred(e) {
+        if let (Verdict::Reject { decode, .. }, Err(e)) = (&case.verdict, &outcome) {
+            if !decode(e) {
                 issues.push(format!(
                     "row {label:?}: rejected for the WRONG reason ({e:?}) -- the row is named \
                      for a §4.2 repeated-value rule, so a rejection from any other check \
@@ -186,15 +188,15 @@ fn manifest_uniqueness_kat_replays() {
         let mut mutated = generate::base_manifest();
         (case.mutate)(&mut mutated);
         let encoded = secretary_core::vault::manifest::encode_manifest(&mutated);
-        if encoded.is_ok() != expect_accept {
+        if encoded.is_ok() != case.verdict.accepts() {
             issues.push(format!(
                 "row {label:?}: encode_manifest returned accept={}, expected {expect_accept} \
                  -- §4.2 binds writers as well as readers",
                 encoded.is_ok()
             ));
         }
-        match (case.expect_encode_err, &encoded) {
-            (Some(pred), Err(e)) if !pred(e) => issues.push(format!(
+        match (&case.verdict, &encoded) {
+            (Verdict::Reject { encode, .. }, Err(e)) if !encode(e) => issues.push(format!(
                 "row {label:?}: encode_manifest rejected for the WRONG reason ({e:?})"
             )),
             // The ACCEPT rows carry the cross-check that keeps the
@@ -203,12 +205,19 @@ fn manifest_uniqueness_kat_replays() {
             // byte. Without it, `plant` could silently drift from
             // `mutate` and the corpus would pin whatever surgery
             // happened to build.
-            (None, Ok(bytes)) if bytes.expose() != rebuilt.as_slice() => issues.push(format!(
-                "row {label:?}: surgery and encode_manifest disagree ({} vs {} bytes) -- \
-                 the `plant` closure has drifted from its `mutate`",
-                rebuilt.len(),
-                bytes.expose().len()
-            )),
+            //
+            // Keyed on `Accept`, not on "no encode predicate" (#608
+            // review): the old shape let one unrelated field switch this
+            // cross-check off on an ACCEPT row, silently, and it is the
+            // corpus's only defence against that drift.
+            (Verdict::Accept, Ok(bytes)) if bytes.expose() != rebuilt.as_slice() => {
+                issues.push(format!(
+                    "row {label:?}: surgery and encode_manifest disagree ({} vs {} bytes) -- \
+                     the `plant` closure has drifted from its `mutate`",
+                    rebuilt.len(),
+                    bytes.expose().len()
+                ))
+            }
             _ => {}
         }
     }
@@ -287,34 +296,64 @@ mod generate {
         ///
         /// [`mutate`]: Self::mutate
         pub(super) plant: fn(&mut Value),
-        /// What `decode_manifest` MUST do — the specification, not an
+        /// What BOTH directions MUST do — the specification, not an
         /// observed value. See `generate_manifest_uniqueness_kat`'s doc.
-        pub(super) expect_accept: bool,
-        /// For a REJECT case, which [`ManifestError`] variant §4.2 assigns
-        /// it. `None` for the two ACCEPT cases.
-        ///
-        /// A predicate rather than a value because `ManifestError` has no
-        /// `PartialEq` (and deliberately so — several variants carry
-        /// `CborFault` payloads). Without this, `is_ok() == false` was the
-        /// whole assertion, so a row could be rejected for an entirely
-        /// unrelated reason — a malformed body, a missing field — and the
-        /// corpus would still report the uniqueness rule as pinned.
-        pub(super) expect_err: Option<fn(&ManifestError) -> bool>,
-        /// The same, for the WRITER (#600): which [`ManifestError`]
-        /// `encode_manifest` must return when handed [`mutate`]'s output.
-        /// `None` for the two ACCEPT cases.
-        ///
-        /// A separate column rather than a reuse of [`expect_err`],
-        /// because the two variants genuinely differ — the encode side
-        /// reports `EncodeDuplicateBlockUuid` where the decode side
-        /// reports `DuplicateBlockUuid`. Asserting the encode verdict
-        /// against the DECODE variant would pass only if the two were
-        /// collapsed, which is the design this codebase deliberately
+        pub(super) verdict: Verdict,
+    }
+
+    /// §4.2's verdict for one row, in both directions at once.
+    ///
+    /// **An enum rather than the `bool` + two `Option`s this replaced
+    /// (#608 review), because that shape made two invalid states
+    /// representable and both were silent.** A REJECT row written
+    /// `expect_accept: false, expect_err: None, expect_encode_err: None`
+    /// compiled, and `manifest_uniqueness_kat_replays` PASSED it —
+    /// degrading the row to "rejected somehow", which is precisely the
+    /// vacuity this file's own doc records #599 as having removed. And
+    /// the surgery-vs-encoder byte cross-check keyed on
+    /// `expect_encode_err.is_none()` rather than on acceptance, so
+    /// setting that one field on an ACCEPT row silently disabled the
+    /// corpus's ONLY defence against `plant` drifting from `mutate`.
+    ///
+    /// Both are now unrepresentable: a `Reject` cannot omit either
+    /// predicate, and the cross-check matches on `Accept`, which is what
+    /// it actually means.
+    pub(super) enum Verdict {
+        /// §4.2 requires both directions to accept. These rows carry the
+        /// byte-for-byte `plant`-vs-`encode_manifest` cross-check, which
+        /// is possible only here: on a REJECT row the encoder produces
+        /// nothing to compare against.
+        Accept,
+        /// §4.2 requires both directions to reject — each with its OWN
+        /// [`ManifestError`] variant, because the two genuinely differ:
+        /// the encoder reports `EncodeDuplicateBlockUuid` where the
+        /// decoder reports `DuplicateBlockUuid`. Asserting the encode
+        /// verdict against the DECODE variant would pass only if the two
+        /// were collapsed, which is the design this codebase deliberately
         /// rejected.
         ///
-        /// [`mutate`]: Self::mutate
-        /// [`expect_err`]: Self::expect_err
-        pub(super) expect_encode_err: Option<fn(&ManifestError) -> bool>,
+        /// Predicates rather than values because `ManifestError` has no
+        /// `PartialEq` (deliberately — several variants carry `CborFault`
+        /// payloads). Without them, `is_ok() == false` is the whole
+        /// assertion, so a row could be rejected for an entirely
+        /// unrelated reason — a malformed body, a missing field — and the
+        /// corpus would still report the uniqueness rule as pinned.
+        Reject {
+            decode: fn(&ManifestError) -> bool,
+            encode: fn(&ManifestError) -> bool,
+        },
+    }
+
+    impl Verdict {
+        /// Whether §4.2 requires this row to be accepted.
+        ///
+        /// The fixture records this as a `bool`, and
+        /// `manifest_uniqueness_kat_replays` compares the two — so it is
+        /// DERIVED here rather than stored alongside the predicates,
+        /// which is what stops it disagreeing with them.
+        pub(super) fn accepts(&self) -> bool {
+            matches!(self, Verdict::Accept)
+        }
     }
 
     /// Where in its array each case plants its repeat, and in which block.
@@ -346,9 +385,7 @@ mod generate {
             label: "control__all_distinct",
             mutate: |_m| {},
             plant: |_v| {},
-            expect_accept: true,
-            expect_err: None,
-            expect_encode_err: None,
+            verdict: Verdict::Accept,
         },
         Case {
             // Two `blocks[]` entries claiming the same block with DIFFERENT
@@ -360,9 +397,10 @@ mod generate {
             label: "blocks__duplicate_block_uuid",
             mutate: |m| m.blocks[2].block_uuid = m.blocks[1].block_uuid,
             plant: |v| copy_field(v, Array::Top("blocks"), 1, 2, "block_uuid"),
-            expect_accept: false,
-            expect_err: Some(|e| matches!(e, ManifestError::DuplicateBlockUuid)),
-            expect_encode_err: Some(|e| matches!(e, ManifestError::EncodeDuplicateBlockUuid)),
+            verdict: Verdict::Reject {
+                decode: |e| matches!(e, ManifestError::DuplicateBlockUuid),
+                encode: |e| matches!(e, ManifestError::EncodeDuplicateBlockUuid),
+            },
         },
         Case {
             // §7 tracks only the most-recent tombstone per block, so two
@@ -372,9 +410,10 @@ mod generate {
             label: "trash__duplicate_block_uuid",
             mutate: |m| m.trash[1].block_uuid = m.trash[0].block_uuid,
             plant: |v| copy_field(v, Array::Top("trash"), 0, 1, "block_uuid"),
-            expect_accept: false,
-            expect_err: Some(|e| matches!(e, ManifestError::DuplicateTrashUuid)),
-            expect_encode_err: Some(|e| matches!(e, ManifestError::EncodeDuplicateTrashUuid)),
+            verdict: Verdict::Reject {
+                decode: |e| matches!(e, ManifestError::DuplicateTrashUuid),
+                encode: |e| matches!(e, ManifestError::EncodeDuplicateTrashUuid),
+            },
         },
         Case {
             // A vector clock is per-device: two counters for one device is
@@ -384,11 +423,10 @@ mod generate {
             label: "vector_clock__duplicate_device_uuid",
             mutate: |m| m.vector_clock[2].device_uuid = m.vector_clock[1].device_uuid,
             plant: |v| copy_field(v, Array::Top("vector_clock"), 1, 2, "device_uuid"),
-            expect_accept: false,
-            expect_err: Some(|e| matches!(e, ManifestError::VectorClockDuplicateDevice)),
-            expect_encode_err: Some(|e| {
-                matches!(e, ManifestError::EncodeVectorClockDuplicateDevice)
-            }),
+            verdict: Verdict::Reject {
+                decode: |e| matches!(e, ManifestError::VectorClockDuplicateDevice),
+                encode: |e| matches!(e, ManifestError::EncodeVectorClockDuplicateDevice),
+            },
         },
         Case {
             // The same rule one level down, and in the SECOND block. That
@@ -412,11 +450,10 @@ mod generate {
                     "device_uuid",
                 )
             },
-            expect_accept: false,
-            expect_err: Some(|e| matches!(e, ManifestError::VectorClockDuplicateDevice)),
-            expect_encode_err: Some(|e| {
-                matches!(e, ManifestError::EncodeVectorClockDuplicateDevice)
-            }),
+            verdict: Verdict::Reject {
+                decode: |e| matches!(e, ManifestError::VectorClockDuplicateDevice),
+                encode: |e| matches!(e, ManifestError::EncodeVectorClockDuplicateDevice),
+            },
         },
         Case {
             // THE DOCUMENTED EXCEPTION (§4.2). A repeated `contact_uuid`
@@ -434,9 +471,7 @@ mod generate {
                 m.blocks[1].recipients[2] = second;
             },
             plant: |v| copy_element(v, Array::InBlock(1, "recipients"), 1, 2),
-            expect_accept: true,
-            expect_err: None,
-            expect_encode_err: None,
+            verdict: Verdict::Accept,
         },
     ];
 
@@ -583,21 +618,24 @@ mod generate {
             let outcome = decode_manifest(&body);
             let got_accept = outcome.is_ok();
             assert_eq!(
-                got_accept, case.expect_accept,
+                got_accept,
+                case.verdict.accepts(),
                 "GENERATOR MUST NOT LAUNDER THE SPEC: case={} table says \
                  expect_accept={}, decoder actually returned accept={}. This is \
                  either a decoder regression or a deliberate, reviewed change to \
                  vault-format.md §4.2's repeated-value rules -- it must not be \
                  silently absorbed by regenerating the fixture.",
-                case.label, case.expect_accept, got_accept
+                case.label,
+                case.verdict.accepts(),
+                got_accept
             );
             // Same stance one level finer: the VARIANT is part of the
             // specification this table records, so a row that starts being
             // rejected by some other check is a mismatch to resolve, not a
             // detail to regenerate over.
-            if let (Some(pred), Err(e)) = (case.expect_err, &outcome) {
+            if let (Verdict::Reject { decode, .. }, Err(e)) = (&case.verdict, &outcome) {
                 assert!(
-                    pred(e),
+                    decode(e),
                     "GENERATOR MUST NOT LAUNDER THE SPEC: case={} was rejected by a \
                      DIFFERENT check than the §4.2 repeated-value rule it is named \
                      for ({e:?}).",
@@ -613,17 +651,17 @@ mod generate {
             let encoded = encode_manifest(&mutated);
             assert_eq!(
                 encoded.is_ok(),
-                case.expect_accept,
+                case.verdict.accepts(),
                 "GENERATOR MUST NOT LAUNDER THE SPEC: case={} table says \
                  expect_accept={}, encode_manifest actually returned accept={}. \
                  §4.2 binds writers as well as readers.",
                 case.label,
-                case.expect_accept,
+                case.verdict.accepts(),
                 encoded.is_ok()
             );
-            if let (Some(pred), Err(e)) = (case.expect_encode_err, &encoded) {
+            if let (Verdict::Reject { encode, .. }, Err(e)) = (&case.verdict, &encoded) {
                 assert!(
-                    pred(e),
+                    encode(e),
                     "GENERATOR MUST NOT LAUNDER THE SPEC: case={} was refused by the \
                      encoder for a DIFFERENT reason than the §4.2 repeated-value rule \
                      it is named for ({e:?}).",
@@ -634,7 +672,7 @@ mod generate {
             rows.push(serde_json::json!({
                 "label": case.label,
                 "manifest_body_hex": hex::encode(&body),
-                "expect_accept": case.expect_accept,
+                "expect_accept": case.verdict.accepts(),
             }));
             seeds.push((seeds_dir.join(format!("uniq__{}.bin", case.label)), body));
         }

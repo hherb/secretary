@@ -142,7 +142,7 @@ exactly that no-op**, caught only because the sha256 check failed.
 
 | # | Mutation | Result |
 |---|---|---|
-| M1 | `has_repeat` → always `false` | **16 red** — 4 encode, 3 **decode**, 8 unit, 1 surgery |
+| M1 | `has_repeat` → always `false` | **16 red** in the lib target — 4 encode, 3 **decode**, 8 unit, 1 surgery. Plus `manifest_uniqueness_kat_replays`, which these counts omit (#608 review: M1/M2/M3 are lib-target SUBTOTALS, the same filter trap this document diagnoses for M4 without applying it upward) |
 | M2 | drop `check_no_repeated_array_values(manifest)?` from `encode_manifest` | **4 red** (the encode tests only — the unit tests still pass, correctly) |
 | M3 | per-block walk scoped to `blocks[0]` | **2 red**, both the non-first-block tests |
 | M4 | `recipients` "tidied up" into a fifth rule | **3 red** in the lib target, including the pre-existing decoder test, **plus the corpus row** — measured in a separate run, see below |
@@ -217,7 +217,12 @@ Checked rather than assumed: `README.md`'s manifest-layer row already reads
   `manifest_canonicality_kat.rs`'s pre-existing `reverse_array`. An
   integration test sees only `secretary_core`'s public API and cannot reach a
   `#[cfg(test)]` module; promoting test-only manifest surgery onto the shipped
-  surface to spare thirty lines is the worse trade. Each copy says so.
+  surface to spare thirty lines is the worse trade. TWO of the three say so
+  (`test_support/surgery.rs` and `manifest_uniqueness_kat.rs`, each naming the
+  other two); `manifest_canonicality_kat.rs`'s `reverse_array` carries no such
+  note, so the copy least likely to be recognised as load-bearing is the one
+  with no cross-reference. "Each copy says so" was false when written
+  (#608 review).
 - **The writer check costs a second pass over four short arrays on every
   manifest save AND on every vault OPEN.** §4.3 step 4 re-encodes the parsed
   manifest through `encode_manifest` itself (`decode/mod.rs:219`) — not through
@@ -288,7 +293,8 @@ entirely about Rust. The reasoning: leaving `py_encode_manifest` non-conformant
 would recreate, on the writer side, exactly the divergence #594 had just closed
 on the reader side — and this repo's whole clean-room claim is that the two
 implementations agree. It was measured behaviour-preserving for every existing
-caller first: all four routes to `py_encode_manifest` run *after* the reader
+caller first: all SEVEN pre-#600 routes to `py_encode_manifest` (not four —
+#608 review; see that function's docstring for the enumeration) run *after* the reader
 has already rejected such a body, so the check is observably a no-op in the
 existing suite. That is also why Section MUQ exercises it **directly** rather
 than through a corpus row — a body the writer must refuse is, by construction,
@@ -454,3 +460,106 @@ shasum -a 256 core/src/vault/manifest/uniqueness.rs \
 `docs/handoffs/2026-09-04-encoder-uniqueness-shipped.md`. This file is the
 single authored baton — do not create a second copy at the root, and do not sync
 it to `main` during a pause window (that produces an add/add conflict).
+
+---
+
+## Review round (#608): one blocking finding, and what it generalises to
+
+Five specialist reviews plus a differential re-measurement. Recorded here rather
+than folded silently into the prose above, because three of these are the same
+class this document already spends a section on: **a claim written from the plan
+rather than from the diff.**
+
+### Blocking — the writer half made the reader half vacuous
+
+Adding §4.2 enforcement to `py_encode_manifest` gave the READER a backstop, and
+Section MUQ could not see it. `py_decode_manifest` re-encodes through
+`py_encode_manifest` for the §4.3 step-4 comparison, so deleting the decoder's
+own distinctness check no longer made a repeat-carrying body decode `Ok` — the
+encoder refused it one step later, with a message containing every fragment
+MUQ's reader assertion (`if want not in detail`) looked for.
+
+Measured in both directions, which is the only reason it is a finding rather
+than a worry:
+
+| tree | decoder's distinctness half deleted | MUQ reader half |
+|---|---|---|
+| merge-base `6d4c1cb3` | body **accepted** | **fails all four rows** |
+| this branch, before the fix | rejected — **by the encoder** | **passes** |
+| this branch, after the fix | rejected by the encoder | **fails all four rows** |
+
+The fix is `manifest_encode.ENCODER_REFUSAL_PREFIX`, defined beside the code
+that emits it so the two cannot drift. MUQ's reader half **rejects** that
+prefix; its writer half **requires** it.
+
+**The Rust side was never exposed**, and the contrast is the lesson: it asserts
+the decode and encode variants *separately*, so a backstop can never satisfy a
+decode assertion. The Python side had the same discriminator available in its
+message text and simply did not use it.
+
+**Generalises to:** whenever a rule is added to one direction of a round-trip,
+ask what the other direction's tests would still catch. Enforcement added in
+one place can silently *subtract* coverage in another.
+
+### A two-sided property was pinned at one end only
+
+Every `vector_clock_summary` fixture in the tree — Rust unit, Rust encode, the
+corpus row, the Python writer case — planted its repeat in `blocks[1]`,
+deliberately, to catch a walk scoped to `blocks[0]`. Nothing caught the mirror
+image. `for block in m.blocks.iter().skip(1)` passed the **entire workspace
+(2081 tests)** and `conformance.py`'s 25/25; the Python `[1:]` equivalent
+likewise printed MUQ's full PASS line. Both ends are now planted in both
+languages, and both mutations red.
+
+This is the dual of the weakness #599's review found in the same corpus, which
+is worth noticing: closing one side of a symmetry is where the other side gets
+created.
+
+### `Case`'s three columns made two invalid states representable
+
+`expect_accept: bool` + `expect_err: Option` + `expect_encode_err: Option`
+admitted a REJECT row with no predicates, which **passed** — degrading to
+"rejected somehow", exactly the vacuity #599 removed. Worse, the
+surgery-vs-encoder byte cross-check keyed on `expect_encode_err.is_none()`
+rather than on acceptance, so setting one unrelated field on an ACCEPT row
+silently disabled the corpus's only defence against `plant` drifting from
+`mutate`. Replaced by `Verdict::{Accept, Reject { decode, encode }}`;
+`accepts()` is derived. The cross-check still fires (verified: 1671 vs 1671
+bytes — same length, so a length check would miss it).
+
+### Smaller, each verified
+
+- **`edit(mutated)` was unguarded** in MUQ's writer half. `IndexError` is not in
+  `_REJECTION_EXCEPTIONS` and `main()` does not guard `section.run()`, so a
+  shape-drifted control row produced a traceback with **no `FAIL:` line** and
+  silently skipped RC, DET and REG. Now reported as an issue per case.
+- **`first_repeated_value`'s `sorted()` was unreachable from either caller** —
+  removing it left MUQ fully green. The Rust twin has been pinned since #600;
+  the Python side got the shared helper without the test. Now pinned by
+  `_shared_helper_issues`.
+- **`parsed.get(array, [])` was fail-open** one token from a fail-loud
+  `row[id_key]`. Both hard-index now.
+- **`sign_manifest` had no negative test**, though it is the harm this whole
+  slice is about. Added.
+- **Doc corrections:** a cited test name that does not exist
+  (`surgery_is_byte_preserving_when_it_plants_nothing`); "deleting
+  `sort_unstable` leaves every other test in this file green" (it reds two, as
+  this document's own M5 row said); #597's drift count inverted (three drifted,
+  not four); `py_encode_manifest`'s caller list naming two of seven; "each copy
+  says so" for the three surgery helpers; and CLAUDE.md's largest-module
+  ranking, which had been wrong for three PRs and which #600 edited without
+  fixing.
+
+### Filed rather than fixed
+
+`#609` — `save_block` does not check `trash`, so re-saving a trashed
+`block_uuid` puts it in **both** arrays; trashing it again then wedges
+permanently on `EncodeDuplicateTrashUuid`, with `restore_block` refusing
+(`BlockUuidAlreadyLive`) and `purge_block` only setting `purged_at_ms`.
+Pre-existing, and **#600 improves it** — before the writer check this wrote a
+signed manifest carrying the duplicate and bricked the vault at next open. What
+remains is the root cause and a `CorruptVault` label on what is a state bug.
+
+`#610` / `#611` / `#612` — the `BlockError` shared-variant precedent, the
+missing block index on `EncodeVectorClockDuplicateDevice`, and
+`manifest_uniqueness_kat.rs` at 810 lines.

@@ -45,10 +45,18 @@ fn has_repeat_finds_a_repeat_on_the_last_adjacent_pair() {
 
 #[test]
 fn has_repeat_finds_a_repeat_the_input_order_separates() {
-    // THE SORT IS LOAD-BEARING, and this is the only test that says so.
+    // THE SORT IS LOAD-BEARING, and this is the test that says so.
     // `[1, 2, 1]` has no equal ADJACENT pair as given; the repeat is
-    // visible only after sorting. Deleting the `sort_unstable` line
-    // leaves every other test in this file green.
+    // visible only after sorting.
+    //
+    // Deleting the `sort_unstable` line reds exactly TWO tests in this
+    // file — this one and
+    // `has_repeat_works_on_the_uuid_arrays_it_is_actually_called_with`
+    // eight lines below, whose `[[0x01; 16], [0x02; 16], [0x01; 16]]` is
+    // the same order-separated shape at the production type. Measured;
+    // an earlier version of this comment said "every other test in this
+    // file" stayed green, which the PR's own M5 row (2 red) already
+    // contradicted (#608 review).
     assert!(has_repeat(vec![1u8, 2, 1]));
 }
 
@@ -111,6 +119,29 @@ fn a_repeated_device_uuid_in_a_non_first_block_summary_is_rejected() {
     let mut m = populated_manifest();
     let first = m.blocks[1].vector_clock_summary[0].device_uuid;
     m.blocks[1].vector_clock_summary[1].device_uuid = first;
+    assert!(matches!(
+        check_no_repeated_array_values(&m),
+        Err(ManifestError::EncodeVectorClockDuplicateDevice)
+    ));
+}
+
+#[test]
+fn a_repeated_device_uuid_in_the_first_block_summary_is_rejected() {
+    // The DUAL of the test above, and it was missing until the #608
+    // review measured its absence. Every summary fixture in this tree —
+    // this file, `encode/tests.rs`, the KAT corpus row and Section MUQ's
+    // `_WRITER_CASES` — planted its repeat in `blocks[1]`, deliberately,
+    // to catch a walk scoped to `blocks[0]`. Nothing caught the mirror
+    // image: `for block in m.blocks.iter().skip(1)` passed the ENTIRE
+    // workspace (2081 tests) and `conformance.py`'s 25/25.
+    //
+    // A two-sided property needs a fixture at each end. `has_repeat`'s
+    // own tests already apply that discipline WITHIN an array
+    // (`..._on_the_first_adjacent_pair` / `..._on_the_last_adjacent_pair`);
+    // this is the same discipline ACROSS blocks.
+    let mut m = populated_manifest();
+    let first = m.blocks[0].vector_clock_summary[0].device_uuid;
+    m.blocks[0].vector_clock_summary[1].device_uuid = first;
     assert!(matches!(
         check_no_repeated_array_values(&m),
         Err(ManifestError::EncodeVectorClockDuplicateDevice)
