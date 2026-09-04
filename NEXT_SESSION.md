@@ -1,1 +1,1 @@
-docs/handoffs/2026-09-04-encoder-uniqueness-shipped.md
+docs/handoffs/2026-09-04-canonicality-cause-shipped.md
