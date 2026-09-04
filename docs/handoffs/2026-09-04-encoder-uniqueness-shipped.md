@@ -142,7 +142,7 @@ exactly that no-op**, caught only because the sha256 check failed.
 
 | # | Mutation | Result |
 |---|---|---|
-| M1 | `has_repeat` → always `false` | **12 red** |
+| M1 | `has_repeat` → always `false` | **16 red** — 4 encode, 3 **decode**, 8 unit, 1 surgery |
 | M2 | drop `check_no_repeated_array_values(manifest)?` from `encode_manifest` | **4 red** (the encode tests only — the unit tests still pass, correctly) |
 | M3 | per-block walk scoped to `blocks[0]` | **2 red**, both the non-first-block tests |
 | M4 | `recipients` "tidied up" into a fifth rule | **3 red**, including the pre-existing decoder test |
@@ -218,12 +218,16 @@ Checked rather than assumed: `README.md`'s manifest-layer row already reads
   integration test sees only `secretary_core`'s public API and cannot reach a
   `#[cfg(test)]` module; promoting test-only manifest surgery onto the shipped
   surface to spare thirty lines is the worse trade. Each copy says so.
-- **The writer check costs a second pass over four arrays on every manifest
-  save**, on top of the sorts `manifest_to_canonical` already does. Arrays here
-  hold a handful of entries, so the cost is negligible — but it is real and is
-  disclosed rather than hidden. Note it does **not** run on decode: the check
-  is in `encode_manifest`, and `decode_manifest`'s §4.3 step-4 re-encode goes
-  through `to_canonical_vec` directly, not through `encode_manifest`.
+- **The writer check costs a second pass over four short arrays on every
+  manifest save AND on every vault OPEN.** §4.3 step 4 re-encodes the parsed
+  manifest through `encode_manifest` itself (`decode/mod.rs:219`) — not through
+  a lower-level helper, and deliberately so, since step 4's whole claim is that
+  the bytes it compares against are the bytes a writer would emit. So the check
+  runs on the every-open path too. It **cannot fire** there:
+  `parse_manifest_map` has already rejected all four repeat shapes with the
+  DECODE-side variants by then, which the three `rejects_duplicate_*` tests
+  pin. The cost is negligible either way, but it is real and it is on a hotter
+  path than "every save".
 - **`manifest_to_canonical` stays infallible.** The check is a separate
   statement in `encode_manifest`, so that function's long "Infallible" doc
   contract is untouched.
@@ -289,6 +293,35 @@ has already rejected such a body, so the check is observably a no-op in the
 existing suite. That is also why Section MUQ exercises it **directly** rather
 than through a corpus row — a body the writer must refuse is, by construction,
 a body the writer cannot produce for a fixture.
+
+### The review round: two claims in the first commit were FALSE
+
+Both were found by re-reading the code against the prose after the commit was
+pushed and PR #608 opened, and both are this repo's signature failure mode —
+**documentation written from the plan rather than from the diff**. They are
+recorded rather than quietly amended because the pattern is more instructive
+than either one.
+
+1. **"The decoder's three hand-copied scans now route through `has_repeat`" was
+   not true.** It was the approved design, it was in the commit message, the
+   PR body, `ROADMAP.md` and `CLAUDE.md` — and `decode/entries.rs` still had
+   three verbatim `ids.sort(); ids.windows(2).any(...)` blocks. The encoder
+   half had been built, the decoder half had been *described*. Fixed in the
+   code (the design was right), and the fix is what makes M1 red **16** tests
+   instead of 12 — the three decoder tests among them. That delta is the
+   evidence the sharing is real; before it, "one helper, both directions" was
+   a sentence with no execution behind it.
+2. **"The check does not run on decode" was false**, and it was a claim about
+   a hot path. §4.3 step 4 re-encodes through `encode_manifest`, so it does.
+   Harmless — unreachable by ordering — but the disclosure was wrong in the
+   direction that understates cost, and the ordering it depends on was
+   undocumented. Now stated in `check_no_repeated_array_values`'s own doc,
+   including what a reversal would look like.
+
+**The habit that catches this class: grep for the thing the sentence claims,
+in the file the sentence names, before the sentence ships.** Both were found
+in under a minute that way. Neither was found by 2081 passing tests, by
+clippy, or by writing the sentence carefully.
 
 ### Two verification traps worth carrying forward
 

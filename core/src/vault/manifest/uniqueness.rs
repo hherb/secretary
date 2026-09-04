@@ -79,6 +79,22 @@ pub(super) fn device_uuids(entries: &[VectorClockEntry]) -> Vec<[u8; super::UUID
 /// enforced since v1. Order of the checks is not observable — a manifest
 /// violating two rules is rejected either way — so they run cheapest
 /// first: the three flat top-level arrays before the per-block walk.
+///
+/// **It is also on the DECODE path, and cannot fire there.** §4.3 step 4
+/// re-encodes the parsed manifest through `encode_manifest` (not through
+/// a lower-level helper — deliberately, so the bytes step 4 compares
+/// against are the bytes a writer would actually emit), so this function
+/// runs on every vault open too. `parse_manifest_map` has already
+/// rejected all four repeat shapes by then, with the DECODE-side
+/// variants, so what reaches here is repeat-free by construction and the
+/// cost is a second scan of four short arrays.
+///
+/// That ordering is load-bearing rather than incidental: if it ever
+/// reversed, a corrupt file would surface as `EncodeDuplicateBlockUuid`
+/// from `decode_manifest` — an error saying the caller asked to encode
+/// something, about a body the caller only asked to read.
+/// `decode::entries::tests`'s three `rejects_duplicate_*` tests pin the
+/// direction, since each asserts the decode-side variant specifically.
 pub(super) fn check_no_repeated_array_values(m: &Manifest) -> Result<(), ManifestError> {
     if has_repeat(device_uuids(&m.vector_clock)) {
         return Err(ManifestError::EncodeVectorClockDuplicateDevice);
