@@ -1,1 +1,1 @@
-docs/handoffs/2026-09-03-deterministic-required-key-shipped.md
+docs/handoffs/2026-09-04-encoder-uniqueness-shipped.md

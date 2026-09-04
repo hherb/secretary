@@ -45,6 +45,30 @@ fn sign_then_verify_round_trips() {
 }
 
 #[test]
+fn sign_manifest_refuses_a_body_with_a_repeated_block_uuid() {
+    // §4.2's writer half at the SIGNING boundary, which is the harm #600
+    // is actually about: before it, `encode_manifest` would emit — and
+    // this function would hybrid-sign — a body `decode_manifest` refuses
+    // to open, producing an owner-signed manifest no client can read.
+    //
+    // Every other test of the new check calls `encode_manifest`
+    // directly, so the stated harm was argued rather than executable
+    // (#608 review). It propagates through a plain `?`, so this pins the
+    // wiring, not the rule.
+    let mut body = populated_manifest();
+    body.blocks[1].block_uuid = body.blocks[0].block_uuid;
+    let header = fixed_manifest_header();
+    let ibk = test_ibk(0x00);
+    let nonce = test_nonce();
+    let (sk_ed, _pk_ed, sk_pq, _pk_pq) = fixture_hybrid_keypair(0x10);
+
+    assert!(matches!(
+        sign_manifest(header, &body, &ibk, &nonce, [0xa5; 16], &sk_ed, &sk_pq),
+        Err(ManifestError::EncodeDuplicateBlockUuid)
+    ));
+}
+
+#[test]
 fn verify_rejects_tampered_aead_ct() {
     let body = minimal_manifest();
     let header = fixed_manifest_header();

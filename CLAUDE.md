@@ -13,14 +13,17 @@ The cryptographic design and on-disk format are **frozen for v1** because vaults
 ```
 core/                Rust crate `secretary-core` — the security-critical source of truth
 core/src/{crypto,identity,unlock,vault}/   — module per spec section
-core/src/vault/manifest/                   — DIRECTORY module (#564), not manifest.rs; 18 files:
-                                             10 production, 7 sibling `tests.rs`, and one
-                                             `#[cfg(test)]` `test_support.rs`
+core/src/vault/manifest/                   — DIRECTORY module (#564), not manifest.rs; 26 files:
+                                             13 production + 11 sibling `tests.rs` + the 2
+                                             non-`tests.rs` files under `test_support/`
+                                             (`mod.rs`, `surgery.rs`). `ls test_support` shows
+                                             THREE — its own `surgery/tests.rs` is counted in
+                                             the 11, not here
 core/tests/          — integration tests; tests/data/ holds KATs and fuzz regressions
 core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (136 lines; the PEP
                                              723 header is the sole dependency declaration).
                                              `conformance.py:NNN` citations predating #593 are
-                                             stale — the verifier is now a 57-file package.
+                                             stale — the verifier is now a 58-file package.
 core/tests/python/conformance_lib/         — DIRECTORY module (#593), the verifier itself: no
                                              dependency on `secretary-core`; proves the spec is
                                              implementable from `docs/` alone. `wire/` parses to
@@ -239,12 +242,24 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 136, over a 57-file package whose largest module is still
-`merge/records.py` at 383 lines — by ONE line over
-`sections/required_key_determinism.py` at 382, so treat that title as contested
-rather than settled (52 files at the #593 split; #594 added
+was 6849 lines; it is now 136, over a **59**-file package whose largest module is
+`sections/required_key_determinism.py` at **390** lines, ahead of
+`merge/records.py` at 383 (52 files at the #593 split; #594 added
 `sections/manifest_uniqueness_kat.py`; #597 added three, and its review round a
-fourth). Two properties are
+fourth; #600 added `codec/array_uniqueness.py`, and its review round
+`sections/manifest_uniqueness_writer.py`).
+
+**Re-measure before citing those numbers.** The sentence above read "largest
+module is still `merge/records.py` at 383 — by ONE line over
+`sections/required_key_determinism.py` at 382" through three PRs, and every
+part of it was wrong by #600's review: `required_key_determinism.py` had been
+390 since #605, so the ordering was already inverted, and #600 itself grew
+`sections/manifest_uniqueness_kat.py` to 425 — past both — while editing that
+very sentence's file count and leaving the ranking untouched. The #608 review
+split the writer half out to `sections/manifest_uniqueness_writer.py`, which
+is what puts `required_key_determinism.py` back on top. A ranking of three
+numbers that drifts every slice is worth measuring rather than quoting. Two
+properties are
 load-bearing and a change that breaks either defeats the point of the split:
 
 - **The PEP 723 header in `conformance.py` is the SOLE dependency declaration.** There
@@ -477,6 +492,80 @@ tries. **#594's own text is unreliable on the spec half** — it reports these
 rules as absent from `docs/` on the strength of `grep -c "uniq"` → 0, but the
 spec says "Repeated values are forbidden" and has since `e29cb216`.
 
+**The WRITER half is enforced too, as of #600, and the rule now lives in one
+place per language.** §4.2 binds writers as well as readers ("writers MUST NOT
+emit them and readers MUST reject them") and *neither* implementation enforced
+the writer half: `encode_manifest` and `py_encode_manifest` could each emit —
+and `sign_manifest` sign — a body their own decoders refuse. Availability, not
+confidentiality: the manifest is owner-signed, so the producer is a caller in
+this process (merge, repair, block CRUD all build a `Manifest` in memory). But
+for a format frozen for decades with a clean-room mandate, an encoder that
+emits a signed document its own decoder rejects is a real defect, and #599 had
+just made the writer half normative, so the encoder was formally
+non-conformant with `docs/`. Four things about the fix:
+
+- **`core/src/vault/manifest/uniqueness.rs` holds the rule once**, and BOTH
+  directions call it: `has_repeat` is the adjacent-scan-after-sort the
+  decoder had hand-copied three times, and `check_no_repeated_array_values`
+  is `encode_manifest`'s new first statement. The Python twin is
+  `conformance_lib/codec/array_uniqueness.py`'s `first_repeated_value`,
+  shared by `_check_sorted_and_distinct` and the new
+  `check_no_repeated_array_values`. Seven hand-copies of one sentence from a
+  frozen spec is how two directions drift, which is what #600 *was*.
+- **Three NEW `ManifestError` variants**, not a reuse of the decoder's:
+  `EncodeDuplicateBlockUuid` / `EncodeDuplicateTrashUuid` /
+  `EncodeVectorClockDuplicateDevice`. Same ruling #586 took one slice earlier
+  for the map-key twin — "the bytes you gave me repeat a uuid" and "the value
+  you asked me to encode repeats one" are different events, and collapsing
+  them would leave a caller unable to tell a corrupt file from a malformed
+  in-memory manifest.
+- **`recipients` is still the exception, on both sides.** Four rules, not
+  five. Three Rust tests (one of them the pre-existing decoder test), the
+  corpus row, and a Python writer case all red if someone folds it in —
+  each verified by mutation. The corpus row needs its own run to see:
+  a `cargo test --lib <filter> --test <name>` positional filter applies to
+  BOTH targets, so a lib-shaped filter silently runs zero integration
+  tests.
+- **No fixture was regenerated, and that is the load-bearing evidence.**
+  `encode_manifest` can no longer build the corpus's four rejecting bodies,
+  so they are now built by post-hoc `ciborium` surgery — and every row's
+  bytes are byte-identical to the ones #594 generated, which
+  `manifest_uniqueness_kat_replays`'s rebuild-and-compare asserts against the
+  committed JSON on every run. `git diff main...HEAD -- core/tests/data/` and
+  `-- core/fuzz/seeds/` are both empty.
+- **Enforcing a rule in the ENCODER can make the READER's test vacuous, and
+  it did (#608 review).** `py_decode_manifest` re-encodes through
+  `py_encode_manifest` for the §4.3 step-4 comparison, so the moment that
+  encoder enforced §4.2 it began BACKSTOPPING the reader: delete the
+  decoder's distinctness check and the body is still rejected — by the
+  encoder, with a message containing every fragment Section MUQ's reader
+  assertion looked for. Measured both ways: at #600's merge-base the mutated
+  reader ACCEPTED and MUQ failed all four rows; with #600 and before the fix
+  MUQ passed all four. The discriminator is
+  `manifest_encode.ENCODER_REFUSAL_PREFIX` (`"cannot encode:"`), which lives
+  beside the code that emits it so the two cannot drift: MUQ's reader half
+  **rejects** that prefix, its writer half **requires** it. The Rust side was
+  never exposed — it asserts `Verdict::Reject`'s `decode` and `encode`
+  predicates separately, so a backstop cannot satisfy a decode assertion.
+  **Generalise this**: whenever a check is added to one direction of a
+  round-trip, ask what the OTHER direction's tests would still catch.
+- **A two-sided property needs a fixture at each end (#608 review).** Every
+  `vector_clock_summary` fixture in this tree planted its repeat in
+  `blocks[1]`, deliberately, to catch a writer scoped to `blocks[0]` — and
+  nothing caught the mirror image. `for block in m.blocks.iter().skip(1)`
+  passed the ENTIRE workspace (2081 tests) and `conformance.py` 25/25;
+  the Python `[1:]` equivalent likewise. Both ends are now planted, in both
+  languages.
+- **`Case`'s verdict is one enum, not a `bool` plus two `Option`s
+  (#608 review).** The old shape made two invalid states representable and
+  both were silent: a REJECT row with `expect_err: None` PASSED, degrading
+  to "rejected somehow" — the exact vacuity #599 had removed — and the
+  surgery-vs-encoder byte cross-check keyed on `expect_encode_err.is_none()`
+  rather than on acceptance, so one unrelated field could switch off the
+  corpus's only defence against `plant` drifting from `mutate`.
+  `Verdict::{Accept, Reject { decode, encode }}` makes both unrepresentable
+  and `accepts()` is derived.
+
 Three things about that corpus are load-bearing and were **not** true of its
 first version (all three found in the #599 review, all three measured rather
 than argued):
@@ -493,18 +582,20 @@ than argued):
   `ids[0] == ids[1]` check are the same function; with the nested rows all in
   `blocks[0]`, a reader checking only the first block was conformant against
   the corpus (`if i == 0:` around the Python check left the suite green).
-- **The generator depends on `encode_manifest` NOT validating uniqueness, and
-  that gap is #600 — not #586.** #586 was `CanonicalMap` accepting a duplicate
-  **map key**; closing it did not touch duplicate array **elements** and did
-  not make this generator fail. The file's module doc cited #586 and described
-  a regeneration tripwire that did not exist. **#586 is now closed in code**
-  (see the `CanonicalMap` paragraph below), and the uniqueness corpus was
-  measured green across the change — which is the distinction between the two
-  issues made by execution rather than by argument. Related:
-  §4.2's repeated-value paragraph is a **writer** MUST NOT as well as a reader
-  MUST, and `encode_manifest` does not enforce the writer half — so this
-  codebase's encoder is formally non-conformant with its own frozen spec until
-  #600 lands. That is disclosed, not overlooked.
+- **The generator no longer depends on `encode_manifest` declining to
+  validate uniqueness — #600 closed that, and the tripwire fired exactly as
+  the file's module doc predicted.** The doc had cited **#586** for it, which
+  was wrong in a way that mattered: #586 was `CanonicalMap` accepting a
+  duplicate **map key**, and closing it neither touched duplicate array
+  **elements** nor made this generator fail (measured green across that
+  change). #600 was the array-element twin, and closing *it* panicked
+  `encode_case` at its `encode_manifest` call in both the generator and the
+  replay's rebuild-and-compare. The bodies now come from `ciborium` surgery on
+  the encoded all-distinct baseline; `Case` keeps its `mutate` column to drive
+  the WRITER-side assertion and gains a `plant` column for the bytes, with the
+  two ACCEPT rows asserting that surgery and `encode_manifest` agree byte for
+  byte (the only cross-check possible — on a REJECT row the encoder produces
+  nothing to compare against).
 
 **`CanonicalMap` rejects duplicate map keys, at ONE choke point (#586).**
 `CanonicalMap` sorts its keys at serialise time and used to accept a

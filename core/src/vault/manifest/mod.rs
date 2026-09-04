@@ -64,6 +64,7 @@ mod error;
 mod file;
 mod header;
 mod types;
+mod uniqueness;
 
 #[cfg(test)]
 mod test_support;

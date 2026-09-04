@@ -136,7 +136,7 @@ SECTIONS: tuple[Section, ...] = (
     Section("MCK", "manifest_canonicality_kat.json §4.2 per-rule corpus replay",
             " (#583, #592)", section_manifest_canonicality_kat),
     Section("MUQ", "manifest_uniqueness_kat.json §4.2 repeated-value replay",
-            " (#594)", section_manifest_uniqueness_kat),
+            " (#594, #600)", section_manifest_uniqueness_kat),
     Section("RC", "record unknown-subtree canonicality, both nesting levels",
             " (#592)", section_record_unknown_subtree_canonicality),
     Section("DET", "required-key rejection determinism across hash seeds",

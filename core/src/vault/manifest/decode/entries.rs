@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 
+use crate::vault::manifest::uniqueness::{device_uuids, has_repeat};
 use crate::vault::record::UnknownValue;
 
 use crate::vault::manifest::{
@@ -38,12 +39,13 @@ pub(super) fn parse_vector_clock(
         out.push(parse_vector_clock_entry(item)?);
     }
     // Reject duplicate device_uuids in either of the two vector_clock
-    // arrays. Sort a copy of the device_uuids and check adjacent equality
-    // — O(n log n) and avoids allocating a HashSet for what is typically
-    // a handful of entries.
-    let mut ids: Vec<[u8; UUID_LEN]> = out.iter().map(|e| e.device_uuid).collect();
-    ids.sort();
-    if ids.windows(2).any(|w| w[0] == w[1]) {
+    // arrays (§4.2). The scan itself lives in `manifest::uniqueness`,
+    // shared with the WRITER: `encode_manifest` enforces the same rule
+    // as of #600, and this was one of three hand-copies of it. Sharing
+    // is what stops the two directions drifting — which is exactly what
+    // #600 was, and what #594 had already had to repair once between
+    // this decoder and the clean-room one.
+    if has_repeat(device_uuids(&out)) {
         return Err(ManifestError::VectorClockDuplicateDevice);
     }
     Ok(out)
@@ -128,9 +130,7 @@ pub(super) fn parse_blocks(v: &Value) -> Result<Vec<BlockEntry>, ManifestError> 
     for item in items {
         out.push(parse_block_entry(item)?);
     }
-    let mut ids: Vec<[u8; UUID_LEN]> = out.iter().map(|b| b.block_uuid).collect();
-    ids.sort();
-    if ids.windows(2).any(|w| w[0] == w[1]) {
+    if has_repeat(out.iter().map(|b| b.block_uuid).collect()) {
         return Err(ManifestError::DuplicateBlockUuid);
     }
     Ok(out)
@@ -328,9 +328,7 @@ pub(super) fn parse_trash(v: &Value) -> Result<Vec<TrashEntry>, ManifestError> {
         .iter()
         .map(parse_trash_entry)
         .collect::<Result<_, _>>()?;
-    let mut ids: Vec<[u8; UUID_LEN]> = out.iter().map(|t| t.block_uuid).collect();
-    ids.sort();
-    if ids.windows(2).any(|w| w[0] == w[1]) {
+    if has_repeat(out.iter().map(|t| t.block_uuid).collect()) {
         return Err(ManifestError::DuplicateTrashUuid);
     }
     Ok(out)

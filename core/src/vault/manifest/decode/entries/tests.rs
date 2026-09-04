@@ -3,11 +3,20 @@
 //! Moved verbatim out of the pre-split `manifest/tests.rs` (#564); shared
 //! fixtures live in [`crate::vault::manifest::test_support`].
 //!
-//! Each test below pins one array parser's duplicate-key rejection and
-//! also drives `encode::encode_manifest` and `decode::decode_manifest` to
-//! get its hand-built duplicate onto the wire.
+//! Each test below pins one array parser's duplicate-key rejection.
+//!
+//! **The three duplicate-VALUE tests build their bodies by surgery, not
+//! by the encoder (#600).** They used to hand `encode_manifest` a
+//! `Manifest` carrying the repeat, which worked only while the encoder
+//! declined to enforce §4.2's writer half — the defect #600 closed. They
+//! now encode a CONFORMANT manifest and plant the repeat in the bytes
+//! with [`copy_entry_field`], which is how such a body would actually
+//! reach a reader: off a disk or a peer, never out of this crate's own
+//! encoder.
 
-use crate::vault::manifest::test_support::{dummy_kdf_params, expect_rejected, unexpected};
+use crate::vault::manifest::test_support::{
+    copy_entry_field, dummy_kdf_params, expect_rejected, unexpected, BodyArray,
+};
 use crate::vault::manifest::{
     decode_manifest, encode_manifest, Manifest, FORMAT_VERSION_V1, MANIFEST_VERSION_V1, SUITE_ID_V1,
 };
@@ -16,13 +25,10 @@ use super::*;
 
 #[test]
 fn rejects_duplicate_device_uuid_in_vector_clock() {
-    // Hand-build a manifest with two vector_clock entries sharing the
-    // same device_uuid. We can NOT rely on encode_manifest to produce
-    // duplicates (the input already needs to have them and the encode
-    // path doesn't dedupe — but the canonical sort doesn't either).
-    // The simplest path: just build the duplicate input, then invoke
-    // encode_manifest and decode it.
-    let dupe_dev = [0x33; UUID_LEN];
+    // Two DISTINCT vector_clock entries, encoded conformantly, then the
+    // repeat planted in the bytes: `encode_manifest` refuses to emit one
+    // itself (#600), and a fixture only a non-conformant writer could
+    // produce is the wrong fixture for a reader test anyway.
     let m = Manifest {
         manifest_version: MANIFEST_VERSION_V1,
         vault_uuid: [0x01; UUID_LEN],
@@ -31,11 +37,11 @@ fn rejects_duplicate_device_uuid_in_vector_clock() {
         owner_user_uuid: [0x02; UUID_LEN],
         vector_clock: vec![
             VectorClockEntry {
-                device_uuid: dupe_dev,
+                device_uuid: [0x33; UUID_LEN],
                 counter: 1,
             },
             VectorClockEntry {
-                device_uuid: dupe_dev,
+                device_uuid: [0x34; UUID_LEN],
                 counter: 2,
             },
         ],
@@ -44,9 +50,16 @@ fn rejects_duplicate_device_uuid_in_vector_clock() {
         kdf_params: dummy_kdf_params(),
         unknown: BTreeMap::new(),
     };
-    let bytes = encode_manifest(&m).expect("encode duplicates");
+    let conformant = encode_manifest(&m).expect("the distinct manifest encodes");
+    let bytes = copy_entry_field(
+        conformant.expose(),
+        BodyArray::Top("vector_clock"),
+        0,
+        1,
+        "device_uuid",
+    );
     let err = expect_rejected(
-        decode_manifest(bytes.expose()),
+        decode_manifest(&bytes),
         "duplicate device_uuid must be rejected on decode",
     );
     assert!(
@@ -57,9 +70,9 @@ fn rejects_duplicate_device_uuid_in_vector_clock() {
 
 #[test]
 fn rejects_duplicate_block_uuid() {
-    let dupe = [0x77; UUID_LEN];
+    // Distinct on the wire, repeated by surgery -- see the module doc.
     let make_block = |suffix: u8| BlockEntry {
-        block_uuid: dupe,
+        block_uuid: [0x76 + suffix; UUID_LEN],
         block_name: format!("blk-{suffix}"),
         fingerprint: [suffix; BLOCK_FINGERPRINT_LEN],
         recipients: vec![[0xc1; UUID_LEN]],
@@ -81,9 +94,16 @@ fn rejects_duplicate_block_uuid() {
         kdf_params: dummy_kdf_params(),
         unknown: BTreeMap::new(),
     };
-    let bytes = encode_manifest(&m).expect("encode duplicates");
+    let conformant = encode_manifest(&m).expect("the distinct manifest encodes");
+    let bytes = copy_entry_field(
+        conformant.expose(),
+        BodyArray::Top("blocks"),
+        0,
+        1,
+        "block_uuid",
+    );
     let err = expect_rejected(
-        decode_manifest(bytes.expose()),
+        decode_manifest(&bytes),
         "duplicate block_uuid must be rejected on decode",
     );
     assert!(
@@ -98,9 +118,9 @@ fn rejects_duplicate_trash_uuid() {
     // (vault-format §7), so two trash entries sharing a block_uuid are
     // nonsensical — a sign of corruption or attack — and rejected on
     // decode, mirroring the `blocks` duplicate rule.
-    let dupe = [0x88; UUID_LEN];
+    // Distinct on the wire, repeated by surgery -- see the module doc.
     let make_trash = |suffix: u8| TrashEntry {
-        block_uuid: dupe,
+        block_uuid: [0x87 + suffix; UUID_LEN],
         tombstoned_at_ms: u64::from(suffix),
         tombstoned_by: [0xd1; UUID_LEN],
         fingerprint: Some([suffix; BLOCK_FINGERPRINT_LEN]),
@@ -119,9 +139,16 @@ fn rejects_duplicate_trash_uuid() {
         kdf_params: dummy_kdf_params(),
         unknown: BTreeMap::new(),
     };
-    let bytes = encode_manifest(&m).expect("encode duplicates");
+    let conformant = encode_manifest(&m).expect("the distinct manifest encodes");
+    let bytes = copy_entry_field(
+        conformant.expose(),
+        BodyArray::Top("trash"),
+        0,
+        1,
+        "block_uuid",
+    );
     let err = expect_rejected(
-        decode_manifest(bytes.expose()),
+        decode_manifest(&bytes),
         "duplicate trash block_uuid must be rejected on decode",
     );
     assert!(

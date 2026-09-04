@@ -10,11 +10,31 @@ SORTED and must CONTAIN a repeat, and the rejection MESSAGE must name the
 repeated-value rule. Sortedness and distinctness are independent -- `[x, x]`
 is sorted -- so a row that is sorted and repeating cannot be rejected by the
 sort discipline; asserting the message is what rules out the ~30 OTHER ways
-this decoder can reject a body (shape, required-key, outer canonicality, the
-§4.3 step-4 re-encode). Without both halves, a corpus whose rows happened to
-be out of order, or malformed in some unrelated way, would pass here against
-a reader that implements no distinctness check at all -- which is exactly
-the reader `py_decode_manifest` was until #594.
+this decoder can reject a body (shape, required-key, outer canonicality) --
+and asserting that the message is NOT the encoder's rules out the §4.3
+step-4 re-encode, which since #600 enforces this very rule and would
+otherwise answer for the reader. Without all of that, a corpus whose rows
+happened to be out of order, or malformed in some unrelated way, would pass
+here against a reader that implements no distinctness check at all -- which
+is exactly the reader `py_decode_manifest` was until #594.
+
+Since #600 it also carries the WRITER half. §4.2 states the rule in both
+directions -- "writers MUST NOT emit them and readers MUST reject them" --
+and neither this package's `py_encode_manifest` nor `core`'s
+`encode_manifest` enforced it, so both could emit a body their own decoders
+refuse. Those cases cannot be corpus rows by construction (a body the
+writer must refuse is one the writer cannot produce), so they are driven
+off the control row's decoded manifest instead; see `_WRITER_CASES`.
+
+**That writer half also created a way for the reader half to go vacuous, and
+closing it is what `ENCODER_REFUSAL_PREFIX` is for.** `py_decode_manifest` re-encodes
+through `py_encode_manifest` for the §4.3 step-4 comparison, so once the
+encoder enforces §4.2 it BACKSTOPS the reader: delete the decoder's
+distinctness check and the body is still rejected, by the encoder, with a
+message carrying every fragment the assertion below looks for. The message
+assertion alone therefore stopped discriminating the moment the writer half
+landed. Each half now also checks WHICH implementation spoke -- the reader
+half rejects the encoder's prefix, the writer half requires it.
 """
 
 from __future__ import annotations
@@ -22,8 +42,14 @@ from __future__ import annotations
 from typing import Callable
 
 from conformance_lib.codec.manifest_decode import py_decode_manifest
+from conformance_lib.codec.manifest_encode import ENCODER_REFUSAL_PREFIX
 from conformance_lib.fixtures import load_json_fixture, manifest_uniqueness_kat_path
 from conformance_lib.rejection import _REJECTION_EXCEPTIONS
+from conformance_lib.sections.manifest_uniqueness_writer import (
+    _WRITER_CASES,
+    _shared_helper_issues,
+    _writer_half_issues,
+)
 
 # Where each rejecting row plants its repeat, as an extractor over the
 # loosely-decoded body, plus the fragment its rejection message must carry.
@@ -72,8 +98,6 @@ _CONTROL_ROW = "control__all_distinct"
 _RECIPIENTS_BLOCK = 1
 
 _EXPECTED_LABELS = frozenset(_REPEAT_POSITIONS) | {_RECIPIENTS_ROW, _CONTROL_ROW}
-
-
 def _all_arrays(body: dict) -> list[tuple[str, list]]:
     """Every array §4.2 names, across EVERY block -- for the control row.
 
@@ -129,13 +153,21 @@ def section_manifest_uniqueness_kat() -> tuple[bool, list[str]]:
        proof of it: what it establishes is agreement on these six bodies.
     2. Each of the four rejecting rows is SORTED at the position it plants
        its repeat, does contain that repeat, and is rejected by a message
-       NAMING that repeat. Sortedness rules out the sort discipline as the
-       cause; the message rules out every other check in the reader. A
-       `_check_sorted_and_distinct` reduced to its sortedness half fails
-       all three.
+       NAMING that repeat and NOT carrying the encoder's `cannot encode:`
+       prefix. Sortedness rules out the sort discipline as the cause; the
+       message rules out every other check in the reader; the prefix rules
+       out the §4.3 step-4 re-encode answering on the reader's behalf. A
+       `_check_sorted_and_distinct` reduced to its sortedness half is
+       caught by the prefix arm -- and by nothing else, since the encoder
+       still rejects the body and its message still names the repeat
+       (#608 review, measured in both directions).
     3. The two accepting rows are what they claim: the `recipients` row
        carries a real repeat (so §4.2's exception is exercised rather than
        assumed), and the control carries none in any array of any block.
+
+    4. The WRITER applies the same four rules and the same exception
+       (#600), asserted against the control row's decoded manifest rather
+       than against fixture bytes -- see `_WRITER_CASES`.
 
     §4.3 step 4's re-encode cannot see any of this. A body carrying
     `[x, x]` parses to `[x, x]` and re-encodes to `[x, x]` byte for byte,
@@ -218,7 +250,20 @@ def section_manifest_uniqueness_kat() -> tuple[bool, list[str]]:
                         f"row {label!r}: {where} carries no repeated value, so the row "
                         "does not exercise the rule it is named for"
                     )
-                if want not in detail:
+                if detail.startswith(ENCODER_REFUSAL_PREFIX):
+                    # The backstop, caught explicitly rather than by the
+                    # substring test below -- which cannot see it, because
+                    # the encoder's message CONTAINS `want`. See
+                    # `ENCODER_REFUSAL_PREFIX`.
+                    issues.append(
+                        f"row {label!r}: the rejection came from the ENCODER, not the "
+                        f"reader ({detail!r}). `py_decode_manifest`'s §4.3 step-4 "
+                        "re-encode runs `py_encode_manifest`, which enforces the same "
+                        "§4.2 rule since #600, so it backstops a reader whose "
+                        "distinctness check is missing -- this row proves nothing about "
+                        "the READER until the reader rejects it first"
+                    )
+                elif want not in detail:
                     issues.append(
                         f"row {label!r}: rejected, but not by the repeated-value rule -- "
                         f"expected a message naming {want!r}, got {detail!r}"
@@ -263,12 +308,33 @@ def section_manifest_uniqueness_kat() -> tuple[bool, list[str]]:
             )
             continue
 
+    # The WRITER half of the same rules (#600), driven off the control row.
+    control = next((r for r in rows if r["label"] == _CONTROL_ROW), None)
+    if control is None:
+        # Label-set equality above reports the missing row; say explicitly
+        # that the writer cases did not run, so a reader of the output does
+        # not read their silence as a pass.
+        issues.append(
+            f"writer half: SKIPPED -- the corpus has no {_CONTROL_ROW!r} row to "
+            "build the writer cases from"
+        )
+    else:
+        issues.extend(_writer_half_issues(bytes.fromhex(control["manifest_body_hex"])))
+
+    # The rule both halves share, pinned directly: neither of its call
+    # sites can reach its sort.
+    issues.extend(_shared_helper_issues())
+
     if issues:
         return False, issues
     return True, [
         f"PASS  manifest uniqueness corpus: {len(rows)} rows replayed "
         f"({n_accept} accept / {n_reject} reject); all {len(_REPEAT_POSITIONS)} "
-        "rejecting rows are sorted-with-a-repeat and rejected by a message naming "
-        "the repeat, so neither the sort discipline nor any other check can "
-        "account for them"
+        "rejecting rows are sorted-with-a-repeat and rejected by the READER with a "
+        "message naming the repeat and free of the encoder's prefix, so neither the "
+        "sort discipline, nor the step-4 re-encode, nor any other check can account "
+        "for them",
+        f"PASS  §4.2 writer half: {len(_WRITER_CASES)} cases -- the encoder refuses "
+        f"all {sum(1 for c in _WRITER_CASES if c[2] is not None)} forbidden repeats "
+        "by name and still emits the recipients exception",
     ]
