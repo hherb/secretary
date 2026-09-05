@@ -99,6 +99,13 @@ There are exactly three valid output shapes:
   Rust error class. The differential check accepts any `(Err, Err)`
   pair as agreement (see `differential_replay.rs::differential_replay_full_corpus`
   the comment around `// Both reject → agreement`).
+- Because it is `type(e).__name__`, the token WIDENS whenever a new
+  exception subclass is introduced. #604 added
+  `codec/scanner.py`'s `NonCanonicalItem(ValueError)`, so every
+  crypto-design §6.2 rule-2/3/4 rejection now reports
+  `"NonCanonicalItem"` where it reported `"ValueError"` before. Nothing
+  compares the token, so no gate moved — recorded here because a
+  protocol-observable change should not be inferred from a diff.
 - This looseness is **intentional but temporary**: when we standardise
   error taxonomies between the two implementations, we'll tighten the
   comparison. Until then, prefer descriptive class names — the

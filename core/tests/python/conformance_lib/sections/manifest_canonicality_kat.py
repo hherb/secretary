@@ -75,7 +75,20 @@ def section_manifest_canonicality_kat() -> tuple[bool, list[str]]:
 
     divergences: list[str] = []
     for row in rows:
-        label, body = row["label"], bytes.fromhex(row["manifest_body_hex"])
+        label = row["label"]
+        # A malformed fixture must produce a FAIL line, not a traceback out
+        # of `main()`. This section runs before MCC, MUQ, RC, DET and REG,
+        # so an escaping `ValueError` here silently skips all five --
+        # including REG, which is what proves the registry is complete
+        # (#614 review; MCC's own copy of this hazard was fixed with it).
+        try:
+            body = bytes.fromhex(row["manifest_body_hex"])
+        except (TypeError, ValueError) as e:
+            issues.append(
+                f"row {label!r}: manifest_body_hex is not valid hex -- this is a "
+                f"FIXTURE defect, not a decoder verdict: {e}"
+            )
+            continue
         expected = row["expect_accept"]
 
         try:

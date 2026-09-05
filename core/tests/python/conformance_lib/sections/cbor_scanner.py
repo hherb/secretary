@@ -6,7 +6,12 @@ forward-compat `unknown` subtree path depends on.
 
 from __future__ import annotations
 
-from conformance_lib.codec.scanner import _check_canonical_item, _scan_item, _scan_map_entries
+from conformance_lib.codec.scanner import (
+    NonCanonicalItem,
+    _check_canonical_item,
+    _scan_item,
+    _scan_map_entries,
+)
 
 def section_cbor_scanner_units() -> tuple[bool, list[str]]:
     """Unit coverage for the span-recording CBOR scanner (§4.2 support).
@@ -58,6 +63,19 @@ def section_cbor_scanner_units() -> tuple[bool, list[str]]:
     except ValueError:
         pass
 
+    # `NonCanonicalItem`'s base class is a cross-cutting contract, and
+    # nothing tested it: `conformance_lib.rejection`'s allowlist and
+    # `diff_replay.py`'s reject-vs-error split both key on `ValueError`.
+    # Dropping the base aborts the whole run at this section with a raw
+    # traceback and no `FAIL:` line, taking all 14 later sections with it --
+    # MCK, MCC, MUQ, RC, DET and REG among them (#614 review).
+    if not issubclass(NonCanonicalItem, ValueError):
+        issues.append(
+            "NonCanonicalItem must subclass ValueError -- conformance_lib.rejection's "
+            "allowlist and diff_replay's reject/error split both key on it, so losing "
+            "the base reclassifies every scanner rejection as a harness failure"
+        )
+
     # --- THE point: duplicates and wire order survive the scan
     dup = bytes([0xA2, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02])   # {"a":1,"a":2}
     entries, end = _scan_map_entries(dup, 0)
@@ -80,39 +98,69 @@ def section_cbor_scanner_units() -> tuple[bool, list[str]]:
         except ValueError as e:
             issues.append(f"{label} must be ACCEPTED inside an unknown subtree, got: {e}")
 
-    for label, raw in [
-        ("rule 2 indefinite map", bytes([0xBF, 0x61, 0x61, 0x01, 0xFF])),
-        ("rule 2 indefinite tstr", bytes([0xA1, 0x61, 0x61, 0x7F, 0x61, 0x78, 0xFF])),
-        ("rule 2 indefinite bstr", bytes([0xA1, 0x61, 0x61, 0x5F, 0x41, 0xAA, 0xFF])),
-        ("rule 2 indefinite array", bytes([0xA1, 0x61, 0x61, 0x9F, 0x01, 0xFF])),
-        ("rule 3 non-shortest int", bytes([0xA1, 0x61, 0x61, 0x18, 0x01])),
-        ("rule 3 non-shortest map length", bytes([0xB8, 0x01, 0x61, 0x61, 0x01])),
-        ("rule 4 float", cbor2.dumps({"a": 1.5})),
-        ("rule 4 tag", cbor2.dumps(cbor2.CBORTag(24, b"x"))),
+    # Each row carries the §4.2-table rule number it must report, or
+    # `None` for the four properties that carry no number. Before #614's
+    # review this loop asserted only "some ValueError" while every label
+    # already spelled its rule out, so the numbers were prose: demoting
+    # `NonCanonicalItem(4, "CBOR tag")` to rule 2 left the ENTIRE suite at
+    # exit 0 with all 26 sections green. Four of these shapes -- both
+    # indefinite tstr/bstr/array rows and the non-shortest map length --
+    # appear in no corpus, so this is the only place their rule number is
+    # pinned at all.
+    for label, raw, want_rule in [
+        ("rule 2 indefinite map", bytes([0xBF, 0x61, 0x61, 0x01, 0xFF]), 2),
+        (
+            "rule 2 indefinite tstr",
+            bytes([0xA1, 0x61, 0x61, 0x7F, 0x61, 0x78, 0xFF]),
+            2,
+        ),
+        (
+            "rule 2 indefinite bstr",
+            bytes([0xA1, 0x61, 0x61, 0x5F, 0x41, 0xAA, 0xFF]),
+            2,
+        ),
+        ("rule 2 indefinite array", bytes([0xA1, 0x61, 0x61, 0x9F, 0x01, 0xFF]), 2),
+        ("rule 3 non-shortest int", bytes([0xA1, 0x61, 0x61, 0x18, 0x01]), 3),
+        ("rule 3 non-shortest map length", bytes([0xB8, 0x01, 0x61, 0x61, 0x01]), 3),
+        ("rule 4 float", cbor2.dumps({"a": 1.5}), 4),
+        ("rule 4 tag", cbor2.dumps(cbor2.CBORTag(24, b"x")), 4),
         # 0x63 = major 3 (tstr), length 3 -- but only 2 bytes follow. An
         # oversized length claim must not silently return a bogus
         # out-of-buffer offset (the bug Finding 1 fixed).
-        ("bounds-check truncated tstr", bytes([0x63, 0x61, 0x62])),
+        ("bounds-check truncated tstr", bytes([0x63, 0x61, 0x62]), None),
         # 0x61 = major 3 (tstr), length 1; 0xFF is never a valid standalone
         # UTF-8 byte (RFC 3629) -- regression pin for Finding A: this used
         # to reach `cbor2.loads`, which raised on it, before this scanner
         # took over the `unknown`-subtree path and stopped checking it.
-        ("invalid-UTF-8 text string", bytes([0x61, 0xFF])),
+        ("invalid-UTF-8 text string", bytes([0x61, 0xFF]), None),
         # 0xF8 0x14 = major 7 (simple value), ai=24 (one-byte argument
         # follows), argument byte 0x14 = 20 -- the extended-form, redundant
         # re-encoding of `false` (canonical form is the single byte 0xF4).
         # Regression pin for Finding B.
-        ("non-canonical extended-form false (0xF8 0x14)", bytes([0xF8, 0x14])),
+        ("non-canonical extended-form false (0xF8 0x14)", bytes([0xF8, 0x14]), None),
         # 0xF7 = major 7, ai=23 = "undefined". An ordinary CBOR item a
         # future writer could emit; Rust's major-7 value space is limited
         # to false/true/null. Pin for Finding B.
-        ("major-7 undefined (0xF7)", bytes([0xF7])),
+        ("major-7 undefined (0xF7)", bytes([0xF7]), None),
     ]:
         try:
             _check_canonical_item(raw, 0)
             issues.append(f"{label} must be REJECTED, was accepted")
-        except ValueError:
-            pass
+        except NonCanonicalItem as e:
+            if want_rule is None:
+                issues.append(
+                    f"{label} carries no §6.2/§4.2 rule number, but was raised as "
+                    f"NonCanonicalItem(rule={e.rule}) -- only the five numbered-rule "
+                    "checks may use that type"
+                )
+            elif e.rule != want_rule:
+                issues.append(f"{label}: expected rule {want_rule}, got {e.rule}: {e}")
+        except ValueError as e:
+            if want_rule is not None:
+                issues.append(
+                    f"{label}: expected NonCanonicalItem(rule={want_rule}), got a "
+                    f"non-numbered {type(e).__name__}: {e}"
+                )
 
     # --- Positive controls for the major-7 restriction above: false/true/
     # --- null must each still be ACCEPTED, so the restriction added for
