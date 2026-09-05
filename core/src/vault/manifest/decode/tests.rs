@@ -24,6 +24,13 @@ use crate::vault::manifest::{
 
 use super::*;
 
+// `UnknownValue` used to reach this module through `use super::*`, because the
+// parser above declared its `unknown` bag as a bare
+// `BTreeMap<String, UnknownValue>`. #589 moved that behind
+// `slot::UnknownBag`, so the parent no longer imports it and this module,
+// which still builds expected bags by hand, imports it directly.
+use crate::vault::record::UnknownValue;
+
 // ---- Decode wipes its parsed tree (#547 Task 7b) ----------------------
 //
 // Both also drive `encode_manifest` to build their input; the wipe
@@ -301,15 +308,19 @@ fn a_manifest_with_a_repeated_key_is_rejected() {
         other => panic!("expected a map, got {other:?}"),
     };
 
-    // EVERY known key, not just whichever sorts first. The check is now
-    // per-`Option`-slot — nine independent `if slot.is_some()` arms
-    // rather than the single shared `BTreeSet` lookup the first version
-    // used — so a test that duplicates only `entries[0]` pins exactly
-    // one of the nine and leaves eight deletable with the suite green.
-    // That is the "nothing would notice if it were removed" failure this
-    // whole slice exists to close, so the sweep is the point (#575
-    // review). Mutation-verified: neutering any single arm reds this
-    // test.
+    // EVERY known key, not just whichever sorts first. The check is
+    // per-SLOT — nine independent `Once` slots rather than the single
+    // shared `BTreeSet` lookup the first version used — so a test that
+    // duplicates only `entries[0]` pins exactly one of the nine and
+    // leaves eight deletable with the suite green. That is the "nothing
+    // would notice if it were removed" failure this whole sweep exists
+    // to close (#575 review).
+    //
+    // Since #589 the nine arms share ONE implementation (`Once::set`),
+    // so a per-arm mutation is no longer expressible and the sweep's
+    // value has shifted: it now pins that each arm passes its OWN `KEY_*`
+    // constant to `set`, which a shared implementation cannot enforce.
+    // The rejection itself is mutation-verified in `slot::tests`.
     assert_eq!(
         entries.len(),
         9,
@@ -348,9 +359,9 @@ fn a_manifest_with_a_repeated_key_is_rejected() {
     }
 }
 
-/// The unknown-key arm has its own duplicate check — `BTreeMap::insert`'s
-/// previous-value return, not an `Option` slot — so it needs its own
-/// test (#575 review). `field` is the literal `"<unknown>"`: the
+/// The unknown-key arm has its own duplicate check — `UnknownBag::insert`,
+/// over `BTreeMap::insert`'s previous-value return, rather than a `Once`
+/// slot — so it needs its own test (#575 review). `field` is the literal `"<unknown>"`: the
 /// repeated key here is attacker-influenced forward-compat text from
 /// inside the encrypted manifest, and carrying it would be exactly the
 /// #474 leak class.
@@ -1136,5 +1147,41 @@ fn unknown_subtree_tolerates_key_order_and_duplicates_but_not_encoding() {
         decode_manifest(&splice(repl)).unwrap_or_else(|e| {
             panic!("{what} inside an unknown subtree must still decode, got {e:?}")
         });
+    }
+}
+
+/// The top-level map has the same ordering property the four nested
+/// parsers do: a duplicate key is reported even when the second copy is
+/// MALFORMED, because the vacancy check precedes the fill.
+///
+/// The nested half of this property lives in
+/// [`entries::tests::a_duplicate_key_outranks_a_malformed_second_copy`](super::entries);
+/// both exist because #589 replaced 31 hand-copied `is_some()` guards with
+/// [`slot::Once`](super::slot), whose `set` takes a CLOSURE precisely so
+/// the fill cannot run on an occupied slot. An eager parameter would flip
+/// this rejection to `WrongType` — a real behaviour change to a v1-frozen
+/// decoder that no pre-#589 test could see, since every duplicate fixture
+/// in the tree repeats a well-typed pair.
+#[test]
+fn top_level_duplicate_key_outranks_a_malformed_second_copy() {
+    let bytes = encode_manifest(&minimal_manifest()).expect("encode");
+    let mut entries = parse_to_value_map(bytes.expose());
+    let repeat_index = entries.len();
+    // A text string where §4.2 requires a 16-byte string: reaching the
+    // fill at all would yield `WrongType`.
+    entries.push((
+        Value::Text(KEY_VAULT_UUID.into()),
+        Value::Text("not a uuid".into()),
+    ));
+
+    match parse_manifest_map(&entries) {
+        Err(ManifestError::DuplicateKey { field, index }) => {
+            assert_eq!(field, KEY_VAULT_UUID, "must name the repeated key");
+            assert_eq!(index, repeat_index, "must report the ordinal of the repeat");
+        }
+        other => panic!(
+            "a duplicate key must outrank the malformed second copy, got {}",
+            unexpected(&other)
+        ),
     }
 }

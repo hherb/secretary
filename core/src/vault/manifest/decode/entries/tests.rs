@@ -23,6 +23,13 @@ use crate::vault::manifest::{
 
 use super::*;
 
+// `BTreeMap` used to reach this module through `use super::*`, because the
+// parser above declared its `unknown` bag as a bare
+// `BTreeMap<String, UnknownValue>`. #589 moved that behind
+// `slot::UnknownBag`, so the parent no longer imports it and this module,
+// which still builds expected bags by hand, imports it directly.
+use std::collections::BTreeMap;
+
 #[test]
 fn rejects_duplicate_device_uuid_in_vector_clock() {
     // Two DISTINCT vector_clock entries, encoded conformantly, then the
@@ -578,5 +585,120 @@ fn accepts_duplicate_contact_uuid_in_recipients() {
         decoded.blocks[0].recipients,
         vec![dupe_recipient, dupe_recipient],
         "the repeat must round-trip verbatim, not be silently deduplicated"
+    );
+}
+
+/// A duplicate key is reported even when the second copy is MALFORMED.
+///
+/// Every fixture above repeats a well-typed pair, so none of them can see
+/// the ordering this test pins: the vacancy check runs *before* the second
+/// copy is parsed. That ordering was an accident of how the guards were
+/// hand-written (`if slot.is_some() { .. }` preceding
+/// `slot = Some(take_*(..)?)`), and #589's slot type preserves it
+/// deliberately — [`Once::set`] takes a closure precisely so the fill
+/// cannot run once the slot is known to be occupied.
+///
+/// Without this test an eager `set(field, index, take_u64(v, KEY)?)` would
+/// flip these four rejections from `DuplicateKey` to `WrongType`, changing
+/// what a v1-frozen decoder reports for a real input class, with the whole
+/// suite green.
+///
+/// One case per nested parser, each repeating a key whose second copy is a
+/// text string where the spec requires bytes or an integer.
+#[test]
+fn a_duplicate_key_outranks_a_malformed_second_copy() {
+    /// A `Value::Text` is the wrong CBOR type for every key exercised
+    /// below, so reaching the fill at all yields `WrongType`.
+    fn malformed() -> Value {
+        Value::Text("not the type this key requires".into())
+    }
+
+    /// `entry` with `(repeated, <malformed>)` appended.
+    fn with_malformed_repeat(entry: &Value, repeated: &'static str) -> Value {
+        let Value::Map(entries) = entry else {
+            panic!("expected a map, got {entry:?}");
+        };
+        assert!(
+            entries
+                .iter()
+                .any(|(k, _)| matches!(k, Value::Text(s) if s == repeated)),
+            "{repeated} must already be present for the append to be a REPEAT"
+        );
+        let mut entries = entries.clone();
+        entries.push((Value::Text(repeated.into()), malformed()));
+        Value::Map(entries)
+    }
+
+    // Each case is (parser name, the parse call, the repeated key). The
+    // parsers have different return types, so each runs its own match
+    // rather than sharing a loop over boxed closures.
+    macro_rules! assert_duplicate_wins {
+        ($parsed:expr, $repeated:expr, $what:literal) => {
+            match $parsed {
+                Err(ManifestError::DuplicateKey { field, index }) => {
+                    assert_eq!(field, $repeated, "{} must name the repeated key", $what);
+                    assert_eq!(index, 2, "{} must report the ordinal of the repeat", $what);
+                }
+                other => panic!(
+                    "{}: a duplicate key must outrank the malformed second copy, got {}",
+                    $what,
+                    unexpected(&other)
+                ),
+            }
+        };
+    }
+
+    // `vector_clock` entry: two keys, so the repeat lands at index 2.
+    let vc = with_malformed_repeat(
+        &vector_clock_entry_value_with_duplicate(KEY_COUNTER),
+        KEY_COUNTER,
+    );
+    // That helper already appended a well-typed repeat, so strip it back
+    // to the two-key original before appending the malformed one.
+    let Value::Map(mut vc_entries) = vc else {
+        panic!("expected a map")
+    };
+    vc_entries.remove(2);
+    assert_duplicate_wins!(
+        parse_vector_clock_entry(&Value::Map(vc_entries)),
+        KEY_COUNTER,
+        "vector_clock entry"
+    );
+
+    // `kdf_params`: four keys; plant the repeat directly after the second
+    // so the index is 2 here too.
+    let Value::Map(kdf) = kdf_params_value_with_duplicate(KEY_MEMORY_KIB) else {
+        panic!("expected a map")
+    };
+    let mut kdf: Vec<(Value, Value)> = kdf.into_iter().take(2).collect();
+    kdf.push((Value::Text(KEY_MEMORY_KIB.into()), malformed()));
+    assert_duplicate_wins!(
+        parse_kdf_params(&Value::Map(kdf)),
+        KEY_MEMORY_KIB,
+        "kdf_params"
+    );
+
+    // `blocks` entry.
+    let Value::Map(block) = block_entry_value_with_duplicate(KEY_BLOCK_UUID) else {
+        panic!("expected a map")
+    };
+    let mut block: Vec<(Value, Value)> = block.into_iter().take(2).collect();
+    block.push((Value::Text(KEY_BLOCK_UUID.into()), malformed()));
+    assert_duplicate_wins!(
+        parse_block_entry(&Value::Map(block)),
+        KEY_BLOCK_UUID,
+        "block entry"
+    );
+
+    // `trash` entry.
+    let Value::Map(trash) = trash_entry_value_with_duplicate(KEY_BLOCK_UUID) else {
+        panic!("expected a map")
+    };
+    let mut trash: Vec<(Value, Value)> = trash.into_iter().take(2).collect();
+    trash.push((Value::Text(KEY_BLOCK_UUID.into()), malformed()));
+    assert_duplicate_wins!(
+        parse_trash_entry(&Value::Map(trash)),
+        KEY_BLOCK_UUID,
+        "trash entry"
     );
 }
