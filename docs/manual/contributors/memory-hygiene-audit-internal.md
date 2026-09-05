@@ -1073,7 +1073,7 @@ grepping every production (non-`#[cfg(test)]`) call site of
 | `record.rs` | `record::decode` (`record.rs:683`) | decode |
 | `block.rs` | `block::decode_plaintext` (`block.rs:1061`) | decode |
 | `unlock/bundle.rs` | `IdentityBundle::from_canonical_cbor` (`bundle.rs:398`, `SecretEntries`) | decode |
-| `manifest/` | `decode_manifest` (`manifest/decode/mod.rs:112`) | decode |
+| `manifest/` | `decode_manifest` (`manifest/decode/mod.rs`) | decode |
 
 **Line numbers refreshed 2026-08-29 (manifest-closeout slice), each by
 re-reading its enclosing function rather than by re-running a line-number
@@ -1107,7 +1107,8 @@ four production sites in the table above, one test-fixture call
 (`bundle.rs:1091`, `wipe_fixture()`, inside `#[cfg(test)] mod tests`), and
 five doc-comment mentions (`bundle.rs:1175`, `block.rs:2983`,
 `record.rs:2355`, `record.rs:2369`,
-`manifest/decode/tests.rs:88`). Anchored to the
+`manifest/decode/tests.rs`,
+`decode_manifest_wipes_its_parsed_tree_on_an_early_return`). Anchored to the
 shape a real construction site actually has — every production call binds
 its result to a local with `let` (`let parsed =
 SecretValueTree::new(parsed);` / `let mut map = SecretEntries::new(m);`),
@@ -1511,9 +1512,13 @@ it was judged out of this slice's scope rather than because it was missed:
   `parse_block_entry`, `parse_trash_entry`, `parse_kdf_params` — with no
   equivalent check of their own, tracked separately as #573;
   **#573 is now closed by the manifest-closeout slice**, which gave all
-  four the same rejection (`core/src/vault/manifest/decode/entries.rs`,
-  21 `DuplicateKey` construction sites, each keyed on a `KEY_*` constant
-  or the literal `"<unknown>"`)),
+  four the same rejection. That rejection was 21 `DuplicateKey`
+  construction sites in `core/src/vault/manifest/decode/entries.rs`, each
+  keyed on a `KEY_*` constant or the literal `"<unknown>"`, until #589
+  replaced all of them — with the top level's ten — by the single
+  construction site in `core/src/vault/manifest/decode/slot.rs`. There
+  are now ZERO in `entries.rs`; the rule is unchanged, its expression is
+  a type invariant),
   **#569** (`bundle.rs`, `manifest.rs` and `card.rs` encode paths still
   copy secrets into an owned `ciborium::Value` rather than borrowing
   through `CanonicalMap` — bundle's copies all four long-term secret keys
@@ -1567,7 +1572,7 @@ production call sites at the time of writing — `unlock/bundle.rs` (1),
 **That count is FIVE as of #569 path 2** (manifest-closeout slice), which
 deleted `unknown_value_inner` and with it the manifest module's
 encode-side re-parse; the surviving manifest site is
-`vault/manifest/decode/mod.rs:97`. Note that the grep the `scratch.rs`
+`vault/manifest/decode/mod.rs`. Note that the grep the `scratch.rs`
 doc comment names returns SIX rows against five call sites — the sixth
 row is that doc comment itself. Two call sites deliberately stay on
 plain `ciborium::de::from_reader`, each with a comment stating why its

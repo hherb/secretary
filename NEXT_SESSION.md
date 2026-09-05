@@ -1,1 +1,1 @@
-docs/handoffs/2026-09-04-canonicality-cause-shipped.md
+docs/handoffs/2026-09-05-decoder-slot-invariant-shipped.md

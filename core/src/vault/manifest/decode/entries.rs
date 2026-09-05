@@ -1,12 +1,9 @@
 //! Per-array / per-entry parsers for the manifest body
 //! (`docs/vault-format.md` §4.2).
 
-use std::collections::BTreeMap;
-
 use ciborium::Value;
 
 use crate::vault::manifest::uniqueness::{device_uuids, has_repeat};
-use crate::vault::record::UnknownValue;
 
 use crate::vault::manifest::{
     BlockEntry, KdfParamsRef, ManifestError, TrashEntry, VectorClockEntry, BLOCK_FINGERPRINT_LEN,
@@ -20,6 +17,7 @@ use crate::vault::manifest::{
 use super::extract::{
     take_fixed_bytes, take_text, take_text_key, take_u16, take_u32, take_u64, value_to_unknown,
 };
+use super::slot::{Once, UnknownBag};
 
 pub(super) fn parse_vector_clock(
     v: &Value,
@@ -61,35 +59,23 @@ fn parse_vector_clock_entry(v: &Value) -> Result<VectorClockEntry, ManifestError
             })
         }
     };
-    let mut device_uuid: Option<[u8; UUID_LEN]> = None;
-    let mut counter: Option<u64> = None;
+    let mut device_uuid: Once<[u8; UUID_LEN]> = Once::default();
+    let mut counter: Once<u64> = Once::default();
     // #573: reject a repeated key rather than last-wins, mirroring
-    // `parse_manifest_map`'s top-level check (#568). Written out per arm
-    // rather than factored into a helper/macro — see that function's own
-    // comment for why: every hygiene guard in this repo reads TEXT, not
-    // expanded macros, so an error construction inside a macro body is
-    // invisible to any future rule that inspects one.
+    // `parse_manifest_map`'s top-level check (#568). The rejection is a
+    // TYPE invariant since #589 — `Once`'s inner `Option` is private to
+    // `slot.rs`, so an arm cannot fill a slot except through `Once::set`
+    // — where it used to be a hand-copied `is_some()` guard per arm. The
+    // macro objection that kept them inline still holds and is satisfied
+    // by a helper TYPE: every hygiene guard in this repo reads TEXT, not
+    // expanded macros, and a function body is ordinary text.
     for (index, (k, val)) in entries.iter().enumerate() {
         let key = take_text_key(k)?;
         match key.as_str() {
-            KEY_DEVICE_UUID => {
-                if device_uuid.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_DEVICE_UUID,
-                        index,
-                    });
-                }
-                device_uuid = Some(take_fixed_bytes::<UUID_LEN>(val, KEY_DEVICE_UUID)?);
-            }
-            KEY_COUNTER => {
-                if counter.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_COUNTER,
-                        index,
-                    });
-                }
-                counter = Some(take_u64(val, KEY_COUNTER)?);
-            }
+            KEY_DEVICE_UUID => device_uuid.set(KEY_DEVICE_UUID, index, || {
+                take_fixed_bytes::<UUID_LEN>(val, KEY_DEVICE_UUID)
+            })?,
+            KEY_COUNTER => counter.set(KEY_COUNTER, index, || take_u64(val, KEY_COUNTER))?,
             // Vector clock entries don't carry an unknown bag in v1 —
             // they're a fixed two-field shape per §4.2. Unknown keys here
             // would be out of scope for the spec and must not be silently
@@ -109,10 +95,8 @@ fn parse_vector_clock_entry(v: &Value) -> Result<VectorClockEntry, ManifestError
         }
     }
     Ok(VectorClockEntry {
-        device_uuid: device_uuid.ok_or(ManifestError::MissingField {
-            field: KEY_DEVICE_UUID,
-        })?,
-        counter: counter.ok_or(ManifestError::MissingField { field: KEY_COUNTER })?,
+        device_uuid: device_uuid.require(KEY_DEVICE_UUID)?,
+        counter: counter.require(KEY_COUNTER)?,
     })
 }
 
@@ -146,43 +130,33 @@ fn parse_block_entry(v: &Value) -> Result<BlockEntry, ManifestError> {
             })
         }
     };
-    let mut block_uuid: Option<[u8; UUID_LEN]> = None;
-    let mut block_name: Option<String> = None;
-    let mut fingerprint: Option<[u8; BLOCK_FINGERPRINT_LEN]> = None;
-    let mut recipients: Option<Vec<[u8; UUID_LEN]>> = None;
-    let mut vector_clock_summary: Option<Vec<VectorClockEntry>> = None;
-    let mut suite_id: Option<u16> = None;
-    let mut created_at_ms: Option<u64> = None;
-    let mut last_mod_ms: Option<u64> = None;
-    let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
+    let mut block_uuid: Once<[u8; UUID_LEN]> = Once::default();
+    let mut block_name: Once<String> = Once::default();
+    let mut fingerprint: Once<[u8; BLOCK_FINGERPRINT_LEN]> = Once::default();
+    let mut recipients: Once<Vec<[u8; UUID_LEN]>> = Once::default();
+    let mut vector_clock_summary: Once<Vec<VectorClockEntry>> = Once::default();
+    let mut suite_id: Once<u16> = Once::default();
+    let mut created_at_ms: Once<u64> = Once::default();
+    let mut last_mod_ms: Once<u64> = Once::default();
+    let mut unknown = UnknownBag::default();
 
     // #573: reject a repeated key rather than last-wins, mirroring
-    // `parse_manifest_map`'s top-level check (#568). Written out per arm
-    // rather than factored into a helper/macro — see that function's own
-    // comment for why. The unknown-bag arm detects its duplicate via
-    // `BTreeMap::insert`'s own "previous value" return, same as the top
-    // level's unknown arm; `field` is the literal `"<unknown>"`, never the
-    // repeated key itself (#474 — that text is attacker-influenced content
-    // from inside the encrypted manifest).
+    // `parse_manifest_map`'s top-level check (#568). Since #589 the
+    // rejection is a TYPE invariant — see `parse_vector_clock_entry`'s
+    // comment. The unknown-bag arm routes through `UnknownBag::insert`,
+    // which still detects its duplicate via `BTreeMap::insert`'s own
+    // "previous value" return, same as the top level's unknown arm;
+    // `field` is `UNKNOWN_FIELD`, private to `slot.rs`, never the
+    // repeated key itself
+    // (#474 — that text is attacker-influenced content from inside the
+    // encrypted manifest).
     for (index, (k, val)) in entries.iter().enumerate() {
         let key = take_text_key(k)?;
         match key.as_str() {
-            KEY_BLOCK_UUID => {
-                if block_uuid.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_BLOCK_UUID,
-                        index,
-                    });
-                }
-                block_uuid = Some(take_fixed_bytes::<UUID_LEN>(val, KEY_BLOCK_UUID)?);
-            }
+            KEY_BLOCK_UUID => block_uuid.set(KEY_BLOCK_UUID, index, || {
+                take_fixed_bytes::<UUID_LEN>(val, KEY_BLOCK_UUID)
+            })?,
             KEY_BLOCK_NAME => {
-                if block_name.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_BLOCK_NAME,
-                        index,
-                    });
-                }
                 // #547 Task 7b: `block_name` is user-visible plaintext
                 // within the encrypted manifest (see the doc comment on
                 // `BlockEntry::block_name`) — the exact content this task
@@ -199,102 +173,40 @@ fn parse_block_entry(v: &Value) -> Result<BlockEntry, ManifestError> {
                 // additionally wiped — no regression, since a plain
                 // `String` destination was never wiped before this task
                 // either.
-                block_name = Some(take_text(val, KEY_BLOCK_NAME)?);
+                block_name.set(KEY_BLOCK_NAME, index, || take_text(val, KEY_BLOCK_NAME))?;
             }
-            KEY_FINGERPRINT => {
-                if fingerprint.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_FINGERPRINT,
-                        index,
-                    });
-                }
-                fingerprint = Some(take_fixed_bytes::<BLOCK_FINGERPRINT_LEN>(
-                    val,
-                    KEY_FINGERPRINT,
-                )?);
-            }
-            KEY_RECIPIENTS => {
-                if recipients.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_RECIPIENTS,
-                        index,
-                    });
-                }
-                recipients = Some(parse_recipients(val)?);
-            }
+            KEY_FINGERPRINT => fingerprint.set(KEY_FINGERPRINT, index, || {
+                take_fixed_bytes::<BLOCK_FINGERPRINT_LEN>(val, KEY_FINGERPRINT)
+            })?,
+            KEY_RECIPIENTS => recipients.set(KEY_RECIPIENTS, index, || parse_recipients(val))?,
             KEY_VECTOR_CLOCK_SUMMARY => {
-                if vector_clock_summary.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_VECTOR_CLOCK_SUMMARY,
-                        index,
-                    });
-                }
-                vector_clock_summary = Some(parse_vector_clock(val, KEY_VECTOR_CLOCK_SUMMARY)?);
+                vector_clock_summary.set(KEY_VECTOR_CLOCK_SUMMARY, index, || {
+                    parse_vector_clock(val, KEY_VECTOR_CLOCK_SUMMARY)
+                })?
             }
-            KEY_SUITE_ID => {
-                if suite_id.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_SUITE_ID,
-                        index,
-                    });
-                }
-                suite_id = Some(take_u16(val, KEY_SUITE_ID)?);
-            }
-            KEY_CREATED_AT_MS => {
-                if created_at_ms.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_CREATED_AT_MS,
-                        index,
-                    });
-                }
-                created_at_ms = Some(take_u64(val, KEY_CREATED_AT_MS)?);
-            }
+            KEY_SUITE_ID => suite_id.set(KEY_SUITE_ID, index, || take_u16(val, KEY_SUITE_ID))?,
+            KEY_CREATED_AT_MS => created_at_ms.set(KEY_CREATED_AT_MS, index, || {
+                take_u64(val, KEY_CREATED_AT_MS)
+            })?,
             KEY_LAST_MOD_MS => {
-                if last_mod_ms.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_LAST_MOD_MS,
-                        index,
-                    });
-                }
-                last_mod_ms = Some(take_u64(val, KEY_LAST_MOD_MS)?);
+                last_mod_ms.set(KEY_LAST_MOD_MS, index, || take_u64(val, KEY_LAST_MOD_MS))?
             }
             _ => {
-                if unknown.insert(key, value_to_unknown(val)?).is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: "<unknown>",
-                        index,
-                    });
-                }
+                unknown.insert(key, value_to_unknown(val)?, index)?;
             }
         }
     }
 
     Ok(BlockEntry {
-        block_uuid: block_uuid.ok_or(ManifestError::MissingField {
-            field: KEY_BLOCK_UUID,
-        })?,
-        block_name: block_name.ok_or(ManifestError::MissingField {
-            field: KEY_BLOCK_NAME,
-        })?,
-        fingerprint: fingerprint.ok_or(ManifestError::MissingField {
-            field: KEY_FINGERPRINT,
-        })?,
-        recipients: recipients.ok_or(ManifestError::MissingField {
-            field: KEY_RECIPIENTS,
-        })?,
-        vector_clock_summary: vector_clock_summary.ok_or(ManifestError::MissingField {
-            field: KEY_VECTOR_CLOCK_SUMMARY,
-        })?,
-        suite_id: suite_id.ok_or(ManifestError::MissingField {
-            field: KEY_SUITE_ID,
-        })?,
-        created_at_ms: created_at_ms.ok_or(ManifestError::MissingField {
-            field: KEY_CREATED_AT_MS,
-        })?,
-        last_mod_ms: last_mod_ms.ok_or(ManifestError::MissingField {
-            field: KEY_LAST_MOD_MS,
-        })?,
-        unknown,
+        block_uuid: block_uuid.require(KEY_BLOCK_UUID)?,
+        block_name: block_name.require(KEY_BLOCK_NAME)?,
+        fingerprint: fingerprint.require(KEY_FINGERPRINT)?,
+        recipients: recipients.require(KEY_RECIPIENTS)?,
+        vector_clock_summary: vector_clock_summary.require(KEY_VECTOR_CLOCK_SUMMARY)?,
+        suite_id: suite_id.require(KEY_SUITE_ID)?,
+        created_at_ms: created_at_ms.require(KEY_CREATED_AT_MS)?,
+        last_mod_ms: last_mod_ms.require(KEY_LAST_MOD_MS)?,
+        unknown: unknown.into_map(),
     })
 }
 
@@ -344,96 +256,54 @@ fn parse_trash_entry(v: &Value) -> Result<TrashEntry, ManifestError> {
             })
         }
     };
-    let mut block_uuid: Option<[u8; UUID_LEN]> = None;
-    let mut tombstoned_at_ms: Option<u64> = None;
-    let mut tombstoned_by: Option<[u8; UUID_LEN]> = None;
-    let mut fingerprint: Option<[u8; BLOCK_FINGERPRINT_LEN]> = None;
-    let mut purged_at_ms: Option<u64> = None;
-    let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
+    let mut block_uuid: Once<[u8; UUID_LEN]> = Once::default();
+    let mut tombstoned_at_ms: Once<u64> = Once::default();
+    let mut tombstoned_by: Once<[u8; UUID_LEN]> = Once::default();
+    let mut fingerprint: Once<[u8; BLOCK_FINGERPRINT_LEN]> = Once::default();
+    let mut purged_at_ms: Once<u64> = Once::default();
+    let mut unknown = UnknownBag::default();
 
     // #573: reject a repeated key rather than last-wins, mirroring
-    // `parse_manifest_map`'s top-level check (#568). Written out per arm
-    // rather than factored into a helper/macro — see that function's own
-    // comment for why. The unknown-bag arm detects its duplicate via
-    // `BTreeMap::insert`'s own "previous value" return, same as the top
-    // level's unknown arm; `field` is the literal `"<unknown>"`, never the
-    // repeated key itself (#474 — that text is attacker-influenced content
-    // from inside the encrypted manifest).
+    // `parse_manifest_map`'s top-level check (#568). Since #589 the
+    // rejection is a TYPE invariant — see `parse_vector_clock_entry`'s
+    // comment. The unknown-bag arm routes through `UnknownBag::insert`,
+    // which still detects its duplicate via `BTreeMap::insert`'s own
+    // "previous value" return, same as the top level's unknown arm;
+    // `field` is `UNKNOWN_FIELD`, private to `slot.rs`, never the
+    // repeated key itself
+    // (#474 — that text is attacker-influenced content from inside the
+    // encrypted manifest).
     for (index, (k, val)) in entries.iter().enumerate() {
         let key = take_text_key(k)?;
         match key.as_str() {
-            KEY_BLOCK_UUID => {
-                if block_uuid.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_BLOCK_UUID,
-                        index,
-                    });
-                }
-                block_uuid = Some(take_fixed_bytes::<UUID_LEN>(val, KEY_BLOCK_UUID)?);
-            }
-            KEY_TOMBSTONED_AT_MS => {
-                if tombstoned_at_ms.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_TOMBSTONED_AT_MS,
-                        index,
-                    });
-                }
-                tombstoned_at_ms = Some(take_u64(val, KEY_TOMBSTONED_AT_MS)?);
-            }
-            KEY_TOMBSTONED_BY => {
-                if tombstoned_by.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_TOMBSTONED_BY,
-                        index,
-                    });
-                }
-                tombstoned_by = Some(take_fixed_bytes::<UUID_LEN>(val, KEY_TOMBSTONED_BY)?);
-            }
-            KEY_FINGERPRINT => {
-                if fingerprint.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_FINGERPRINT,
-                        index,
-                    });
-                }
-                fingerprint = Some(take_fixed_bytes::<BLOCK_FINGERPRINT_LEN>(
-                    val,
-                    KEY_FINGERPRINT,
-                )?);
-            }
+            KEY_BLOCK_UUID => block_uuid.set(KEY_BLOCK_UUID, index, || {
+                take_fixed_bytes::<UUID_LEN>(val, KEY_BLOCK_UUID)
+            })?,
+            KEY_TOMBSTONED_AT_MS => tombstoned_at_ms.set(KEY_TOMBSTONED_AT_MS, index, || {
+                take_u64(val, KEY_TOMBSTONED_AT_MS)
+            })?,
+            KEY_TOMBSTONED_BY => tombstoned_by.set(KEY_TOMBSTONED_BY, index, || {
+                take_fixed_bytes::<UUID_LEN>(val, KEY_TOMBSTONED_BY)
+            })?,
+            KEY_FINGERPRINT => fingerprint.set(KEY_FINGERPRINT, index, || {
+                take_fixed_bytes::<BLOCK_FINGERPRINT_LEN>(val, KEY_FINGERPRINT)
+            })?,
             KEY_PURGED_AT_MS => {
-                if purged_at_ms.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_PURGED_AT_MS,
-                        index,
-                    });
-                }
-                purged_at_ms = Some(take_u64(val, KEY_PURGED_AT_MS)?);
+                purged_at_ms.set(KEY_PURGED_AT_MS, index, || take_u64(val, KEY_PURGED_AT_MS))?
             }
             _ => {
-                if unknown.insert(key, value_to_unknown(val)?).is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: "<unknown>",
-                        index,
-                    });
-                }
+                unknown.insert(key, value_to_unknown(val)?, index)?;
             }
         }
     }
 
     Ok(TrashEntry {
-        block_uuid: block_uuid.ok_or(ManifestError::MissingField {
-            field: KEY_BLOCK_UUID,
-        })?,
-        tombstoned_at_ms: tombstoned_at_ms.ok_or(ManifestError::MissingField {
-            field: KEY_TOMBSTONED_AT_MS,
-        })?,
-        tombstoned_by: tombstoned_by.ok_or(ManifestError::MissingField {
-            field: KEY_TOMBSTONED_BY,
-        })?,
-        fingerprint,
-        purged_at_ms,
-        unknown,
+        block_uuid: block_uuid.require(KEY_BLOCK_UUID)?,
+        tombstoned_at_ms: tombstoned_at_ms.require(KEY_TOMBSTONED_AT_MS)?,
+        tombstoned_by: tombstoned_by.require(KEY_TOMBSTONED_BY)?,
+        fingerprint: fingerprint.into_option(),
+        purged_at_ms: purged_at_ms.into_option(),
+        unknown: unknown.into_map(),
     })
 }
 
@@ -447,54 +317,30 @@ pub(super) fn parse_kdf_params(v: &Value) -> Result<KdfParamsRef, ManifestError>
             })
         }
     };
-    let mut memory_kib: Option<u32> = None;
-    let mut iterations: Option<u32> = None;
-    let mut parallelism: Option<u32> = None;
-    let mut salt: Option<[u8; SALT_LEN]> = None;
+    let mut memory_kib: Once<u32> = Once::default();
+    let mut iterations: Once<u32> = Once::default();
+    let mut parallelism: Once<u32> = Once::default();
+    let mut salt: Once<[u8; SALT_LEN]> = Once::default();
 
     // #573: reject a repeated key rather than last-wins, mirroring
-    // `parse_manifest_map`'s top-level check (#568). Written out per arm
-    // rather than factored into a helper/macro — see that function's own
-    // comment for why.
+    // `parse_manifest_map`'s top-level check (#568). Since #589 the
+    // rejection is a TYPE invariant — see `parse_vector_clock_entry`'s
+    // comment.
     for (index, (k, val)) in entries.iter().enumerate() {
         let key = take_text_key(k)?;
         match key.as_str() {
             KEY_MEMORY_KIB => {
-                if memory_kib.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_MEMORY_KIB,
-                        index,
-                    });
-                }
-                memory_kib = Some(take_u32(val, KEY_MEMORY_KIB)?);
+                memory_kib.set(KEY_MEMORY_KIB, index, || take_u32(val, KEY_MEMORY_KIB))?
             }
             KEY_ITERATIONS => {
-                if iterations.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_ITERATIONS,
-                        index,
-                    });
-                }
-                iterations = Some(take_u32(val, KEY_ITERATIONS)?);
+                iterations.set(KEY_ITERATIONS, index, || take_u32(val, KEY_ITERATIONS))?
             }
             KEY_PARALLELISM => {
-                if parallelism.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_PARALLELISM,
-                        index,
-                    });
-                }
-                parallelism = Some(take_u32(val, KEY_PARALLELISM)?);
+                parallelism.set(KEY_PARALLELISM, index, || take_u32(val, KEY_PARALLELISM))?
             }
-            KEY_SALT => {
-                if salt.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_SALT,
-                        index,
-                    });
-                }
-                salt = Some(take_fixed_bytes::<SALT_LEN>(val, KEY_SALT)?);
-            }
+            KEY_SALT => salt.set(KEY_SALT, index, || {
+                take_fixed_bytes::<SALT_LEN>(val, KEY_SALT)
+            })?,
             // kdf_params has a fixed shape in v1; reject unknown keys
             // here for the same reason as vector_clock entries.
             _ => {
@@ -507,16 +353,10 @@ pub(super) fn parse_kdf_params(v: &Value) -> Result<KdfParamsRef, ManifestError>
     }
 
     Ok(KdfParamsRef {
-        memory_kib: memory_kib.ok_or(ManifestError::MissingField {
-            field: KEY_MEMORY_KIB,
-        })?,
-        iterations: iterations.ok_or(ManifestError::MissingField {
-            field: KEY_ITERATIONS,
-        })?,
-        parallelism: parallelism.ok_or(ManifestError::MissingField {
-            field: KEY_PARALLELISM,
-        })?,
-        salt: salt.ok_or(ManifestError::MissingField { field: KEY_SALT })?,
+        memory_kib: memory_kib.require(KEY_MEMORY_KIB)?,
+        iterations: iterations.require(KEY_ITERATIONS)?,
+        parallelism: parallelism.require(KEY_PARALLELISM)?,
+        salt: salt.require(KEY_SALT)?,
     })
 }
 

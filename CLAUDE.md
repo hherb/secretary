@@ -13,12 +13,13 @@ The cryptographic design and on-disk format are **frozen for v1** because vaults
 ```
 core/                Rust crate `secretary-core` — the security-critical source of truth
 core/src/{crypto,identity,unlock,vault}/   — module per spec section
-core/src/vault/manifest/                   — DIRECTORY module (#564), not manifest.rs; 26 files:
-                                             13 production + 11 sibling `tests.rs` + the 2
+core/src/vault/manifest/                   — DIRECTORY module (#564), not manifest.rs; 28 files:
+                                             14 production + 12 sibling `tests.rs` + the 2
                                              non-`tests.rs` files under `test_support/`
                                              (`mod.rs`, `surgery.rs`). `ls test_support` shows
                                              THREE — its own `surgery/tests.rs` is counted in
-                                             the 11, not here
+                                             the 12, not here. Was 26/13/11 before #589 added
+                                             `decode/slot.rs` and its sibling tests
 core/tests/          — integration tests; tests/data/ holds KATs and fuzz regressions
 core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (136 lines; the PEP
                                              723 header is the sole dependency declaration).
@@ -398,6 +399,82 @@ find in a doc predates the split and is stale. **Watch for the near-miss:**
 still exists, and citations to it are valid — only ones resolving under
 `core/src/` are stale.
 
+**Duplicate-key and missing-field rejection is a TYPE invariant, not an
+idiom (#589).** RFC 8949 §5.4's no-repeated-key rule and §4.2's
+required-key list were enforced by 31 hand-copied
+`if slot.is_some() { return Err(DuplicateKey { .. }) }` guards and 26
+`.ok_or(MissingField { .. })` calls across the five manifest maps (#568
+for the top level, #573 for the four nested parsers). Nothing about
+`Option<T>` forced either: a new match arm writing
+`slot = Some(take_u64(..)?)` compiled cleanly and silently last-won.
+`decode/slot.rs`'s `Once<T>` and `UnknownBag` hold private fields, so a
+parser **cannot** fill a slot except through `Once::set`, and
+`DuplicateKey` / `MissingField` are now each constructed **exactly once**
+in the whole decoder. Four things about it:
+
+- **State the privacy scope exactly.** Rust privacy is module-SUBTREE
+  scoped, so a DESCENDANT of `slot` could write `Once(Some(v))` and
+  bypass `set` — only `tests` is declared there, and it is
+  `#[cfg(test)]`. The parsers the type constrains are SIBLINGS, and for
+  them the invariant is absolute. #515 made the same distinction about
+  `Detail`'s private field and gave it guard rule E6; that field is a
+  security boundary, this one is a correctness invariant on an
+  already-trusted decoder, so the note is the control.
+- **The macro objection that kept the guards inline is satisfied, not
+  traded away.** #575 declined to factor them into a `macro_rules!`
+  because every hygiene guard in this repo reads TEXT, not expanded
+  macros, so an error construction inside a macro body is invisible to
+  any future rule that inspects one. A function body is ordinary text —
+  the greppable-construction property is strictly better at 1 site than
+  at 31.
+- **`Once::set` takes a CLOSURE, and that is the observable contract.**
+  The hand-copied guards checked `slot.is_some()` *before* parsing the
+  second value, so a duplicate key whose second copy is malformed
+  reported `DuplicateKey`, not `WrongType`. An eager `set(field, index,
+  take_u64(v, KEY)?)` reverses that for a v1-frozen decoder — and **no
+  test in the tree could see it**, because every duplicate fixture
+  repeats a well-typed pair. Two new regressions pin it at both levels
+  (`a_duplicate_key_outranks_a_malformed_second_copy` and its
+  `top_level_` twin); the eager mutation reds exactly those two plus the
+  unit test, and leaves all eight pre-existing duplicate-key tests
+  GREEN. Say "duplicate-key", not "`rejects_every_duplicate_key`": the
+  count of eight is right (the four `*_rejects_every_duplicate_key`
+  sweeps, the two `*_rejects_duplicate_unknown_key_without_naming_it`,
+  and the two `a_manifest_with_a_repeated_*_is_rejected`) but only four
+  carry that name. `UnknownBag::insert` deliberately stays EAGER — there the
+  pre-existing ordering runs `value_to_unknown` first, and `decode/mod.rs`
+  documents that as unobservable.
+- **The `unknown`-subtree residual is untouched.** No duplicate-key check
+  looks *inside* an `UnknownValue`, at any level, and that is deliberate
+  (crypto-design §6.2 rules 1 and 5 are scoped to material the reader
+  interprets). `UnknownBag` rejects a repeat of the bag's OWN key and says
+  nothing about the subtree hanging off it.
+
+A side effect worth recording because it closes a tracked issue:
+`decode/entries.rs` went from **524 lines to 362**, which is what **#582**
+asked for.
+
+**The `require` half was swept only in the review round, and the asymmetry
+is worth remembering rather than the fix.** The argument above — once the
+arms share one implementation the `KEY_*` constant is the only per-arm
+thing left, so only a sweep can pin it — was made for `Once::set`, tested
+at all 28 arms, and *not* made for `Once::require`. The tree held exactly
+ONE assertion on a manifest `MissingField` name
+(`rejects_missing_required_field_vault_uuid`, covering `vault_uuid`)
+against 26 `require` sites, and that gap pre-dated #589 rather than being
+introduced by it. Two sweeps now cover all 26 —
+`a_manifest_missing_any_required_key_names_that_key` (9 top-level) and
+`every_nested_parser_names_the_required_key_it_is_missing` (17 nested) —
+each mutation-proven by pointing one arm's `require` at a neighbouring
+`KEY_*`, which reds exactly one test. `a_trash_entry_missing_an_optional_key_still_parses`
+is their mirror: it pins that §4.2's two optional keys take
+`into_option`, which is otherwise enforced only by `TrashEntry`'s own
+field types and would stop holding the day a required field is declared
+`Option<T>`. **Generalise it**: when a hand-copied idiom becomes a shared
+implementation, every argument for sweeping one direction applies to the
+other, and the reviewer who checks only the direction the author tested
+finds nothing.
+
 `decode_manifest` re-encodes the parsed `Manifest` and requires a
 byte-identical match against its input (#572), which is what `record::decode`
 and `block::decode_plaintext` already did. **At this layer the check is
@@ -766,7 +843,7 @@ the writer and reader halves have different histories:
   row 2 says so); rule 4 is never the re-encode, because a normalising parse
   preserves a tag or a float and re-encodes it identically — it is caught by a
   separate whole-body walk, which in this codebase is
-  `reject_floats_and_tags` at `manifest/decode/mod.rs:116`, run before the
+  `reject_floats_and_tags` in `manifest/decode/mod.rs`, run before the
   re-encode. Alongside the table sits the byte-preservation MUST that makes
   re-emission possible, stated as a two-part obligation so that every
   representation is admissible on equal terms.
