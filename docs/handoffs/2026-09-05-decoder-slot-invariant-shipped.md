@@ -33,7 +33,7 @@ Housekeeping done at the same time: `.worktrees/canonicality-cause` removed and
 
 | SHA | What |
 |---|---|
-| *(the slice)* | `decode/slot.rs` + `slot/tests.rs`; all 57 sites converted; 2 ordering regressions; CLAUDE.md + ROADMAP |
+| `b80f5c9a` | the slice — `decode/slot.rs` + `slot/tests.rs`; all 57 sites converted; 2 ordering regressions; CLAUDE.md + ROADMAP |
 | *(this)* | the baton — a commit cannot cite its own SHA, so this row stays symbolic |
 
 ### The defect
