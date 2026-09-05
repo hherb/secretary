@@ -436,8 +436,12 @@ in the whole decoder. Four things about it:
   repeats a well-typed pair. Two new regressions pin it at both levels
   (`a_duplicate_key_outranks_a_malformed_second_copy` and its
   `top_level_` twin); the eager mutation reds exactly those two plus the
-  unit test, and leaves all eight pre-existing `rejects_every_duplicate_key`
-  tests GREEN. `UnknownBag::insert` deliberately stays EAGER — there the
+  unit test, and leaves all eight pre-existing duplicate-key tests
+  GREEN. Say "duplicate-key", not "`rejects_every_duplicate_key`": the
+  count of eight is right (the four `*_rejects_every_duplicate_key`
+  sweeps, the two `*_rejects_duplicate_unknown_key_without_naming_it`,
+  and the two `a_manifest_with_a_repeated_*_is_rejected`) but only four
+  carry that name. `UnknownBag::insert` deliberately stays EAGER — there the
   pre-existing ordering runs `value_to_unknown` first, and `decode/mod.rs`
   documents that as unobservable.
 - **The `unknown`-subtree residual is untouched.** No duplicate-key check
@@ -449,6 +453,27 @@ in the whole decoder. Four things about it:
 A side effect worth recording because it closes a tracked issue:
 `decode/entries.rs` went from **524 lines to 362**, which is what **#582**
 asked for.
+
+**The `require` half was swept only in the review round, and the asymmetry
+is worth remembering rather than the fix.** The argument above — once the
+arms share one implementation the `KEY_*` constant is the only per-arm
+thing left, so only a sweep can pin it — was made for `Once::set`, tested
+at all 28 arms, and *not* made for `Once::require`. The tree held exactly
+ONE assertion on a manifest `MissingField` name
+(`rejects_missing_required_field_vault_uuid`, covering `vault_uuid`)
+against 26 `require` sites, and that gap pre-dated #589 rather than being
+introduced by it. Two sweeps now cover all 26 —
+`a_manifest_missing_any_required_key_names_that_key` (9 top-level) and
+`every_nested_parser_names_the_required_key_it_is_missing` (17 nested) —
+each mutation-proven by pointing one arm's `require` at a neighbouring
+`KEY_*`, which reds exactly one test. `a_trash_entry_missing_an_optional_key_still_parses`
+is their mirror: it pins that §4.2's two optional keys take
+`into_option`, which is otherwise enforced only by `TrashEntry`'s own
+field types and would stop holding the day a required field is declared
+`Option<T>`. **Generalise it**: when a hand-copied idiom becomes a shared
+implementation, every argument for sweeping one direction applies to the
+other, and the reviewer who checks only the direction the author tested
+finds nothing.
 
 `decode_manifest` re-encodes the parsed `Manifest` and requires a
 byte-identical match against its input (#572), which is what `record::decode`
@@ -818,7 +843,7 @@ the writer and reader halves have different histories:
   row 2 says so); rule 4 is never the re-encode, because a normalising parse
   preserves a tag or a float and re-encodes it identically — it is caught by a
   separate whole-body walk, which in this codebase is
-  `reject_floats_and_tags` at `manifest/decode/mod.rs:116`, run before the
+  `reject_floats_and_tags` in `manifest/decode/mod.rs`, run before the
   re-encode. Alongside the table sits the byte-preservation MUST that makes
   re-emission possible, stated as a two-part obligation so that every
   representation is admissible on equal terms.

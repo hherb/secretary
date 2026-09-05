@@ -1,6 +1,22 @@
 //! Strict canonical CBOR decode path for the manifest body
 //! (`docs/vault-format.md` §4.2).
 
+// Every `Once::set` / `UnknownBag::insert` call in this subtree must
+// propagate its `Result` — that Result IS the duplicate-key rejection. A
+// bare `slot.set(..);` is already caught, because `Result` is `#[must_use]`
+// and CI runs `-D warnings`; `let _ = slot.set(..)` is NOT, because that is
+// the sanctioned way to discard a must-use value and rustc deliberately
+// stays quiet. This lint is the only thing that closes it, and it is a
+// `restriction`-group lint, so it is off unless asked for.
+//
+// The consequence of dropping one is fail-CLOSED but not free: the #572
+// re-encode still rejects the body (a dropped duplicate leaves the two
+// values un-merged, so the re-encode diverges), but the precise
+// `DuplicateKey { field, index }` degrades to a generic
+// `NonCanonicalEncoding { cause: Unclassified }` — on the path every vault
+// open takes, which is the diagnostic regression #590 exists to prevent.
+#![deny(clippy::let_underscore_must_use)]
+
 mod classify;
 mod entries;
 mod extract;
@@ -293,7 +309,8 @@ fn parse_manifest_map(map: &[(Value, Value)]) -> Result<Manifest, ManifestError>
     //
     // `field` stays `&'static str` throughout: for a known key it is the
     // §4.2 `KEY_*` constant the arm passes, and for an unknown key it is
-    // `slot::UNKNOWN_FIELD` — never the repeated key itself, which is
+    // `UNKNOWN_FIELD`, private to `slot.rs` — never the repeated key
+    // itself, which is
     // attacker-influenced text from inside the encrypted manifest and
     // exactly the class `RecordError::DuplicateKey` once leaked (#474).
     //
@@ -329,11 +346,20 @@ fn parse_manifest_map(map: &[(Value, Value)]) -> Result<Manifest, ManifestError>
                 // re-parsed it by the time `UnknownBag::insert` can report
                 // the duplicate. `UnknownBag::insert` therefore takes a
                 // value where `Once::set` takes a closure — deliberately,
-                // to preserve this ordering unchanged. It is not
-                // observable either way: the returned error is the same,
-                // and `value_to_unknown`'s own failure would have to be
-                // raised before a duplicate could be reported by any
-                // ordering.
+                // to preserve this ordering unchanged.
+                //
+                // It is unobservable, but NOT for the reason an earlier
+                // version of this comment gave ("the returned error is the
+                // same, and `value_to_unknown`'s own failure would have to
+                // be raised first by any ordering") — that is circular,
+                // and lazily a repeated key whose second copy failed
+                // `value_to_unknown` would report `DuplicateKey` instead.
+                // The real reason is `reject_floats_and_tags` above: it
+                // walks the whole body before this loop runs, so the only
+                // failures `value_to_unknown` has are already gone. That
+                // is an invariant of THIS function, not of the parsers —
+                // see `slot::UnknownBag::insert` for the full statement.
+
                 unknown.insert(key, value_to_unknown(v)?, index)?;
             }
         }

@@ -146,7 +146,8 @@ fn parse_block_entry(v: &Value) -> Result<BlockEntry, ManifestError> {
     // comment. The unknown-bag arm routes through `UnknownBag::insert`,
     // which still detects its duplicate via `BTreeMap::insert`'s own
     // "previous value" return, same as the top level's unknown arm;
-    // `field` is `slot::UNKNOWN_FIELD`, never the repeated key itself
+    // `field` is `UNKNOWN_FIELD`, private to `slot.rs`, never the
+    // repeated key itself
     // (#474 — that text is attacker-influenced content from inside the
     // encrypted manifest).
     for (index, (k, val)) in entries.iter().enumerate() {
@@ -268,7 +269,8 @@ fn parse_trash_entry(v: &Value) -> Result<TrashEntry, ManifestError> {
     // comment. The unknown-bag arm routes through `UnknownBag::insert`,
     // which still detects its duplicate via `BTreeMap::insert`'s own
     // "previous value" return, same as the top level's unknown arm;
-    // `field` is `slot::UNKNOWN_FIELD`, never the repeated key itself
+    // `field` is `UNKNOWN_FIELD`, private to `slot.rs`, never the
+    // repeated key itself
     // (#474 — that text is attacker-influenced content from inside the
     // encrypted manifest).
     for (index, (k, val)) in entries.iter().enumerate() {

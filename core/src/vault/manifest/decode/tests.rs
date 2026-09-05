@@ -316,11 +316,20 @@ fn a_manifest_with_a_repeated_key_is_rejected() {
     // would notice if it were removed" failure this whole sweep exists
     // to close (#575 review).
     //
-    // Since #589 the nine arms share ONE implementation (`Once::set`),
-    // so a per-arm mutation is no longer expressible and the sweep's
-    // value has shifted: it now pins that each arm passes its OWN `KEY_*`
-    // constant to `set`, which a shared implementation cannot enforce.
-    // The rejection itself is mutation-verified in `slot::tests`.
+    // Since #589 the nine arms share ONE implementation (`Once::set`), so
+    // a per-arm mutation OF THE DUPLICATE CHECK ITSELF is no longer
+    // expressible — there is one guard, not nine, and deleting it reds
+    // every sweep at once. Say it that narrowly: a per-arm mutation of the
+    // `KEY_*` ARGUMENT very much is expressible (one arm passing the wrong
+    // constant compiles cleanly), which is precisely what this sweep still
+    // catches and what a shared implementation cannot enforce. An earlier
+    // draft of this comment said "a per-arm mutation is no longer
+    // expressible" flatly, and the mutation run that checked the very next
+    // clause disproved it.
+    //
+    // The rejection itself is mutation-verified in `slot::tests`. The
+    // `require` side of the same argument is swept by
+    // `a_manifest_missing_any_required_key_names_that_key` below.
     assert_eq!(
         entries.len(),
         9,
@@ -1183,5 +1192,59 @@ fn top_level_duplicate_key_outranks_a_malformed_second_copy() {
             "a duplicate key must outrank the malformed second copy, got {}",
             unexpected(&other)
         ),
+    }
+}
+
+/// The top-level half of `entries::tests::
+/// every_nested_parser_names_the_required_key_it_is_missing`: each of the
+/// nine §4.2-required top-level keys, dropped one at a time, must be named
+/// by the resulting [`ManifestError::MissingField`].
+///
+/// Nine here plus seventeen there is all 26 `Once::require` sites. Before
+/// these two, `rejects_missing_required_field_vault_uuid` above was the ONLY
+/// assertion on a manifest missing-field name in the tree — one of 26 — while
+/// the `Once::set` side was swept at all 28 arms. #589 made both sides one
+/// shared implementation, so the same argument the duplicate sweep records
+/// (once the arms share an implementation the `KEY_*` constant is the only
+/// per-arm thing left) applies to `require` and had no counterpart.
+///
+/// Dropping a key from a canonically-encoded map leaves the remainder sorted
+/// and canonical, so the §4.3 step-4 re-encode is not what fires here — and
+/// it could not be, since `parse_manifest_map` returns first. The precise
+/// `MissingField` is the thing under test, exactly as `DuplicateKey` is in
+/// the sweep above.
+#[test]
+fn a_manifest_missing_any_required_key_names_that_key() {
+    let bytes = encode_manifest(&populated_manifest()).expect("encode");
+    let entries = parse_to_value_map(bytes.expose());
+
+    assert_eq!(
+        entries.len(),
+        9,
+        "populated_manifest() is expected to emit all nine known keys and no \
+         unknowns; a change here means the arm census moved"
+    );
+
+    for i in 0..entries.len() {
+        let dropped = match &entries[i].0 {
+            Value::Text(s) => s.clone(),
+            other => panic!("non-text manifest key: {other:?}"),
+        };
+
+        let mut without = entries.clone();
+        without.remove(i);
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(without), &mut buf).expect("re-encode");
+
+        match decode_manifest(&buf) {
+            Err(ManifestError::MissingField { field }) => assert_eq!(
+                field, dropped,
+                "MissingField must name the required key that was dropped"
+            ),
+            other => panic!(
+                "dropping {dropped} must report MissingField, got {}",
+                unexpected(&other)
+            ),
+        }
     }
 }

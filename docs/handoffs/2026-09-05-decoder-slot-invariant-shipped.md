@@ -108,7 +108,7 @@ restore by **sha256**.
 | # | Mutation | Result |
 |---|---|---|
 | M1 | delete `Once::set`'s `is_some()` guard | **11 tests red** — all four nested parsers, the top level, and `slot::tests` |
-| M2 | **eager fill** (evaluate `f()` before the vacancy check) | **exactly 3 red** — the unit test plus both ordering regressions. **All eight pre-existing `rejects_every_duplicate_key` tests stayed GREEN**, which is the measurement that justifies the closure form |
+| M2 | **eager fill** (evaluate `f()` before the vacancy check) | **exactly 3 red** — the unit test plus both ordering regressions. **All eight pre-existing duplicate-key tests stayed GREEN**, which is the measurement that justifies the closure form |
 | M3 | delete `UnknownBag::insert`'s guard | **4 red**, both nested unknown arms + top level + unit |
 | M4 | `require` never reports a missing field | **3 red** |
 | M5 | one arm passes the **wrong `KEY_*` constant** to `set` | **1 red** (`a_manifest_with_a_repeated_key_is_rejected`) — run to *verify a claim written into that test's own comment*, that the nine-key sweep still pins per-arm key correctness now that the nine arms share one implementation |
@@ -149,6 +149,89 @@ Checked rather than assumed. `README.md` is a status/roadmap table; nothing in
 it cites the manifest decoder's internals, a line count, or a test count, and
 this slice changes no user-visible behaviour and no on-disk format.
 `ROADMAP.md` and `CLAUDE.md` both changed.
+
+---
+
+## (1b) The review round — what it changed and what it measured
+
+Five review agents plus a mechanical arm/`require` census. **No behavioural
+defect was found**: a 7111-input decoder differential (fuzz seeds, both
+manifest KATs, and structured `ciborium::Value` mutations at every map —
+drop key, append well-typed duplicate, insert/append malformed duplicate,
+wrong-type value, non-text key, duplicate unknown key) produced
+**byte-identical `{:?}` verdicts against `origin/main`, 7111/7111** — exact
+variant and payload, not merely "rejected". Non-vacuous: making `Once::set`
+accept a repeat changes 2745 of them; making the fill eager changes 1164.
+
+**The substantive finding was an asymmetry in this slice's own argument.**
+The sweep comment records that once the nine arms share one `Once::set`, the
+`KEY_*` constant each arm passes is the only per-arm thing left, and only a
+sweep can pin it — and M5 was run to prove exactly that. The identical
+argument applies to `Once::require`, was never made, and was never tested:
+the tree held **one** assertion on a manifest `MissingField` name
+(`rejects_missing_required_field_vault_uuid`, `vault_uuid`) against **26**
+`require` sites. Pre-existing rather than introduced by #589, but #589 is
+what makes it matter. Closed by two sweeps covering all 26 —
+`a_manifest_missing_any_required_key_names_that_key` (9 top-level, derived
+from `populated_manifest()`) and
+`every_nested_parser_names_the_required_key_it_is_missing` (17 nested,
+derived from the fixture builders with per-parser counts asserted, 2+4+8+3)
+— plus `a_trash_entry_missing_an_optional_key_still_parses` as their mirror.
+**Both mutation-proven**, each restore sha256-verified: pointing one arm's
+`require` at a neighbouring `KEY_*` reds **exactly one** test, nested and
+top-level respectively.
+
+**Three claims were wrong and are corrected rather than softened:**
+
+- *"a per-arm mutation is no longer expressible"* (the sweep's own comment)
+  was falsified by M5 two clauses later — M5 **is** a per-arm mutation. Now
+  scoped to "a per-arm mutation OF THE DUPLICATE CHECK ITSELF".
+- *"all eight pre-existing `rejects_every_duplicate_key` tests"* named a set
+  of **four** with a count of **eight**. The count is right — the four
+  sweeps, the two `*_rejects_duplicate_unknown_key_without_naming_it`, and
+  the two `a_manifest_with_a_repeated_*_is_rejected` — the label is not.
+- `UnknownBag::insert`'s eagerness justification was **circular**: it argued
+  `value_to_unknown`'s failure "would have to be raised first by any
+  ordering", which merely restates the eager order. Lazily, a repeated
+  unknown key whose SECOND copy fails would report `DuplicateKey` instead —
+  the very distinction `Once::set`'s closure exists to preserve, with the
+  opposite answer here. It is unobservable because `decode_manifest` runs
+  `reject_floats_and_tags` over the whole body first, so that second copy
+  cannot fail at all. **That is a non-local invariant of `decode_manifest`,
+  not of the parsers** — the same exposure shape this baton already
+  attributes to the §4.3 re-encode — and both sites now say so.
+
+**One new gate.** `let _ = slot.set(..)` was ungated: a bare `slot.set(..);`
+is caught (`Result` is `#[must_use]`, CI runs `-D warnings`) but `let _ =`
+is the sanctioned discard and rustc stays silent, while
+`clippy::let_underscore_must_use` is a `restriction` lint and the workspace
+table sets only `unsafe_code = "forbid"`. Measured blast radius is
+fail-CLOSED (0 of 7111 inputs become `Ok`; #572 rejects the body) but the
+diagnostic degrades to `NonCanonicalEncoding { cause: Unclassified }` — the
+#590 regression. `#![deny(clippy::let_underscore_must_use)]` now sits in
+`decode/mod.rs`, **self-tested two-sided**: it errors on a planted
+`let _ = trash.set(..)` and is silent on the real tree.
+
+Also: `UNKNOWN_FIELD` is now module-private (it had no code user outside
+`slot.rs`); the four fixture builders share an `assert_census` whose comment
+states exactly what it catches (builder drift) and what it does not (a new
+*optional* parser arm — live, since `parse_trash_entry` has two);
+`a_duplicate_key_outranks_a_malformed_second_copy` no longer appends a
+well-typed repeat only to strip it back out, and its macro-argument comment
+listed the arguments in the wrong order.
+
+**Filed rather than fixed:** [#618](https://github.com/hherb/secretary/issues/618)
+(the new `DuplicateKey`-outranks-`WrongType` precedence is Rust-only — no
+spec sentence, no KAT, and `differential_replay.rs` cannot see it because it
+scores reject-vs-reject as agreement without comparing `detail`),
+[#619](https://github.com/hherb/secretary/issues/619) (stale `:NNN`
+citations in the two normative-doc trees, including
+`threat-model.md:174` now pointing **past EOF** — left alone deliberately so
+the "normative `docs/` diff is empty" invariant below stays checkable), and
+[#620](https://github.com/hherb/secretary/issues/620) (`Once::new(FIELD)`
+would make a `set`/`require` name disagreement unrepresentable rather than
+swept; not obviously worth re-touching 54 sites on a frozen path whose
+equivalence rests on that differential).
 
 ---
 
@@ -225,7 +308,10 @@ named.
 `CLAUDE.md`'s "Seven targets" line becomes eight.
 
 **(d) #612 — two `core/tests/` KAT files past the 500-line threshold.**
-`manifest_uniqueness_kat.rs` (848) and `manifest_canonicality_kat.rs` (788).
+`manifest_uniqueness_kat.rs` (848) and `manifest_canonicality_kat.rs` (**956**;
+the 788 this line carried until the review round was the previous baton's
+figure, carried forward unmeasured — #614 grew the file. Re-measure before
+citing, which is what CLAUDE.md says of this exact family of numbers).
 The previous baton widened the issue to cover both by comment. `core/tests/`
 already holds six shared-helper directories, so the pattern exists.
 **Acceptance:** both under 500, sharing their `SHAPES` / `cause_name` /

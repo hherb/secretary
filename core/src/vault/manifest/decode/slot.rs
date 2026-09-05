@@ -62,7 +62,7 @@ use crate::vault::record::UnknownValue;
 /// from inside the encrypted manifest, and `RecordError::DuplicateKey`
 /// once leaked exactly this class (#474). A `&'static str` here keeps
 /// [`ManifestError::DuplicateKey`] data-free by construction.
-pub(super) const UNKNOWN_FIELD: &str = "<unknown>";
+const UNKNOWN_FIELD: &str = "<unknown>";
 
 /// The one place a repeated manifest map key becomes an error.
 ///
@@ -156,12 +156,35 @@ impl UnknownBag {
     /// Insert an unknown key, or reject it as a repeat.
     ///
     /// `value` is taken **eagerly**, unlike [`Once::set`]'s closure. That
-    /// is deliberate and preserves the pre-existing ordering exactly: the
-    /// caller's `value_to_unknown(v)?` has always run before
-    /// `BTreeMap::insert` could report the duplicate, and `decode/mod.rs`
-    /// documents that ordering as unobservable — `value_to_unknown`'s own
-    /// failure would have to be raised before a duplicate could be
-    /// reported by any ordering.
+    /// is deliberate: it preserves the pre-existing ordering exactly, in
+    /// which the caller's `value_to_unknown(v)?` runs before
+    /// `BTreeMap::insert` can report the duplicate. Converting this to a
+    /// closure would be a silent behaviour change to a v1-frozen decoder,
+    /// in the opposite direction to the one [`Once::set`] guards against.
+    ///
+    /// **Why that ordering is unobservable — the honest reason, which is
+    /// not local to this function.** The tempting argument is that
+    /// `value_to_unknown`'s failure "would have to be raised first by any
+    /// ordering", and that is circular: it merely restates the eager
+    /// order. Lazily, a repeated unknown key whose SECOND copy fails
+    /// `value_to_unknown` would report [`ManifestError::DuplicateKey`]
+    /// where eagerly it reports the parse failure — exactly the
+    /// distinction [`Once::set`]'s closure exists to preserve for known
+    /// keys, with the opposite answer here.
+    ///
+    /// It is unobservable because that second copy cannot fail at all on
+    /// the path this is reached from. `value_to_unknown` fails only on a
+    /// float or a tag (`from_canonical_cbor`) or a `ciborium` round-trip
+    /// error on a `Vec` it just wrote, and `decode_manifest` runs
+    /// `reject_floats_and_tags` over the WHOLE body before
+    /// `parse_manifest_map` is called at all.
+    ///
+    /// State the dependency rather than hiding it: that is a non-local
+    /// invariant of `decode_manifest`, not of these parsers, so a future
+    /// entry point that calls a parser without the float/tag pre-pass
+    /// makes the ordering observable with no compile-time signal. It is
+    /// the same shape of exposure the §4.3 step-4 re-encode has, and for
+    /// the same reason.
     pub(super) fn insert(
         &mut self,
         key: String,
