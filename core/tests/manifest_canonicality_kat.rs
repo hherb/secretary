@@ -134,7 +134,7 @@ fn assert_rejection_mechanism(
         }
         // A null cause means "rejected BEFORE the re-encode produced a
         // NonCanonicalEncoding". `reject_floats_and_tags`
-        // (`decode/mod.rs:116`) is the only mechanism that reaches this
+        // (`decode/mod.rs`) is the only mechanism that reaches this
         // arm for any body this corpus builds.
         //
         // LIMIT, stated because the obvious wider claim is false and an
@@ -147,7 +147,7 @@ fn assert_rejection_mechanism(
         // here. The tight form
         // `Canonical(CanonicalError::FloatRejected { .. })` is what
         // `manifest/decode/tests.rs`'s `rejects_float_in_unknown_value`
-        // asserts (at `decode/tests.rs:258`); it
+        // asserts; it
         // is unavailable HERE because `vault::canonical` is
         // `pub(crate)` (`core/src/vault/mod.rs:24`) and this is an
         // integration test, i.e. a separate crate. The mechanism is

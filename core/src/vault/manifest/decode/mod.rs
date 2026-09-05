@@ -1,9 +1,26 @@
 //! Strict canonical CBOR decode path for the manifest body
 //! (`docs/vault-format.md` §4.2).
 
+// Every `Once::set` / `UnknownBag::insert` call in this subtree must
+// propagate its `Result` — that Result IS the duplicate-key rejection. A
+// bare `slot.set(..);` is already caught, because `Result` is `#[must_use]`
+// and CI runs `-D warnings`; `let _ = slot.set(..)` is NOT, because that is
+// the sanctioned way to discard a must-use value and rustc deliberately
+// stays quiet. This lint is the only thing that closes it, and it is a
+// `restriction`-group lint, so it is off unless asked for.
+//
+// The consequence of dropping one is fail-CLOSED but not free: the #572
+// re-encode still rejects the body (a dropped duplicate leaves the two
+// values un-merged, so the re-encode diverges), but the precise
+// `DuplicateKey { field, index }` degrades to a generic
+// `NonCanonicalEncoding { cause: Unclassified }` — on the path every vault
+// open takes, which is the diagnostic regression #590 exists to prevent.
+#![deny(clippy::let_underscore_must_use)]
+
 mod classify;
 mod entries;
 mod extract;
+mod slot;
 
 // `pub(super) use extract::record_error_to_cbor_fault;` stood here from the
 // #564 split until #569 path 2. It existed for exactly one cross-boundary
@@ -16,17 +33,15 @@ mod extract;
 // anticipated this: the widening to `pub(in crate::vault::manifest)` was
 // recorded there as existing solely for `encode.rs`.
 
-use std::collections::BTreeMap;
-
 use ciborium::Value;
 
 use crate::cbor::SecretValueTree;
 use crate::vault::canonical::reject_floats_and_tags;
-use crate::vault::record::UnknownValue;
 
 use self::classify::classify_non_canonical;
 use self::entries::{parse_blocks, parse_kdf_params, parse_trash, parse_vector_clock};
 use self::extract::{take_fixed_bytes, take_text_key, take_u16, take_u8, value_to_unknown};
+use self::slot::{Once, UnknownBag};
 use super::encode::encode_manifest;
 use super::{
     BlockEntry, KdfParamsRef, Manifest, ManifestError, TrashEntry, VectorClockEntry,
@@ -263,181 +278,117 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
 /// `decode_manifest`'s `SecretValueTree` still covers everything, wherever
 /// in the tree it sits, the moment it drops.
 fn parse_manifest_map(map: &[(Value, Value)]) -> Result<Manifest, ManifestError> {
-    let mut manifest_version: Option<u8> = None;
-    let mut vault_uuid: Option<[u8; UUID_LEN]> = None;
-    let mut format_version: Option<u16> = None;
-    let mut suite_id: Option<u16> = None;
-    let mut owner_user_uuid: Option<[u8; UUID_LEN]> = None;
-    let mut vector_clock: Option<Vec<VectorClockEntry>> = None;
-    let mut blocks: Option<Vec<BlockEntry>> = None;
-    let mut trash: Option<Vec<TrashEntry>> = None;
-    let mut kdf_params: Option<KdfParamsRef> = None;
-    let mut unknown: BTreeMap<String, UnknownValue> = BTreeMap::new();
+    let mut manifest_version: Once<u8> = Once::default();
+    let mut vault_uuid: Once<[u8; UUID_LEN]> = Once::default();
+    let mut format_version: Once<u16> = Once::default();
+    let mut suite_id: Once<u16> = Once::default();
+    let mut owner_user_uuid: Once<[u8; UUID_LEN]> = Once::default();
+    let mut vector_clock: Once<Vec<VectorClockEntry>> = Once::default();
+    let mut blocks: Once<Vec<BlockEntry>> = Once::default();
+    let mut trash: Once<Vec<TrashEntry>> = Once::default();
+    let mut kdf_params: Once<KdfParamsRef> = Once::default();
+    let mut unknown = UnknownBag::default();
 
     // RFC 8949 §5.4: reject a repeated key rather than last-wins.
     //
-    // Every known key already has an `Option` slot above and `unknown` is a
-    // `BTreeMap`, so both halves of the check are free: `slot.is_some()`
-    // for the nine known keys, and `BTreeMap::insert`'s own "previous
-    // value" return for the unknown bag. The first version of this check
-    // carried a separate `BTreeSet<String>` plus a `key.clone()` per entry
-    // — one extra unwiped heap allocation per key, in a slice whose whole
-    // subject is eliminating copies — and reported the constant placeholder
-    // `"<manifest>"` for every duplicate. This shape allocates nothing and
-    // names the key that was actually repeated (#575 review).
+    // The check is no longer written out per arm. Each known key holds a
+    // [`Once`] slot whose inner `Option` is private to `slot.rs`, so an
+    // arm CANNOT fill one except through `Once::set` — the rejection is a
+    // type invariant rather than nine hand-copied `slot.is_some()` guards
+    // a new arm could forget (#589). The unknown bag gets the same
+    // treatment via [`UnknownBag`].
     //
-    // Written out per arm rather than factored into a local `macro_rules!`
-    // — which is what the first draft of this fix did. Every hygiene guard
-    // in this repo reads TEXT, not expanded macros (CLAUDE.md says so of
-    // the payload guard explicitly), so an error CONSTRUCTION inside a
-    // macro body is invisible to any future rule that inspects one. Nine
-    // repetitions is a cheap price for staying greppable.
+    // The macro objection that kept the guards inline (#575) is unchanged
+    // and is *satisfied* by this, not traded away: every hygiene guard in
+    // this repo reads TEXT, not expanded macros, so an error construction
+    // inside a `macro_rules!` body would be invisible to any future rule
+    // that inspects one. A function body is ordinary text —
+    // `ManifestError::DuplicateKey` and `ManifestError::MissingField` are
+    // now each constructed exactly once in the whole decoder, in
+    // `slot.rs`, instead of 31 and 26 near-identical copies.
     //
-    // `field` stays `&'static str` either way: for a known key it is the
-    // §4.2 `KEY_*` constant, and for an unknown key it is the literal
-    // `"<unknown>"` — never the repeated key itself, which is
+    // `field` stays `&'static str` throughout: for a known key it is the
+    // §4.2 `KEY_*` constant the arm passes, and for an unknown key it is
+    // `UNKNOWN_FIELD`, private to `slot.rs` — never the repeated key
+    // itself, which is
     // attacker-influenced text from inside the encrypted manifest and
     // exactly the class `RecordError::DuplicateKey` once leaked (#474).
+    //
+    // `Once::set` takes a CLOSURE, so the fill runs only on a vacant slot.
+    // That preserves the pre-#589 ordering exactly: a duplicate key whose
+    // second copy is malformed still reports `DuplicateKey`, not
+    // `WrongType` (`tests::top_level_duplicate_key_outranks_a_malformed_second_copy`).
     for (index, (k, v)) in map.iter().enumerate() {
         let key = take_text_key(k)?;
         match key.as_str() {
-            KEY_MANIFEST_VERSION => {
-                if manifest_version.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_MANIFEST_VERSION,
-                        index,
-                    });
-                }
-                manifest_version = Some(take_u8(v, KEY_MANIFEST_VERSION)?);
-            }
-            KEY_VAULT_UUID => {
-                if vault_uuid.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_VAULT_UUID,
-                        index,
-                    });
-                }
-                vault_uuid = Some(take_fixed_bytes::<UUID_LEN>(v, KEY_VAULT_UUID)?);
-            }
-            KEY_FORMAT_VERSION => {
-                if format_version.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_FORMAT_VERSION,
-                        index,
-                    });
-                }
-                format_version = Some(take_u16(v, KEY_FORMAT_VERSION)?);
-            }
-            KEY_SUITE_ID => {
-                if suite_id.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_SUITE_ID,
-                        index,
-                    });
-                }
-                suite_id = Some(take_u16(v, KEY_SUITE_ID)?);
-            }
-            KEY_OWNER_USER_UUID => {
-                if owner_user_uuid.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_OWNER_USER_UUID,
-                        index,
-                    });
-                }
-                owner_user_uuid = Some(take_fixed_bytes::<UUID_LEN>(v, KEY_OWNER_USER_UUID)?);
-            }
-            KEY_VECTOR_CLOCK => {
-                if vector_clock.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_VECTOR_CLOCK,
-                        index,
-                    });
-                }
-                vector_clock = Some(parse_vector_clock(v, KEY_VECTOR_CLOCK)?);
-            }
-            KEY_BLOCKS => {
-                if blocks.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_BLOCKS,
-                        index,
-                    });
-                }
-                blocks = Some(parse_blocks(v)?);
-            }
-            KEY_TRASH => {
-                if trash.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_TRASH,
-                        index,
-                    });
-                }
-                trash = Some(parse_trash(v)?);
-            }
-            KEY_KDF_PARAMS => {
-                if kdf_params.is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: KEY_KDF_PARAMS,
-                        index,
-                    });
-                }
-                kdf_params = Some(parse_kdf_params(v)?);
-            }
+            KEY_MANIFEST_VERSION => manifest_version.set(KEY_MANIFEST_VERSION, index, || {
+                take_u8(v, KEY_MANIFEST_VERSION)
+            })?,
+            KEY_VAULT_UUID => vault_uuid.set(KEY_VAULT_UUID, index, || {
+                take_fixed_bytes::<UUID_LEN>(v, KEY_VAULT_UUID)
+            })?,
+            KEY_FORMAT_VERSION => format_version.set(KEY_FORMAT_VERSION, index, || {
+                take_u16(v, KEY_FORMAT_VERSION)
+            })?,
+            KEY_SUITE_ID => suite_id.set(KEY_SUITE_ID, index, || take_u16(v, KEY_SUITE_ID))?,
+            KEY_OWNER_USER_UUID => owner_user_uuid.set(KEY_OWNER_USER_UUID, index, || {
+                take_fixed_bytes::<UUID_LEN>(v, KEY_OWNER_USER_UUID)
+            })?,
+            KEY_VECTOR_CLOCK => vector_clock.set(KEY_VECTOR_CLOCK, index, || {
+                parse_vector_clock(v, KEY_VECTOR_CLOCK)
+            })?,
+            KEY_BLOCKS => blocks.set(KEY_BLOCKS, index, || parse_blocks(v))?,
+            KEY_TRASH => trash.set(KEY_TRASH, index, || parse_trash(v))?,
+            KEY_KDF_PARAMS => kdf_params.set(KEY_KDF_PARAMS, index, || parse_kdf_params(v))?,
             _ => {
-                // Unlike the nine arms above, the duplicate is detected
-                // AFTER `value_to_unknown` has re-encoded and re-parsed the
-                // value — `BTreeMap::insert` is what reports it. That
-                // ordering difference is not observable: the returned error
-                // is the same, and `value_to_unknown`'s own failure would
-                // have to be raised before a duplicate could be reported by
-                // any ordering.
-                if unknown.insert(key, value_to_unknown(v)?).is_some() {
-                    return Err(ManifestError::DuplicateKey {
-                        field: "<unknown>",
-                        index,
-                    });
-                }
+                // Unlike the nine arms above, the value is taken
+                // EAGERLY: `value_to_unknown` has already re-encoded and
+                // re-parsed it by the time `UnknownBag::insert` can report
+                // the duplicate. `UnknownBag::insert` therefore takes a
+                // value where `Once::set` takes a closure — deliberately,
+                // to preserve this ordering unchanged.
+                //
+                // It is unobservable, but NOT for the reason an earlier
+                // version of this comment gave ("the returned error is the
+                // same, and `value_to_unknown`'s own failure would have to
+                // be raised first by any ordering") — that is circular,
+                // and lazily a repeated key whose second copy failed
+                // `value_to_unknown` would report `DuplicateKey` instead.
+                // The real reason is `reject_floats_and_tags` above: it
+                // walks the whole body before this loop runs, so the only
+                // failures `value_to_unknown` has are already gone. That
+                // is an invariant of THIS function, not of the parsers —
+                // see `slot::UnknownBag::insert` for the full statement.
+
+                unknown.insert(key, value_to_unknown(v)?, index)?;
             }
         }
     }
 
-    let manifest_version = manifest_version.ok_or(ManifestError::MissingField {
-        field: KEY_MANIFEST_VERSION,
-    })?;
+    let manifest_version = manifest_version.require(KEY_MANIFEST_VERSION)?;
     if manifest_version != MANIFEST_VERSION_V1 {
         return Err(ManifestError::UnsupportedManifestVersion(manifest_version));
     }
-    let format_version = format_version.ok_or(ManifestError::MissingField {
-        field: KEY_FORMAT_VERSION,
-    })?;
+    let format_version = format_version.require(KEY_FORMAT_VERSION)?;
     if format_version != FORMAT_VERSION_V1 {
         return Err(ManifestError::UnsupportedFormatVersion(format_version));
     }
-    let suite_id = suite_id.ok_or(ManifestError::MissingField {
-        field: KEY_SUITE_ID,
-    })?;
+    let suite_id = suite_id.require(KEY_SUITE_ID)?;
     if suite_id != SUITE_ID_V1 {
         return Err(ManifestError::UnsupportedSuiteId(suite_id));
     }
 
     Ok(Manifest {
         manifest_version,
-        vault_uuid: vault_uuid.ok_or(ManifestError::MissingField {
-            field: KEY_VAULT_UUID,
-        })?,
+        vault_uuid: vault_uuid.require(KEY_VAULT_UUID)?,
         format_version,
         suite_id,
-        owner_user_uuid: owner_user_uuid.ok_or(ManifestError::MissingField {
-            field: KEY_OWNER_USER_UUID,
-        })?,
-        vector_clock: vector_clock.ok_or(ManifestError::MissingField {
-            field: KEY_VECTOR_CLOCK,
-        })?,
-        blocks: blocks.ok_or(ManifestError::MissingField { field: KEY_BLOCKS })?,
-        trash: trash.ok_or(ManifestError::MissingField { field: KEY_TRASH })?,
-        kdf_params: kdf_params.ok_or(ManifestError::MissingField {
-            field: KEY_KDF_PARAMS,
-        })?,
-        unknown,
+        owner_user_uuid: owner_user_uuid.require(KEY_OWNER_USER_UUID)?,
+        vector_clock: vector_clock.require(KEY_VECTOR_CLOCK)?,
+        blocks: blocks.require(KEY_BLOCKS)?,
+        trash: trash.require(KEY_TRASH)?,
+        kdf_params: kdf_params.require(KEY_KDF_PARAMS)?,
+        unknown: unknown.into_map(),
     })
 }
 

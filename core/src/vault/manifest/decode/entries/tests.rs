@@ -23,6 +23,13 @@ use crate::vault::manifest::{
 
 use super::*;
 
+// `BTreeMap` used to reach this module through `use super::*`, because the
+// parser above declared its `unknown` bag as a bare
+// `BTreeMap<String, UnknownValue>`. #589 moved that behind
+// `slot::UnknownBag`, so the parent no longer imports it and this module,
+// which still builds expected bags by hand, imports it directly.
+use std::collections::BTreeMap;
+
 #[test]
 fn rejects_duplicate_device_uuid_in_vector_clock() {
     // Two DISTINCT vector_clock entries, encoded conformantly, then the
@@ -178,16 +185,23 @@ fn rejects_duplicate_trash_uuid() {
 // `a_manifest_with_a_repeated_unknown_key_is_rejected`
 // (`decode/tests.rs`) hand-construct the top-level map.
 
-/// A valid `vector_clock` entry map with `repeated`'s key/value pair
-/// appended a second time.
-fn vector_clock_entry_value_with_duplicate(repeated: &'static str) -> Value {
-    let mut entries: Vec<(Value, Value)> = vec![
+/// A valid `vector_clock` entry map's two known-key entries.
+fn vector_clock_entry_base_entries() -> Vec<(Value, Value)> {
+    let entries = vec![
         (
             Value::Text(KEY_DEVICE_UUID.into()),
             Value::Bytes([0x33; UUID_LEN].to_vec()),
         ),
         (Value::Text(KEY_COUNTER.into()), Value::Integer(7u64.into())),
     ];
+    assert_census(&entries, 2, "parse_vector_clock_entry");
+    entries
+}
+
+/// A valid `vector_clock` entry map with `repeated`'s key/value pair
+/// appended a second time.
+fn vector_clock_entry_value_with_duplicate(repeated: &'static str) -> Value {
+    let mut entries = vector_clock_entry_base_entries();
     let dup = entries
         .iter()
         .find(|(k, _)| matches!(k, Value::Text(s) if s == repeated))
@@ -197,11 +211,10 @@ fn vector_clock_entry_value_with_duplicate(repeated: &'static str) -> Value {
     Value::Map(entries)
 }
 
-/// A valid `kdf_params` map with `repeated`'s key/value pair appended a
-/// second time.
-fn kdf_params_value_with_duplicate(repeated: &'static str) -> Value {
+/// A valid `kdf_params` map's four known-key entries.
+fn kdf_params_base_entries() -> Vec<(Value, Value)> {
     let k = dummy_kdf_params();
-    let mut entries: Vec<(Value, Value)> = vec![
+    let entries = vec![
         (
             Value::Text(KEY_MEMORY_KIB.into()),
             Value::Integer(u64::from(k.memory_kib).into()),
@@ -216,6 +229,14 @@ fn kdf_params_value_with_duplicate(repeated: &'static str) -> Value {
         ),
         (Value::Text(KEY_SALT.into()), Value::Bytes(k.salt.to_vec())),
     ];
+    assert_census(&entries, 4, "parse_kdf_params");
+    entries
+}
+
+/// A valid `kdf_params` map with `repeated`'s key/value pair appended a
+/// second time.
+fn kdf_params_value_with_duplicate(repeated: &'static str) -> Value {
+    let mut entries = kdf_params_base_entries();
     let dup = entries
         .iter()
         .find(|(kk, _)| matches!(kk, Value::Text(s) if s == repeated))
@@ -225,10 +246,34 @@ fn kdf_params_value_with_duplicate(repeated: &'static str) -> Value {
     Value::Map(entries)
 }
 
+/// The known-key census each fixture builder below encodes.
+///
+/// **What this catches and what it does not**, because the wider reading is
+/// wrong. It reds when a builder's own entry list drifts from the count the
+/// sweeps were written against — i.e. when someone edits the builder. It is
+/// NOT a tripwire on the parser's match arms: adding a new arm to
+/// `parse_block_entry` changes nothing here.
+///
+/// For a *required* key that is self-correcting anyway — the parser would
+/// report `MissingField` against the unchanged fixture and every test using
+/// it reds at once. For an *optional* key nothing reds, and that shape is
+/// live rather than hypothetical: `parse_trash_entry` already has two
+/// (`fingerprint`, `purged_at_ms`). Adding a third means updating the count
+/// here by hand.
+fn assert_census(entries: &[(Value, Value)], expected: usize, parser: &str) {
+    assert_eq!(
+        entries.len(),
+        expected,
+        "{parser}'s fixture is expected to carry all {expected} known keys; \
+         a change here means the arm census moved and the sweeps below need \
+         the new key"
+    );
+}
+
 /// A valid `blocks` entry map's eight known-key entries, in no particular
 /// order — `parse_block_entry` dispatches by key text, not position.
 fn block_entry_base_entries() -> Vec<(Value, Value)> {
-    vec![
+    let entries = vec![
         (
             Value::Text(KEY_BLOCK_UUID.into()),
             Value::Bytes([0xb1; UUID_LEN].to_vec()),
@@ -258,7 +303,9 @@ fn block_entry_base_entries() -> Vec<(Value, Value)> {
             Value::Text(KEY_LAST_MOD_MS.into()),
             Value::Integer(2u64.into()),
         ),
-    ]
+    ];
+    assert_census(&entries, 8, "parse_block_entry");
+    entries
 }
 
 fn block_entry_value_with_duplicate(repeated: &'static str) -> Value {
@@ -289,7 +336,7 @@ fn block_entry_value_with_duplicate_unknown(unknown_key: &str) -> Value {
 
 /// A valid `trash` entry map's five known-key entries.
 fn trash_entry_base_entries() -> Vec<(Value, Value)> {
-    vec![
+    let entries = vec![
         (
             Value::Text(KEY_BLOCK_UUID.into()),
             Value::Bytes([0xde; UUID_LEN].to_vec()),
@@ -310,7 +357,9 @@ fn trash_entry_base_entries() -> Vec<(Value, Value)> {
             Value::Text(KEY_PURGED_AT_MS.into()),
             Value::Integer(3u64.into()),
         ),
-    ]
+    ];
+    assert_census(&entries, 5, "parse_trash_entry");
+    entries
 }
 
 fn trash_entry_value_with_duplicate(repeated: &'static str) -> Value {
@@ -579,4 +628,258 @@ fn accepts_duplicate_contact_uuid_in_recipients() {
         vec![dupe_recipient, dupe_recipient],
         "the repeat must round-trip verbatim, not be silently deduplicated"
     );
+}
+
+/// A duplicate key is reported even when the second copy is MALFORMED.
+///
+/// Every fixture above repeats a well-typed pair, so none of them can see
+/// the ordering this test pins: the vacancy check runs *before* the second
+/// copy is parsed. That ordering was an accident of how the guards were
+/// hand-written (`if slot.is_some() { .. }` preceding
+/// `slot = Some(take_*(..)?)`), and #589's slot type preserves it
+/// deliberately — [`Once::set`] takes a closure precisely so the fill
+/// cannot run once the slot is known to be occupied.
+///
+/// Without this test an eager `set(field, index, take_u64(v, KEY)?)` would
+/// flip these four rejections from `DuplicateKey` to `WrongType`, changing
+/// what a v1-frozen decoder reports for a real input class, with the whole
+/// suite green.
+///
+/// One case per nested parser, each repeating a key whose second copy is a
+/// text string where the spec requires bytes or an integer.
+#[test]
+fn a_duplicate_key_outranks_a_malformed_second_copy() {
+    /// A `Value::Text` is the wrong CBOR type for every key exercised
+    /// below, so reaching the fill at all yields `WrongType`.
+    fn malformed() -> Value {
+        Value::Text("not the type this key requires".into())
+    }
+
+    /// The first two entries of `base`, plus a third repeating `repeated`
+    /// with a malformed value.
+    ///
+    /// Truncating to two keys first is what fixes the repeat's ordinal at
+    /// **2** for every parser, whatever its map's real width — so the
+    /// `index` assertion below is one constant rather than four.
+    fn with_malformed_repeat(base: Vec<(Value, Value)>, repeated: &'static str) -> Value {
+        let mut entries: Vec<(Value, Value)> = base.into_iter().take(2).collect();
+        assert!(
+            entries
+                .iter()
+                .any(|(k, _)| matches!(k, Value::Text(s) if s == repeated)),
+            "{repeated} must be among the first two keys, or the third entry \
+             is not a REPEAT and this test proves nothing"
+        );
+        entries.push((Value::Text(repeated.into()), malformed()));
+        Value::Map(entries)
+    }
+
+    // Arguments are (the parse call, the repeated key, the parser's name).
+    // The parsers have different return types, so each runs its own match
+    // rather than sharing a loop over boxed closures.
+    macro_rules! assert_duplicate_wins {
+        ($parsed:expr, $repeated:expr, $what:literal) => {
+            match $parsed {
+                Err(ManifestError::DuplicateKey { field, index }) => {
+                    assert_eq!(field, $repeated, "{} must name the repeated key", $what);
+                    assert_eq!(index, 2, "{} must report the ordinal of the repeat", $what);
+                }
+                other => panic!(
+                    "{}: a duplicate key must outrank the malformed second copy, got {}",
+                    $what,
+                    unexpected(&other)
+                ),
+            }
+        };
+    }
+
+    assert_duplicate_wins!(
+        parse_vector_clock_entry(&with_malformed_repeat(
+            vector_clock_entry_base_entries(),
+            KEY_COUNTER
+        )),
+        KEY_COUNTER,
+        "vector_clock entry"
+    );
+    assert_duplicate_wins!(
+        parse_kdf_params(&with_malformed_repeat(
+            kdf_params_base_entries(),
+            KEY_MEMORY_KIB
+        )),
+        KEY_MEMORY_KIB,
+        "kdf_params"
+    );
+    assert_duplicate_wins!(
+        parse_block_entry(&with_malformed_repeat(
+            block_entry_base_entries(),
+            KEY_BLOCK_UUID
+        )),
+        KEY_BLOCK_UUID,
+        "block entry"
+    );
+    assert_duplicate_wins!(
+        parse_trash_entry(&with_malformed_repeat(
+            trash_entry_base_entries(),
+            KEY_BLOCK_UUID
+        )),
+        KEY_BLOCK_UUID,
+        "trash entry"
+    );
+}
+
+/// `entries` with the single pair named by `dropped` removed.
+///
+/// Asserts the key was present *exactly once* first, so a sweep that names a
+/// key the fixture does not carry fails loudly instead of silently testing
+/// the unmodified map — which would pass, because the unmodified map parses.
+fn without_key(mut entries: Vec<(Value, Value)>, dropped: &str) -> Vec<(Value, Value)> {
+    let before = entries.len();
+    entries.retain(|(k, _)| !matches!(k, Value::Text(s) if s == dropped));
+    assert_eq!(
+        entries.len(),
+        before - 1,
+        "{dropped} must be present exactly once for its removal to be the \
+         thing under test"
+    );
+    entries
+}
+
+/// The text of a fixture entry's key.
+fn text_key(k: &Value) -> String {
+    match k {
+        Value::Text(s) => s.clone(),
+        other => panic!("non-text fixture key: {other:?}"),
+    }
+}
+
+/// Every §4.2-required key of every nested map, dropped one at a time, must
+/// be named by the resulting [`ManifestError::MissingField`].
+///
+/// **The `set` half of this property was swept; the `require` half was not.**
+/// #589 made both a shared implementation, and `decode/tests.rs`'s top-level
+/// sweep records the consequence for `set`: once the arms share one
+/// `Once::set`, the `KEY_*` constant each arm passes is the only per-arm
+/// thing left, and nothing but a sweep can pin it. That argument holds
+/// verbatim for `Once::require`, and until this test there was exactly ONE
+/// assertion on a manifest `MissingField` name in the whole tree
+/// (`decode/tests.rs::rejects_missing_required_field_vault_uuid`, covering
+/// `vault_uuid`) against 26 `require` call sites.
+///
+/// `parse_block_entry` in particular ends in an eight-line struct literal of
+/// `x.require(KEY_X)?` calls — the canonical copy-paste site. A wrong
+/// constant there still *rejects* the manifest, so this is a diagnostic
+/// contract rather than an acceptance one; that diagnostic is a
+/// `&'static str` which crosses the FFI, and this repo already treats "which
+/// field gets named" as behaviour worth pinning cross-language (#597/#605).
+///
+/// The key lists are DERIVED from the fixture builders, not hardcoded, so a
+/// key added to a builder is swept automatically. The per-parser counts are
+/// asserted because that is the half derivation cannot check: they sum to 17,
+/// which with `decode/tests.rs`'s nine top-level keys is all 26 `require`
+/// sites.
+#[test]
+fn every_nested_parser_names_the_required_key_it_is_missing() {
+    /// The two §4.2 keys of a `trash` entry that are genuinely optional.
+    /// They take `Once::into_option`, not `Once::require`, and are asserted
+    /// separately below — dropping one must still *parse*.
+    const TRASH_OPTIONAL: [&str; 2] = [KEY_FINGERPRINT, KEY_PURGED_AT_MS];
+
+    macro_rules! assert_missing_names_it {
+        ($parsed:expr, $dropped:expr, $what:literal) => {
+            match $parsed {
+                Err(ManifestError::MissingField { field }) => assert_eq!(
+                    field, $dropped,
+                    "{} must name the required key that was dropped",
+                    $what
+                ),
+                other => panic!(
+                    "{}: dropping {} must report MissingField, got {}",
+                    $what,
+                    $dropped,
+                    unexpected(&other)
+                ),
+            }
+        };
+    }
+
+    let mut swept = 0usize;
+
+    for (k, _) in vector_clock_entry_base_entries() {
+        let dropped = text_key(&k);
+        let v = Value::Map(without_key(vector_clock_entry_base_entries(), &dropped));
+        assert_missing_names_it!(parse_vector_clock_entry(&v), dropped, "vector_clock entry");
+        swept += 1;
+    }
+    assert_eq!(swept, 2, "vector_clock entries have two required keys");
+
+    let mut kdf_swept = 0usize;
+    for (k, _) in kdf_params_base_entries() {
+        let dropped = text_key(&k);
+        let v = Value::Map(without_key(kdf_params_base_entries(), &dropped));
+        assert_missing_names_it!(parse_kdf_params(&v), dropped, "kdf_params");
+        kdf_swept += 1;
+    }
+    assert_eq!(kdf_swept, 4, "kdf_params has four required keys");
+    swept += kdf_swept;
+
+    let mut block_swept = 0usize;
+    for (k, _) in block_entry_base_entries() {
+        let dropped = text_key(&k);
+        let v = Value::Map(without_key(block_entry_base_entries(), &dropped));
+        assert_missing_names_it!(parse_block_entry(&v), dropped, "block entry");
+        block_swept += 1;
+    }
+    assert_eq!(block_swept, 8, "block entries have eight required keys");
+    swept += block_swept;
+
+    let mut trash_swept = 0usize;
+    for (k, _) in trash_entry_base_entries() {
+        let dropped = text_key(&k);
+        if TRASH_OPTIONAL.contains(&dropped.as_str()) {
+            continue;
+        }
+        let v = Value::Map(without_key(trash_entry_base_entries(), &dropped));
+        assert_missing_names_it!(parse_trash_entry(&v), dropped, "trash entry");
+        trash_swept += 1;
+    }
+    assert_eq!(
+        trash_swept, 3,
+        "trash entries have three required keys and two optional ones"
+    );
+    swept += trash_swept;
+
+    assert_eq!(
+        swept, 17,
+        "the four nested parsers hold 17 of the decoder's 26 `require` sites; \
+         the other nine are the top level's, swept in `decode/tests.rs`"
+    );
+}
+
+/// The mirror of the sweep above: `TrashEntry`'s two optional §4.2 keys must
+/// NOT be required.
+///
+/// This is what pins that they take [`Once::into_option`] rather than
+/// [`Once::require`]. The two accessors are not interchangeable by accident —
+/// swapping one for the other is a type error against `TrashEntry`'s field
+/// types — but that is a property of the destination struct, not of `Once`,
+/// and it would stop holding the day a spec-required field is declared
+/// `Option<T>`. Asserting the observable behaviour costs four lines.
+#[test]
+fn a_trash_entry_missing_an_optional_key_still_parses() {
+    for absent in [KEY_FINGERPRINT, KEY_PURGED_AT_MS] {
+        let v = Value::Map(without_key(trash_entry_base_entries(), absent));
+        let entry = parse_trash_entry(&v)
+            .unwrap_or_else(|e| panic!("{absent} is optional in §4.2, got Err({e:?})"));
+        match absent {
+            KEY_FINGERPRINT => assert!(
+                entry.fingerprint.is_none(),
+                "an absent fingerprint must decode to None"
+            ),
+            KEY_PURGED_AT_MS => assert!(
+                entry.purged_at_ms.is_none(),
+                "an absent purged_at_ms must decode to None"
+            ),
+            other => panic!("unexpected optional key {other}"),
+        }
+    }
 }
