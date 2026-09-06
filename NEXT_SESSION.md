@@ -1,1 +1,1 @@
-docs/handoffs/2026-09-05-decoder-slot-invariant-shipped.md
+docs/handoffs/2026-09-07-cause-coverage-shipped.md
