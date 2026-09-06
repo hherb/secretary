@@ -171,3 +171,149 @@ pub fn body_for(level: Level, shape: &Shape) -> Vec<u8> {
     spliced.splice(at..at + NEEDLE.len(), shape.bytes.iter().copied());
     spliced
 }
+
+// ---------------------------------------------------------------------------
+// The mutation family's bodies (#613)
+// ---------------------------------------------------------------------------
+//
+// These bodies cannot be produced by `encode_manifest` -- it sorts all five
+// arrays and emits map keys in canonical order, which are the very
+// disciplines under test -- so each one round-trips the encoded baseline
+// through `ciborium::Value` and reorders exactly one sequence there. The
+// round trip is an identity on the rest of the body: `encode_manifest`'s
+// output is canonical, and `ciborium`'s serializer emits definite lengths
+// and shortest-form heads, so nothing but the reordered sequence moves.
+// `body_for_case` asserts that the mutation actually changed the bytes, so
+// a case that silently became a no-op fails rather than joining the corpus
+// as a body the decoder accepts.
+
+use ciborium::Value;
+
+use super::cases::{Case, MapPath, Mutation};
+
+/// The entry list of the CBOR map `v`, or a panic naming what it is instead.
+fn map_entries_mut(v: &mut Value) -> &mut Vec<(Value, Value)> {
+    match v {
+        Value::Map(entries) => entries,
+        other => panic!("expected a CBOR map, got {other:?}"),
+    }
+}
+
+/// The value stored under text key `key` in the CBOR map `v`.
+fn value_at_key_mut<'a>(v: &'a mut Value, key: &str) -> &'a mut Value {
+    map_entries_mut(v)
+        .iter_mut()
+        .find(|(k, _)| k.as_text() == Some(key))
+        .map(|(_, val)| val)
+        .unwrap_or_else(|| panic!("key {key:?} not found"))
+}
+
+/// The item list of the CBOR array stored under text key `key` in map `v`.
+fn array_items_mut<'a>(v: &'a mut Value, key: &str) -> &'a mut Vec<Value> {
+    match value_at_key_mut(v, key) {
+        Value::Array(items) => items,
+        other => panic!("key {key:?} is not an array: {other:?}"),
+    }
+}
+
+/// Serialize a decoded body back to bytes.
+fn encode_value(v: &Value) -> Vec<u8> {
+    let mut out = Vec::new();
+    ciborium::ser::into_writer(v, &mut out).expect("re-encode mutated body");
+    out
+}
+
+/// Reverse one of §4.2's five sorted arrays inside an encoded manifest body.
+///
+/// `outer` names a top-level key; when `inner` is `Some`, `outer` must be an
+/// array of maps and the reversal targets `outer[0][inner]` instead. Two
+/// levels is all the manifest has, so this is written flat rather than as a
+/// general path walk.
+///
+/// **The single implementation of this reversal**, shared by the corpus
+/// generator and by `array_sort_disciplines_are_enforced_and_not_vacuous`,
+/// so the bytes the fixture-independent test exercises cannot drift from
+/// the bytes the `arraysort__*` rows commit.
+pub fn reverse_array(body: &[u8], outer: &str, inner: Option<&str>) -> Vec<u8> {
+    let mut v: Value = ciborium::de::from_reader(body).expect("parse body");
+    let target = match inner {
+        None => array_items_mut(&mut v, outer),
+        Some(key) => {
+            let first = array_items_mut(&mut v, outer)
+                .first_mut()
+                .expect("outer array must be non-empty");
+            array_items_mut(first, key)
+        }
+    };
+    assert!(
+        target.len() >= 2,
+        "array {outer}/{inner:?} has {} element(s) -- a sort discipline \
+         cannot be violated with fewer than 2, so this case would be vacuous",
+        target.len()
+    );
+    target.reverse();
+    encode_value(&v)
+}
+
+/// Reverse the ENTRY ORDER of the map at `path`, leaving every key and
+/// every value byte-identical.
+///
+/// Two entries would be enough to violate the order; the assertion below
+/// is what stops a future base manifest whose target map shrank to one
+/// entry from making a row vacuous -- it would re-encode to itself and be
+/// ACCEPTED, joining the corpus as a row that proves nothing.
+pub fn reverse_map_keys(body: &[u8], path: MapPath) -> Vec<u8> {
+    let mut v: Value = ciborium::de::from_reader(body).expect("parse body");
+    {
+        let target: &mut Value = match path {
+            MapPath::Top => &mut v,
+            MapPath::KdfParams => value_at_key_mut(&mut v, "kdf_params"),
+            MapPath::FirstBlock => array_items_mut(&mut v, "blocks")
+                .first_mut()
+                .expect("blocks must be non-empty"),
+            MapPath::FirstTrash => array_items_mut(&mut v, "trash")
+                .first_mut()
+                .expect("trash must be non-empty"),
+        };
+        let entries = map_entries_mut(target);
+        assert!(
+            entries.len() >= 2,
+            "map {path:?} has {} entr(y/ies) -- key order cannot be violated \
+             with fewer than 2, so this case would be vacuous",
+            entries.len()
+        );
+        entries.reverse();
+    }
+    encode_value(&v)
+}
+
+/// Rebuild one corpus row's manifest body from its [`Case`].
+///
+/// **The single implementation for BOTH families**, used by the generator
+/// and by the replay's rebuild-and-compare, so the bytes a row is checked
+/// against cannot drift from the bytes that produced it (#614 review).
+pub fn body_for_case(case: Case) -> Vec<u8> {
+    match case {
+        Case::Splice { level, shape } => body_for(level, shape),
+        Case::Mutate(mutation_case) => {
+            // Every mutation row is built from the SAME `Level::Top`
+            // baseline, so a divergence between two of them is always the
+            // mutation and never the base.
+            let base = encode_manifest(&base_manifest(Level::Top))
+                .expect("encode base manifest")
+                .expose()
+                .to_vec();
+            let mutated = match mutation_case.mutation {
+                Mutation::ReverseArray { outer, inner } => reverse_array(&base, outer, inner),
+                Mutation::ReverseMapKeys(path) => reverse_map_keys(&base, path),
+            };
+            assert_ne!(
+                mutated, base,
+                "mutation {} produced the baseline body unchanged -- the row \
+                 would be an ACCEPT masquerading as a REJECT",
+                mutation_case.label
+            );
+            mutated
+        }
+    }
+}

@@ -19,13 +19,43 @@ classify by the same route, and they do not.
 
 from __future__ import annotations
 
-from conformance_lib.codec.manifest_decode import py_decode_manifest
+from dataclasses import dataclass
+
+from conformance_lib.codec.manifest_decode import (
+    ArraySortOrderViolation,
+    NonCanonicalBody,
+    py_decode_manifest,
+)
 from conformance_lib.codec.scanner import NonCanonicalItem
 from conformance_lib.fixtures import load_json_fixture, manifest_canonicality_kat_path
 from conformance_lib.rejection import _REJECTION_EXCEPTIONS
+from conformance_lib.sections.manifest_canonicality_corpus import (
+    expected_labels,
+    label_issues,
+)
 
-# The fixture's `expect_cause` vocabulary -> the crypto-design §6.2 rule
-# number a byte-retaining reader detects for that shape.
+# The fixture's `expect_cause` vocabulary -> what a byte-retaining reader
+# must do with a row declaring it.
+#
+# TWO KINDS OF ENTRY, and the second one is what #613 needed.  Until then
+# every cause mapped to a crypto-design §6.2 NUMBERED rule, so the table was
+# `dict[str | None, int]`.  The two causes #613 added map to no numbered rule
+# at all, and pretending otherwise would make this reader disagree with a
+# conformant implementation over a rule neither document assigns:
+#
+#   * `ArraySortOrder` is `docs/vault-format.md` §4.2's own rule.  §6.2 says
+#     nothing about array elements.
+#   * `Unclassified` is the residue -- a real divergence with NO attributable
+#     violation.  In practice outer-map key disorder, i.e. §6.2 rule 1, which
+#     `_check_canonical_item` deliberately never checks (§4.2's table marks
+#     rules 1 and 5 unenforced inside a forward-compat subtree, and checking
+#     them would reintroduce the #592 divergence).
+#
+# So those two are pinned by the reader's exception TYPE instead.  That is a
+# strictly structured discriminator, never message text: a substring match on
+# `"is not sorted"` keeps passing when the message is reworded, and keeps
+# passing when a DIFFERENT check grows a message containing the fragment --
+# the failure #608's review found on the encoder side of this corpus family.
 #
 # `None` -- a rejecting row with no cause -- means "rejected BEFORE the §4.3
 # step-4 re-encode comparison".  Mapping it to rule 4 is not a guess about
@@ -48,6 +78,11 @@ from conformance_lib.rejection import _REJECTION_EXCEPTIONS
 # (2) separately").  So Rust reaches rules 2 and 3 through the re-encode
 # plus #590's classifier, and `_check_canonical_item` reaches them directly.
 #
+# `ArraySortOrder` has the same asymmetry one layer up: Rust classifies it
+# off the PARSED manifest after the re-encode has already rejected, this
+# reader checks the discipline directly and BEFORE the re-encode runs.  Same
+# rule, different mechanism -- which is the whole claim of this section.
+#
 # The rule NUMBERS follow `docs/vault-format.md` §4.2's per-rule table, not
 # crypto-design §6.2's prose.  §6.2 rule 4 reads "No tags, no floats, no
 # indefinite-length items", so by §6.2's own text an indefinite item
@@ -59,30 +94,73 @@ from conformance_lib.rejection import _REJECTION_EXCEPTIONS
 # reader (#614 review).
 #
 # FAIL-CLOSED: a cause spelling absent from this table is an issue, never a
-# skipped row.  That includes the two variants this corpus does not reach
-# today -- `ArraySortOrder` and `Unclassified` (#613) -- as well as any
-# variant added later.  NOTE for #613: neither of those two can simply be
-# added as a row here.  `ArraySortOrder` is not a §6.2 rule at all (array
-# sort disciplines are §4.2, and §6.2 says nothing about array elements),
-# and `Unclassified` is usually outer-map key disorder, i.e. §6.2 rule 1,
-# which `_check_canonical_item` deliberately never checks.  Both land in
-# this reader as plain, unnumbered `ValueError`s, so #613 needs a second
-# discriminator kind rather than two more rows.
-_CAUSE_TO_RULE: dict[str | None, int] = {
-    "IndefiniteLength": 2,
-    "NonShortestForm": 3,
-    None: 4,
+# skipped row.  That covers any variant added later -- and it is what caught
+# #613's own two the moment the fixture grew them, rather than skipping nine
+# rows silently.
+
+
+@dataclass(frozen=True)
+class RuleNumber:
+    """The reader must raise `NonCanonicalItem` carrying this rule number."""
+
+    rule: int
+
+    def describe(self) -> str:
+        return f"§6.2 rule {self.rule}"
+
+
+@dataclass(frozen=True)
+class ExceptionKind:
+    """The reader must raise exactly this exception class.
+
+    For the two causes that map to no §6.2 numbered rule.  `detects` is the
+    §4.2 property the class stands for, used only in diagnostics.
+    """
+
+    exc: type[Exception]
+    detects: str
+
+    def describe(self) -> str:
+        return f"{self.exc.__name__} ({self.detects})"
+
+
+_CAUSE_EXPECTATION: dict[str | None, RuleNumber | ExceptionKind] = {
+    "IndefiniteLength": RuleNumber(2),
+    "NonShortestForm": RuleNumber(3),
+    None: RuleNumber(4),
+    "ArraySortOrder": ExceptionKind(
+        ArraySortOrderViolation, "vault-format §4.2 array sort discipline"
+    ),
+    "Unclassified": ExceptionKind(
+        NonCanonicalBody, "a §4.3 step-4 divergence with no attributable rule"
+    ),
 }
 
-_EXPECTED_ROWS = 21
-_EXPECTED_CAUSED_REJECTS = 6
-_EXPECTED_UNCAUSED_REJECTS = 3
 
-# The corpus is a `<level>__<shape>` product. Checking the PRODUCT, not just
-# the row count, is what stops 21 rows drawn from one nesting level passing
-# (#614 review) -- the level dimension is the corpus's stated premise, and
-# nothing on this side looked at it.
-_EXPECTED_LEVELS = ("top", "block", "trash")
+def _discriminator(e: Exception) -> str | None:
+    """The structured discriminator `e` carries, or `None` if it carries none.
+
+    One vocabulary for both kinds of expectation, so the coverage floor at
+    the end of the section can be a single set comparison rather than two
+    that could disagree about which rows counted.
+    """
+    if isinstance(e, NonCanonicalItem):
+        return f"rule {e.rule}"
+    if isinstance(e, (ArraySortOrderViolation, NonCanonicalBody)):
+        return type(e).__name__
+    return None
+
+
+def _expected_discriminator(want: RuleNumber | ExceptionKind) -> str:
+    """The discriminator string a conformant reader must produce for `want`."""
+    if isinstance(want, RuleNumber):
+        return f"rule {want.rule}"
+    return want.exc.__name__
+
+
+_EXPECTED_ROWS = len(expected_labels())
+_EXPECTED_CAUSED_REJECTS = 15
+_EXPECTED_UNCAUSED_REJECTS = 3
 
 # Every column this section reads. Checked up front so a row-shape defect
 # produces a FAIL line rather than a traceback out of `main()`: MCC runs
@@ -139,7 +217,7 @@ def section_manifest_canonicality_cause() -> tuple[bool, list[str]]:
 
     caused = 0
     uncaused = 0
-    rules_seen: set[int] = set()
+    discriminators_seen: set[str] = set()
 
     labels: list[str] = []
 
@@ -186,14 +264,16 @@ def section_manifest_canonicality_cause() -> tuple[bool, list[str]]:
                 )
             continue
 
-        if declared not in _CAUSE_TO_RULE:
+        if declared not in _CAUSE_EXPECTATION:
             issues.append(
                 f"row {label!r}: unrecognised expect_cause {declared!r} -- add it to "
-                "_CAUSE_TO_RULE with the §6.2 rule a byte-retaining reader detects "
-                "for it, rather than letting the row be skipped"
+                "_CAUSE_EXPECTATION with the §6.2 rule number a byte-retaining "
+                "reader detects for it, or the exception type that stands for it "
+                "when no numbered rule applies, rather than letting the row be "
+                "skipped"
             )
             continue
-        want_rule = _CAUSE_TO_RULE[declared]
+        want = _CAUSE_EXPECTATION[declared]
 
         if declared is None:
             uncaused += 1
@@ -215,27 +295,38 @@ def section_manifest_canonicality_cause() -> tuple[bool, list[str]]:
             )
             continue
 
+        # ONE `except` clause, dispatching afterwards, rather than a
+        # `NonCanonicalItem` clause ahead of the general one. With two kinds
+        # of expectation the ordered form has an ordering trap: both #613
+        # types are `ValueError` subclasses, so a future type that also
+        # subclassed `NonCanonicalItem` would be silently captured by the
+        # narrower clause and scored against the wrong expectation. Narrow
+        # regardless, for the reason `rejection.py` states -- a bare
+        # `except Exception` would score a NameError/AttributeError inside
+        # the decoder as a verdict.
         try:
             py_decode_manifest(body)
-        except NonCanonicalItem as e:
-            rules_seen.add(e.rule)
-            if e.rule != want_rule:
-                issues.append(
-                    f"row {label!r}: corpus declares cause {declared!r} (§6.2 rule "
-                    f"{want_rule}), byte-retaining reader detected rule {e.rule}: {e}"
-                )
         except _REJECTION_EXCEPTIONS as e:
-            # Rejected, but by a check that carries no rule number -- so the
-            # two implementations do NOT agree on which rule this body
-            # violates, which is precisely what this section exists to
-            # detect. Narrow, for the reason `rejection.py` states: a bare
-            # `except Exception` would score a NameError/AttributeError
-            # inside the decoder as a verdict.
-            issues.append(
-                f"row {label!r}: corpus declares cause {declared!r} (§6.2 rule "
-                f"{want_rule}), but the reader rejected with a non-numbered "
-                f"{type(e).__name__}: {e}"
-            )
+            got = _discriminator(e)
+            if got is not None:
+                discriminators_seen.add(got)
+            expected_discriminator = _expected_discriminator(want)
+            if got is None:
+                # Rejected, but by a check carrying no structured
+                # discriminator at all -- so the two implementations do NOT
+                # agree on why this body is non-conformant, which is
+                # precisely what this section exists to detect.
+                issues.append(
+                    f"row {label!r}: corpus declares cause {declared!r} "
+                    f"({want.describe()}), but the reader rejected with an "
+                    f"undiscriminated {type(e).__name__}: {e}"
+                )
+            elif got != expected_discriminator:
+                issues.append(
+                    f"row {label!r}: corpus declares cause {declared!r} "
+                    f"({want.describe()}), byte-retaining reader produced "
+                    f"{got!r}: {e}"
+                )
         else:
             issues.append(
                 f"row {label!r}: corpus declares cause {declared!r}, so the body must "
@@ -244,37 +335,21 @@ def section_manifest_canonicality_cause() -> tuple[bool, list[str]]:
 
     if len(rows) != _EXPECTED_ROWS:
         issues.append(
-            f"corpus must carry 7 shapes x 3 levels = {_EXPECTED_ROWS} rows, "
+            f"corpus must carry the {_EXPECTED_ROWS}-row two-family case table, "
             f"found {len(rows)}"
         )
 
-    # The label set must be a full `<level>__<shape>` product. A bare row
-    # count is satisfied by 21 copies of one row, and -- the case that
-    # actually mattered -- by 21 rows drawn from a single nesting level.
-    if len(set(labels)) != len(labels):
-        dupes = sorted({lbl for lbl in labels if labels.count(lbl) > 1})
-        issues.append(f"corpus has duplicate labels: {dupes}")
-    by_level: dict[str, set[str]] = {}
-    for lbl in labels:
-        level, _, shape = lbl.partition("__")
-        if not shape:
-            issues.append(f"row {lbl!r}: label is not <level>__<shape>")
-            continue
-        by_level.setdefault(level, set()).add(shape)
-    if set(by_level) != set(_EXPECTED_LEVELS):
-        issues.append(
-            f"corpus must cover levels {sorted(_EXPECTED_LEVELS)}, "
-            f"found {sorted(by_level)}"
-        )
-    elif len({frozenset(shapes) for shapes in by_level.values()}) != 1:
-        issues.append(
-            "every level must carry the SAME set of shapes: "
-            + "; ".join(f"{lvl}={sorted(sh)}" for lvl, sh in sorted(by_level.items()))
-        )
+    # The label floor, shared with Section MCK so the two cannot drift onto
+    # two ideas of the same corpus. A bare row count is satisfied by N
+    # copies of one row, and -- the case that actually mattered -- by rows
+    # drawn from a single nesting level (#614 review).
+    issues.extend(label_issues(labels))
+
     if caused != _EXPECTED_CAUSED_REJECTS:
         issues.append(
             f"expected {_EXPECTED_CAUSED_REJECTS} rejecting rows WITH a cause "
-            f"(rules 2 and 3, three levels each), found {caused}"
+            f"(rules 2 and 3 at three levels each, plus the 9 #613 mutation "
+            f"rows), found {caused}"
         )
     if uncaused != _EXPECTED_UNCAUSED_REJECTS:
         issues.append(
@@ -286,15 +361,28 @@ def section_manifest_canonicality_cause() -> tuple[bool, list[str]]:
 
     # Only meaningful once every row above agreed; a mismatched row already
     # reported its own issue and this would add noise rather than signal.
-    if rules_seen != {2, 3, 4}:
+    #
+    # Derived from `_CAUSE_EXPECTATION` rather than written out, so a cause
+    # added to that table without a corpus row reds here instead of being
+    # declared covered by a literal nobody updated. This is the Python side
+    # of Rust's `causes_seen == ALL_CAUSES` assertion, and #613 is what made
+    # both of them non-vacuous: before it, two of the four causes had no row
+    # and both sides recorded the gap in prose.
+    want_discriminators = {
+        _expected_discriminator(expectation) for expectation in _CAUSE_EXPECTATION.values()
+    }
+    if discriminators_seen != want_discriminators:
         return False, [
-            f"the byte-retaining reader reported rules {sorted(rules_seen)} across the "
-            "corpus, expected exactly [2, 3, 4] -- a reader collapsing every violation "
-            "onto one rule number satisfies the per-row checks and classifies nothing"
+            f"the byte-retaining reader produced {sorted(discriminators_seen)} across "
+            f"the corpus, expected exactly {sorted(want_discriminators)} -- a reader "
+            "collapsing every violation onto one verdict satisfies the per-row checks "
+            "and classifies nothing, and a cause with no corpus row has no "
+            "cross-language agreement at all"
         ]
 
     return True, [
         f"PASS  manifest canonicality causes: {caused} caused + {uncaused} uncaused "
-        f"rejections agree with the Rust NonCanonicalCause column, "
-        f"§6.2 rules {sorted(rules_seen)} all exercised"
+        f"rejections agree with the Rust NonCanonicalCause column; all "
+        f"{len(want_discriminators)} discriminators exercised "
+        f"({', '.join(sorted(want_discriminators))})"
     ]

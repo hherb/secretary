@@ -1,9 +1,9 @@
 """Section MCK -- `manifest_canonicality_kat.json` §4.2 per-rule corpus replay.
 
-21 rows against the per-rule table in vault-format.md §4.2, replayed
-cross-language. Carries a NAIVE CONTROL: a decoder without the span-scanner
-must diverge on rows the real one gets right, or the corpus is not
-discriminating.
+The per-rule table in vault-format.md §4.2, replayed cross-language over both
+of the corpus's families (see `manifest_canonicality_corpus`). Carries a NAIVE
+CONTROL: a decoder without the span-scanner must diverge on rows the real one
+gets right, or the corpus is not discriminating.
 """
 
 from __future__ import annotations
@@ -12,23 +12,32 @@ from __future__ import annotations
 from conformance_lib.codec.manifest_decode import py_decode_manifest
 from conformance_lib.fixtures import load_json_fixture, manifest_canonicality_kat_path
 from conformance_lib.rejection import _REJECTION_EXCEPTIONS
+from conformance_lib.sections.manifest_canonicality_corpus import (
+    expected_labels,
+    label_issues,
+)
 
 def section_manifest_canonicality_kat() -> tuple[bool, list[str]]:
     """Replay `manifest_canonicality_kat.json` -- the §4.2 per-rule table,
     at all three nesting levels the corpus carries (#583, #592).
 
-    The corpus is 21 rows: 7 shapes x 3 levels (`top__*`, `block__*`,
-    `trash__*`), because `BlockEntry` and `TrashEntry` each carry their own
-    forward-compat `unknown` bag and the deepest divergence this slice
-    found lives at block-entry level. Two readers, one corpus:
+    The corpus is TWO families. The splice family is 7 shapes x 3 levels
+    (`top__*`, `block__*`, `trash__*`), because `BlockEntry` and
+    `TrashEntry` each carry their own forward-compat `unknown` bag and the
+    deepest divergence #592 found lives at block-entry level. The mutation
+    family (`arraysort__*`, `keyorder__*`) is #613's: whole-body reorderings
+    that no `unknown`-subtree splice can express, added so Rust's remaining
+    two `NonCanonicalCause` variants get a cross-language pin. This section
+    treats both alike -- it replays the recorded verdict, and Section MCC
+    is what reads the `expect_cause` column. Two readers, one corpus:
 
     1. `py_decode_manifest` (byte-retaining) MUST agree with the recorded
-       Rust verdict on every row. These 21 rows are EVIDENCE for the "two
+       Rust verdict on every row. These rows are EVIDENCE for the "two
        conformant readers accept the same set" property §4.2 states in
        prose (#583), not a proof of it: what this assertion actually
        establishes is that `py_decode_manifest` and `decode_manifest`
-       agree on these specific 21 rows, at the three nesting levels the
-       corpus carries (top-level, block entry, trash entry).
+       agree on these specific rows, at the nesting levels and in the
+       mutation positions the corpus carries.
     2. A deliberately naive `cbor2.loads` reader MUST DIVERGE on all
        THREE `*__rule5_duplicate_key` rows (one per level). This is a
        POSITIVE CONTROL: without it, a corpus that happened to contain no
@@ -97,8 +106,9 @@ def section_manifest_canonicality_kat() -> tuple[bool, list[str]]:
         except _REJECTION_EXCEPTIONS:
             # NARROW, for the reason `naive_accepts` above states about
             # itself and this arm did not apply to the reader actually
-            # under test (#595). 9 of the 21 rows expect a REJECT, so a
-            # bare `except Exception` let a `NameError`/`AttributeError`
+            # under test (#595). Most of the corpus expects a REJECT -- 18
+            # of the 30 rows as of #613, and 9 of 21 when this was written
+            # -- so a bare `except Exception` let a `NameError`/`AttributeError`
             # inside `py_decode_manifest` satisfy them for the wrong
             # reason -- verified by mutation: making every rejection raise
             # `NameError` instead left this section reporting ok=True.
@@ -130,8 +140,8 @@ def section_manifest_canonicality_kat() -> tuple[bool, list[str]]:
 
     # The KNOWN-NEGATIVE half, without which the control is one-sided
     # (#595). The membership check above is satisfied by a naive reader
-    # that returns False for EVERYTHING: all 12 `expect_accept` rows then
-    # land in `divergences`, and the 3 rule-5 rows are a subset of them.
+    # that returns False for EVERYTHING: every `expect_accept` row then
+    # lands in `divergences`, and the 3 rule-5 rows are a subset of them.
     # Verified by execution -- with `naive_accepts` stuck at False the
     # control passed having proven nothing. A reader that is uniformly
     # False now fails here instead, which is the two-sided discipline
@@ -161,8 +171,15 @@ def section_manifest_canonicality_kat() -> tuple[bool, list[str]]:
     # decoder that accepts everything.
     n_accept = sum(1 for r in rows if r["expect_accept"])
     n_reject = len(rows) - n_accept
-    if len(rows) != 21:
-        issues.append(f"corpus must carry 7 shapes x 3 levels = 21 rows, found {len(rows)}")
+    want_rows = len(expected_labels())
+    if len(rows) != want_rows:
+        issues.append(
+            f"corpus must carry the {want_rows}-row two-family case table, "
+            f"found {len(rows)}"
+        )
+    # Shared with Section MCC, so the two readers of this fixture cannot
+    # drift onto two ideas of which rows it is supposed to hold.
+    issues.extend(label_issues([r["label"] for r in rows]))
     if n_accept == 0:
         issues.append("corpus has no ACCEPT rows -- it would pass by rejecting everything")
     if n_reject == 0:

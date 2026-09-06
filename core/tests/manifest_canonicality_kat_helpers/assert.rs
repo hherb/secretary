@@ -46,6 +46,22 @@ pub fn cause_name(cause: NonCanonicalCause) -> &'static str {
     }
 }
 
+/// Every [`NonCanonicalCause`] variant, in one place.
+///
+/// **The one place a fifth variant is not a compile error.** `cause_name`'s
+/// `match` is exhaustive, so a new variant fails to build there; this array
+/// would silently stay three-quarters complete. Two tests depend on it and
+/// neither can see that omission on its own, so the in-crate
+/// `manifest/cause/tests.rs::every_variant_is_listed_in_all_causes` covers
+/// the axis an integration test cannot (`--cfg test` is not propagated to
+/// dependencies).
+pub const ALL_CAUSES: [NonCanonicalCause; 4] = [
+    NonCanonicalCause::ArraySortOrder,
+    NonCanonicalCause::IndefiniteLength,
+    NonCanonicalCause::NonShortestForm,
+    NonCanonicalCause::Unclassified,
+];
+
 /// Assert that `err` is the rejection the corpus row DECLARES, and say
 /// which mechanism produced it.
 ///

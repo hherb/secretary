@@ -21,6 +21,69 @@ from conformance_lib.codec.required_keys import first_missing_key_in_sorted_orde
 from conformance_lib.codec.scanner import _check_canonical_item, _decode_head, _scan_map_entries
 from conformance_lib.constants import FORMAT_VERSION, SUITE_ID
 
+class ArraySortOrderViolation(ValueError):
+    """One of `docs/vault-format.md` §4.2's five sorted arrays arrived out of
+    its fixed order.
+
+    **Deliberately NOT a `NonCanonicalItem`.**  That type carries a
+    crypto-design §6.2 rule NUMBER, and array sort order is not one of §6.2's
+    five rules -- §6.2 says nothing about array elements at all.  It is §4.2's
+    own rule, so there is no number to carry and inventing one would make this
+    reader disagree with a conformant implementation over a rule neither
+    document assigns.  Section MCC therefore discriminates on the TYPE here,
+    which is the second KIND of expectation entry #613 needed.
+
+    **The two implementations reach this by different routes, and §4.2 makes
+    that normative.**  Rust reaches it as `NonCanonicalCause::ArraySortOrder`,
+    a classification of a §4.3 step-4 re-encode divergence that has ALREADY
+    decided to reject (`encode_manifest` sorts all five arrays on output, so
+    an unsorted input cannot re-encode to itself).  This byte-retaining reader
+    re-emits its input unconditionally, so the re-encode can never see array
+    disorder; it must check -- and does check -- the discipline directly,
+    before that comparison runs.
+
+    No custom `__init__`, unlike `NonCanonicalItem`: this type's IDENTITY is
+    the whole discriminator, so there is no structured payload to carry, and
+    `BaseException.__reduce__`'s `(cls, self.args)` therefore round-trips
+    through `copy`/`pickle` correctly on its own.  Adding a payload later
+    means adding a `__reduce__` with it (#614 review).
+
+    Subclasses `ValueError` for the same cross-cutting reason
+    `NonCanonicalItem` does: `conformance_lib.rejection`'s allowlist already
+    admits `ValueError` as "this input is non-conformant", so every existing
+    caller -- including `diff_replay.py`'s reject-vs-error split -- keeps
+    scoring these as a verdict rather than as a harness failure.
+    """
+
+
+class NonCanonicalBody(ValueError):
+    """The §4.3 step-4 re-encode did not reproduce the input byte for byte,
+    and no numbered-rule violation accounts for it.
+
+    The counterpart of Rust's `NonCanonicalCause::Unclassified`, and honest
+    for the same reason: the body carries no encoding-level violation to find
+    -- every head is canonical, every length definite -- so the divergence is
+    real but unattributable.  Map-key disorder is the shape that reaches here
+    in practice: it re-encodes to a different byte string while every
+    individual head stays perfectly canonical.
+
+    **The arm whose correctness argument is subtlest, which is why it wanted a
+    second implementation to agree with it.**  #590's first Rust classifier
+    read the CBOR head at the first differing byte, which for key disorder
+    lands INSIDE a key's UTF-8 payload -- so an ordinary character (`_` =
+    0x5F, `8` = 0x38, `x` = 0x78) was reported as an indefinite-length or
+    non-shortest-form head, and because `unknown` keys are wire data a peer
+    could CHOOSE which wrong cause a v1 client printed.
+
+    Reaching this class is not a claim that rules 2, 3 and 4 were checked and
+    passed -- `_check_canonical_item` runs on VALUES, never on the body as a
+    whole, so the outer map's own head reaches only this comparison.  It is
+    the residue: rejected, with nothing further to say.
+
+    No custom `__init__`, for the reason `ArraySortOrderViolation` states.
+    """
+
+
 def py_decode_manifest(data: bytes) -> dict:
     """Strict §4.2/§4.3 manifest BODY decoder matching
     `manifest/decode/mod.rs::decode_manifest`.
@@ -148,7 +211,7 @@ def py_decode_manifest(data: bytes) -> dict:
         # accepts, which is the divergence this reader exists to detect.
         recips = blk.get("recipients", [])
         if recips != sorted(recips):
-            raise ValueError(f"blocks[{i}].recipients is not sorted")
+            raise ArraySortOrderViolation(f"blocks[{i}].recipients is not sorted")
         _check_sorted_and_distinct(
             blk.get("vector_clock_summary", []),
             "device_uuid",
@@ -176,7 +239,7 @@ def py_decode_manifest(data: bytes) -> dict:
     # verbatim and compare equal, so this check does not undo the
     # byte-retention design at either nesting level.
     if py_encode_manifest(out) != data:
-        raise ValueError("manifest body is not in canonical CBOR form")
+        raise NonCanonicalBody("manifest body is not in canonical CBOR form")
 
     return out
 
@@ -294,6 +357,16 @@ def _check_sorted_and_distinct(rows: list, key: str, label: str) -> None:
     be shorter and is deliberately not used -- it collapses the two rules
     into one verdict and loses the id.
 
+    **They also raise DIFFERENT types, and the asymmetry is deliberate.**
+    The sort half raises `ArraySortOrderViolation`, because Section MCC
+    discriminates on its type to pin Rust's `NonCanonicalCause::
+    ArraySortOrder` cross-language (#613). The repeat half stays a plain
+    `ValueError`: Section MUQ discriminates it by a message fragment naming
+    the repeated id, which a bare type cannot carry, and the two rules must
+    stay separable -- collapsing them onto one type would let a reader that
+    checked only sortedness satisfy MUQ, which is exactly the #594
+    divergence.
+
     The distinctness half is `first_repeated_value`, shared with the
     ENCODER (#600): §4.2 binds writers as well as readers, and the writer
     half of this rule was missing from this package until then. Sharing
@@ -303,7 +376,7 @@ def _check_sorted_and_distinct(rows: list, key: str, label: str) -> None:
     """
     ids = [r[key] for r in rows]
     if ids != sorted(ids):
-        raise ValueError(f"{label} is not sorted by {key}")
+        raise ArraySortOrderViolation(f"{label} is not sorted by {key}")
     repeat = first_repeated_value(ids)
     if repeat is not None:
         raise ValueError(f"{label} has a repeated {key}: {repeat.hex()}")

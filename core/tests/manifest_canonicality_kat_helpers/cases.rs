@@ -174,3 +174,207 @@ impl Level {
         Level::ALL.into_iter().find(|lvl| lvl.label() == label)
     }
 }
+
+// ---------------------------------------------------------------------------
+// The second case family: whole-body mutations (#613)
+// ---------------------------------------------------------------------------
+//
+// `NonCanonicalCause` has four variants and the splice family above reaches
+// two. The other two need bodies that are not `unknown`-subtree splices at
+// all, so they cannot be expressed as an eighth `Shape` -- which is what
+// left `ArraySortOrder` and `Unclassified` pinned by Rust unit tests only,
+// with nothing for a clean-room reader to agree with (#613).
+//
+// Both are mutations of the SAME base manifest the splice family uses, at
+// `Level::Top`, so the needle (`zzz_needle`) is present in every one of
+// these bodies. That is deliberate rather than incidental: an ordinary
+// character inside a wire-supplied `unknown` KEY (`_` = 0x5F, `z` = 0x7A)
+// is exactly what #590's first, positional classifier misread as an
+// indefinite-length or non-shortest-form head. These rows therefore pin the
+// arm a peer could once *choose*, on a body that still carries the material
+// they would have chosen it with.
+
+/// Which CBOR map a [`Mutation::ReverseMapKeys`] targets.
+///
+/// Four positions rather than one because they are four different parsers
+/// on both sides of the contract: the top-level map
+/// (`parse_manifest_map` / `py_decode_manifest`'s own loop), `kdf_params`
+/// (`parse_kdf_params` / `_decode_strict_entry_map`), and the two entry
+/// maps (`parse_block_entry` / `parse_trash_entry`, both
+/// `_decode_manifest_entry_map`). A reader that checked key order at the
+/// top level only would satisfy a single-position corpus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapPath {
+    /// The manifest body's own outer map.
+    Top,
+    /// The `kdf_params` map.
+    KdfParams,
+    /// `blocks[0]`'s entry map.
+    FirstBlock,
+    /// `trash[0]`'s entry map.
+    FirstTrash,
+}
+
+/// A structure-preserving mutation of the base manifest body.
+///
+/// Every variant leaves the manifest's VALUES untouched and reorders only
+/// the sequence they arrive in, which is what makes the resulting body
+/// non-canonical without being malformed: it parses cleanly, every
+/// individual head stays canonical, and only the §4.3 step-4 re-encode
+/// comparison objects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mutation {
+    /// Reverse one of the five arrays `docs/vault-format.md` §4.2 fixes an
+    /// order for. `inner` is `None` for a top-level array (`vector_clock`,
+    /// `blocks`, `trash`) and `Some(key)` for one inside `blocks[0]`
+    /// (`recipients`, `vector_clock_summary`).
+    ReverseArray {
+        outer: &'static str,
+        inner: Option<&'static str>,
+    },
+    /// Reverse the ENTRY ORDER of one CBOR map, leaving every key and
+    /// every value byte-identical.
+    ReverseMapKeys(MapPath),
+}
+
+/// One row of the mutation family.
+///
+/// The label is written out rather than derived, because unlike the splice
+/// family there is no product to derive it from -- the five arrays do not
+/// map onto the three nesting levels (`vector_clock`, `blocks` and `trash`
+/// are all top-level). It carries its own two-part namespace so
+/// [`Level::from_label`] can never claim one of these rows; `no_case_label_is_ambiguous`
+/// asserts that disjointness rather than leaving it to the eye.
+pub struct MutationCase {
+    pub label: &'static str,
+    pub mutation: Mutation,
+    pub verdict: Verdict,
+}
+
+pub const MUTATIONS: &[MutationCase] = &[
+    // -- ArraySortOrder: all five of §4.2's sorted arrays ------------------
+    //
+    // Rust reaches this cause off the PARSED manifest
+    // (`classify::arrays_are_sorted`); the byte-retaining Python reader
+    // reaches it from its own explicit sort checks, before the re-encode
+    // runs at all. Same rule, different mechanism -- which is the
+    // asymmetry `docs/vault-format.md` §4.2 makes normative and Section
+    // MCC exists to pin.
+    MutationCase {
+        label: "arraysort__vector_clock",
+        mutation: Mutation::ReverseArray {
+            outer: "vector_clock",
+            inner: None,
+        },
+        verdict: Verdict::RejectAtReEncode(NonCanonicalCause::ArraySortOrder),
+    },
+    MutationCase {
+        label: "arraysort__blocks",
+        mutation: Mutation::ReverseArray {
+            outer: "blocks",
+            inner: None,
+        },
+        verdict: Verdict::RejectAtReEncode(NonCanonicalCause::ArraySortOrder),
+    },
+    MutationCase {
+        label: "arraysort__trash",
+        mutation: Mutation::ReverseArray {
+            outer: "trash",
+            inner: None,
+        },
+        verdict: Verdict::RejectAtReEncode(NonCanonicalCause::ArraySortOrder),
+    },
+    MutationCase {
+        label: "arraysort__block_recipients",
+        mutation: Mutation::ReverseArray {
+            outer: "blocks",
+            inner: Some("recipients"),
+        },
+        verdict: Verdict::RejectAtReEncode(NonCanonicalCause::ArraySortOrder),
+    },
+    MutationCase {
+        label: "arraysort__block_vector_clock_summary",
+        mutation: Mutation::ReverseArray {
+            outer: "blocks",
+            inner: Some("vector_clock_summary"),
+        },
+        verdict: Verdict::RejectAtReEncode(NonCanonicalCause::ArraySortOrder),
+    },
+    // -- Unclassified: map-key disorder at four parser positions -----------
+    //
+    // The honest residue. The body carries no encoding-level violation to
+    // find -- every head is canonical and every length definite -- so
+    // `find_encoding_violation` returns `None` and naming a cause would
+    // make the diagnostic worse than silence. This is the arm #590's first
+    // implementation got wrong in the direction a peer could CHOOSE, and
+    // the one with the subtlest correctness argument, which is why it is
+    // the row that most wanted a second implementation to agree with it.
+    MutationCase {
+        label: "keyorder__top",
+        mutation: Mutation::ReverseMapKeys(MapPath::Top),
+        verdict: Verdict::RejectAtReEncode(NonCanonicalCause::Unclassified),
+    },
+    MutationCase {
+        label: "keyorder__kdf_params",
+        mutation: Mutation::ReverseMapKeys(MapPath::KdfParams),
+        verdict: Verdict::RejectAtReEncode(NonCanonicalCause::Unclassified),
+    },
+    MutationCase {
+        label: "keyorder__block",
+        mutation: Mutation::ReverseMapKeys(MapPath::FirstBlock),
+        verdict: Verdict::RejectAtReEncode(NonCanonicalCause::Unclassified),
+    },
+    MutationCase {
+        label: "keyorder__trash",
+        mutation: Mutation::ReverseMapKeys(MapPath::FirstTrash),
+        verdict: Verdict::RejectAtReEncode(NonCanonicalCause::Unclassified),
+    },
+];
+
+/// One corpus row, in whichever of the two families it belongs to.
+///
+/// The replay looks a fixture label up in [`all_cases`] and rebuilds that
+/// row's bytes from the case, so a hand-edited body reds. Keeping both
+/// families in ONE list is what makes that lookup total: a label matching
+/// neither family has no case, and the replay panics naming it rather than
+/// silently checking one fewer row.
+#[derive(Clone, Copy)]
+pub enum Case {
+    /// A [`Shape`] spliced into the `unknown` bag at `level`.
+    Splice { level: Level, shape: &'static Shape },
+    /// A whole-body [`Mutation`] of the `Level::Top` base manifest.
+    Mutate(&'static MutationCase),
+}
+
+impl Case {
+    /// The row's fixture label.
+    pub fn label(self) -> String {
+        match self {
+            Case::Splice { level, shape } => format!("{}__{}", level.label(), shape.label),
+            Case::Mutate(case) => case.label.to_string(),
+        }
+    }
+
+    /// What `decode_manifest` MUST do with this row's body.
+    pub fn verdict(self) -> Verdict {
+        match self {
+            Case::Splice { shape, .. } => shape.verdict,
+            Case::Mutate(case) => case.verdict,
+        }
+    }
+}
+
+/// The whole corpus: the splice family's `Level::ALL x SHAPES` product,
+/// then the mutation family in table order.
+pub fn all_cases() -> Vec<Case> {
+    let mut cases: Vec<Case> = Level::ALL
+        .into_iter()
+        .flat_map(|level| {
+            SHAPES
+                .iter()
+                .map(move |shape| Case::Splice { level, shape })
+        })
+        .collect();
+    cases.extend(MUTATIONS.iter().map(Case::Mutate));
+    cases
+}
