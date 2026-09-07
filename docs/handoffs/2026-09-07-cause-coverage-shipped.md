@@ -41,6 +41,7 @@ backup; leave it.
 |---|---|
 | `80c3c488` | **#612 half** — `manifest_canonicality_kat.rs` 956 → 374 lines + a `_helpers/` directory. Behaviour-preserving, committed separately so it is checkable as a pure move |
 | `27601b87` | **#613** — the two-family corpus, the second KIND of Python expectation, two structured discriminators, 21 → 30 rows |
+| *(review round)* | **#622 review** — `blocks[1]` array rows, closed `SortedArray` enum with derived labels, per-CAUSE coverage floor, shared row-shape + body-distinctness guards, four corrected claims; 30 → 32 rows |
 | `266fca4b` | CLAUDE.md + ROADMAP, with the drifted `conformance_lib` figures re-measured |
 | *(this)* | the baton — a commit cannot cite its own SHA, so this row stays symbolic |
 
@@ -82,7 +83,7 @@ recommendation:
   `arraysort__*` (one per §4.2 sorted array) and 4 `keyorder__*` (top /
   `kdf_params` / `blocks[0]` / `trash[0]`). Four map positions rather than one
   because they are four different parsers on both sides.
-- **21 → 30 rows, 27 → 36 seeds, with the 21 existing rows and every existing
+- **21 → 32 rows, 27 → 38 seeds, with the 21 existing rows and every existing
   seed byte-identical.** Asserted against the merge-base fixture; that is the
   evidence the change is additive rather than a regeneration.
 - **`body_for_case` is the single builder for BOTH families**, used by the
@@ -142,7 +143,7 @@ Every restore verified by **sha256**.
 - **Format invariants:** UDL and normative `docs/` diffs **empty**.
   `core/tests/data/` gains 9 rows and `core/fuzz/seeds/` 9 files, **with nothing
   rewritten** — `git status` showed 9 untracked and 0 modified seeds.
-- Every file under 500: entry 452, largest helper 380, `manifest_canonicality_
+- Every file under 500: entry 489, largest helper 470, `manifest_canonicality_
   cause.py` 388, `manifest_decode.py` 382.
 
 ### README was deliberately not touched
@@ -318,7 +319,7 @@ import json,collections
 r=json.load(open('core/tests/data/manifest_canonicality_kat.json'))['rows']
 print(len(r),'rows')
 print(sorted(collections.Counter((x['expect_accept'],x['expect_cause']) for x in r).items(),key=str))"
-# expect 30 rows; 5 ArraySortOrder, 3 IndefiniteLength, 3 NonShortestForm,
+# expect 32 rows; 7 ArraySortOrder, 3 IndefiniteLength, 3 NonShortestForm,
 #                 4 Unclassified, 3 null-reject, 12 accept
 
 # --- the cross-language contract (no CI job covers this one) ---
@@ -395,3 +396,87 @@ PY
 `docs/handoffs/2026-09-07-cause-coverage-shipped.md`. This file is the single
 authored baton — do not create a second copy at the root, and do not sync it to
 `main` during a pause window (that produces an add/add conflict).
+
+
+---
+
+## Review round (#622), appended
+
+Five specialised reviewers plus a hand pass. Everything below was MEASURED,
+each restore sha256-verified.
+
+### Two coverage gaps in the property this slice exists to pin
+
+1. **`blocks[1]` was unreachable.** Every nested array row planted at
+   `blocks[0]` (`build.rs` hard-coded `.first_mut()`), so a reader or
+   classifier scoped to the first block was conformant against the whole
+   tree. Measured both ways: `classify::arrays_are_sorted` narrowed to
+   `.take(1)` left the **entire workspace** green; the Python reader's nested
+   sort check narrowed to `blocks[0]` left **all 26 sections** green. This is
+   verbatim #608's "a two-sided property needs a fixture at each end", which
+   the uniqueness corpus got and the sortedness corpus never did. Two rows
+   added; both mutations now red (`.take(1)` reds 2 tests, the Python
+   narrowing exits 1).
+
+2. **#623 — arrays hold 2 elements**, so a first-pair check and a full
+   adjacent scan are the same function (measured: a first-pair reader leaves
+   all 26 sections green). NOT fixed here: it changes `base_manifest`, hence
+   all 32 bodies and 38 seeds, spending exactly the additivity evidence this
+   slice rests on. Filed with the measurement and the middle-swap requirement.
+
+### Four claims that were false
+
+- `generate.rs` called its `Ok` arm "not vacuous". It is unreachable twice
+  over — `Verdict::cause()` returns `None` for `Accept`, and the `assert_eq!`
+  15 lines above has already forced `Accept`. It also contradicted
+  `cases.rs`'s own `Verdict` doc. Now labelled unreachable-by-construction
+  future-proofing.
+- "deleting the `ArraySortOrder` arm reds **two** Rust tests" — measured
+  **five** (3 `--lib` + 2 integration). The original was an integration-binary
+  subtotal written as a claim about Rust tests. Same shape as the
+  `--lib`/`--test` filter trap CLAUDE.md already records.
+- The four `keyorder__*` rows were said to "pin the arm a peer could once
+  choose". All four diverge on a major-type-3 head with ai <= 23, which #590's
+  positional classifier reads identically to today's decisive one — so they
+  cannot discriminate the two. Filed as **#624**.
+- `manifest_encode.py`'s docstring claimed it sorts all five arrays on output.
+  It never has (the only `sorted` in the file is a comment saying so), and the
+  claim contradicts the mechanism asymmetry Section MCC rests on.
+
+### Structural fixes
+
+- **`Mutation::ReverseArray` takes a closed `SortedArray` enum**, not
+  `(&str, Option<&str>)`. The pair made 28 combinations representable, of
+  which 5 named a §4.2 array and only by a property of today's base manifest.
+  Labels are now DERIVED, so a row whose label disagrees with what it reverses
+  is unconstructible — it was representable and measured invisible to both
+  languages.
+- **MCC's coverage floor is per-CAUSE, plus an injectivity check.** It
+  compared DISCRIMINATORS against a MANY-TO-ONE table, so a colliding new
+  cause was declared covered with no corpus row: `RuleNumber(2)` PASSED,
+  unique `RuleNumber(9)` correctly red. Both now red. A third expectation
+  KIND used to escape as `AttributeError` out of `main()`; now a FAIL line.
+- **`row_issues` + `body_issues` are shared by MCK and MCC.** MCK runs first
+  on the same file and had no shape guard, so a malformed row escaped as a
+  traceback with no `FAIL:` line, skipping MCC/MUQ/RC/DET/**REG**. Closing it
+  required removing three later raw `r["label"]` reads that stepped around the
+  guard — a guard one later read can bypass is not a guard. `body_issues` is
+  the floor a label check structurally cannot provide: #614's own finding was
+  a body substitution with labels retained, and it passed until now.
+- Rust gained a pairwise body-distinctness floor (mutation-proven: pointing
+  `BlockRecipients{1}` at block 0 reds it, naming both rows).
+
+### Gates
+
+`cargo test --release --workspace` 99 binaries / **2101 passed** / 0 failed /
+21 ignored, exit 0 · `--features differential-replay` 2102 passed, exit 0 ·
+clippy `-D warnings` exit 0 · `RUSTDOCFLAGS="-D warnings" cargo doc` exit 0 ·
+`cargo fmt --all --check` clean · `conformance.py` exit 0, 26 sections, REG
+26/26, MCK 32 rows (12 accept / 20 reject), MCC 17 caused + 3 uncaused, all 5
+discriminators · all six hygiene guards `--self-test` then run, exit 0, no
+probe residue · `core/fuzz` builds under the pinned nightly ·
+`spec_test_name_freshness.py` = 90 (unchanged baseline).
+
+**One process note.** A `conformance.py` run reported **0 FAIL lines and exit
+1** — a `SyntaxError` from a botched docstring edit. Grepping for `FAIL` alone
+would have scored it green. Judge by exit code.

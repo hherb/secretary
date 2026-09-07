@@ -35,8 +35,10 @@ pub enum Mechanism {
 /// That is a DIFFERENT axis from the `other => panic!` arm this function
 /// replaced, which was fail-closed on an unrecognised SHAPES entry. That
 /// axis is still covered, just elsewhere: `Shape::verdict` is a required
-/// field, and the replay asserts both `rows.len() == 21` and
-/// `labels == Level::ALL x SHAPES`. Nothing about this match protects it.
+/// field, and the replay asserts `rows.len() == cases.len()`, that the
+/// whole label set equals the case table's, and that the splice-filtered
+/// subset is still the full `Level::ALL x SHAPES` product. Nothing about
+/// this match protects it.
 pub fn cause_name(cause: NonCanonicalCause) -> &'static str {
     match cause {
         NonCanonicalCause::ArraySortOrder => "ArraySortOrder",

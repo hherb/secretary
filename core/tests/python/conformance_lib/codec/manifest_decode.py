@@ -284,7 +284,7 @@ def _validate_manifest_shape(out: dict) -> None:
     `decode_manifest` proves the opposite of what it claims.
 
     Nothing else in the file can catch this class. The §4.3 step-4 re-encode
-    compares BYTES, and every mutation above re-encodes to itself; the 21-row
+    compares BYTES, and every mutation above re-encodes to itself; the splice family of the
     canonicality corpus mutates only `unknown` subtrees. The three version
     sentinels mirror `decode/mod.rs`'s `UnsupportedManifestVersion` /
     `UnsupportedFormatVersion` / `UnsupportedSuiteId`.

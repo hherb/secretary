@@ -189,7 +189,7 @@ pub fn body_for(level: Level, shape: &Shape) -> Vec<u8> {
 
 use ciborium::Value;
 
-use super::cases::{Case, MapPath, Mutation};
+use super::cases::{Case, MapPath, Mutation, SortedArray};
 
 /// The entry list of the CBOR map `v`, or a panic naming what it is instead.
 fn map_entries_mut(v: &mut Value) -> &mut Vec<(Value, Value)> {
@@ -225,30 +225,39 @@ fn encode_value(v: &Value) -> Vec<u8> {
 
 /// Reverse one of §4.2's five sorted arrays inside an encoded manifest body.
 ///
-/// `outer` names a top-level key; when `inner` is `Some`, `outer` must be an
-/// array of maps and the reversal targets `outer[0][inner]` instead. Two
-/// levels is all the manifest has, so this is written flat rather than as a
-/// general path walk.
+/// The array is named by a closed [`SortedArray`], not by a `(&str,
+/// Option<&str>)` key pair: the pair made 23 non-§4.2 combinations
+/// representable (all of which panicked, but only because of what today's
+/// base manifest happens to contain), and it let a row's label disagree
+/// with what the row actually reverses.
+///
+/// **The nested variants carry a block INDEX**, so the corpus can plant at
+/// `blocks[1]` as well as `blocks[0]`. Without that, a reader or classifier
+/// scoped to the first block is conformant against the whole corpus --
+/// measured in both languages, and the mirror of the defect #608's review
+/// fixed on `manifest_uniqueness_kat`.
 ///
 /// **The single implementation of this reversal**, shared by the corpus
 /// generator and by `array_sort_disciplines_are_enforced_and_not_vacuous`,
 /// so the bytes the fixture-independent test exercises cannot drift from
 /// the bytes the `arraysort__*` rows commit.
-pub fn reverse_array(body: &[u8], outer: &str, inner: Option<&str>) -> Vec<u8> {
+pub fn reverse_array(body: &[u8], array: SortedArray) -> Vec<u8> {
     let mut v: Value = ciborium::de::from_reader(body).expect("parse body");
+    let (outer, inner) = array.path();
     let target = match inner {
         None => array_items_mut(&mut v, outer),
-        Some(key) => {
-            let first = array_items_mut(&mut v, outer)
-                .first_mut()
-                .expect("outer array must be non-empty");
-            array_items_mut(first, key)
+        Some((key, index)) => {
+            let entries = array_items_mut(&mut v, outer);
+            let entry = entries.get_mut(index).unwrap_or_else(|| {
+                panic!("{outer}[{index}] does not exist -- {array:?} cannot be built")
+            });
+            array_items_mut(entry, key)
         }
     };
     assert!(
         target.len() >= 2,
-        "array {outer}/{inner:?} has {} element(s) -- a sort discipline \
-         cannot be violated with fewer than 2, so this case would be vacuous",
+        "array {array:?} has {} element(s) -- a sort discipline cannot be \
+         violated with fewer than 2, so this case would be vacuous",
         target.len()
     );
     target.reverse();
@@ -304,14 +313,15 @@ pub fn body_for_case(case: Case) -> Vec<u8> {
                 .expose()
                 .to_vec();
             let mutated = match mutation_case.mutation {
-                Mutation::ReverseArray { outer, inner } => reverse_array(&base, outer, inner),
+                Mutation::ReverseArray(array) => reverse_array(&base, array),
                 Mutation::ReverseMapKeys(path) => reverse_map_keys(&base, path),
             };
             assert_ne!(
-                mutated, base,
+                mutated,
+                base,
                 "mutation {} produced the baseline body unchanged -- the row \
                  would be an ACCEPT masquerading as a REJECT",
-                mutation_case.label
+                mutation_case.label()
             );
             mutated
         }

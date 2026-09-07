@@ -1,27 +1,43 @@
 //! Cross-language corpus for `docs/vault-format.md` §4.2's per-rule table.
 //!
-//! `Manifest`, `BlockEntry` and `TrashEntry` each carry their own
-//! forward-compat `unknown` bag (`core/src/vault/manifest/types.rs`). Each
-//! row here splices one of seven CBOR subtree shapes into ONE of those
-//! three bags and records the verdict `decode_manifest` gives the
-//! resulting manifest body. 7 shapes x 3 levels (top-level, block-entry,
-//! trash-entry) = 21 rows, labelled `<level>__<shape>` (e.g.
-//! `block__rule5_duplicate_key`) so the level is visible without decoding
-//! the hex.
+//! **The corpus is TWO FAMILIES, 32 rows in total.** `helpers::cases`
+//! declares both and `all_cases()` yields them as one list, which is what
+//! makes the replay's label lookup total.
+//!
+//! *The splice family, 21 rows.* `Manifest`, `BlockEntry` and `TrashEntry`
+//! each carry their own forward-compat `unknown` bag
+//! (`core/src/vault/manifest/types.rs`). Each of these rows splices one of
+//! seven CBOR subtree shapes into ONE of those three bags and records the
+//! verdict `decode_manifest` gives the resulting manifest body. 7 shapes x
+//! 3 levels (top-level, block-entry, trash-entry) = 21 rows, labelled
+//! `<level>__<shape>` (e.g. `block__rule5_duplicate_key`) so the level is
+//! visible without decoding the hex.
+//!
+//! *The mutation family, 11 rows (#613).* That construction reaches only
+//! two of `NonCanonicalCause`'s four variants -- `ArraySortOrder` needs one
+//! of §4.2's sorted arrays out of order and `Unclassified` needs map-key
+//! disorder, and neither is an `unknown` subtree at all, so neither can be
+//! an eighth shape. These rows are whole-body REORDERINGS of the same
+//! `Level::Top` baseline, in their own `arraysort__` / `keyorder__`
+//! namespace: 7 array reversals (§4.2's five arrays, with the two nested
+//! ones planted at BOTH `blocks[0]` and `blocks[1]`, because a reader
+//! scoped to the first block is otherwise conformant against the whole
+//! corpus) and 4 map-entry reversals (top / `kdf_params` / `blocks[0]` /
+//! `trash[0]`).
 //!
 //! The same fixture is replayed by `core/tests/python/conformance.py`'s
 //! `py_decode_manifest`, so the two implementations' acceptance sets are
 //! compared row by row rather than asserted to match in prose (#583,
 //! #592). It is also written out as raw seed files under
 //! `core/fuzz/seeds/manifest_body/`, so `core/tests/differential_replay.rs`
-//! exercises the same 21 bodies. The `manifest_body`
+//! exercises the same 32 bodies. The `manifest_body`
 //! DIFFERENTIAL-REPLAY target was introduced alongside this corpus
 //! (#592/#595), so it never "passed vacuously" on an older `main`;
 //! without these seeds it would replay zero inputs, which the seeds and
 //! `differential_replay.rs`'s own per-target input floor prevent. It is
 //! not one of the seven `cargo-fuzz` targets -- #596 tracks that.
 //!
-//! The seven shapes' expected verdicts are the SPECIFICATION (vault-format
+//! Every row's expected verdict is the SPECIFICATION (vault-format
 //! §4.2's five-row table), not an observed decoder behaviour: rules 1
 //! (map-key order) and 5 (duplicate keys) are TOLERATED inside an
 //! `unknown` subtree, because `ciborium`'s `Value::Map` is an ordered
@@ -53,7 +69,7 @@ mod manifest_canonicality_kat_helpers;
 
 use helpers::assert::{assert_rejection_mechanism, cause_name, Mechanism, ALL_CAUSES};
 use helpers::build::{base_manifest, body_for_case, reverse_array};
-use helpers::cases::{all_cases, Case, Level, Verdict, MUTATIONS, SHAPES};
+use helpers::cases::{all_cases, mutations, Case, Level, SortedArray, Verdict, SHAPES};
 use helpers::fixture_path;
 use manifest_canonicality_kat_helpers as helpers;
 
@@ -98,7 +114,7 @@ fn manifest_canonicality_kat_replays() {
         cases.len(),
         "corpus must carry every case: 7 shapes x 3 levels spliced, plus the \
          {} whole-body mutation rows (#613)",
-        MUTATIONS.len()
+        mutations().len()
     );
 
     // Every case must be present, not merely N rows: a fixture holding N
@@ -111,6 +127,8 @@ fn manifest_canonicality_kat_replays() {
     let mut re_encode = 0usize;
     let mut float_walk = 0usize;
     let mut causes_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // Every row's body, to assert pairwise distinctness after the loop.
+    let mut bodies: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for row in rows {
         let label = row["label"].as_str().expect("label");
         labels.insert(label.to_string());
@@ -174,12 +192,13 @@ fn manifest_canonicality_kat_replays() {
         // "7 shapes x 3 levels" down to one level with nothing objecting
         // (#614 review). `body_for_case` is the same builder the generator
         // writes with -- for BOTH families -- so the two cannot drift.
+        bodies.insert(label.to_string(), hex::encode(&body));
         let rebuilt = body_for_case(case);
         assert_eq!(
             hex::encode(&body),
             hex::encode(&rebuilt),
             "row {label:?}: committed manifest_body_hex is not what this row's case \
-             produces -- the fixture was hand-edited, or SHAPES/MUTATIONS/base_manifest \
+             produces -- the fixture was hand-edited, or SHAPES/mutations()/base_manifest \
              changed without regenerating it"
         );
 
@@ -253,10 +272,34 @@ fn manifest_canonicality_kat_replays() {
          rejections"
     );
     assert_eq!(
-        want_re_encode, 15,
-        "6 splice rows (rules 2 and 3, three levels each) plus the 9 \
-         whole-body mutation rows (#613)"
+        want_re_encode, 17,
+        "6 splice rows (rules 2 and 3, three levels each) plus the 11 \
+         whole-body mutation rows -- 7 `arraysort__*` (§4.2's five arrays, \
+         with the two nested ones planted at BOTH blocks[0] and blocks[1]) \
+         and 4 `keyorder__*`"
     );
+
+    // Every row must carry a DISTINCT body. Rebuild-and-compare above binds
+    // each row to its own case, but two cases that happen to produce the
+    // same bytes would each satisfy it -- so the corpus could claim N
+    // positions while exercising fewer, with every other assertion green.
+    // The reachable shape is a `SortedArray` or `MapPath` variant whose
+    // `path()` duplicates a sibling's; labels being DERIVED closes the
+    // duplicate-table-entry route, but not this one.
+    {
+        let mut by_body: std::collections::BTreeMap<&String, Vec<&String>> =
+            std::collections::BTreeMap::new();
+        for (label, body) in &bodies {
+            by_body.entry(body).or_default().push(label);
+        }
+        let collisions: Vec<&Vec<&String>> =
+            by_body.values().filter(|labels| labels.len() > 1).collect();
+        assert!(
+            collisions.is_empty(),
+            "these corpus rows share one manifest body, so the corpus claims \
+             more positions than it exercises: {collisions:?}"
+        );
+    }
 
     // ALL FOUR `NonCanonicalCause` variants now carry corpus rows, so both
     // languages agree on the whole cause vocabulary rather than half of it
@@ -273,7 +316,7 @@ fn manifest_canonicality_kat_replays() {
     // The version this replaced conceded it was the one property on this
     // corpus never shown to fire by mutation, and that is unchanged --
     // an intermediate draft of this very comment claimed "deleting either
-    // family's rows from `MUTATIONS` reds it directly (verified by
+    // family's rows from the mutation table reds it directly (verified by
     // mutation)", which was then measured and is FALSE: dropping the four
     // `keyorder__*` cases trips the `rows.len() == cases.len()`
     // assertion 180 lines above, and regenerating past that trips
@@ -354,7 +397,7 @@ fn manifest_canonicality_kat_replays() {
     );
 }
 
-/// No [`MUTATIONS`] label may parse as a `<level>__<shape>` splice label.
+/// No mutation label may parse as a `<level>__<shape>` splice label.
 ///
 /// The replay partitions the corpus by reading a label's prefix as a
 /// [`Level`], so a mutation row whose prefix collided with one would be
@@ -366,18 +409,17 @@ fn manifest_canonicality_kat_replays() {
 /// choosing a colliding one.
 #[test]
 fn no_mutation_label_can_be_read_as_a_splice_row() {
-    for case in MUTATIONS {
-        let prefix = case
-            .label
+    for case in mutations() {
+        let label = case.label();
+        let prefix = label
             .split_once("__")
-            .unwrap_or_else(|| panic!("mutation label {:?} is not <family>__<case>", case.label))
+            .unwrap_or_else(|| panic!("mutation label {label:?} is not <family>__<case>"))
             .0;
         assert!(
             Level::from_label(prefix).is_none(),
-            "mutation label {:?} starts with the Level prefix {prefix:?} -- it \
-             would be counted into the splice family's Level::ALL x SHAPES \
-             product assertion",
-            case.label
+            "mutation label {label:?} starts with the Level prefix {prefix:?} \
+             -- it would be counted into the splice family's Level::ALL x \
+             SHAPES product assertion"
         );
     }
 }
@@ -417,34 +459,28 @@ fn array_sort_disciplines_are_enforced_and_not_vacuous() {
     };
     decode_manifest(&body).expect("baseline: the unreversed fixture must decode");
 
-    for (outer, inner) in [
-        ("vector_clock", None),
-        ("blocks", None),
-        ("trash", None),
-        ("blocks", Some("recipients")),
-        ("blocks", Some("vector_clock_summary")),
-    ] {
-        let mutated = reverse_array(&body, outer, inner);
+    for array in SortedArray::ALL {
+        let mutated = reverse_array(&body, array);
         assert_ne!(
             mutated, body,
-            "reversing {outer}/{inner:?} produced an identical body -- the \
-             case is vacuous"
+            "reversing {array:?} produced an identical body -- the case is \
+             vacuous"
         );
         let err = decode_manifest(&mutated).expect_err(&format!(
-            "{outer}/{inner:?} reversed was ACCEPTED -- §4.2's sort \
-             discipline for it is not enforced"
+            "{array:?} reversed was ACCEPTED -- §4.2's sort discipline for \
+             it is not enforced"
         ));
         match err {
             ManifestError::NonCanonicalEncoding { cause, .. } => assert_eq!(
                 cause,
                 NonCanonicalCause::ArraySortOrder,
-                "{outer}/{inner:?} reversed was rejected, but the cause was \
+                "{array:?} reversed was rejected, but the cause was \
                  {cause:?} -- ArraySortOrder is DECISIVE (read off the parsed \
                  Manifest by `classify::arrays_are_sorted`), so anything else \
                  means the classifier stopped attributing array disorder"
             ),
             other => panic!(
-                "{outer}/{inner:?} reversed must be rejected by the §4.3 step-4 \
+                "{array:?} reversed must be rejected by the §4.3 step-4 \
                  re-encode comparison, got {other}"
             ),
         }

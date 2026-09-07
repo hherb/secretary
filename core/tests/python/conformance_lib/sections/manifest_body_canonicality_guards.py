@@ -28,8 +28,16 @@ def section_manifest_body_outer_canonicality_guard() -> tuple[bool, list[str]]:
     REJECT to ACCEPT -- all three of which Rust rejects.
 
     The three rows below are exactly those inputs. They sit at the outer
-    map, which the 21-row canonicality corpus cannot reach: every corpus row
-    splices its mutation INSIDE an `unknown` subtree.
+    map.
+
+    **The canonicality corpus now reaches this too, partially.**  This said
+    the corpus "cannot reach" the outer map because every corpus row spliced
+    its mutation INSIDE an `unknown` subtree.  That stopped being true with
+    #613: its `keyorder__top` row is the identical outer-map entry reversal
+    row 1 performs here.  The other two rows -- an indefinite-length outer
+    map head and a non-shortest outer length prefix -- remain unique to this
+    section, and unlike the corpus this section computes its bodies fresh,
+    so all three still hold if the fixture is deleted.
     """
     import cbor2
 

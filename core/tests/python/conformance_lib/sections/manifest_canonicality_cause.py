@@ -30,8 +30,10 @@ from conformance_lib.codec.scanner import NonCanonicalItem
 from conformance_lib.fixtures import load_json_fixture, manifest_canonicality_kat_path
 from conformance_lib.rejection import _REJECTION_EXCEPTIONS
 from conformance_lib.sections.manifest_canonicality_corpus import (
+    body_issues,
     expected_labels,
     label_issues,
+    row_issues,
 )
 
 # The fixture's `expect_cause` vocabulary -> what a byte-retaining reader
@@ -144,22 +146,43 @@ def _discriminator(e: Exception) -> str | None:
     the end of the section can be a single set comparison rather than two
     that could disagree about which rows counted.
     """
+    # The `ExceptionKind` types are tested FIRST, and the tuple is DERIVED
+    # from `_CAUSE_EXPECTATION` rather than written out.  Both halves matter:
+    # this function had `NonCanonicalItem` first, which is the exact ordering
+    # trap the `except`-clause comment further down warns about -- a future
+    # type subclassing both would have been scored against the wrong
+    # expectation -- and a hand-written tuple is a second place for the set of
+    # exception kinds to live.
+    for expectation in _CAUSE_EXPECTATION.values():
+        if isinstance(expectation, ExceptionKind) and isinstance(e, expectation.exc):
+            return expectation.exc.__name__
     if isinstance(e, NonCanonicalItem):
         return f"rule {e.rule}"
-    if isinstance(e, (ArraySortOrderViolation, NonCanonicalBody)):
-        return type(e).__name__
     return None
 
 
 def _expected_discriminator(want: RuleNumber | ExceptionKind) -> str:
-    """The discriminator string a conformant reader must produce for `want`."""
+    """The discriminator string a conformant reader must produce for `want`.
+
+    Exhaustive by construction: a THIRD kind of expectation raises here
+    rather than reaching `want.exc` and dying with an `AttributeError`,
+    which is not in `_REJECTION_EXCEPTIONS` and would therefore escape
+    `section_manifest_canonicality_cause` as a traceback out of `main()` --
+    silently skipping MUQ, RC, DET and REG, the last of which is what
+    proves the registry is complete.
+    """
     if isinstance(want, RuleNumber):
         return f"rule {want.rule}"
-    return want.exc.__name__
+    if isinstance(want, ExceptionKind):
+        return want.exc.__name__
+    raise TypeError(
+        f"_CAUSE_EXPECTATION carries an unrecognised expectation kind "
+        f"{type(want).__name__} -- add it here and to `_discriminator`"
+    )
 
 
 _EXPECTED_ROWS = len(expected_labels())
-_EXPECTED_CAUSED_REJECTS = 15
+_EXPECTED_CAUSED_REJECTS = 17
 _EXPECTED_UNCAUSED_REJECTS = 3
 
 # Every column this section reads. Checked up front so a row-shape defect
@@ -170,43 +193,62 @@ _REQUIRED_COLUMNS = ("label", "manifest_body_hex", "expect_accept", "expect_caus
 
 
 def section_manifest_canonicality_cause() -> tuple[bool, list[str]]:
-    """Replay `manifest_canonicality_kat.json`'s `expect_cause` column (#604).
+    """Replay `manifest_canonicality_kat.json`'s `expect_cause` column (#604, #613).
 
-    For every REJECTING row, `py_decode_manifest` must raise
-    `NonCanonicalItem` carrying the §6.2 rule number that the row's declared
-    cause maps to.  The discriminator is the exception's `.rule` ATTRIBUTE,
-    never its message text: a substring match on `"rule 2:"` keeps passing
-    when the message is reworded, and keeps passing when an unrelated check
-    grows a message containing the same fragment.  That is the failure #608's
-    review found on the encoder side of this same corpus family, where adding
-    a rule to one direction of a round trip silently made the other
-    direction's assertion vacuous.
+    For every REJECTING row, `py_decode_manifest` must produce the
+    STRUCTURED DISCRIMINATOR that the row's declared cause maps to.  There
+    are TWO KINDS, and this docstring said there was one until #613's review
+    caught it -- it was byte-identical to its pre-#613 version while the
+    function under it had been rewritten:
+
+    * `RuleNumber(n)` -- the reader must raise `NonCanonicalItem` whose
+      `.rule` ATTRIBUTE is `n`.  Three of the five entries.
+    * `ExceptionKind(cls)` -- the reader must raise exactly `cls`
+      (`ArraySortOrderViolation` or `NonCanonicalBody`).  Two of the five,
+      for the causes that map to no §6.2 numbered rule at all.
+
+    Either way the discriminator is a TYPE or an attribute, never message
+    text: a substring match on `"rule 2:"` keeps passing when the message is
+    reworded, and keeps passing when an unrelated check grows a message
+    containing the same fragment.  That is the failure #608's review found on
+    the encoder side of this same corpus family, where adding a rule to one
+    direction of a round trip silently made the other direction's assertion
+    vacuous.
 
     For every ACCEPTING row the column must be present and `null` -- a body
-    that decodes has no rejection to explain.  Present, not absent: the
-    column is hard-indexed below, so a fixture that dropped it fails loudly
-    rather than reading as `None` on every row.  Mirrors the Rust replay's
-    assertion of the same property, so a fixture that grew a cause on an
-    accepting row reds in both languages.
+    that decodes has no rejection to explain.  Present, not absent: `row_issues`
+    requires the column, so a fixture that dropped it fails loudly rather than
+    reading as `None` on every row.  Mirrors the Rust replay's assertion of the
+    same property, so a fixture that grew a cause on an accepting row reds in
+    both languages.
 
-    Three floors keep the section from passing vacuously.  The 6/3 split
-    between caused and uncaused rejections is asserted BY COUNT, mirroring
-    the Rust replay's `re_encode`/`float_walk` totals against the same
-    fixture.  The label set must be exactly the 7 shapes x 3 levels the
-    corpus is built from -- the Python counterpart of Rust's
-    `Level::ALL x SHAPES` assertion, without which 21 rows drawn from one
-    nesting level pass.
+    **Floors, all evaluated only once every row agreed** (a mismatched row
+    reports its own issue, and adding these on top would be noise):
 
-    The third is a CORPUS-COVERAGE floor, and the obvious reading of it is
-    wrong: a decoder that collapsed every violation onto one rule number is
-    caught ABOVE it, per-row, and since this floor sits after
-    `if issues: return` it is never evaluated on such a run (verified by
-    mutation -- deleting it leaves the identical six per-row findings).
-    What it catches is a FIXTURE that stopped exercising a rule: six caused
-    rows all declaring one cause satisfies every per-row check and the 6/3
-    counts, and reduces this section to a single-rule pin.  Rust catches
-    that with its fixture-vs-`SHAPES` cross-check; this is the Python route
-    to the same place.
+    1. The 17/3 split between caused and uncaused rejections, BY COUNT,
+       mirroring the Rust replay's `want_re_encode`/`want_float_walk` totals
+       against the same fixture.  17 = 6 splice rows (rules 2 and 3 at three
+       nesting levels) + 11 mutation rows.
+    2. The LABEL set, shared with MCK via `label_issues`: the full
+       `<level>__<shape>` product plus every mutation label.
+    3. The BODY set, shared with MCK via `body_issues`: pairwise distinct.
+       Floors 2 and 3 are not interchangeable -- #614's measured finding was a
+       BODY substitution with labels retained, which no label check can see.
+    4. PER-CAUSE coverage: every spelling in `_CAUSE_EXPECTATION` must have
+       been exercised by a rejecting row.  This is the floor whose earlier
+       version compared DISCRIMINATORS instead, and the table is many-to-one,
+       so a new cause colliding with an existing discriminator was declared
+       covered with no corpus row (measured: `RuleNumber(2)` PASSED, a unique
+       `RuleNumber(9)` correctly red).
+    5. Table INJECTIVITY, the counterpart of Rust's `cause_names_are_distinct`.
+    6. Every discriminator must actually be PRODUCED, which catches the other
+       direction: a reader collapsing every violation onto one verdict
+       satisfies the per-row checks and classifies nothing.
+
+    Floors 4-6 are what Rust reaches with `causes_seen == ALL_CAUSES` plus its
+    fixture-vs-case-table cross-check.  Unlike the Rust side, floor 4 here is
+    mutation-proven, because a `_CAUSE_EXPECTATION` entry can be added without
+    adding a Rust enum variant.
     """
     path = manifest_canonicality_kat_path()
     doc = load_json_fixture(path, "manifest_canonicality_kat.json")
@@ -218,8 +260,13 @@ def section_manifest_canonicality_cause() -> tuple[bool, list[str]]:
     caused = 0
     uncaused = 0
     discriminators_seen: set[str] = set()
+    # Which CAUSE SPELLINGS the corpus actually exercised.  Distinct from
+    # `discriminators_seen`: `_CAUSE_EXPECTATION` is MANY-TO-ONE, so a set of
+    # discriminators cannot answer "does every cause have a row?".
+    causes_checked: set[str | None] = set()
 
     labels: list[str] = []
+    bodies: list[str] = []
 
     for index, row in enumerate(rows):
         # Shape first, so every later read is safe and every defect is a
@@ -229,25 +276,20 @@ def section_manifest_canonicality_cause() -> tuple[bool, list[str]]:
         # and the three that really are rule 4 would still pass -- a
         # partly-green section reporting on a column that no longer exists.
         # Same fail-open shape #608's review found in `parsed.get(array, [])`.
-        if not isinstance(row, dict):
-            issues.append(
-                f"row {index}: expected a JSON object, got {type(row).__name__}"
-            )
+        #
+        # SHARED with MCK (`row_issues`), which reads the same file and runs
+        # FIRST: a guard living only here is unreachable for the very defects
+        # it was written for.
+        shape = row_issues(index, row)
+        if shape:
+            issues.extend(shape)
             continue
-        missing = [k for k in _REQUIRED_COLUMNS if k not in row]
-        if missing:
-            issues.append(
-                f"row {index}: fixture is missing column(s) {missing} -- regenerate "
-                "it with `cargo test --release --workspace -- --ignored "
-                "generate_manifest_canonicality_kat`"
-            )
-            continue
-
         label = row["label"]
         labels.append(label)
+        bodies.append(row["manifest_body_hex"])
         declared = row["expect_cause"]
-        # `declared` indexes `_CAUSE_TO_RULE` below, so a non-hashable value
-        # (a JSON list, say) would raise `TypeError` -- outside
+        # `declared` indexes `_CAUSE_EXPECTATION` above, so a non-hashable
+        # value (a JSON list, say) would raise `TypeError` -- outside
         # `_REJECTION_EXCEPTIONS`, hence straight out of `main()`.
         if not isinstance(declared, (str, type(None))):
             issues.append(
@@ -264,6 +306,7 @@ def section_manifest_canonicality_cause() -> tuple[bool, list[str]]:
                 )
             continue
 
+        causes_checked.add(declared)
         if declared not in _CAUSE_EXPECTATION:
             issues.append(
                 f"row {label!r}: unrecognised expect_cause {declared!r} -- add it to "
@@ -344,11 +387,12 @@ def section_manifest_canonicality_cause() -> tuple[bool, list[str]]:
     # copies of one row, and -- the case that actually mattered -- by rows
     # drawn from a single nesting level (#614 review).
     issues.extend(label_issues(labels))
+    issues.extend(body_issues(bodies))
 
     if caused != _EXPECTED_CAUSED_REJECTS:
         issues.append(
             f"expected {_EXPECTED_CAUSED_REJECTS} rejecting rows WITH a cause "
-            f"(rules 2 and 3 at three levels each, plus the 9 #613 mutation "
+            f"(rules 2 and 3 at three levels each, plus the 11 mutation "
             f"rows), found {caused}"
         )
     if uncaused != _EXPECTED_UNCAUSED_REJECTS:
@@ -362,12 +406,53 @@ def section_manifest_canonicality_cause() -> tuple[bool, list[str]]:
     # Only meaningful once every row above agreed; a mismatched row already
     # reported its own issue and this would add noise rather than signal.
     #
-    # Derived from `_CAUSE_EXPECTATION` rather than written out, so a cause
-    # added to that table without a corpus row reds here instead of being
-    # declared covered by a literal nobody updated. This is the Python side
-    # of Rust's `causes_seen == ALL_CAUSES` assertion, and #613 is what made
-    # both of them non-vacuous: before it, two of the four causes had no row
-    # and both sides recorded the gap in prose.
+    # TWO floors, because one of them used to do the work of both and could
+    # not. `_CAUSE_EXPECTATION` is MANY-TO-ONE -- several causes may map to
+    # the same rule number, and legitimately so: the natural next
+    # `NonCanonicalCause` variants are refinements of an existing one (say
+    # `IndefiniteLength` splitting into map/string forms), and a
+    # byte-retaining reader detects both as §6.2 rule 2.
+    #
+    # (1) PER-CAUSE coverage. Every spelling in the table must have been
+    # exercised by a rejecting row. This is the floor the section's own
+    # comment claimed, and it did not hold: the comparison was over
+    # DISCRIMINATORS, so a new cause whose discriminator collided with an
+    # existing entry's was declared covered with no corpus row at all
+    # (measured: adding `"SomeFutureCause": RuleNumber(2)` PASSED, while a
+    # unique `RuleNumber(9)` correctly red). That is the Python half of
+    # Rust's `causes_seen == ALL_CAUSES`, and unlike the Rust half it is
+    # mutation-proven, because a table entry can be added here without
+    # adding a Rust enum variant.
+    if causes_checked != set(_CAUSE_EXPECTATION):
+        missing = sorted(str(c) for c in set(_CAUSE_EXPECTATION) - causes_checked)
+        extra = sorted(str(c) for c in causes_checked - set(_CAUSE_EXPECTATION))
+        return False, [
+            f"every cause in _CAUSE_EXPECTATION must be exercised by a corpus row: "
+            f"missing {missing}, unexpected {extra} -- a cause with no row has no "
+            "cross-language agreement at all, which is the gap #613 closed"
+        ]
+
+    # (2) INJECTIVITY of the table, which is what makes (1) meaningful to a
+    # reader and is the counterpart of Rust's `cause_names_are_distinct`.
+    # Two causes sharing a discriminator is not itself an error -- see the
+    # refinement case above -- but it must be a DELIBERATE entry rather than
+    # a copy-paste, so it is reported here and the two rows are named.
+    by_discriminator: dict[str, list[str]] = {}
+    for cause, expectation in _CAUSE_EXPECTATION.items():
+        by_discriminator.setdefault(_expected_discriminator(expectation), []).append(str(cause))
+    collisions = {d: sorted(cs) for d, cs in by_discriminator.items() if len(cs) > 1}
+    if collisions:
+        return False, [
+            f"_CAUSE_EXPECTATION is not injective: {collisions} -- two causes sharing "
+            "one discriminator are indistinguishable to this section, so each is "
+            "covered only by the other's corpus row. If that is deliberate (a cause "
+            "REFINING another that a byte-retaining reader cannot tell apart), say so "
+            "here and give each its own row."
+        ]
+
+    # (3) The reader must actually produce every discriminator. Catches the
+    # other direction: a reader collapsing every violation onto one verdict
+    # satisfies the per-row checks and classifies nothing.
     want_discriminators = {
         _expected_discriminator(expectation) for expectation in _CAUSE_EXPECTATION.values()
     }
@@ -376,8 +461,7 @@ def section_manifest_canonicality_cause() -> tuple[bool, list[str]]:
             f"the byte-retaining reader produced {sorted(discriminators_seen)} across "
             f"the corpus, expected exactly {sorted(want_discriminators)} -- a reader "
             "collapsing every violation onto one verdict satisfies the per-row checks "
-            "and classifies nothing, and a cause with no corpus row has no "
-            "cross-language agreement at all"
+            "and classifies nothing"
         ]
 
     return True, [

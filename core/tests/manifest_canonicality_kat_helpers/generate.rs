@@ -87,10 +87,20 @@ fn generate_manifest_canonicality_kat() {
         // comparison, so the generator and the replay cannot drift onto two
         // readings of one column -- and it is fail-closed in both arms.
         //
-        // BOTH arms are asserted. The `Ok` arm is not vacuous: it is the one
-        // combination `Verdict` alone cannot make unrepresentable at the
-        // point the decoder disagrees with the table, and behind the old
-        // `if let Err(..)` it was checked nowhere in the generator at all.
+        // BOTH arms are asserted, and the `Ok` arm is deliberately
+        // UNREACHABLE-BY-CONSTRUCTION future-proofing rather than a live
+        // check -- say so, because an earlier version of this comment
+        // claimed it "is not vacuous" and that was false twice over.
+        // `Verdict::cause()` returns `None` for `Accept`, so the type
+        // already makes accept-plus-cause unrepresentable (`cases.rs` says
+        // so in `Verdict`'s own doc); and the `assert_eq!` above has
+        // already forced `verdict.accepts()` by the time this arm runs, so
+        // control cannot reach it with a `Some` cause even if the type
+        // stopped guaranteeing that. It is kept because it costs one line
+        // and would catch a future `Verdict` variant that accepted while
+        // carrying a cause -- but it is argued, not measured, and behind
+        // the old `if let Err(..)` this combination was checked nowhere in
+        // the generator at all.
         match &outcome {
             Err(err) => {
                 assert_rejection_mechanism(&label, verdict.cause().map(cause_name), err);
