@@ -24,7 +24,7 @@ core/tests/          — integration tests; tests/data/ holds KATs and fuzz regr
 core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (136 lines; the PEP
                                              723 header is the sole dependency declaration).
                                              `conformance.py:NNN` citations predating #593 are
-                                             stale — the verifier is now a 60-file package.
+                                             stale — the verifier is now a 61-file package.
 core/tests/python/conformance_lib/         — DIRECTORY module (#593), the verifier itself: no
                                              dependency on `secretary-core`; proves the spec is
                                              implementable from `docs/` alone. `wire/` parses to
@@ -243,18 +243,23 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 136, over a **60**-file package whose largest module is
-`sections/required_key_determinism.py` at **390** lines, ahead of
-`merge/records.py` at 383 (52 files at the #593 split; #594 added
+was 6849 lines; it is now 136, over a **61**-file package whose largest module is
+`sections/manifest_canonicality_cause.py` at **472** lines, ahead of
+`sections/required_key_determinism.py` at 390, `merge/records.py` at 383 and
+`codec/manifest_decode.py` at 382. The top slot changed hands twice inside
+#613 alone — 388 at the first pass, 472 after the review round — so treat any
+ordering here as stale on sight (52 files at the #593 split;
+#594 added
 `sections/manifest_uniqueness_kat.py`; #597 added three, and its review round a
 fourth; #600 added `codec/array_uniqueness.py`, and its review round
 `sections/manifest_uniqueness_writer.py`; #604 added
-`sections/manifest_canonicality_cause.py`). Re-measured at #604: the ranking
-above still holds, and `sections/manifest_uniqueness_kat.py` — 425 lines and
-top of the list at #600 — is back down to 340 after the #608 review split its
-writer half out, so it is now fifth-EQUAL (tied with
-`sections/manifest_body_schema_guards.py`, also 340). A rank stated where
-there is a tie is how the next measurement reads as drift.
+`sections/manifest_canonicality_cause.py`; #613 added
+`sections/manifest_canonicality_corpus.py`). Re-measured after #613's review
+round, which grew `manifest_canonicality_cause.py` 300 → 388 → 472 (two new
+floors and a rewritten driver docstring) and `codec/manifest_decode.py`
+309 → 382. `sections/manifest_uniqueness_kat.py` — 425 lines and top of the
+list at #600 — is 340, no longer in the top six at all. A rank stated where
+there is a near-tie is how the next measurement reads as drift.
 
 **Re-measure before citing those numbers.** The sentence above read "largest
 module is still `merge/records.py` at 383 — by ONE line over
@@ -527,34 +532,81 @@ allowlist row and no `DATA_FREE_TYPES` entry — which a plain fieldless
 enum WOULD have needed, and which is what `CborFault`, a plain struct, did
 need. The `at` offset is the same deliberate length-oracle disclosure
 `CborFault::offset` already documents. `manifest_canonicality_kat_replays`
-now asserts a cause for each of the **six** rejecting rows that reach the
-re-encode, and pins the 6/3 split by count. Say "six", not "every rejecting
-row": the corpus has **nine** rejects, and the three `rule4_float` ones are
-caught earlier by `reject_floats_and_tags` and deliberately get no cause —
-that negative is the whole point of the `FloatWalk` arm.
+asserts a cause for each rejecting row that reaches the re-encode, and pins
+the split by count. **Both numbers have moved twice — re-measure, do not
+quote.** At #590 it was 6 caused / 3 uncaused out of 21 rows; #613 made it
+**17 / 3 out of 32**. What is stable is the RULE: the `rule4_float` rows are
+the only pre-re-encode rejections, caught earlier by `reject_floats_and_tags`
+and deliberately given no cause — that negative is the whole point of the
+`FloatWalk` arm, and it is three rows because there are three nesting
+levels.
 
 **Since #604 the expectation lives in the FIXTURE, not in the Rust test,
 and both languages read it.** `manifest_canonicality_kat.json` carries an
-`expect_cause` column — `"IndefiniteLength"` / `"NonShortestForm"` on the
-six re-encode rows, `null` on the three `rule4_float` ones — and
+`expect_cause` column — one of the four `NonCanonicalCause` spellings on
+each row that reaches the re-encode, `null` on the three `rule4_float`
+ones — and
 `assert_rejection_mechanism` reads it instead of matching on the label
 suffix, so the Rust test is a CONSUMER of the contract rather than its sole
-author. Four things about it:
+author. Several things about it, and the count is deliberately not written
+out — it has been wrong twice:
 
-- **The corpus reaches two of the four cause variants.**
-  `ArraySortOrder` and `Unclassified` need bodies that are not
-  `unknown`-subtree splices, which is the only shape the generator builds,
-  so they stay Rust-unit-test-only with no cross-language agreement
-  (**#613**). The gap carries a TRIPWIRE rather than only prose: a
-  `causes_seen` set assertion reds the moment a row declaring a third
-  cause is added, so #613's own fix cannot land while this paragraph
-  still claims two. Describe it as defence in depth and nothing more —
-  every mutation constructible against TODAY's corpus trips an earlier
-  per-row assertion first (the fixture-vs-`SHAPES` cross-check, or the
-  decoder comparison), so it was NOT shown to fire by mutation the way
-  the other three properties here were. `Unclassified` is the arm that
-  matters most — it is the one #590's first implementation got wrong in
-  the direction a peer could *choose*.
+- **The corpus reached two of the four cause variants; #613 closed that,
+  and the shape of the fix is the point.** `ArraySortOrder` and
+  `Unclassified` need bodies that are not `unknown`-subtree splices,
+  which is the only thing the generator built — so they could not be an
+  eighth `Shape`, and the corpus became TWO FAMILIES. `cases.rs` yields
+  one `all_cases()` list over `Case::{Splice, Mutate}`: the untouched
+  `Level::ALL x SHAPES` product, plus **11** whole-body reorderings of the
+  same `Level::Top` baseline (7 `arraysort__*`; 4 `keyorder__*` at top /
+  `kdf_params` / `blocks[0]` / `trash[0]`). 21 → 32 rows, 27 → 38 seeds;
+  the 21 existing rows and every existing seed are byte-identical, which
+  is the evidence the change is additive.
+  **SEVEN array rows for five arrays, because the two NESTED ones are
+  planted at `blocks[0]` AND `blocks[1]`.** The review round measured that
+  a corpus planting only at the first block leaves a reader scoped there
+  fully conformant, in BOTH languages: narrowing Rust's
+  `classify::arrays_are_sorted` to `.take(1)` left the entire workspace
+  green, and narrowing the Python reader's nested sort check to `blocks[0]`
+  left all 26 `conformance.py` sections green. It is the exact mirror of
+  the defect #608's review fixed for the uniqueness corpus — whose
+  fixtures plant at `blocks[1]` — and the sortedness twin had never had
+  the same treatment. Both mutations now red. `Mutation::ReverseArray`
+  therefore takes a closed `SortedArray` enum carrying a block INDEX, not
+  a `(&str, Option<&str>)` key pair, and every mutation label is DERIVED
+  from it, so a row whose label disagrees with what it reverses is
+  unconstructible (it was representable, and invisible to both languages).
+  Four map positions rather than one because they are four different
+  parsers on the RUST side — Python has three, `_decode_manifest_entry_map`
+  serving both entry maps, so do not write "on both sides".
+  **The array-LENGTH half of #608's lesson is still open, and is #623.**
+  Every one of the five arrays in `base_manifest` holds exactly TWO
+  elements, so a full adjacent scan and a first-pair check are the same
+  function — measured: a reader checking only `ids[:2]` leaves all 26
+  sections green. Closing it changes `base_manifest`, hence every one of
+  the 32 bodies and 38 seeds, which is why it is its own slice rather than
+  part of this one; the additivity evidence above is exactly what it
+  spends. It also needs a MIDDLE-swap row, because reversing three
+  elements still disturbs the first pair.
+  **The `causes_seen` assertion is still DEFENCE IN DEPTH**, and its own
+  comment now says so after an intermediate draft claimed otherwise and
+  was measured false: dropping mutation rows trips the
+  `rows.len() == cases.len()` assertion first, and regenerating past that
+  trips `want_re_encode == 17`. What IS measured is that the comparison
+  is live (a duplicated `ALL_CAUSES` entry reds it, and shortening the
+  array is a compile error). The direction it exists for — a FIFTH
+  `NonCanonicalCause` with no corpus row — needs a real variant to
+  exercise. Its Python counterpart IS mutation-proven, because a table entry
+  can be added without adding a Rust enum variant — but only since the
+  review round, and the reason is worth keeping. It compared
+  `discriminators_seen` against `_CAUSE_EXPECTATION`'s VALUES, and that
+  table is MANY-TO-ONE, so a new cause whose discriminator collided with an
+  existing entry was declared covered with no corpus row at all (measured:
+  `"SomeFutureCause": RuleNumber(2)` PASSED; a unique `RuleNumber(9)`
+  correctly red). The realistic next variant is precisely a collision — a
+  refinement of an existing cause that a byte-retaining reader detects as
+  the same §6.2 rule. The floor is now PER-CAUSE, with a separate
+  injectivity check standing in for Rust's `cause_names_are_distinct`.
 - **The fixture is cross-checked against the `SHAPES` table it was
   generated from**, so a hand-edited `expect_cause` reds rather than
   silently becoming the new contract. Without it the fixture would be
@@ -610,11 +662,53 @@ author. Four things about it:
   indefinite-length items**", so by §6.2's own text an indefinite item
   violates rules 2 AND 4; §4.2's table row 4 is spelled "no tags, no
   floats" and leaves indefinite lengths to row 2. Both `scanner.py` and
-  `_CAUSE_TO_RULE` say so in source, because without it a clean-room
+  `_CAUSE_EXPECTATION` say so in source, because without it a clean-room
   implementer reading §6.2 literally would classify an indefinite item
   as rule 4 and Section MCC would report a divergence against a
   CONFORMANT reader — on the section whose entire audience is that
   implementer (#614 review).
+- **Since #613 that table has TWO KINDS of entry, and the second one is
+  not a rule number.** `_CAUSE_TO_RULE` is now `_CAUSE_EXPECTATION`,
+  holding `RuleNumber(n)` or `ExceptionKind(cls)`. Neither new cause maps
+  to a §6.2 numbered rule — §6.2 says nothing about array elements, and
+  `Unclassified` is usually §6.2 rule 1, which `_check_canonical_item`
+  deliberately never checks — so inventing numbers would make this reader
+  disagree with a conformant implementation over rules neither document
+  assigns. `manifest_decode.py` gained two structured discriminators for
+  them, `ArraySortOrderViolation` and `NonCanonicalBody`: `ValueError`
+  subclasses (so `_REJECTION_EXCEPTIONS` and `diff_replay.py`'s
+  reject-vs-error split are untouched) with **no custom `__init__`** —
+  their IDENTITY is the whole discriminator, so the default
+  `BaseException.__reduce__` round-trips, which is exactly why
+  `NonCanonicalItem`, carrying a rule number, needs an explicit one.
+  **The sort/repeat asymmetry inside `_check_sorted_and_distinct` is
+  load-bearing:** the SORT branch raises the new type, the REPEAT branch
+  stays a plain `ValueError` because Section MUQ discriminates that one
+  by a message fragment naming the repeated id. Collapsing the two onto
+  one type would let a sortedness-only reader satisfy MUQ — the exact
+  #594 divergence.
+- **`ArraySortOrder` is the same rule-not-mechanism asymmetry one layer
+  up.** Rust classifies it off the PARSED `Manifest`
+  (`classify::arrays_are_sorted`) after the re-encode has already decided
+  to reject; the byte-retaining reader re-emits its input unconditionally,
+  so its re-encode can never see array disorder and it checks the
+  discipline directly, BEFORE that comparison. Measured, not argued:
+  deleting the Rust classifier's `ArraySortOrder` arm reds **five** Rust
+  tests — three in `--lib`
+  (`array_order_outranks_an_encoding_violation`,
+  `every_array_sort_discipline_is_rejected_out_of_order_on_decode`,
+  `non_canonical_shapes_are_each_rejected`) and two in
+  `--test manifest_canonicality_kat` — and leaves all 26 `conformance.py`
+  sections green. It said "two" until the review round re-measured: that
+  figure was the INTEGRATION binary's subtotal, written as a claim about
+  "Rust tests". A mutation scoped to one cargo target reports one target's
+  answer, which is the mirror of the `--lib`/`--test` filter trap recorded
+  above. The load-bearing half is the second clause — Python staying green
+  is what makes the two mechanisms independent.
+- **The corpus's label set is declared ONCE for its two readers**, in
+  `sections/manifest_canonicality_corpus.py`, so MCK and MCC cannot drift
+  onto two ideas of which rows the fixture holds. It defines no
+  `section*` driver, so Section REG discovers it and still reports 26/26.
 
 **The residual, stated exactly, because the obvious wider claim is false.**
 Inside a forward-compat `unknown` subtree the check misses **duplicate map

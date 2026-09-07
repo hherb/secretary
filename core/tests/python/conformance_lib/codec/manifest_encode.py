@@ -1,9 +1,24 @@
 """§4.2 manifest BODY encoder.
 
-Sorts on output -- `vector_clock`, `blocks`, `trash`, and per-block
-`recipients` and `vector_clock_summary`. Because the decoder re-encodes and
-compares, those sort disciplines are what make an out-of-order array a
-REJECTION rather than a silent normalisation.
+**This encoder does NOT sort arrays, and that is deliberate.**  An earlier
+version of this docstring said it sorted all five of §4.2's arrays on
+output, "which is what makes an out-of-order array a REJECTION rather than
+a silent normalisation".  That describes Rust's `encode_manifest`, not this
+one: the only `sorted` in this file is the comment at `_encode_body` saying
+array ELEMENT order is never resorted here.
+
+The distinction is load-bearing for Section MCC's whole claim.  This is a
+BYTE-RETAINING reader: it re-emits array order verbatim, so the §4.3 step-4
+re-encode comparison can never see array disorder, and `py_decode_manifest`
+must therefore check the sort discipline DIRECTLY -- which it does, raising
+`ArraySortOrderViolation` before the comparison runs.  Rust reaches the same
+rule by the opposite route (its encoder does sort, so an unsorted input
+fails to re-encode to itself, and `classify::arrays_are_sorted` then names
+the cause).  Same rule, different mechanism; `docs/vault-format.md` §4.2
+makes that asymmetry normative.
+
+What this encoder DOES enforce is §4.2's writer half for repeated array
+values (#600), via `check_no_repeated_array_values`.
 """
 
 from __future__ import annotations

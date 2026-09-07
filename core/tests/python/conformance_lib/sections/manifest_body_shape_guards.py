@@ -142,7 +142,7 @@ def section_manifest_body_shape_guard() -> tuple[bool, list[str]]:
 
     Nothing else in this file can see this class, which is why it needs its
     own section: the §4.3 step-4 re-encode compares BYTES and every row
-    below re-encodes to itself, and the 21-row canonicality corpus mutates
+    below re-encodes to itself, and the canonicality corpus's SPLICE family mutates
     only `unknown` subtrees. Each row asserts on message CONTENT as well as
     on rejection, so a row cannot be satisfied by an unrelated `ValueError`
     raised further down the decoder.

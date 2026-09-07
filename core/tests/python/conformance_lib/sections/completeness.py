@@ -52,6 +52,7 @@ _NON_DRIVER_MODULES = (
     "manifest_body_fixtures",
     "required_key_structure",
     "manifest_uniqueness_writer",
+    "manifest_canonicality_corpus",
 )
 
 
