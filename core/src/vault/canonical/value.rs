@@ -369,17 +369,21 @@ pub(crate) fn to_canonical_vec(map: &CanonicalMap<'_>) -> Result<Vec<u8>, Canoni
     // check lives here rather than on `push`, and for why forward-compat
     // `Borrowed` subtrees are deliberately outside the walk.
     //
-    // Scope it exactly, because the wider claim is false: `identity::card`
-    // and `sync::state` do NOT funnel through here and are NOT covered.
-    // `ContactCard::signed_bytes` — the byte string the §8 hybrid
-    // self-signature commits to — encodes via card.rs's own private
-    // `encode_map`, and `pk_bundle_bytes` / `SyncState::to_canonical_cbor`
-    // via `legacy::encode_canonical_map`; neither deduplicates. There is no
-    // live exposure (all three build their keys from fixed `&'static str`
-    // literals, and card.rs's `encode_map` is deliberately permissive so
-    // its tests can build hostile-peer bytes), but that is a property of
-    // today's call sites, not of the encoder — which is the posture #586
-    // exists to replace. Tracked as #602 rather than fixed here.
+    // Scope it exactly. This is the choke point for the four VAULT-BODY
+    // encoders and NOT the crate's only duplicate-key check: `identity::card`
+    // and `sync::state` build `ciborium::Value` maps and reach
+    // `legacy::{encode_canonical_map, canonical_sort_entries}` instead, which
+    // carry their own — see `super::dedupe` (#602). The two checks are
+    // deliberately separate implementations over two different types, not one
+    // shared walk, but they agree on the rule and on the meaning of
+    // `DuplicateKey`'s ordinal.
+    //
+    // The one behavioural difference is this walk's `Borrowed` carve-out
+    // below, which `dedupe`'s has no analogue for — and that asymmetry is
+    // structural, not an oversight: a `Borrowed` arm is a forward-compat
+    // `unknown` subtree, and neither `ContactCard` (which rejects unknown
+    // fields outright) nor `SyncState` (two typed fields, no `unknown` bag)
+    // can carry one.
     map.check_no_duplicate_keys()?;
 
     let bound = map.size_bound();
@@ -449,6 +453,34 @@ mod tests {
             // Asserted rather than `{ .. }`-waved so a checker that reported
             // a PUSH-order ordinal (3) reds here.
             Err(CanonicalError::DuplicateKey { index }) => assert_eq!(index, 1),
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
+    }
+
+    /// **The ordinal is a real position, not the constant `1`.** Every
+    /// other `DuplicateKey` fixture in this file sorts its duplicate to
+    /// position 0, so `assert_eq!(index, 1)` is satisfied by a hardcoded
+    /// `1` — including `the_nested_ordinal_is_scoped_to_its_own_map` below,
+    /// whose doc says "Nothing else in this file distinguishes the two" but
+    /// which also expects 1. Measured during the #602 review: replacing
+    /// `index: position + 1` with `index: 1` in BOTH this file and
+    /// `dedupe.rs` left the entire 99-binary workspace green.
+    ///
+    /// Canonical order here is `a`, `bb`, `bb` — `(len, bytes)` puts the
+    /// one-byte key first — so the second `bb` sits at 2. `dedupe.rs`'s
+    /// `the_ordinal_is_a_real_position_not_the_constant_one` is the twin,
+    /// with the same fixture: that agreement is what makes the shared
+    /// "second occurrence, canonical order" contract checkable rather than
+    /// merely asserted in two doc comments.
+    #[test]
+    fn the_ordinal_is_a_real_position_not_the_constant_one() {
+        let mut map = CanonicalMap::with_capacity(3);
+        map.push("a", CanonicalValue::Uint(1));
+        map.push("bb", CanonicalValue::Uint(2));
+        map.push("bb", CanonicalValue::Uint(3));
+
+        match to_canonical_vec(&map) {
+            Err(CanonicalError::DuplicateKey { index }) => assert_eq!(index, 2),
             other => panic!("expected DuplicateKey, got {other:?}"),
         }
     }

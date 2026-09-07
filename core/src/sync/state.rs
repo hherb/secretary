@@ -84,6 +84,44 @@ impl SyncState {
     /// `vault_uuid` and entry `device_uuid`, integer for entry `counter`.
     /// Forward-compat: a future C.1.x adding new keys uses the same
     /// `unknown` opaque round-trip pattern as `Record`/`Manifest`.
+    ///
+    /// # Duplicate map keys (#602)
+    ///
+    /// Both helpers reject a repeated key, so this cannot emit an ambiguous
+    /// body — the inner per-device entry maps through `canonical_sort_entries`
+    /// and the outer map through `encode_canonical_map`, each checking the
+    /// level it sorts. `encode_canonical_map`'s walk also recurses, so the
+    /// inner maps are covered twice over.
+    ///
+    /// Two scoping notes, because the obvious wider readings are both wrong.
+    ///
+    /// First, the check is **unconditionally vacuous on this path**, and the
+    /// reason is not the one it is tempting to give. Do not write "no
+    /// `SyncState` carrying a duplicate can be constructed": both fields are
+    /// `pub` and [`SyncState::empty`] bypasses [`SyncState::new`], so a
+    /// struct literal builds one freely. And `validate_clock_canonical`
+    /// dedupes **array elements** by `device_uuid`, whereas this check
+    /// inspects **map keys** — a different thing entirely, so a `SyncState`
+    /// carrying repeated device entries would not make it fire either way.
+    /// What actually makes it vacuous is that every key on both levels is a
+    /// fixed `&'static str` constant, so no `SyncState` value can produce a
+    /// repeated key at all.
+    ///
+    /// Second, crypto-design §6.2 does **not** bind this function — §6.2's
+    /// opening sentence enumerates the `canonical_cbor(...)` byte strings it
+    /// governs, and OS-keystore state is not among them. The check arrives
+    /// by sharing a helper with the card paths, which §6.2 does bind. Do not
+    /// cite the spec for it.
+    ///
+    /// **If the forward-compat `unknown` bag promised above ever lands, this
+    /// walk must gain an opaque-subtree boundary first.**
+    /// `vault::canonical::dedupe`'s walk is unconditional — it has no
+    /// analogue of `to_canonical_vec`'s `CanonicalValue::Borrowed`
+    /// carve-out — and it is unconditional *because* `SyncState` has two
+    /// typed fields today. A v2 peer's subtree carrying a repeated key is
+    /// something v1 must accept (§6.2 rules 1 and 5 are scoped to material
+    /// the reader interprets); descending into one here would turn it into a
+    /// `StateEncodeFailed` this device could never clear.
     pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, SyncError> {
         use ciborium::value::Value;
 
