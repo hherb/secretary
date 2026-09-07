@@ -94,11 +94,12 @@ encoder, which is exactly the posture #586 exists to replace.
   funnel through one function, `canonical_error_to_card_error` is applied
   once rather than per call site, and its `CanonicalError::DuplicateKey` arm
   is **live code on a live path**.
-- **Two hostile fixtures re-based onto one shared `#[cfg(test)]` permissive
-  encoder**, `dedupe::encode_map_allowing_duplicates` — which is the
-  pre-#602 `encode_map` body preserved verbatim, so it doubles as the
-  byte-identity oracle.
-- **15 tests added, none renamed or removed** (2101 → 2116).
+- **One hostile fixture re-based onto `dedupe::encode_map_allowing_duplicates`**
+  — the pre-#602 `encode_map` body preserved verbatim, so it doubles as the
+  byte-identity oracle. The review round corrected an earlier "two fixtures
+  re-based onto one shared encoder": the card's fixture deliberately does not
+  use it (see §4).
+- **21 tests added, none renamed or removed** (2101 → 2122; 15 in the original slice, 6 in the review round).
 
 ### Non-vacuity, by mutation
 
@@ -115,6 +116,10 @@ rather than reporting it.
 | M6 | do not sort before the adjacent sweep | RED — 3 tests |
 | M7 | **revert `encode_map` to the pre-#602 body** | RED — **only** `card_encode_path_rejects_a_duplicate_key`; all three byte-identity tests stay GREEN |
 | M8 | reverse `encode_canonical_map`'s sort | RED — all three byte-identity tests **plus** the pre-existing `pk_bundle_bytes_is_byte_pinned` |
+| M9 | **ordinal → the constant `1`, in `dedupe.rs`** | GREEN before the review round (whole workspace); now RED — 2 |
+| M10 | **ordinal → the constant `1`, in #586's `value.rs`** | GREEN before the review round (whole workspace); now RED — 1 |
+| M11 | drop the `Tag` arm from the walk | GREEN before the review round (583/583 lib); now RED — 1 |
+| M12 | revert the key walk (`for (_, value)`) | GREEN before the review round; now RED — 1 |
 
 **M7 and M8 are the pair that matters, and they run in opposite
 directions.** M7 says the bytes genuinely did not move (swapping the old
@@ -124,11 +129,11 @@ evidence.
 
 ### The measured result
 
-- **`cargo test --release --workspace`: 99 binaries, 2116 passed, 0 failed,
+- **`cargo test --release --workspace`: 99 binaries, 2122 passed, 0 failed,
   21 ignored**, exit 0.
 - **Test NAME SET is additive-only, proven without a baseline build**: the
-  diff removes **zero** functions and adds exactly **15** `#[test]`
-  attributes, which is precisely the 2101 → 2116 delta. A rename or removal
+  diff removes **zero** functions and adds exactly **21** `#[test]`
+  attributes, which is precisely the 2101 → 2122 delta. A rename or removal
   cannot hide inside a count that reconciles that way.
 - **`--features differential-replay` exit 0** — 99 binaries, 2117 passed, 0
   failed (one more than the default run; the feature adds a test). No CI job
@@ -232,7 +237,7 @@ first-pair mutation reds. Note this regenerates all 32 bodies and 38 seeds,
 spending the additivity evidence #613 rests on — which is why it is its own
 slice.
 
-**(d) #625 — `card.rs` is 1254 lines.** Filed by this slice. Same class as
+**(d) #625 — `card.rs` is 1264 lines** (the issue title says 1254, measured before the last review round). Filed by this slice. Same class as
 #556 / #563 / #603. **Acceptance:** directory module split by ROLE
 (`mod`/`encode`/`decode`/`error` + sibling `tests.rs`), every file under
 500, committed as a behaviour-preserving move with the name set diffed, and
@@ -274,9 +279,16 @@ ambiguous bytes. `card.rs`'s
 `duplicate_field_names_the_spec_key_as_a_static_str` and
 `manifest/decode/tests.rs`'s `manifest_bytes_with_duplicate_nested_key`
 (whose repeat is nested in a map inside an array — which is how the
-recursive walk found it) now share one `#[cfg(test)]` permissive encoder,
-following the pattern `core/tests/identity.rs::card_parse_rejects_duplicate_keys`
-had always used.
+recursive walk found it) solved it DIFFERENTLY, and this passage claimed
+through four documents that they "now share one `#[cfg(test)]` permissive
+encoder". Measured in the review round: only the manifest fixture calls
+`encode_map_allowing_duplicates`. The card's test assembles its bytes inline
+with raw `ciborium` — the pattern
+`core/tests/identity.rs::card_parse_rejects_duplicate_keys` had always used —
+because it wants PUSH order and the shared helper sorts. `card.rs`'s own
+test-module comment said so correctly the whole time, which is the tell: when
+the code's comment and the summary disagree, the summary is the one that was
+written from intent rather than from the diff.
 
 **Generalise it:** when you tighten an encoder, the tests that break are a
 census of everywhere a test was relying on it being permissive — and each
@@ -316,11 +328,17 @@ paragraph ends with the command rather than the conclusion.
 
 ### Standing risks this slice does not remove
 
-- **#602's siblings are closed, but the ordinal contract is now asserted in
-  two places.** `to_canonical_vec` and `dedupe` both promise "second
-  occurrence, canonical order, scoped to its own map". Nothing mechanically
-  ties them; M5 pins `dedupe`'s half and #586's tests pin the other. A
-  future change to one must change both.
+- **The ordinal contract is asserted in two places and was pinned in
+  neither — closed in the review round.** `to_canonical_vec` and `dedupe`
+  both promise "second occurrence, canonical order, scoped to its own map",
+  and nothing mechanically ties them. The claim that "M5 pins `dedupe`'s half
+  and #586's tests pin the other" was measured and is false: every one of the
+  thirteen index assertions in the crate placed its duplicate at sorted
+  position 0, so the constant `1` passed the entire 99-binary workspace in
+  BOTH implementations. M5 (first-of-pair) reds them; a constant did not.
+  Each side now carries `the_ordinal_is_a_real_position_not_the_constant_one`
+  over `["a", "bb", "bb"]`, expecting 2. Still two implementations of one
+  rule: a future change to one must change both.
 - **Five of the six PEP 723 deps remain unbounded** (`cryptography`,
   `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` still
   has the "no exception means success" shape whose failure direction is
@@ -330,7 +348,7 @@ paragraph ends with the command rather than the conclusion.
   `differential_replay.rs` scores reject-vs-reject as agreement without
   comparing `detail` (#618) — which is why #621 is invisible to it, and
   will stay invisible after #621 is fixed.
-- **`card.rs` (1254) and `sync/state.rs` (549) are past the 500-line
+- **`card.rs` (1264) and `sync/state.rs` (570) are past the 500-line
   guideline** — #625 / #626, filed by this slice, deliberately not fixed in
   it.
 
@@ -356,7 +374,7 @@ cargo build --release --workspace          # separate from the test run ON PURPO
 # Redirect, then echo $? — a `| grep` pipeline reports GREP's exit code:
 cargo test --release --workspace > /tmp/suite.txt 2>&1; echo "CARGO EXIT: $?"
 grep -E "^test result" /tmp/suite.txt | \
-  awk '{p+=$4; f+=$6; i+=$8} END {print NR, p, f, i}'   # expect 99 2116 0 21
+  awk '{p+=$4; f+=$6; i+=$8} END {print NR, p, f, i}'   # expect 99 2122 0 21
 # NOT redundant with the above — `--tests` catches unused imports the full
 # suite compiles green:
 cargo clippy --release --workspace --tests -- -D warnings

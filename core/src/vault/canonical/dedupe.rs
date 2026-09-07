@@ -41,21 +41,41 @@
 //! into a `CanonicalValue::Borrowed` — a forward-compat `unknown` subtree,
 //! where a repeated key is the documented v1 residual (§6.2 rules 1 and 5 are
 //! scoped to material the reader *interprets*). That carve-out has no analogue
-//! here, and the reason is structural rather than a judgement call: neither
-//! production caller can carry such a subtree. `ContactCard` **rejects**
-//! unknown fields outright (`CardError::UnknownField`), and `SyncState` has
-//! two typed fields and no `unknown` bag. There is no v1-residual to narrow,
-//! so this walk descends through every map and array it is given.
+//! here because neither production caller can carry such a subtree today:
+//! `ContactCard` **rejects** unknown fields outright
+//! (`CardError::UnknownField`), and `SyncState` has two typed fields and no
+//! `unknown` bag. There is no v1-residual to narrow, so this walk descends
+//! through every map, array and tag it is given — keys as well as values.
+//!
+//! **State that as a property of today's types, not a structural one, because
+//! one of the two is already scheduled to break it.**
+//! `sync::state::SyncState::to_canonical_cbor`'s own doc comment promises
+//! that "a future C.1.x adding new keys uses the same `unknown` opaque
+//! round-trip pattern as `Record`/`Manifest`". The day that lands, this
+//! unconditional walk would reject a v2 peer's subtree carrying a repeated
+//! key — narrowing exactly the residual #586's `Borrowed` carve-out exists to
+//! preserve, and surfacing as a `SyncError::StateEncodeFailed` the device
+//! cannot clear. Adding an `unknown` bag to either caller therefore means
+//! giving this walk an opaque-subtree boundary first; `state.rs` carries the
+//! same note where that change would actually be made.
 //!
 //! # On materialising key bytes
 //!
 //! [`check_no_duplicate_keys`] encodes each key to sort it, so it allocates
 //! key buffers — which [`super::value::to_canonical_vec`] pointedly does not,
 //! because record field names are decrypted plaintext and a buffer that is
-//! never built needs no wipe. That is fine here and must stay checked: both
-//! production callers' keys are fixed literals, and each caller's own sort
-//! already materialises the identical bytes, so this adds no new *class* of
-//! exposure. A future production caller whose keys are plaintext belongs on
+//! never built needs no wipe. That is fine here for one reason only, and it
+//! is worth stating narrowly: **both production callers' keys are fixed
+//! `&'static str` literals.**
+//!
+//! Do not reach for the wider-sounding argument that each caller's own sort
+//! already materialises the same bytes. That holds at the TOP level and
+//! nowhere else — `encode_canonical_map` sorts one level, while this walk
+//! recurses, so for any nested map it encodes key buffers the caller never
+//! would. Today the nested keys are literals too (`SyncState`'s
+//! `"device_uuid"` / `"counter"`, and the card nests nothing), so nothing is
+//! exposed; but the fixed-literal argument is the one carrying the weight.
+//! A future production caller whose keys are plaintext belongs on
 //! `CanonicalMap` / `to_canonical_vec`, not here.
 
 use ciborium::Value;
@@ -81,7 +101,17 @@ use super::CanonicalError;
 /// the keys. Requiring a pre-sorted input would split one rule into a
 /// precondition and a sweep, which is the drift this module exists to
 /// prevent.
-pub(crate) fn check_no_duplicate_keys(entries: &[(Value, Value)]) -> Result<(), CanonicalError> {
+///
+/// **Both halves of every entry are recursed into, keys included.** A CBOR
+/// map key may itself be a `Map` / `Array` / `Tag`, so a key is a container
+/// position like any other; [`super::reject_floats_and_tags`] walks keys for
+/// exactly this reason and the two sweeps would otherwise disagree about
+/// what a key is. No production caller has a non-`Text` key today — which is
+/// precisely why the walk must not be scoped to that fact.
+///
+/// `pub(super)`, not `pub(crate)`: `dedupe` is a private module, so the
+/// wider spelling would have claimed a reach the path cannot deliver.
+pub(super) fn check_no_duplicate_keys(entries: &[(Value, Value)]) -> Result<(), CanonicalError> {
     let mut keys: Vec<Vec<u8>> = entries
         .iter()
         .map(|(key, _)| {
@@ -104,7 +134,8 @@ pub(crate) fn check_no_duplicate_keys(entries: &[(Value, Value)]) -> Result<(), 
         }
     }
 
-    for (_, value) in entries {
+    for (key, value) in entries {
+        check_value(key)?;
         check_value(value)?;
     }
     Ok(())
@@ -112,6 +143,10 @@ pub(crate) fn check_no_duplicate_keys(entries: &[(Value, Value)]) -> Result<(), 
 
 /// Recurse [`check_no_duplicate_keys`] through the arms that can contain a
 /// map.
+///
+/// Called on **both** halves of every entry — see
+/// [`check_no_duplicate_keys`] for why a key is a container position like
+/// any other.
 ///
 /// `Value::Tag` is walked even though [`super::reject_floats_and_tags`] means
 /// no vault path should ever present one: an arm that silently skipped a
@@ -138,22 +173,36 @@ fn check_value(value: &Value) -> Result<(), CanonicalError> {
 ///
 /// 1. **Hostile-peer fixtures.** A decoder test that proves a repeated key is
 ///    rejected needs bytes carrying one, and a sanctioned encoder must not be
-///    able to produce them. Callers today:
-///    `identity::card`'s `duplicate_field_names_the_spec_key_as_a_static_str`
-///    and `vault::manifest::decode`'s `manifest_bytes_with_duplicate_nested_key`.
-/// 2. **The byte-identity oracle** for the #602 migration — `signed_bytes`,
-///    `to_canonical_cbor` and `pk_bundle_bytes` are each asserted equal to
-///    this, so "the delegation changed no byte" is measured rather than
-///    argued.
+///    able to produce them. One caller today:
+///    `vault::manifest::decode`'s `manifest_bytes_with_duplicate_nested_key`,
+///    whose repeat sits in a map inside an array. `identity::card`'s
+///    `duplicate_field_names_the_spec_key_as_a_static_str` needs such bytes
+///    too and deliberately does **not** use this function — it assembles them
+///    inline with raw `ciborium` so the intent is visible at the site, the
+///    pattern `core/tests/identity.rs::card_parse_rejects_duplicate_keys` has
+///    always followed. Do not "unify" the two; the difference is that this
+///    one also has to sort, and that test wants push order.
+/// 2. **The byte-identity oracle** for the #602 migration. Callers:
+///    `identity::card`'s `signed_bytes_is_byte_identical_to_the_previous_encoder`,
+///    `to_canonical_cbor_is_byte_identical_to_the_previous_encoder` and
+///    `pk_bundle_bytes_is_byte_identical_to_the_previous_encoder`, which
+///    import it under the alias `encode_via_value_map`. So "the delegation
+///    changed no byte" is measured rather than argued.
 ///
 /// It is one function rather than a copy per test module deliberately: a
 /// hand-copied encoder is exactly the drift this module exists to remove, and
 /// a single `#[cfg(test)]` definition is greppable in a way three are not.
 ///
-/// **It must never gain a production caller.** `#[cfg(test)]` is what keeps
-/// it out of shipped artifacts; that is a build-configuration guarantee, not
-/// a language one, so treat adding a caller outside a test module as the
-/// security decision it is.
+/// **It must never gain a production caller**, and `#[cfg(test)]` is what
+/// makes that stick: a `#[cfg(test)]` item is not compiled into the rlib a
+/// dependent links, so a production call is a hard `cargo build --release`
+/// error rather than something a guard has to notice.
+///
+/// Do not read across from `Detail::for_test`'s hatch, which reads similarly
+/// and is genuinely weaker — that one is behind a Cargo *feature*, which a
+/// manifest edit can switch on, which is why it needs
+/// `check-test-support-placement.py`. There is no resolver precondition to
+/// defend here and no guard is required.
 #[cfg(test)]
 pub(crate) fn encode_map_allowing_duplicates(entries: &[(Value, Value)]) -> Vec<u8> {
     let mut sorted: Vec<(Vec<u8>, (Value, Value))> = entries
@@ -184,11 +233,14 @@ mod tests {
         Value::Integer(n.into())
     }
 
-    /// The core rejection, and the ordinal contract: `index` names the
-    /// SECOND of the two equal keys in CANONICAL order, matching
-    /// `to_canonical_vec`'s behaviour exactly (#586) so one
-    /// `CanonicalError::DuplicateKey` means one thing whichever encoder
-    /// produced it.
+    /// The core rejection. Note what this pins about the ordinal and what
+    /// it does not: the duplicate sorts to position 0, so `index == 1`
+    /// discriminates only against an ordinal naming the FIRST occurrence
+    /// (`index: position`). It does **not** distinguish the real ordinal
+    /// from the constant `1` — see
+    /// `the_ordinal_is_a_real_position_not_the_constant_one`, which exists
+    /// because the whole suite stayed green under `index: 1` until it was
+    /// written.
     #[test]
     fn a_map_repeating_a_key_is_rejected() {
         let entries = vec![
@@ -234,8 +286,11 @@ mod tests {
         let inner = Value::Map(vec![(text("k"), uint(1)), (text("k"), uint(2))]);
         let entries = vec![(text("outer"), inner)];
         match check_no_duplicate_keys(&entries) {
-            // Scoped to the map it was FOUND in, per `DuplicateKey`'s doc —
-            // not a running count across the walk.
+            // Rejection only. This fixture's outer map holds ONE entry, so
+            // a running count across the walk also reports 1 — the scoping
+            // claim is carried by
+            // `the_nested_ordinal_is_scoped_to_its_own_map_and_is_a_real_position`,
+            // not by this.
             Err(CanonicalError::DuplicateKey { index }) => assert_eq!(index, 1),
             other => panic!("expected DuplicateKey, got {other:?}"),
         }
@@ -276,14 +331,117 @@ mod tests {
 
     /// Two keys that share a PREFIX but differ are not a duplicate — the
     /// comparison is on the whole encoded key, not a prefix or a length.
+    ///
+    /// `"aa"` / `"bb"` carry the LENGTH half of that claim: the three
+    /// prefix keys have three distinct lengths, so a comparator that
+    /// looked only at length would pass on them alone. It rejects this
+    /// pair.
     #[test]
     fn distinct_keys_sharing_a_prefix_are_accepted() {
         let entries = vec![
             (text("device"), uint(1)),
             (text("device_uuid"), uint(2)),
             (text("d"), uint(3)),
+            (text("aa"), uint(4)),
+            (text("bb"), uint(5)),
         ];
         assert!(check_no_duplicate_keys(&entries).is_ok());
+    }
+
+    /// **The ordinal is a real position.** Every other rejection fixture in
+    /// this module and in `legacy.rs` puts its duplicate at sorted position
+    /// 0, so `assert_eq!(index, 1)` is satisfied by the constant `1` —
+    /// measured, not supposed: replacing `index: position + 1` with
+    /// `index: 1` left the entire 99-binary workspace green before this
+    /// test existed.
+    ///
+    /// Canonical order here is `a`, `bb`, `bb` (bytewise on the encoded
+    /// key), so the second `bb` sits at 2. Reds the constant `1`, reds an
+    /// ordinal naming the first occurrence (1), and reds an entry-order
+    /// ordinal (2 by luck here — which is why the nested case below carries
+    /// the entry-order half).
+    #[test]
+    fn the_ordinal_is_a_real_position_not_the_constant_one() {
+        let entries = vec![
+            (text("a"), uint(1)),
+            (text("bb"), uint(2)),
+            (text("bb"), uint(3)),
+        ];
+        match check_no_duplicate_keys(&entries) {
+            Err(CanonicalError::DuplicateKey { index }) => assert_eq!(index, 2),
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
+    }
+
+    /// The nested ordinal is scoped to its own map AND is a real position —
+    /// the mirror of `value::tests::the_nested_ordinal_is_scoped_to_its_own_map`,
+    /// which #586 wrote for the same reason and which this module had no
+    /// counterpart to.
+    ///
+    /// The inner map's canonical order is `a`, `zz`, `zz`, so a per-map
+    /// ordinal reports 2. A counter accumulating across the walk would
+    /// report something larger (the two outer entries are visited first);
+    /// the constant `1` reds too. One fixture, both properties.
+    #[test]
+    fn the_nested_ordinal_is_scoped_to_its_own_map_and_is_a_real_position() {
+        let inner = Value::Map(vec![
+            (text("a"), uint(0)),
+            (text("zz"), uint(1)),
+            (text("zz"), uint(2)),
+        ]);
+        let entries = vec![
+            (text("m1"), uint(1)),
+            (text("m2"), uint(2)),
+            (text("nested"), inner),
+        ];
+        match check_no_duplicate_keys(&entries) {
+            Err(CanonicalError::DuplicateKey { index }) => assert_eq!(
+                index, 2,
+                "the ordinal must be the inner map's own position, not a running count"
+            ),
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
+    }
+
+    /// Recursion through `Value::Tag`. No vault path may present a tag —
+    /// `reject_floats_and_tags` refuses one — but `check_value` walks the
+    /// arm deliberately, and until this test the arm was pinned by nothing:
+    /// deleting it left 583/583 lib tests green.
+    #[test]
+    fn a_duplicate_inside_a_tag_is_caught() {
+        let tagged = Value::Tag(
+            24,
+            Box::new(Value::Map(vec![(text("k"), uint(1)), (text("k"), uint(2))])),
+        );
+        let entries = vec![(text("tagged"), tagged)];
+        match check_no_duplicate_keys(&entries) {
+            Err(CanonicalError::DuplicateKey { index }) => assert_eq!(index, 1),
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
+    }
+
+    /// A map used as a KEY is a container like any other. `reject_floats_and_tags`
+    /// has always walked keys; until this test the duplicate sweep did not,
+    /// so `encode_canonical_map` would emit a body whose own key was an
+    /// ambiguous map. No production caller has a non-`Text` key — which is
+    /// exactly why the walk must not be scoped to that fact.
+    #[test]
+    fn a_duplicate_inside_a_composite_key_is_caught() {
+        let key = Value::Map(vec![(text("a"), uint(1)), (text("a"), uint(2))]);
+        let entries = vec![(key, uint(0))];
+        match check_no_duplicate_keys(&entries) {
+            Err(CanonicalError::DuplicateKey { index }) => assert_eq!(index, 1),
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
+    }
+
+    /// Maps too small to hold a duplicate are accepted rather than
+    /// panicking — `windows(2)` yields nothing below length 2. The mirror
+    /// of `value::tests::maps_too_small_to_hold_a_duplicate_encode`.
+    #[test]
+    fn maps_too_small_to_hold_a_duplicate_are_accepted() {
+        assert!(check_no_duplicate_keys(&[]).is_ok());
+        assert!(check_no_duplicate_keys(&[(text("only"), uint(1))]).is_ok());
     }
 
     /// The same key at two DIFFERENT levels is not a duplicate — the check

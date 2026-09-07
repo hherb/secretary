@@ -23,12 +23,22 @@ use crate::cbor::classify_ser;
 pub fn canonical_sort_entries(
     entries: &[(Value, Value)],
 ) -> Result<Vec<(Value, Value)>, CanonicalError> {
-    // #602: reject an ambiguous map BEFORE reordering it. This function
-    // sorts ONE level and returns entries rather than bytes, so it carries
-    // its own check: `SyncState::to_canonical_cbor` routes the inner
-    // per-device vector-clock maps through here and the outer map through
-    // `encode_canonical_map`, and both levels are covered only because both
-    // functions check.
+    // #602: reject an ambiguous map BEFORE reordering it.
+    //
+    // This is its own entry point, not a step on the way to
+    // `encode_canonical_map` — it returns entries rather than bytes, and a
+    // caller may hand them anywhere. So it checks what it is given, and the
+    // check is the first statement for the same reason it is there.
+    //
+    // Do NOT justify it as "the level `encode_canonical_map` misses". The
+    // #602 review measured that claim and it is false:
+    // `check_no_duplicate_keys` recurses through `Map`/`Array`/`Tag`, so on
+    // the one composed production path — `SyncState::to_canonical_cbor`,
+    // inner per-device maps here and the outer map there — the outer call
+    // already covers both levels, and deleting this check reds only this
+    // function's own unit test. `sync::state`'s doc says the same
+    // ("covered twice over"). Defence in depth, and an independently
+    // reachable entry point; not a necessary condition.
     super::dedupe::check_no_duplicate_keys(entries)?;
 
     let mut materialised: Vec<(Vec<u8>, (Value, Value))> = entries
@@ -372,11 +382,15 @@ mod tests {
         }
     }
 
-    /// `canonical_sort_entries` sorts ONE level and returns entries rather
-    /// than bytes, so it needs its own check: `SyncState::to_canonical_cbor`
-    /// uses it for the inner per-device vector-clock maps and
-    /// `encode_canonical_map` for the outer one. Both levels are covered
-    /// only because both functions check.
+    /// `canonical_sort_entries` returns entries rather than bytes and is an
+    /// independently reachable entry point, so it checks what it is given.
+    ///
+    /// This is NOT the only thing covering the inner level of
+    /// `SyncState::to_canonical_cbor`: `encode_canonical_map`'s own check
+    /// recurses and reaches the same maps — see
+    /// `encode_canonical_map_rejects_a_duplicate_nested_one_level_down`,
+    /// which is that property. Deleting the check this test drives reds
+    /// this test and nothing else.
     #[test]
     fn canonical_sort_entries_rejects_a_duplicate_key() {
         let entries = vec![

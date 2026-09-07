@@ -457,6 +457,34 @@ mod tests {
         }
     }
 
+    /// **The ordinal is a real position, not the constant `1`.** Every
+    /// other `DuplicateKey` fixture in this file sorts its duplicate to
+    /// position 0, so `assert_eq!(index, 1)` is satisfied by a hardcoded
+    /// `1` — including `the_nested_ordinal_is_scoped_to_its_own_map` below,
+    /// whose doc says "Nothing else in this file distinguishes the two" but
+    /// which also expects 1. Measured during the #602 review: replacing
+    /// `index: position + 1` with `index: 1` in BOTH this file and
+    /// `dedupe.rs` left the entire 99-binary workspace green.
+    ///
+    /// Canonical order here is `a`, `bb`, `bb` — `(len, bytes)` puts the
+    /// one-byte key first — so the second `bb` sits at 2. `dedupe.rs`'s
+    /// `the_ordinal_is_a_real_position_not_the_constant_one` is the twin,
+    /// with the same fixture: that agreement is what makes the shared
+    /// "second occurrence, canonical order" contract checkable rather than
+    /// merely asserted in two doc comments.
+    #[test]
+    fn the_ordinal_is_a_real_position_not_the_constant_one() {
+        let mut map = CanonicalMap::with_capacity(3);
+        map.push("a", CanonicalValue::Uint(1));
+        map.push("bb", CanonicalValue::Uint(2));
+        map.push("bb", CanonicalValue::Uint(3));
+
+        match to_canonical_vec(&map) {
+            Err(CanonicalError::DuplicateKey { index }) => assert_eq!(index, 2),
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
+    }
+
     /// The walk recurses through `Map`, so a duplicate one level down is
     /// caught too — a top-level-only check would encode this happily.
     #[test]
