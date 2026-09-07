@@ -884,19 +884,17 @@ knowing:
   encoder". So this makes the encoder conformant with an already-normative
   rule — the opposite of #600, the array-ELEMENT twin, where §4.2's writer
   half genuinely had to be raised to MUST NOT.
-- **"All four production encode paths" is NOT "every canonical encoder in
-  the crate", and one of the uncovered ones is signed.**
-  `ContactCard::signed_bytes` — what the §8 hybrid self-signature commits
-  to — goes through `identity::card`'s own private `encode_map`, and
-  `pk_bundle_bytes` / `sync::state::to_canonical_cbor` through
-  `legacy::encode_canonical_map`; neither deduplicates, and card.rs's
-  `encode_map` is deliberately permissive so its own tests can build
-  hostile-peer bytes with a repeated key. Nothing is exposed today — all
-  three build their keys from fixed literals — but that is a property of
-  today's call sites, not of the encoder, which is the posture #586 exists
-  to replace. Tracked as **#602**. A consequence visible in the code:
-  the `CanonicalError::DuplicateKey` arm in `canonical_error_to_card_error`
-  is structurally **dead**, and says so.
+- **"All four production encode paths" was NOT "every canonical encoder in
+  the crate", and one of the uncovered ones was signed — closed by #602.**
+  `ContactCard::signed_bytes` (what the §8 hybrid self-signature commits
+  to), `to_canonical_cbor` (the §6.1 fingerprint input) and
+  `pk_bundle_bytes` (§7's HKDF input) reached `identity::card`'s own private
+  `encode_map` or `legacy::encode_canonical_map`; neither deduplicated, so a
+  caller could build an **ambiguous signed document** — one two conformant
+  readers may resolve differently while both accepting the signature.
+  Nothing was exposed (all keys are fixed literals), but that was a property
+  of today's call sites rather than of the encoder, which is the posture
+  #586 exists to replace.
 - **The reachable shape is narrow.** `Record.fields` and every `unknown`
   bag are `BTreeMap`s, so the only way to build a duplicate is an
   `unknown` key colliding with a *known* key — §4.2 at the manifest layer,
@@ -905,6 +903,77 @@ knowing:
   key as the known one), so the producer is always a caller building a
   value in memory. That is what merge, repair and every block-CRUD path
   do.
+**#602 closed it, and the shape of the fix matters more than the fix.**
+`core/src/vault/canonical/dedupe.rs` holds the rule once and
+`legacy::{encode_canonical_map, canonical_sort_entries}` call it as their
+first statement — the same "one implementation, called by both directions"
+move #600 made for the array-element twin. Six things about it:
+
+- **Two checks, not one shared walk, and that is deliberate.**
+  `to_canonical_vec` operates on `CanonicalMap` (borrowed `&str` keys, no key
+  buffer ever materialised); `dedupe` operates on `ciborium::Value` (any key
+  type, keys encoded to sort). They agree on the RULE and on
+  `DuplicateKey`'s ordinal contract — second occurrence, canonical order,
+  scoped to the map it was found in — not on a mechanism. Do not "unify"
+  them: the whole reason `to_canonical_vec` exists is that record field names
+  are decrypted plaintext and a key buffer that is never built needs no wipe.
+- **#586's `Borrowed` carve-out has NO analogue here, and the reason is
+  structural rather than a judgement call.** That carve-out exists so a
+  forward-compat `unknown` subtree keeps its v1-residual right to a repeated
+  key (§6.2 rules 1 and 5 are scoped to material the reader *interprets*).
+  Neither production caller can carry one: `ContactCard` **rejects** unknown
+  fields outright (`CardError::UnknownField`) and `SyncState` has two typed
+  fields and no `unknown` bag. So `dedupe`'s walk descends through every map
+  and array unconditionally.
+- **No frozen-spec edit, and that was checked rather than assumed.**
+  crypto-design §6.2's opening sentence enumerates what it binds — "the §6
+  self-signed message, the §6.1 fingerprint input, … and `sender_pk_bundle` /
+  `recipient_pk_bundle` in §7" — which is exactly the three card paths, and
+  rule 5 already says its reader-side scoping is "not a licence for an
+  encoder". The encoder was simply non-conformant. **`sync::state` is NOT in
+  that enumeration** (OS-keystore state is not a `canonical_cbor(...)` byte
+  string), so it gains the check by sharing a helper, not by spec obligation
+  — do not cite §6.2 for it, and note it is defence in depth there anyway
+  since `SyncState::new` already rejects a duplicate `device_uuid`.
+- **`card.rs::encode_map` was a near-duplicate encoder, and is now a 1-line
+  delegation.** All three card paths funnel through it, so
+  `canonical_error_to_card_error` is applied once rather than per call site,
+  and its `DuplicateKey` arm is **live code on a live path** — merely not
+  reachable from `ContactCard`'s *public* API, since every key it encodes is
+  a fixed `KEY_*` literal. That is the point of the change; the arm's own doc
+  now draws the distinction, because "dead" and "unreachable from the public
+  API" are different claims.
+- **The migration is byte-preserving, measured not argued.** The old
+  `Value::Map` body survives as `dedupe::encode_map_allowing_duplicates`, a
+  `#[cfg(test)]` oracle, and `signed_bytes` / `to_canonical_cbor` /
+  `pk_bundle_bytes` are each asserted byte-identical to it. Mutation-proven
+  in **both** directions: reverting `encode_map` to the pre-#602 body reds
+  ONLY `card_encode_path_rejects_a_duplicate_key` (so the bytes genuinely did
+  not move), and reversing `encode_canonical_map`'s sort reds all three
+  byte-identity tests plus the pre-existing `pk_bundle_bytes_is_byte_pinned`
+  (so they are not vacuous).
+- **A sanctioned encoder must not be able to build a hostile fixture.** Two
+  tests need bytes carrying a duplicate — card.rs's
+  `duplicate_field_names_the_spec_key_as_a_static_str` and
+  `manifest/decode/tests.rs`'s `manifest_bytes_with_duplicate_nested_key`
+  (whose repeat is nested in a map inside an array, which is how the
+  recursive walk caught it). Both now use the ONE `#[cfg(test)]`
+  `encode_map_allowing_duplicates` rather than a copy each — a hand-copied
+  permissive encoder is exactly the drift this closed. `core/tests/
+  identity.rs::card_parse_rejects_duplicate_keys` had always built its own
+  with raw `ciborium`, which is the pattern the two adopted.
+
+**Every production canonical-MAP encoder in `core/src` is now behind one of
+the two checks — measured, and the census is the claim.** The remaining
+production `ciborium::ser::into_writer` calls are `block.rs`'s and
+`manifest/decode/extract.rs`'s `value_to_unknown` plus `record.rs`'s
+`UnknownValue::to_canonical_cbor`, all three re-emitting forward-compat
+`unknown` subtrees verbatim — the one place a repeated key must stay
+ACCEPTED. Re-run that census (`grep -rn "ciborium::ser::into_writer"
+core/src`, then split production from `#[cfg(test)]` by hand) before
+widening this paragraph; the sentence it replaced was true when written and
+false for two slices after.
+
 - **`canonical_order` is now shared** between `Serialize` and the check,
   extracted so the two cannot drift onto different orderings: the check's
   whole claim is that adjacency in *that* order means equality, which is
