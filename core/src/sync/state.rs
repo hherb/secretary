@@ -84,6 +84,23 @@ impl SyncState {
     /// `vault_uuid` and entry `device_uuid`, integer for entry `counter`.
     /// Forward-compat: a future C.1.x adding new keys uses the same
     /// `unknown` opaque round-trip pattern as `Record`/`Manifest`.
+    ///
+    /// # Duplicate map keys (#602)
+    ///
+    /// Both helpers reject a repeated key, so this cannot emit an ambiguous
+    /// body — the inner per-device entry maps through `canonical_sort_entries`
+    /// and the outer map through `encode_canonical_map`, each checking the
+    /// level it sorts. `encode_canonical_map`'s walk also recurses, so the
+    /// inner maps are covered twice over.
+    ///
+    /// Two scoping notes, because the obvious wider readings are both wrong.
+    /// First, this is **defence in depth here**: `SyncState::new` already
+    /// rejects a duplicate `device_uuid`, so no `SyncState` carrying one can
+    /// be constructed in the first place. Second, crypto-design §6.2 does
+    /// **not** bind this function — §6.2's opening sentence enumerates the
+    /// `canonical_cbor(...)` byte strings it governs, and OS-keystore state
+    /// is not among them. The check arrives by sharing a helper with the
+    /// card paths, which §6.2 does bind. Do not cite the spec for it.
     pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, SyncError> {
         use ciborium::value::Value;
 

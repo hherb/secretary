@@ -369,17 +369,21 @@ pub(crate) fn to_canonical_vec(map: &CanonicalMap<'_>) -> Result<Vec<u8>, Canoni
     // check lives here rather than on `push`, and for why forward-compat
     // `Borrowed` subtrees are deliberately outside the walk.
     //
-    // Scope it exactly, because the wider claim is false: `identity::card`
-    // and `sync::state` do NOT funnel through here and are NOT covered.
-    // `ContactCard::signed_bytes` — the byte string the §8 hybrid
-    // self-signature commits to — encodes via card.rs's own private
-    // `encode_map`, and `pk_bundle_bytes` / `SyncState::to_canonical_cbor`
-    // via `legacy::encode_canonical_map`; neither deduplicates. There is no
-    // live exposure (all three build their keys from fixed `&'static str`
-    // literals, and card.rs's `encode_map` is deliberately permissive so
-    // its tests can build hostile-peer bytes), but that is a property of
-    // today's call sites, not of the encoder — which is the posture #586
-    // exists to replace. Tracked as #602 rather than fixed here.
+    // Scope it exactly. This is the choke point for the four VAULT-BODY
+    // encoders and NOT the crate's only duplicate-key check: `identity::card`
+    // and `sync::state` build `ciborium::Value` maps and reach
+    // `legacy::{encode_canonical_map, canonical_sort_entries}` instead, which
+    // carry their own — see `super::dedupe` (#602). The two checks are
+    // deliberately separate implementations over two different types, not one
+    // shared walk, but they agree on the rule and on the meaning of
+    // `DuplicateKey`'s ordinal.
+    //
+    // The one behavioural difference is this walk's `Borrowed` carve-out
+    // below, which `dedupe`'s has no analogue for — and that asymmetry is
+    // structural, not an oversight: a `Borrowed` arm is a forward-compat
+    // `unknown` subtree, and neither `ContactCard` (which rejects unknown
+    // fields outright) nor `SyncState` (two typed fields, no `unknown` bag)
+    // can carry one.
     map.check_no_duplicate_keys()?;
 
     let bound = map.size_bound();

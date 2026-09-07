@@ -7,7 +7,9 @@
 //! [`entries`](super::entries)'s own `tests`; ones that fire inside a
 //! typed-extract helper live in [`extract`](super::extract)'s.
 
-use crate::vault::canonical::{encode_canonical_map, CanonicalError};
+use crate::vault::canonical::{
+    encode_canonical_map, encode_map_allowing_duplicates, CanonicalError,
+};
 use crate::vault::manifest::encode::encode_manifest;
 // `KEY_DEVICE_UUID` / `KEY_COUNTER` are NOT re-exported by
 // `decode::mod`'s own `use super::{..}` list (the top-level parser never
@@ -643,7 +645,12 @@ fn manifest_bytes_with_duplicate_nested_key() -> Vec<u8> {
         (Value::Text(KEY_TRASH.into()), Value::Array(Vec::new())),
         (Value::Text(KEY_KDF_PARAMS.into()), dummy_kdf_params_value()),
     ];
-    encode_canonical_map(&entries).expect("encode_canonical_map")
+    // NOT `encode_canonical_map`: since #602 that function rejects a
+    // repeated map key at any depth, and the repeat above is exactly what
+    // these bytes exist to carry. A sanctioned encoder being unable to
+    // build a hostile fixture is the point, not an obstacle — see
+    // `vault::canonical::dedupe::encode_map_allowing_duplicates`.
+    encode_map_allowing_duplicates(&entries)
 }
 
 /// #573's precise duplicate-key errors must fire BEFORE #572's generic

@@ -138,11 +138,19 @@
 
 use crate::cbor::CborFault;
 
+mod dedupe;
 mod legacy;
 mod size;
 mod value;
 
 pub use legacy::{canonical_sort_entries, encode_canonical_map, reject_floats_and_tags};
+
+/// Test-only escape hatch for building deliberately AMBIGUOUS CBOR — see
+/// [`dedupe::encode_map_allowing_duplicates`]. Re-exported because `dedupe`
+/// is a private module and the two callers are test modules elsewhere in the
+/// crate (`identity::card`, `vault::manifest::decode`).
+#[cfg(test)]
+pub(crate) use dedupe::encode_map_allowing_duplicates;
 pub(crate) use size::{cbor_size_bound, HEAD_MAX};
 pub(crate) use value::to_canonical_vec;
 // `CanonicalMap`/`CanonicalValue` were re-exported `pub` (not `pub(crate)`)
@@ -257,14 +265,26 @@ pub enum CanonicalError {
     /// through, rather than by making `CanonicalMap::push` fallible at 55
     /// call sites whose keys are provably-unique literals.
     ///
-    /// **Not every canonical encoder in the crate is covered**, and the
-    /// difference matters because one of the uncovered ones is signed:
-    /// `identity::card`'s `encode_map` (behind `ContactCard::signed_bytes`)
-    /// and `legacy::encode_canonical_map` (behind `pk_bundle_bytes` and
-    /// `sync::state`) do not deduplicate. All three build their keys from
-    /// fixed literals, so nothing is exposed today — see
-    /// `to_canonical_vec`'s own comment for the full scoping, and #602 for
-    /// the follow-up that closes it.
+    /// **Raised by two checks, not one**, and a caller must not assume
+    /// which. [`value::to_canonical_vec`] covers the four vault-body
+    /// encoders (manifest, record, block, bundle); [`dedupe`] covers the
+    /// `ciborium::Value` paths behind `ContactCard::signed_bytes` /
+    /// `to_canonical_cbor` / `pk_bundle_bytes` and
+    /// `SyncState::to_canonical_cbor`, through
+    /// [`canonical_sort_entries`] and [`encode_canonical_map`] (#602 —
+    /// before it, those paths deduplicated nothing, so a caller could build
+    /// an ambiguous map for the §8 hybrid self-signature to commit to).
+    /// Both produce the same ordinal contract; see [`dedupe`] for why they
+    /// are two implementations rather than one.
+    ///
+    /// Every production canonical-MAP encoder in `core/src` is now behind
+    /// one of the two. Measured, not assumed: the remaining production
+    /// `ciborium::ser::into_writer` calls (`block.rs` and
+    /// `manifest/decode/extract.rs`'s `value_to_unknown`, `record.rs`'s
+    /// `UnknownValue::to_canonical_cbor`) re-emit forward-compat `unknown`
+    /// subtrees verbatim, which is the one place a repeated key must stay
+    /// ACCEPTED — see the paragraph below. Re-run that census before
+    /// widening this claim.
     ///
     /// **Forward-compat subtrees are deliberately NOT walked.** A
     /// duplicate key inside a `CanonicalValue::Borrowed` — a v2 client's

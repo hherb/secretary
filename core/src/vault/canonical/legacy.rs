@@ -23,6 +23,14 @@ use crate::cbor::classify_ser;
 pub fn canonical_sort_entries(
     entries: &[(Value, Value)],
 ) -> Result<Vec<(Value, Value)>, CanonicalError> {
+    // #602: reject an ambiguous map BEFORE reordering it. This function
+    // sorts ONE level and returns entries rather than bytes, so it carries
+    // its own check: `SyncState::to_canonical_cbor` routes the inner
+    // per-device vector-clock maps through here and the outer map through
+    // `encode_canonical_map`, and both levels are covered only because both
+    // functions check.
+    super::dedupe::check_no_duplicate_keys(entries)?;
+
     let mut materialised: Vec<(Vec<u8>, (Value, Value))> = entries
         .iter()
         .map(|pair| {
@@ -67,6 +75,17 @@ impl serde::Serialize for BorrowedCanonicalMap<'_> {
 /// `Value::Map`'s `Vec<(Value, Value)>` in iteration order, NOT in CBOR
 /// canonical order), then serialises as a single definite-length map.
 pub fn encode_canonical_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, CanonicalError> {
+    // #602: reject an ambiguous map BEFORE encoding it, so no duplicate key
+    // can reach a signature. This is the `ciborium::Value` counterpart of
+    // the check `to_canonical_vec` performs for the four vault-body encoders
+    // (#586) — see `super::dedupe` for why the rule lives in one place and
+    // why, unlike #586's, this walk has no forward-compat carve-out.
+    //
+    // First statement on purpose: `ContactCard::signed_bytes` and
+    // `to_canonical_cbor` reach this function, and those bytes are what the
+    // §8 hybrid self-signature and the §6.1 fingerprint commit to.
+    super::dedupe::check_no_duplicate_keys(entries)?;
+
     // Only the KEYS are materialised, to sort on. The values ride along as
     // BORROWS: the `pair.clone()` this replaced was a full deep clone of every
     // value, and on the record path those values are decrypted user plaintext
@@ -312,5 +331,80 @@ mod tests {
             "capacity changed from the reserved bound — into_writer grew the \
              buffer, freeing an unwiped block"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // #602 — duplicate map keys on the `ciborium::Value` encode paths
+    // -----------------------------------------------------------------
+
+    /// `encode_canonical_map` backs `ContactCard::pk_bundle_bytes` (a §7
+    /// HKDF input) and `SyncState::to_canonical_cbor`. Until #602 it would
+    /// happily emit an ambiguous body carrying one key twice.
+    #[test]
+    fn encode_canonical_map_rejects_a_duplicate_key() {
+        let entries = vec![
+            (Value::Text("a".into()), Value::Integer(1u64.into())),
+            (Value::Text("b".into()), Value::Integer(2u64.into())),
+            (Value::Text("a".into()), Value::Integer(3u64.into())),
+        ];
+        match encode_canonical_map(&entries) {
+            // Canonical order is a, a, b — the second "a" sits at 1.
+            Err(CanonicalError::DuplicateKey { index }) => assert_eq!(index, 1),
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
+    }
+
+    /// The check must run BEFORE any encoding, so an ambiguous map never
+    /// reaches a buffer — let alone a signature. Asserted by variant rather
+    /// than by `is_err()`: a body that encoded and then failed the capacity
+    /// tripwire would also be an `Err`, and would mean something quite
+    /// different happened.
+    #[test]
+    fn encode_canonical_map_rejects_a_duplicate_nested_one_level_down() {
+        let inner = Value::Map(vec![
+            (Value::Text("k".into()), Value::Integer(1u64.into())),
+            (Value::Text("k".into()), Value::Integer(2u64.into())),
+        ]);
+        let entries = vec![(Value::Text("outer".into()), inner)];
+        match encode_canonical_map(&entries) {
+            Err(CanonicalError::DuplicateKey { index }) => assert_eq!(index, 1),
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
+    }
+
+    /// `canonical_sort_entries` sorts ONE level and returns entries rather
+    /// than bytes, so it needs its own check: `SyncState::to_canonical_cbor`
+    /// uses it for the inner per-device vector-clock maps and
+    /// `encode_canonical_map` for the outer one. Both levels are covered
+    /// only because both functions check.
+    #[test]
+    fn canonical_sort_entries_rejects_a_duplicate_key() {
+        let entries = vec![
+            (
+                Value::Text("device_uuid".into()),
+                Value::Bytes(vec![0xAB; 16]),
+            ),
+            (
+                Value::Text("device_uuid".into()),
+                Value::Bytes(vec![0xCD; 16]),
+            ),
+        ];
+        match canonical_sort_entries(&entries) {
+            Err(CanonicalError::DuplicateKey { index }) => assert_eq!(index, 1),
+            other => panic!("expected DuplicateKey, got {other:?}"),
+        }
+    }
+
+    /// The negative control for all three above: an ordinary distinct-key
+    /// map still encodes. Without this, a checker that rejected EVERY map
+    /// would pass the three rejection tests.
+    #[test]
+    fn a_distinct_key_map_still_encodes_and_sorts() {
+        let entries = vec![
+            (Value::Text("bb".into()), Value::Integer(2u64.into())),
+            (Value::Text("a".into()), Value::Integer(1u64.into())),
+        ];
+        assert!(encode_canonical_map(&entries).is_ok());
+        assert!(canonical_sort_entries(&entries).is_ok());
     }
 }

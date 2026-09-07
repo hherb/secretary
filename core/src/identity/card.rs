@@ -52,7 +52,7 @@
 
 use ciborium::Value;
 
-use crate::cbor::{classify_de, classify_ser, CborFault};
+use crate::cbor::{classify_de, CborFault};
 use crate::crypto::sig::{
     self, Ed25519Public, Ed25519Secret, Ed25519Sig, HybridSig, MlDsa65Public, MlDsa65Secret,
     MlDsa65Sig, SigError, SigRole, ED25519_PK_LEN, ED25519_SIG_LEN, ML_DSA_65_PK_LEN,
@@ -304,8 +304,7 @@ impl ContactCard {
                 Value::Bytes(self.ml_dsa_65_pk.clone()),
             ),
         ];
-        crate::vault::canonical::encode_canonical_map(&entries)
-            .map_err(canonical_error_to_card_error)
+        encode_map(&entries)
     }
 
     /// Inverse of [`Self::to_canonical_cbor`]. Validates that `card_version == 1`
@@ -557,53 +556,65 @@ impl ContactCard {
 // ---------------------------------------------------------------------------
 
 fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, CardError> {
-    // RFC 8949 §4.2.1: map keys must be sorted bytewise lexicographically by
-    // their deterministic CBOR encoding. We materialize each key's encoded
-    // bytes and sort by that — robust against any future key shape (text,
-    // byte, integer) without a separate code path per type.
-    let mut sorted: Vec<(Vec<u8>, (Value, Value))> = entries
-        .iter()
-        .map(|pair| {
-            let mut key_bytes = Vec::new();
-            ciborium::ser::into_writer(&pair.0, &mut key_bytes)
-                .map_err(|e| CardError::CborEncode(classify_ser(&e)))?;
-            Ok((key_bytes, pair.clone()))
-        })
-        .collect::<Result<_, CardError>>()?;
-    sorted.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let value = Value::Map(sorted.into_iter().map(|(_, pair)| pair).collect());
-    let mut buf = Vec::new();
-    ciborium::ser::into_writer(&value, &mut buf)
-        .map_err(|e| CardError::CborEncode(classify_ser(&e)))?;
-    Ok(buf)
+    // #602: delegate to the shared canonical encoder rather than repeat its
+    // body. The hand-rolled version this replaced sorted keys identically
+    // but did NOT reject a repeated one, so `signed_bytes` could hand the §8
+    // hybrid self-signature an ambiguous map — one two conformant readers
+    // may resolve differently while both accepting the signature.
+    // `encode_canonical_map` performs that check (see
+    // `vault::canonical::dedupe`) and additionally pre-reserves its output
+    // buffer.
+    //
+    // Byte-preserving, and proven so rather than argued: the body this
+    // replaced survives verbatim as the `#[cfg(test)]` oracle
+    // `vault::canonical::dedupe::encode_map_allowing_duplicates` (imported
+    // by the test module below under its `encode_via_value_map` alias), and
+    // `signed_bytes` / `to_canonical_cbor` / `pk_bundle_bytes` are each
+    // asserted byte-identical against it. `Value::Map` and
+    // `encode_canonical_map`'s borrowing `BorrowedCanonicalMap` both emit a
+    // definite-length major-type-5 map over the same sort order, which is
+    // why the bytes cannot move.
+    //
+    // All three card encode paths now funnel through here, so
+    // `canonical_error_to_card_error` is applied in exactly one place
+    // instead of once per call site.
+    crate::vault::canonical::encode_canonical_map(entries).map_err(canonical_error_to_card_error)
 }
 
 /// Convert a [`CanonicalError`] (from `crate::vault::canonical`) into a
-/// [`CardError`]. Only [`Self::pk_bundle_bytes`] routes through
-/// `encode_canonical_map`, and that call site can only ever produce
-/// [`CanonicalError::CborEncode`] — the four `Value`s it hands in are all
-/// `Value::Bytes`/`Value::Text` built from already-validated card fields, so
-/// [`CanonicalError::FloatRejected`] / [`CanonicalError::TagRejected`] are
-/// structurally unreachable here. **So is
-/// [`CanonicalError::DuplicateKey`]** (#586, added to this enumeration in
-/// the same slice that introduced it): that variant is constructed only by
-/// `to_canonical_vec`, and no card path calls it — `pk_bundle_bytes` uses
-/// `encode_canonical_map` and `signed_bytes` / `to_canonical_cbor` use this
-/// file's own `encode_map`, neither of which deduplicates. The match is
-/// still exhaustive (no `_ =>`) so a change to `CanonicalError`'s variant
-/// set forces a conscious decision at this call site rather than silently
-/// falling through a wildcard.
+/// [`CardError`]. Since #602 **all three** card encode paths route through
+/// `encode_map`, hence through `encode_canonical_map`, so this mapping is
+/// applied in exactly one place rather than once per call site.
+///
+/// [`CanonicalError::FloatRejected`] / [`CanonicalError::TagRejected`] stay
+/// structurally unreachable here: every `Value` a card hands in is a
+/// `Value::Bytes` / `Value::Text` / `Value::Integer` built from an
+/// already-validated field.
+///
+/// [`CanonicalError::DuplicateKey`] is a different case now, and the
+/// distinction is worth keeping. Before #602 it was unreachable because no
+/// card path called a *deduplicating* encoder at all. It is now raised by
+/// the encoder the card actually uses — so the arm is live code on a live
+/// path, and merely not reachable from `ContactCard`'s **public API**,
+/// because `push_pre_sig_entries` and `pk_bundle_bytes` build their keys
+/// from fixed `KEY_*` literals. That is the point of the change: the
+/// guarantee moved from a property of today's call sites to a property of
+/// the encoder. `card_encode_path_rejects_a_duplicate_key` drives it
+/// through `encode_map` directly.
+///
+/// The match is still exhaustive (no `_ =>`) so a change to
+/// [`CanonicalError`]'s variant set forces a conscious decision at this call
+/// site rather than silently falling through a wildcard.
 fn canonical_error_to_card_error(e: CanonicalError) -> CardError {
     match e {
         CanonicalError::CborEncode(fault) => CardError::CborEncode(fault),
         CanonicalError::FloatRejected { .. } => {
             CardError::Malformed("float values are not permitted in canonical CBOR")
         }
-        // #586: the value handed in repeats a CBOR map key, which would
-        // encode to an ambiguous body. Unreachable from this file today
-        // (see the enumeration in this function's doc); present so the
-        // exhaustive match keeps forcing a decision. `index` is discarded
+        // #586/#602: the value handed in repeats a CBOR map key, which
+        // would encode to an ambiguous body — one two conformant readers
+        // may resolve differently while both accepting the §8 signature.
+        // Live since #602 (see this function's doc). `index` is discarded
         // because `CardError::Malformed` carries only fixed `&'static str`
         // literals — a shape constraint of that variant, NOT a #474
         // plaintext concern: `CanonicalError::DuplicateKey`'s own doc
@@ -1056,7 +1067,17 @@ mod tests {
             Value::Text(KEY_DISPLAY_NAME.into()),
             Value::Text("second-copy".into()),
         ));
-        let bytes = encode_map(&entries).expect("hostile-peer bytes must encode with a duplicate");
+        // Built with raw `ciborium` rather than `encode_map`: since #602 the
+        // card's own encoder REFUSES to emit a duplicate key, which is the
+        // point of `card_encode_path_rejects_a_duplicate_key` below. Hostile
+        // bytes are not something a sanctioned encoder should be able to
+        // produce, so they are assembled here instead — the same way
+        // `core/tests/identity.rs::card_parse_rejects_duplicate_keys` has
+        // always built its own. Key order is irrelevant to this test:
+        // `from_canonical_cbor` documents that it tolerates non-§6 order.
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut bytes)
+            .expect("hostile-peer bytes must encode with a duplicate");
 
         let err =
             ContactCard::from_canonical_cbor(&bytes).expect_err("duplicate field must be rejected");
@@ -1111,11 +1132,13 @@ mod tests {
         }
     }
 
-    /// #586's arm. Structurally UNREACHABLE from this file — no card path
-    /// calls `to_canonical_vec`, the only constructor of `DuplicateKey` —
-    /// so this constructs the `CanonicalError` directly, exactly as the
-    /// `CapacityBoundExceeded` test above does and for the same reason: the
-    /// mapping is ordinary code with no such excuse.
+    /// #586's arm, live on the card path since #602. It is still not
+    /// reachable from `ContactCard`'s PUBLIC API — every key the card
+    /// encodes is a fixed `KEY_*` literal — so this constructs the
+    /// `CanonicalError` directly, as the `CapacityBoundExceeded` test above
+    /// does. `card_encode_path_rejects_a_duplicate_key` is the companion
+    /// that drives the real encoder and asserts this same message,
+    /// so the mapping is pinned from both ends.
     #[test]
     fn canonical_error_duplicate_key_maps_to_card_error() {
         let err = CanonicalError::DuplicateKey { index: 2 };
@@ -1125,5 +1148,117 @@ mod tests {
             }
             other => panic!("expected Malformed, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // #602 — the card's encode path is behind the duplicate-key check
+    // -----------------------------------------------------------------
+
+    // Aliased at import: at these call sites the function is being used as
+    // the pre-#602 encoder, and what the assertions claim is about its
+    // MECHANISM (sort, then emit an owned `Value::Map`), not about the
+    // permissiveness its real name warns of. The one test that does rely on
+    // the permissiveness — `duplicate_field_names_the_spec_key_as_a_static_str`
+    // — deliberately does not use it, building its hostile bytes inline so
+    // the intent is visible at the site.
+    use crate::vault::canonical::encode_map_allowing_duplicates as encode_via_value_map;
+
+    /// The behaviour change: the card's encode path now refuses to build an
+    /// ambiguous map. Before #602 this returned `Ok` — a body carrying one
+    /// key twice, which `signed_bytes` would hand to the §8 hybrid
+    /// self-signature.
+    ///
+    /// Driven through `encode_map` rather than through `signed_bytes`
+    /// because `push_pre_sig_entries` builds its keys from fixed `KEY_*`
+    /// literals, so no duplicate is constructible from `ContactCard`'s
+    /// public API. That is precisely the point: the guarantee is now a
+    /// property of the ENCODER, not of today's call sites.
+    #[test]
+    fn card_encode_path_rejects_a_duplicate_key() {
+        let card = fixture_card("placeholder", 1_714_060_800_000, 0x55, 0x66);
+        let mut entries: Vec<(Value, Value)> = Vec::new();
+        card.push_pre_sig_entries(&mut entries);
+        entries.push((
+            Value::Text(KEY_DISPLAY_NAME.into()),
+            Value::Text("second-copy".into()),
+        ));
+
+        match encode_map(&entries) {
+            Err(CardError::Malformed(msg)) => {
+                assert_eq!(msg, "duplicate CBOR map key in canonical encoding");
+            }
+            other => panic!("expected Malformed(duplicate ...), got {other:?}"),
+        }
+    }
+
+    /// #602 replaced `encode_map`'s hand-rolled body with a delegation to
+    /// `encode_canonical_map`. `signed_bytes` is what the §8 hybrid
+    /// self-signature commits to, so a single byte of drift would
+    /// invalidate every card ever signed. Asserted against the old body.
+    #[test]
+    fn signed_bytes_is_byte_identical_to_the_previous_encoder() {
+        let card = fixture_card("Alice", 1_714_060_800_000, 0x11, 0x22);
+        let mut entries: Vec<(Value, Value)> = Vec::new();
+        card.push_pre_sig_entries(&mut entries);
+
+        assert_eq!(
+            card.signed_bytes().expect("signed_bytes"),
+            encode_via_value_map(&entries)
+        );
+    }
+
+    /// The same proof for the §6 wire form, which is also the §6.1
+    /// fingerprint input — drift here would change every contact
+    /// fingerprint and break the manifest's recipient references.
+    #[test]
+    fn to_canonical_cbor_is_byte_identical_to_the_previous_encoder() {
+        let card = fixture_card("Alice", 1_714_060_800_000, 0x11, 0x22);
+        let mut entries: Vec<(Value, Value)> = Vec::new();
+        card.push_pre_sig_entries(&mut entries);
+        entries.push((
+            Value::Text(KEY_SELF_SIG_ED.into()),
+            Value::Bytes(card.self_sig_ed.to_vec()),
+        ));
+        entries.push((
+            Value::Text(KEY_SELF_SIG_PQ.into()),
+            Value::Bytes(card.self_sig_pq.clone()),
+        ));
+
+        assert_eq!(
+            card.to_canonical_cbor().expect("to_canonical_cbor"),
+            encode_via_value_map(&entries)
+        );
+    }
+
+    /// `pk_bundle_bytes` is the §7 `sender_pk_bundle` / `recipient_pk_bundle`
+    /// HKDF input. It already used `encode_canonical_map`; #602 routes it
+    /// through `encode_map` alongside its two siblings, so this pins that
+    /// the unification changed no byte either.
+    #[test]
+    fn pk_bundle_bytes_is_byte_identical_to_the_previous_encoder() {
+        let card = fixture_card("Alice", 1_714_060_800_000, 0x11, 0x22);
+        let entries: Vec<(Value, Value)> = vec![
+            (
+                Value::Text(KEY_X25519_PK.into()),
+                Value::Bytes(card.x25519_pk.to_vec()),
+            ),
+            (
+                Value::Text(KEY_ML_KEM_768_PK.into()),
+                Value::Bytes(card.ml_kem_768_pk.clone()),
+            ),
+            (
+                Value::Text(KEY_ED25519_PK.into()),
+                Value::Bytes(card.ed25519_pk.to_vec()),
+            ),
+            (
+                Value::Text(KEY_ML_DSA_65_PK.into()),
+                Value::Bytes(card.ml_dsa_65_pk.clone()),
+            ),
+        ];
+
+        assert_eq!(
+            card.pk_bundle_bytes().expect("pk_bundle_bytes"),
+            encode_via_value_map(&entries)
+        );
     }
 }
