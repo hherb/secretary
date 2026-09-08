@@ -13,18 +13,20 @@ The cryptographic design and on-disk format are **frozen for v1** because vaults
 ```
 core/                Rust crate `secretary-core` — the security-critical source of truth
 core/src/{crypto,identity,unlock,vault}/   — module per spec section
-core/src/vault/manifest/                   — DIRECTORY module (#564), not manifest.rs; 28 files:
-                                             14 production + 12 sibling `tests.rs` + the 2
+core/src/vault/manifest/                   — DIRECTORY module (#564), not manifest.rs; 30 files:
+                                             15 production + 13 sibling `tests.rs` + the 2
                                              non-`tests.rs` files under `test_support/`
                                              (`mod.rs`, `surgery.rs`). `ls test_support` shows
                                              THREE — its own `surgery/tests.rs` is counted in
-                                             the 12, not here. Was 26/13/11 before #589 added
-                                             `decode/slot.rs` and its sibling tests
+                                             the 13, not here. Was 28/14/12 before #587 added
+                                             `sentinel.rs` and its sibling tests, and 26/13/11
+                                             before #589 added `decode/slot.rs`. RE-MEASURE:
+                                             `find core/src/vault/manifest -name '*.rs' | wc -l`
 core/tests/          — integration tests; tests/data/ holds KATs and fuzz regressions
 core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (136 lines; the PEP
                                              723 header is the sole dependency declaration).
                                              `conformance.py:NNN` citations predating #593 are
-                                             stale — the verifier is now a 61-file package.
+                                             stale — the verifier is now a 62-file package.
 core/tests/python/conformance_lib/         — DIRECTORY module (#593), the verifier itself: no
                                              dependency on `secretary-core`; proves the spec is
                                              implementable from `docs/` alone. `wire/` parses to
@@ -243,7 +245,7 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 136, over a **61**-file package whose largest module is
+was 6849 lines; it is now 136, over a **62**-file package whose largest module is
 `sections/manifest_canonicality_cause.py` at **472** lines, ahead of
 `sections/required_key_determinism.py` at 390, `merge/records.py` at 383 and
 `codec/manifest_decode.py` at 382. The top slot changed hands twice inside
@@ -254,7 +256,8 @@ ordering here as stale on sight (52 files at the #593 split;
 fourth; #600 added `codec/array_uniqueness.py`, and its review round
 `sections/manifest_uniqueness_writer.py`; #604 added
 `sections/manifest_canonicality_cause.py`; #613 added
-`sections/manifest_canonicality_corpus.py`). Re-measured after #613's review
+`sections/manifest_canonicality_corpus.py`; #587 added
+`sections/manifest_sentinel_writer.py`). Re-measured after #613's review
 round, which grew `manifest_canonicality_cause.py` 300 → 388 → 472 (two new
 floors and a rewritten driver docstring) and `codec/manifest_decode.py`
 309 → 382. `sections/manifest_uniqueness_kat.py` — 425 lines and top of the
@@ -708,7 +711,8 @@ out — it has been wrong twice:
 - **The corpus's label set is declared ONCE for its two readers**, in
   `sections/manifest_canonicality_corpus.py`, so MCK and MCC cannot drift
   onto two ideas of which rows the fixture holds. It defines no
-  `section*` driver, so Section REG discovers it and still reports 26/26.
+  `section*` driver, so Section REG discovers it and reports the full count
+  (26/26 at #613; **27/27** since #587 added Section MSN).
 
 **The residual, stated exactly, because the obvious wider claim is false.**
 Inside a forward-compat `unknown` subtree the check misses **duplicate map
@@ -1032,6 +1036,60 @@ leaves SIX production sites, not three, because `legacy.rs` (x3),
 `value.rs` and `dedupe.rs` are themselves production `into_writer` callers.
 `unlock/bundle.rs`'s `canonical_key_cmp` is the one plausible falsifier and
 is `#[cfg(test)]`.
+
+**The v1 SENTINELS were the fourth member of that family, closed by #587,
+and the interesting part is where it declines to follow #600/#602.**
+`Manifest.manifest_version`, `.format_version` and `.suite_id` are `pub`
+fields with no type invariant. `decode_manifest` has rejected anything but
+the v1 values since v1; `encode_manifest` validated none of them, so a
+caller could set `manifest_version: 7` and `sign_manifest` — whose step 1
+IS `encode_manifest` — would hybrid-sign a body no v1 client can open.
+`py_encode_manifest` had the identical gap. Four things:
+
+- **`manifest/sentinel.rs` holds the rule, called as `encode_manifest`'s
+  FIRST statement, ahead of #600's `check_no_repeated_array_values`.** That
+  precedence is deliberate (a body whose *version* this client cannot speak
+  should say so before complaining about arrays whose meaning is
+  version-dependent) and is pinned by
+  `the_sentinel_check_outranks_the_repeated_value_check`, so a future
+  reordering of those two lines is a test failure rather than a silent
+  change.
+- **The DECODER is deliberately NOT routed through it — the opposite of the
+  call #600 and #602 made, and justified rather than inconsistent.**
+  `parse_manifest_map` interleaves each comparison with the `Once::require`
+  that produces the value, so hoisting the three requires to feed a shared
+  checker changes which error a body reports when it both declares a bad
+  sentinel and omits a later required key: `UnsupportedManifestVersion`
+  today, `MissingField` after. Silently, on a v1-frozen decoder — verbatim
+  the #589 `Once::set` lesson. What sharing would have bought is bought
+  directly: the three v1 values are already single-sourced as constants, and
+  `each_v1_sentinel_is_rejected_in_both_directions` pins the only thing left
+  that could drift, which fields are checked at all. **Generalise the
+  inverse of the #589 note above**: "put the rule in one place, called by
+  both directions" is this repo's default and is right most of the time, but
+  it is not free when one direction's control flow is itself observable.
+- **Three NEW `Encode*` variants, and here that is load-bearing rather than
+  a style match — measured, not argued.** §4.3 step 4 re-encodes every
+  parsed manifest through `encode_manifest`, so the new check runs on the
+  decode path too. With the variants collapsed onto the decoder's three
+  **and** `parse_manifest_map`'s own rejection deleted, the entire
+  `secretary-core --lib` suite reported **602 passed, exit 0** — the
+  re-encode rejected the body one step later with a byte-identical error.
+  With them separate, that deletion reds exactly
+  `the_decode_side_check_is_not_backstopped_by_this_one`. Same #608 lesson
+  as `ENCODER_REFUSAL_PREFIX`, reached from the error-TYPE side instead of
+  the message side; Python keeps using the prefix, because its two
+  directions raise the same class.
+- **Section MSN carries no JSON fixture, deliberately.** Every other
+  manifest corpus freezes BODIES, because for those rules the bytes are the
+  contract. A sentinel rejection happens *before any byte is produced*, so a
+  byte corpus would assert nothing the three writer cases do not. The
+  section's docstring says so — an unexplained asymmetry between sibling
+  corpora is how the next author concludes one of them is incomplete.
+
+`docs/vault-format.md` §4.2 gained one normative paragraph binding writers
+and fixing the report order — the same uplift #600 needed, and unlike
+#586/#602, where the spec already bound the encoder.
 
 **Two frozen-spec edits were made. No byte on disk changes, and both are
 reversible** — but be precise about *whose* behaviour each documents, because
