@@ -29,9 +29,23 @@ rules the bytes *are* the contract: the reader must reject a specific
 encoding, and only committed bytes pin which one.  A sentinel rejection
 happens **before any byte is produced**, so a byte corpus would assert
 nothing that the three cases below do not.  The reader half needs no corpus
-either: `py_decode_manifest`'s sentinel rejection is already exercised by
-`manifest_body_schema_guards`, and the two implementations' agreement on
-non-v1 *bodies* is covered by the differential replay.
+either -- but be careful WHY, because the obvious reason is wrong and an
+earlier version of this docstring gave it.
+
+Section MSH (`manifest_body_shape_guards`, not the near-identically named
+`manifest_body_schema_guards`, which carries no sentinel mutation at all)
+does mutate all three sentinels. It is **not** independent cover for the
+reader, for two measured reasons: its `manifest_version` row never reaches
+the sentinel comparison at all (the `u8` width check fires first on 999),
+and its `format_version` / `suite_id` rows were answered by the ENCODER at
+the §4.3 step-4 re-encode from the moment #587 landed -- that section scored
+PASS with the reader's own sentinel check deleted, until the #631 review
+gave it the `ENCODER_REFUSAL_PREFIX` discriminator.
+
+So `_reader_is_not_backstopped_issues` below is the ONLY pin on this
+package's reader-side sentinel comparison. Do not delete it as belt-and-
+braces. The two implementations' agreement on non-v1 *bodies* is separately
+covered by the differential replay.
 
 What DOES need stating cross-language is that neither writer will emit one,
 which is what this section is.
@@ -192,6 +206,16 @@ def _field_order_issues(base: dict) -> list[str]:
         py_encode_manifest(mutated)
     except _REJECTION_EXCEPTIONS as e:
         first = _SENTINELS[0][0]
+        if not str(e).startswith(ENCODER_REFUSAL_PREFIX):
+            # Same discriminator `_writer_issues` applies, for the same
+            # reason: without it any rejection that merely happened to
+            # contain the field name -- the reader's own, at the step-4
+            # re-encode -- would satisfy this writer-side assertion.
+            return [
+                f"a body violating all three sentinels was refused, but not by "
+                f"the ENCODER's own rule -- expected a message starting "
+                f"{ENCODER_REFUSAL_PREFIX!r}, got {str(e)!r}"
+            ]
         if first not in str(e):
             return [
                 f"a body violating all three sentinels must name {first!r} (§4.2 "

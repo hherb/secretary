@@ -1075,17 +1075,50 @@ IS `encode_manifest` — would hybrid-sign a body no v1 client can open.
   **and** `parse_manifest_map`'s own rejection deleted, the entire
   `secretary-core --lib` suite reported **602 passed, exit 0** — the
   re-encode rejected the body one step later with a byte-identical error.
-  With them separate, that deletion reds exactly
-  `the_decode_side_check_is_not_backstopped_by_this_one`. Same #608 lesson
+  With them separate, that deletion reds **four** tests — the three in
+  `sentinel/tests.rs` that assert a decode-side variant
+  (`the_decode_side_check_is_not_backstopped_by_this_one`,
+  `each_v1_sentinel_is_rejected_in_both_directions`,
+  `the_decoder_reports_the_same_field_order_as_the_writer`) plus the
+  pre-existing `decode::tests::rejects_unsupported_manifest_version`.
+  **That figure was "exactly one" through the whole slice**, because it was
+  measured with `cargo test --lib manifest::sentinel`, which reports
+  `590 filtered out` — and the pre-existing decoder test is in those 590.
+  A mutation scoped to a filtered target reports the filter's answer, which
+  is the same trap this file already records one section up for
+  `--lib`-vs-`--test`. Re-measure on the whole `--lib` target. Same #608 lesson
   as `ENCODER_REFUSAL_PREFIX`, reached from the error-TYPE side instead of
   the message side; Python keeps using the prefix, because its two
   directions raise the same class.
-- **Section MSN carries no JSON fixture, deliberately.** Every other
-  manifest corpus freezes BODIES, because for those rules the bytes are the
+- **Section MSN adds no JSON fixture, deliberately.** Every other manifest
+  corpus freezes BODIES, because for those rules the bytes are the
   contract. A sentinel rejection happens *before any byte is produced*, so a
   byte corpus would assert nothing the three writer cases do not. The
   section's docstring says so — an unexplained asymmetry between sibling
-  corpora is how the next author concludes one of them is incomplete.
+  corpora is how the next author concludes one of them is incomplete. (It
+  does *load* one, borrowing a valid control body from
+  `manifest_uniqueness_kat.json`.)
+- **#587 broke a PRE-EXISTING section's rows, and the rule it broke was
+  already written down four bullets up.** "Whenever a check is added to one
+  direction of a round-trip, ask what the OTHER direction's tests would
+  still catch" was applied rigorously *inside* MSN — that is what
+  `_reader_is_not_backstopped_issues` is — and not at all to the sections
+  that already existed. `py_decode_manifest` re-encodes through
+  `py_encode_manifest`, so the moment that encoder enforced the sentinels it
+  began answering for the reader in Section **MSH**
+  (`manifest_body_shape_guards`), whose assertion is a bare
+  `if want not in str(e)` and whose encoder refusal *contains the field
+  name*. Measured: with the Python reader's three sentinel comparisons
+  deleted, MSH scored **PASS, "15 mutations rejected"**, of which the
+  `format_version` and `suite_id` rows were answered by the encoder. Closed
+  in the #631 review with the same `ENCODER_REFUSAL_PREFIX` discriminator
+  #608 gave MUQ; both rows now red. The `manifest_version` row was never
+  affected — its `u8` width check fires first on 999, which is also why MSH
+  was never independent cover for the reader's sentinel comparison, as MSN's
+  docstring had claimed while naming the wrong file
+  (`manifest_body_schema_guards`, which carries no sentinel mutation at
+  all). **Generalise the generalisation:** applying a round-trip rule to the
+  section you are writing is not applying it to the tree.
 
 `docs/vault-format.md` §4.2 gained one normative paragraph binding writers
 and fixing the report order — the same uplift #600 needed, and unlike

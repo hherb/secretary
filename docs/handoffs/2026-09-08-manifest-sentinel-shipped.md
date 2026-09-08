@@ -125,7 +125,7 @@ aborts rather than reporting a failed restore.
 | M4 | report the EXPECTED v1 value, not the observed one | RED — 2 |
 | M5 | reverse §4.2 field order | RED — 6 |
 | M6 | swap the two `encode_manifest` preconditions | RED — 1 (the precedence test alone) |
-| M7 | **delete the DECODER's sentinel check** | RED — 1 (`the_decode_side_check_is_not_backstopped_by_this_one`) |
+| M7 | **delete the DECODER's sentinel check** | RED — **4** (`the_decode_side_check_is_not_backstopped_by_this_one`, `each_v1_sentinel_is_rejected_in_both_directions`, `the_decoder_reports_the_same_field_order_as_the_writer`, and the pre-existing `decode::tests::rejects_unsupported_manifest_version`). **Recorded as "RED — 1" until the #631 review** — measured through `cargo test --lib manifest::sentinel`, which reports `590 filtered out`, and the pre-existing decoder test is in those 590. |
 | P1 | delete the wiring from `py_encode_manifest` | RED |
 | P2 | **delete the Python READER's sentinel check** | RED, with the intended diagnostic |
 | P3 | drop `suite_id` from the Python table | RED |
@@ -147,7 +147,13 @@ should re-run rather than trust:
 
 So under the design #587's issue text proposed, the decoder's sentinel check
 could have been deleted with the whole lib suite green. With separate
-variants, that deletion reds exactly one test.
+variants, that deletion reds **four** tests — see the M7 row. This
+paragraph said "exactly one test" until the #631 review, and the way it
+went wrong is the lesson §(4) below claims as this slice's most
+transferable one, committed in the same breath: the mutation was measured
+through a FILTERED target (`--lib manifest::sentinel`, `590 filtered out`)
+and written up as a whole-suite claim. The ruling is unaffected — under
+collapsed variants NO test reds — but the count understated the pin.
 
 **A near-miss inside that very measurement is worth more than the result.** My
 first run of it reported "one test still caught it", which would have made the
@@ -177,8 +183,10 @@ counterfactualised**, or it measures the mutation's incompleteness instead.
 - `core/fuzz` checks clean under the pinned nightly.
 - **Format invariants — `core/tests/data/`, `core/fuzz/seeds/` and the UDL
   diffs all EMPTY.** Normative `docs/` is `vault-format.md` only, +12 lines.
-- Every file created or touched is under 500 (`sentinel.rs` 119,
+- Every **code** file created or touched is under 500 (`sentinel.rs` 119,
   `sentinel/tests.rs` 270, `manifest_sentinel_writer.py` 299, `error.rs` 475).
+  The prose files touched are not and are not expected to be — `CLAUDE.md`
+  is 1846 and `docs/vault-format.md` 775.
 
 ### `clippy --tests` earned its place again
 
@@ -214,7 +222,8 @@ slice changes no user-visible behaviour, no on-disk format and no FFI surface.
   that is a test (`each_v1_sentinel_is_rejected_in_both_directions`), not a
   structural guarantee. They cannot drift on the VALUES, because the three
   constants are single-sourced.
-- **Section MSN carries no JSON fixture, deliberately** — a sentinel rejection
+- **Section MSN ADDS no JSON fixture, deliberately** (it does *load* one, the
+  `manifest_uniqueness_kat.json` control row it borrows a valid body from) — a sentinel rejection
   happens before any byte is produced, so a byte corpus would assert nothing.
   Do not "complete" the corpus family by adding one.
 - **Rust and Python use DIFFERENT anti-backstop mechanisms**, and neither is
@@ -317,14 +326,28 @@ not just in the file you are editing. This is the same class as the
 `--lib`/`--test` filter trap and the integration-binary-subtotal trap CLAUDE.md
 already records: **a measurement scoped more narrowly than its claim.**
 
-### The verification trap this session did NOT hit, and why
+### The verification trap this session DID hit after all
 
-The last two batons both recorded writing a comment asserting a mutation
-result that turned out false. This session wrote **no** "verified by mutation"
-comment before running the mutation — every such claim in `sentinel.rs`,
-`manifest_sentinel_writer.py`, the commit message and ROADMAP was written from
-harness output. The `602 passed, exit 0` figure in `sentinel.rs`'s doc is the
-one to re-run if it is ever doubted; the command is in §(1).
+This section originally read "the verification trap this session did NOT
+hit", and claimed that every "verified by mutation" comment in `sentinel.rs`,
+`manifest_sentinel_writer.py`, the commit message and ROADMAP "was written
+from harness output". Both halves were true and neither was sufficient: the
+M7 figure WAS written from harness output, and the harness had been given a
+FILTERED target. Writing from harness output is necessary, not sufficient —
+**read what the harness filtered before quoting what it counted.** The
+`--lib manifest::sentinel` run that produced "RED — 1" says `590 filtered
+out` on the same line it says `12 passed`.
+
+That makes three traps of one shape in this document — the filtered target
+here, the two-of-three-files counterfactual above, and the
+integration-binary subtotal CLAUDE.md records — which is why the
+generalisation above is stated as **a measurement scoped more narrowly than
+its claim** rather than as three separate rules.
+
+The `602 passed, exit 0` figure remains the whole-design counterfactual and
+is the one to re-run if doubted; the command is in §(1). Note it is a
+whole-DESIGN change, not a one-line mutation, so it cannot be re-derived by
+reverting a single hunk.
 
 One stale citation did slip in and was caught by re-reading: `sentinel.rs`'s
 module doc named a test
@@ -340,8 +363,20 @@ docs against the test names you actually shipped.**
 **The `sign_manifest` test went where its fixture already lived**, not with
 the rule it tests. The alternative — copying `fixture_hybrid_keypair` into
 `sentinel/tests.rs` — would have created a second signing fixture to keep one
-test co-located, which is the drift #602's review spent a paragraph
-correcting. Co-location is worth less than a single fixture.
+test co-located. Co-location is worth less than a single fixture — the same
+call `test_support/mod.rs` makes one file over, where
+`build_manifest_map_with_overrides` became the v1 special case of
+`build_manifest_map_with_sentinels` rather than a second near-identical
+builder.
+
+(An earlier draft cited "#602's review" for this. That is the wrong
+citation and the #631 review caught it: #602's review round concluded the
+*opposite* about its own two hostile-fixture tests — that they legitimately
+solved the problem DIFFERENTLY, `card.rs` assembling bytes inline rather
+than reaching for the shared permissive encoder, because it wanted PUSH
+order. What that review actually corrected was a doc claiming they shared
+one helper. The principle invoked here is real and in-repo; it just is not
+that paragraph's.)
 
 ### Standing risks this slice does not remove
 

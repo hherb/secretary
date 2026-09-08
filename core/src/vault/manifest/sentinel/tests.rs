@@ -27,6 +27,13 @@ use crate::vault::manifest::test_support::{
 /// test asserting on it cannot pass by accident against a `+ 1` mutation.
 const NOT_V1: u16 = 7;
 
+/// `NOT_V1 as u8` appears below, because `manifest_version` is a `u8` while
+/// its two siblings are `u16`. Keep that cast lossless: raising `NOT_V1`
+/// above 255 to strengthen the `u16` cases would silently truncate the
+/// `manifest_version` ones, and could land them back on a value the check
+/// ACCEPTS.
+const _: () = assert!(NOT_V1 <= u8::MAX as u16);
+
 /// One sweep case: the §4.2 field name, and the edit that makes it non-v1.
 ///
 /// A named type rather than an inline tuple because `-D clippy::type_complexity`
@@ -34,10 +41,16 @@ const NOT_V1: u16 = 7;
 /// row is the same shape, which a name states and a repeated tuple does not.
 type BreakCase = (&'static str, fn(&mut Manifest));
 
-/// One parity case: the field under test, then the three sentinel values to
-/// give both directions. Spelled out per direction rather than derived, so
-/// the reader and writer are handed *the same* triple by construction.
-type ParityCase = (&'static str, u8, u16, u16);
+/// One parity case: the field under test, the three sentinel values to give
+/// both directions, and the DECODE-side variant the reader must answer with.
+/// Spelled out per direction rather than derived, so the reader and writer
+/// are handed *the same* triple by construction.
+///
+/// The variant predicate is what makes the read half anti-backstop. Asserting
+/// only `is_err()` there is precisely what a backstop satisfies: with the
+/// decoder's own check deleted, the §4.3 step-4 re-encode still rejects the
+/// body, just with an `Encode*` variant.
+type ParityCase = (&'static str, u8, u16, u16, fn(&ManifestError) -> bool);
 
 // ---- check_v1_sentinels, directly ------------------------------------
 
@@ -185,10 +198,17 @@ fn each_v1_sentinel_is_rejected_in_both_directions() {
     // The parity floor. The two implementations of §4.2's sentinel rule
     // are independent by design (see the module doc), so nothing but this
     // test stops one direction gaining a sentinel the other does not
-    // check. It asserts the WEAK property — both directions reject —
-    // deliberately: the STRONG property (which variant) is what
-    // `the_decode_side_check_is_not_backstopped_by_this_one` covers, and
-    // conflating them would let a backstop satisfy this one.
+    // check.
+    //
+    // Each half asserts the SPECIFIC variant its direction owns. An earlier
+    // version asserted only `is_err()` on the read side, reasoning that the
+    // weak property stopped a backstop satisfying it — which is backwards:
+    // `is_err()` is exactly what a backstop DOES satisfy, since with the
+    // decoder's check gone the §4.3 step-4 re-encode rejects the same body
+    // with an `Encode*` variant. It also left the body-level `format_version`
+    // and `suite_id` rejections with no variant assertion anywhere in the
+    // tree — `header/tests.rs` covers those two variants only for the HEADER
+    // path, which this does not exercise.
     use crate::vault::manifest::decode::decode_manifest;
 
     let cases: [ParityCase; 3] = [
@@ -197,12 +217,25 @@ fn each_v1_sentinel_is_rejected_in_both_directions() {
             NOT_V1 as u8,
             FORMAT_VERSION_V1,
             SUITE_ID_V1,
+            |e| matches!(e, ManifestError::UnsupportedManifestVersion(_)),
         ),
-        ("format_version", MANIFEST_VERSION_V1, NOT_V1, SUITE_ID_V1),
-        ("suite_id", MANIFEST_VERSION_V1, FORMAT_VERSION_V1, NOT_V1),
+        (
+            "format_version",
+            MANIFEST_VERSION_V1,
+            NOT_V1,
+            SUITE_ID_V1,
+            |e| matches!(e, ManifestError::UnsupportedFormatVersion(_)),
+        ),
+        (
+            "suite_id",
+            MANIFEST_VERSION_V1,
+            FORMAT_VERSION_V1,
+            NOT_V1,
+            |e| matches!(e, ManifestError::UnsupportedSuiteId(_)),
+        ),
     ];
 
-    for (field, mv, fv, sid) in cases {
+    for (field, mv, fv, sid, is_decode_side_variant) in cases {
         // Write side.
         let mut m = minimal_manifest();
         m.manifest_version = mv;
@@ -218,9 +251,88 @@ fn each_v1_sentinel_is_rejected_in_both_directions() {
         // the card: a checked encoder cannot build its own hostile
         // fixture.
         let bytes = build_manifest_map_with_sentinels(Some(mv), true, fv, sid);
+        let err = expect_rejected(decode_manifest(&bytes), "non-v1 body on read");
         assert!(
-            decode_manifest(&bytes).is_err(),
-            "the READER accepted a body whose {field} is not v1"
+            is_decode_side_variant(&err),
+            "the READER must reject a body whose {field} is not v1 with the \
+             DECODE-side variant, not the writer's; got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn a_v1_body_still_decodes() {
+    // The reader's positive control. The sweep above only ever asserts that a
+    // NON-v1 body is rejected, so a decoder refusing every body this builder
+    // produces would satisfy all three of its read halves. The writer half
+    // carries two positive controls; this is the reader's.
+    use crate::vault::manifest::decode::decode_manifest;
+
+    let bytes = build_manifest_map_with_sentinels(
+        Some(MANIFEST_VERSION_V1),
+        true,
+        FORMAT_VERSION_V1,
+        SUITE_ID_V1,
+    );
+    assert!(
+        decode_manifest(&bytes).is_ok(),
+        "a body carrying all three v1 sentinels must still decode"
+    );
+}
+
+#[test]
+fn the_decoder_reports_the_same_field_order_as_the_writer() {
+    // §4.2 now makes the report order NORMATIVE — "an implementation that
+    // reports a single field MUST choose the first in the order this
+    // paragraph names them" — and this module's doc claims the two directions
+    // agree on it.
+    //
+    // Nothing asserted that. The writer-side twin
+    // `a_body_violating_two_sentinels_names_the_first_in_field_order` calls
+    // `check_v1_sentinels` twice and never touches the decoder, so the
+    // agreement held by coincidence in exactly the sense that comment denied.
+    use crate::vault::manifest::decode::decode_manifest;
+
+    let bytes = build_manifest_map_with_sentinels(Some(NOT_V1 as u8), true, NOT_V1, NOT_V1);
+    let err = expect_rejected(decode_manifest(&bytes), "all three sentinels wrong on read");
+    assert!(
+        matches!(err, ManifestError::UnsupportedManifestVersion(_)),
+        "the READER must name the FIRST field in §4.2 order, got {err:?}"
+    );
+
+    // ...and with that one restored, the next in order — the same walk the
+    // writer-side twin makes.
+    let bytes = build_manifest_map_with_sentinels(Some(MANIFEST_VERSION_V1), true, NOT_V1, NOT_V1);
+    let err = expect_rejected(decode_manifest(&bytes), "two sentinels wrong on read");
+    assert!(
+        matches!(err, ManifestError::UnsupportedFormatVersion(_)),
+        "the READER must name format_version once manifest_version is v1, got {err:?}"
+    );
+}
+
+#[test]
+fn each_variant_renders_the_field_and_the_offending_value() {
+    // The `Display` text is what reaches the FFI `detail` payload and the
+    // platform log line, and it is what the Python twin asserts on
+    // (`_writer_issues` requires both the refusal prefix and the field name).
+    // Everything else in this file asserts only the VARIANT via `matches!`,
+    // so without this the two languages' user-visible strings could drift
+    // with nothing failing.
+    // `BreakCase`, not an inline tuple — the same `-D clippy::type_complexity`
+    // reason its own doc gives, and the same shape the sweep above uses.
+    let cases: [BreakCase; 3] = [
+        ("manifest_version", |m| m.manifest_version = 7),
+        ("format_version", |m| m.format_version = 7),
+        ("suite_id", |m| m.suite_id = 7),
+    ];
+    for (field, break_it) in cases {
+        let mut m = minimal_manifest();
+        break_it(&mut m);
+        let err = expect_rejected(check_v1_sentinels(&m), field);
+        assert_eq!(
+            err.to_string(),
+            format!("cannot encode: unsupported {field}: 7"),
+            "the rendered message for {field} is what crosses the FFI"
         );
     }
 }

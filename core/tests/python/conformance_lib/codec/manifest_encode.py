@@ -83,6 +83,15 @@ def check_v1_sentinels(parsed: dict) -> None:
     half requires it, so a backstop can never satisfy a reader assertion.
     """
     for key, want in _V1_SENTINELS:
+        # Hard subscript, not `.get()` -- the same fail-loud stance
+        # `check_no_repeated_array_values` documents below. All three keys are
+        # in `MANIFEST_REQUIRED_KEYS`, so a caller reaching here without one
+        # has already gone wrong. The consequence is sharper here than there,
+        # though: a `KeyError`'s `str()` is just the quoted key name, carrying
+        # no `ENCODER_REFUSAL_PREFIX`, so Section MSN would read it as a
+        # READER rejection rather than a writer one. It is in
+        # `_REJECTION_EXCEPTIONS`, so `--diff-replay` still scores it a
+        # reject rather than a harness error.
         got = parsed[key]
         if got != want:
             raise ValueError(

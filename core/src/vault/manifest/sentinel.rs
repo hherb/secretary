@@ -50,13 +50,22 @@
 //! duplicate-key-vs-malformed-value precedence, and *no test in the tree
 //! could see it* because every fixture varies one thing at a time.
 //!
-//! What sharing would have bought is cheap to buy directly: the three v1
-//! values are already single-sourced as the constants above, so the two
-//! directions cannot drift on the VALUES. Only the list of WHICH fields
-//! are sentinel-checked could drift, and
-//! `tests::each_v1_sentinel_is_rejected_in_both_directions` pins that by
-//! driving both directions over the same three fields, so a sentinel added
-//! to one and not the other reds.
+//! Part of what sharing would have bought is cheap to buy directly: the
+//! three v1 values are already single-sourced as the constants above, so
+//! the two directions cannot drift on the VALUES.
+//!
+//! **The rest is NOT bought, and saying so is the point.** The list of
+//! WHICH fields are sentinel-checked can still drift.
+//! `tests::each_v1_sentinel_is_rejected_in_both_directions` drives both
+//! directions over the same three fields and asserts each one's
+//! direction-specific variant, so it is a real parity floor for the
+//! sentinels that exist — but its `ParityCase` table is a hand-written
+//! literal and `check_v1_sentinels` is three hand-written `if` blocks,
+//! with no shared list behind them. A FOURTH sentinel added to one
+//! direction only adds no case and reds nothing. That residual is
+//! tracked as #632, and it is the #589 lesson turned on this module: a
+//! sweep pins the arm set only when the sweep's list and the
+//! implementation's list have one source.
 
 use super::{Manifest, ManifestError, FORMAT_VERSION_V1, MANIFEST_VERSION_V1, SUITE_ID_V1};
 
@@ -66,9 +75,17 @@ use super::{Manifest, ManifestError, FORMAT_VERSION_V1, MANIFEST_VERSION_V1, SUI
 /// Checked in §4.2 field order — `manifest_version`, `format_version`,
 /// `suite_id` — which is also the order `parse_manifest_map` reports them
 /// in, so a body violating more than one sentinel names the same field
-/// whichever direction rejects it. That agreement is asserted by
+/// whichever direction rejects it — which `docs/vault-format.md` §4.2 now
+/// makes normative for every conformant implementation.
+///
+/// Two tests are needed for that, one per direction, and the second was
+/// missing until the #631 review:
 /// `tests::a_body_violating_two_sentinels_names_the_first_in_field_order`
-/// rather than left to coincidence.
+/// walks the WRITER, and
+/// `tests::the_decoder_reports_the_same_field_order_as_the_writer` walks
+/// the DECODER over the same two steps. The first alone never touches
+/// `parse_manifest_map`, so the cross-direction agreement it was cited for
+/// really was left to coincidence.
 ///
 /// # It is also on the DECODE path, and cannot fire there
 ///
@@ -86,18 +103,32 @@ use super::{Manifest, ManifestError, FORMAT_VERSION_V1, MANIFEST_VERSION_V1, SUI
 /// [`ManifestError::UnsupportedManifestVersion`] and its two siblings,
 /// deleting `parse_manifest_map`'s sentinel rejection would leave a bad
 /// body still rejected — by this function, at the re-encode, with a
-/// byte-identical error — and nothing would say so. Verified by execution:
-/// with the variants collapsed onto the decoder's three *and* the
-/// decoder's own check deleted, the whole `secretary-core --lib` suite
-/// reported **602 passed, 0 failed, exit 0**. With the variants separate,
-/// the same deletion reds
-/// `tests::the_decode_side_check_is_not_backstopped_by_this_one` and
-/// nothing else.
+/// byte-identical error — and nothing would say so. That counterfactual is
+/// a whole-design change rather than a one-line mutation (every test naming
+/// an `Encode*` variant would have been written against the shared one),
+/// and when it was carried out the `secretary-core --lib` suite reported
+/// **0 failures**.
+///
+/// With the variants separate, the same deletion IS a one-line mutation,
+/// and it reds **four** tests:
+///
+/// - `tests::the_decode_side_check_is_not_backstopped_by_this_one`
+/// - `tests::each_v1_sentinel_is_rejected_in_both_directions`
+/// - `tests::the_decoder_reports_the_same_field_order_as_the_writer`
+/// - the pre-existing `decode::tests::rejects_unsupported_manifest_version`
+///
+/// **Do not re-derive that count from a filtered run.** An earlier version
+/// of this comment said the deletion red exactly one test, because it was
+/// measured through `cargo test --lib manifest::sentinel`, which reports
+/// `590 filtered out` — and the pre-existing decoder test is in those 590.
+/// Run the whole `--lib` target.
 ///
 /// So this is #600's ruling — "the bytes you gave me" and "the value you
 /// asked me to encode" are different events — arriving at the same answer
 /// for a second, independent reason. Do not collapse the two directions
 /// onto one variant as a tidy-up.
+///
+/// [`encode_manifest`]: super::encode_manifest
 pub(super) fn check_v1_sentinels(m: &Manifest) -> Result<(), ManifestError> {
     if m.manifest_version != MANIFEST_VERSION_V1 {
         return Err(ManifestError::EncodeUnsupportedManifestVersion(

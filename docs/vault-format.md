@@ -274,17 +274,20 @@ tombstone per block). `recipients` is the exception — a repeated
 `contact_uuid` is accepted and round-trips, since it denotes no additional
 grant.
 
-**The three v1 sentinel fields bind writers too.** `manifest_version`,
-`format_version` and `suite_id` are fixed at `1` for a v1 manifest body, as
-the schema above declares. Readers MUST reject any other value (§4.3 step 3);
-**writers MUST NOT emit one**. The obligation is stated explicitly because the
-reader half alone leaves an encoder free to serialise, and §4.4's signing step
-free to sign, a body no v1 client can open — the same asymmetry the repeated-
-value rule above had before it was written down. A writer that finds a
-non-v1 sentinel in a body it was asked to encode MUST fail rather than emit,
-and MUST report which of the three fields was wrong, checking them in the
-order this paragraph names them so that a body violating more than one is
-diagnosed identically by every conformant implementation.
+**The three top-level v1 sentinel fields bind writers too.** The top-level
+`manifest_version`, `format_version` and `suite_id` are fixed at `1` for a v1
+manifest body, as the schema above declares. The per-block `suite_id` inside
+`blocks[]` is a *different* field and is not constrained by this paragraph.
+Readers MUST reject any other value (§4.3 step 4); **writers MUST NOT emit
+one**. The obligation is stated explicitly because the reader half alone
+leaves an encoder free to serialise, and §4.4's signing step free to sign, a
+body no v1 client can open — the same asymmetry the repeated-value rule above
+had before it was written down. A writer that finds a non-v1 sentinel in a
+body it was asked to encode MUST fail rather than emit, and MUST report which
+field was wrong. An implementation that reports a single field MUST choose the
+first in the order this paragraph names them, so that a body violating more
+than one is diagnosed identically by every conformant implementation; one that
+reports all offending fields is equally conformant.
 
 The two rules above — element order, and no repeated values — apply to the
 five named arrays only. They say nothing about arrays that appear *inside* a
