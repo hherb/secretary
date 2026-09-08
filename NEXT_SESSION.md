@@ -1,1 +1,1 @@
-docs/handoffs/2026-09-07-card-dedupe-shipped.md
+docs/handoffs/2026-09-08-manifest-sentinel-shipped.md
