@@ -209,6 +209,54 @@ pub enum ManifestError {
     #[error("cannot encode: vector clock contains duplicate device_uuid")]
     EncodeVectorClockDuplicateDevice,
 
+    /// The [`Manifest`] handed to [`encode_manifest`] declared a
+    /// `manifest_version` no v1 client can open (#587).
+    ///
+    /// **The WRITER-side twin of [`Self::UnsupportedManifestVersion`], and
+    /// a deliberately separate variant** — the same ruling #600 took for
+    /// the array-repeat twin, for the same reason, and the reasoning at
+    /// [`Self::EncodeDuplicateBlockUuid`] applies verbatim: this one says
+    /// *the value you asked me to encode declares version 7*, a bug in
+    /// this process reachable only by a caller building a [`Manifest`] in
+    /// memory; the decode-side variant says *the bytes you gave me do*, a
+    /// statement about a file that may have come from a peer or from a
+    /// future format version.
+    ///
+    /// Splitting the two is not only a diagnostic nicety here. §4.3 step 4
+    /// re-encodes every parsed manifest through [`encode_manifest`], so a
+    /// shared variant would let the writer's check silently stand in for
+    /// the reader's: deleting `parse_manifest_map`'s sentinel rejection
+    /// would leave the body rejected with an identical error, and the
+    /// decoder's own regression could no longer fail. See
+    /// `super::sentinel::check_v1_sentinels` for the full statement.
+    ///
+    /// [`Manifest`]: super::Manifest
+    /// [`encode_manifest`]: super::encode_manifest
+    #[error("cannot encode: unsupported manifest_version: {0}")]
+    EncodeUnsupportedManifestVersion(u8),
+
+    /// The [`Manifest`] handed to [`encode_manifest`] declared a
+    /// `format_version` that doesn't match [`crate::version::FORMAT_VERSION`]
+    /// (#587). Writer-side twin of [`Self::UnsupportedFormatVersion`]; see
+    /// [`Self::EncodeUnsupportedManifestVersion`] for why the two
+    /// directions get separate variants.
+    ///
+    /// [`Manifest`]: super::Manifest
+    /// [`encode_manifest`]: super::encode_manifest
+    #[error("cannot encode: unsupported format_version: {0}")]
+    EncodeUnsupportedFormatVersion(u16),
+
+    /// The [`Manifest`] handed to [`encode_manifest`] declared a `suite_id`
+    /// that doesn't match [`crate::version::SUITE_ID`] (#587). Writer-side
+    /// twin of [`Self::UnsupportedSuiteId`]; see
+    /// [`Self::EncodeUnsupportedManifestVersion`] for why the two
+    /// directions get separate variants.
+    ///
+    /// [`Manifest`]: super::Manifest
+    /// [`encode_manifest`]: super::encode_manifest
+    #[error("cannot encode: unsupported suite_id: {0}")]
+    EncodeUnsupportedSuiteId(u16),
+
     /// A canonical-CBOR rule was violated (float, tag, …). Lifted from
     /// the shared `crate::vault::canonical` helpers.
     #[error("canonical CBOR violation: {0}")]

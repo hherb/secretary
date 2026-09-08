@@ -49,6 +49,9 @@ from conformance_lib.sections.manifest_canonicality_cause import (
 from conformance_lib.sections.manifest_canonicality_kat import (
     section_manifest_canonicality_kat,
 )
+from conformance_lib.sections.manifest_sentinel_writer import (
+    section_manifest_sentinel_writer,
+)
 from conformance_lib.sections.manifest_uniqueness_kat import (
     section_manifest_uniqueness_kat,
 )
@@ -142,6 +145,8 @@ SECTIONS: tuple[Section, ...] = (
             " (#590, #604)", section_manifest_canonicality_cause),
     Section("MUQ", "manifest_uniqueness_kat.json §4.2 repeated-value replay",
             " (#594, #600)", section_manifest_uniqueness_kat),
+    Section("MSN", "manifest §4.2 v1 sentinel writer-half enforcement",
+            " (#587)", section_manifest_sentinel_writer),
     Section("RC", "record unknown-subtree canonicality, both nesting levels",
             " (#592)", section_record_unknown_subtree_canonicality),
     Section("DET", "required-key rejection determinism across hash seeds",

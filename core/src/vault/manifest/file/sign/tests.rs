@@ -390,3 +390,44 @@ fn empty_local_against_any_incoming_not_rollback() {
         "both empty — equal, not a rollback"
     );
 }
+
+// ---- §4.2 v1 sentinels (#587) ----------------------------------------
+
+#[test]
+fn sign_manifest_refuses_a_body_no_v1_client_could_open() {
+    // #587's user-visible property, and the reason the check went into
+    // `encode_manifest` rather than anywhere further down: `sign_manifest`'s
+    // step 1 IS `encode_manifest`, so a body whose `manifest_version` this
+    // client cannot speak never reaches the hybrid signature.
+    //
+    // Without it, `sign_manifest` would happily produce a manifest signed
+    // under Ed25519 ∧ ML-DSA-65 that `decode_manifest` refuses to open —
+    // the same "signed, unopenable body" class #600 closed for §4.2's
+    // repeated-value rules and #586/#602 for duplicate map keys.
+    //
+    // It lives here rather than in `sentinel/tests.rs` because it needs
+    // `fixture_hybrid_keypair`, and duplicating a signing fixture to move
+    // one test is how two fixtures drift.
+    let (sk_ed, _pk_ed, sk_pq, _pk_pq) = fixture_hybrid_keypair(0x60);
+    let mut body = populated_manifest();
+    body.manifest_version = 7;
+
+    let outcome = sign_manifest(
+        fixed_manifest_header(),
+        &body,
+        &test_ibk(0x11),
+        &test_nonce(),
+        [0xa5; 16],
+        &sk_ed,
+        &sk_pq,
+    );
+
+    let err = match outcome {
+        Err(e) => e,
+        Ok(_) => panic!("sign_manifest signed a body no v1 client can open"),
+    };
+    assert!(
+        matches!(err, ManifestError::EncodeUnsupportedManifestVersion(7)),
+        "expected the signature to be refused before it was produced, got {err:?}"
+    );
+}
