@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from conformance_lib.canonical import encode_canonical_map_raw
 from conformance_lib.codec.array_uniqueness import first_repeated_value
+from conformance_lib.codec.manifest_schema import MANIFEST_VERSION_V1
+from conformance_lib.constants import FORMAT_VERSION, SUITE_ID
 
 
 # The four arrays §4.2 forbids a repeat in, as (array key, id key) pairs.
@@ -43,6 +45,58 @@ from conformance_lib.codec.array_uniqueness import first_repeated_value
 # crediting it to the reader is what made that half vacuous -- #608
 # review); the writer half requires it.
 ENCODER_REFUSAL_PREFIX = "cannot encode:"
+
+
+# §4.2's three v1 sentinel fields, as (key, expected value) pairs in the
+# field order §4.2 declares them -- which is also the order both decoders
+# report them in, so a body violating several names the same field
+# whichever implementation and whichever direction rejects it.
+_V1_SENTINELS: tuple[tuple[str, int], ...] = (
+    ("manifest_version", MANIFEST_VERSION_V1),
+    ("format_version", FORMAT_VERSION),
+    ("suite_id", SUITE_ID),
+)
+
+
+def check_v1_sentinels(parsed: dict) -> None:
+    """Reject a manifest whose §4.2 sentinel fields are not the v1 values.
+
+    §4.2 fixes `manifest_version`, `format_version` and `suite_id` at 1 for
+    a v1 body, and binds the WRITER as well as the reader.  Both
+    implementations enforced only the reader half until #587: Rust's
+    `encode_manifest` would serialise `manifest_version: 7` and
+    `sign_manifest` would hybrid-sign the result, and this encoder would
+    emit the same bytes -- a signed manifest no v1 client can open.  That is
+    the identical defect #600 closed for §4.2's repeated-value rules, one
+    field group over.
+
+    Availability rather than confidentiality (the manifest is owner-signed,
+    so the producer is always a local caller), but for a frozen format with
+    a clean-room mandate an encoder that emits a signed document its own
+    decoder rejects is a real defect -- and `docs/` states the obligation,
+    so an encoder ignoring it is formally non-conformant.
+
+    Raises `ValueError` prefixed with `ENCODER_REFUSAL_PREFIX`, for the
+    reason that constant documents: `py_decode_manifest` re-encodes through
+    `py_encode_manifest`, so this check BACKSTOPS the reader's own sentinel
+    rejection.  Section MSN's reader half rejects the prefix and its writer
+    half requires it, so a backstop can never satisfy a reader assertion.
+    """
+    for key, want in _V1_SENTINELS:
+        # Hard subscript, not `.get()` -- the same fail-loud stance
+        # `check_no_repeated_array_values` documents below. All three keys are
+        # in `MANIFEST_REQUIRED_KEYS`, so a caller reaching here without one
+        # has already gone wrong. The consequence is sharper here than there,
+        # though: a `KeyError`'s `str()` is just the quoted key name, carrying
+        # no `ENCODER_REFUSAL_PREFIX`, so Section MSN would read it as a
+        # READER rejection rather than a writer one. It is in
+        # `_REJECTION_EXCEPTIONS`, so `--diff-replay` still scores it a
+        # reject rather than a harness error.
+        got = parsed[key]
+        if got != want:
+            raise ValueError(
+                f"{ENCODER_REFUSAL_PREFIX} unsupported {key}: {got}"
+            )
 
 
 _FLAT_UNIQUE_ARRAYS: tuple[tuple[str, str], ...] = (
@@ -181,6 +235,7 @@ def py_encode_manifest(parsed: dict) -> bytes:
 
     Refuses a manifest violating §4.2's repeated-value rules before
     emitting anything (#600) -- see `check_no_repeated_array_values`.
+    Refuses a non-v1 sentinel first (#587) -- see `check_v1_sentinels`.
 
     Observably a no-op for every caller that PRE-DATES #600. There are
     seven of them, not the two an earlier version of this docstring named
@@ -207,6 +262,10 @@ def py_encode_manifest(parsed: dict) -> bytes:
     """
     import cbor2
 
+    # §4.2's two writer-side preconditions, sentinels FIRST (#587) --
+    # the same order `core`'s `encode_manifest` applies them in, and
+    # pinned there by `the_sentinel_check_outranks_the_repeated_value_check`.
+    check_v1_sentinels(parsed)
     check_no_repeated_array_values(parsed)
 
     entries: list[tuple[str, bytes]] = []

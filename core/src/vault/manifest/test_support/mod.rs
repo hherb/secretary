@@ -307,9 +307,35 @@ pub(super) fn entry_bytes_field(entry: &Value, key: &str) -> Vec<u8> {
 
 /// Build a top-level manifest CBOR map by hand. Useful for negative
 /// tests where we want to mutate one key away from canonical.
+///
+/// The two §4.2 sentinels this signature does not expose are fixed at
+/// their v1 values; reach for [`build_manifest_map_with_sentinels`] when
+/// the test is *about* one of them.
 pub(super) fn build_manifest_map_with_overrides(
     manifest_version: Option<u8>,
     vault_uuid_present: bool,
+) -> Vec<u8> {
+    build_manifest_map_with_sentinels(
+        manifest_version,
+        vault_uuid_present,
+        FORMAT_VERSION_V1,
+        SUITE_ID_V1,
+    )
+}
+
+/// Build a top-level manifest CBOR map by hand, choosing all three §4.2
+/// sentinel values (#587).
+///
+/// One body, two entry points: [`build_manifest_map_with_overrides`] is
+/// the v1-sentinel special case of this function. Writing a second
+/// near-identical builder would be the hand-copy this crate keeps
+/// finding — the two would drift the first time §4.2's key list changes,
+/// and only one of them would be updated.
+pub(super) fn build_manifest_map_with_sentinels(
+    manifest_version: Option<u8>,
+    vault_uuid_present: bool,
+    format_version: u16,
+    suite_id: u16,
 ) -> Vec<u8> {
     let mut entries: Vec<(Value, Value)> = Vec::new();
     if let Some(mv) = manifest_version {
@@ -326,11 +352,11 @@ pub(super) fn build_manifest_map_with_overrides(
     }
     entries.push((
         Value::Text(KEY_FORMAT_VERSION.into()),
-        Value::Integer(u64::from(FORMAT_VERSION_V1).into()),
+        Value::Integer(u64::from(format_version).into()),
     ));
     entries.push((
         Value::Text(KEY_SUITE_ID.into()),
-        Value::Integer(u64::from(SUITE_ID_V1).into()),
+        Value::Integer(u64::from(suite_id).into()),
     ));
     entries.push((
         Value::Text(KEY_OWNER_USER_UUID.into()),

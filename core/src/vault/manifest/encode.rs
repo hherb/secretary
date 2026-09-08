@@ -2,6 +2,7 @@
 
 use crate::crypto::secret::SecretBytes;
 use crate::vault::canonical::{to_canonical_vec, CanonicalMap, CanonicalValue};
+use crate::vault::manifest::sentinel::check_v1_sentinels;
 use crate::vault::manifest::uniqueness::check_no_repeated_array_values;
 
 use super::{
@@ -51,6 +52,13 @@ use super::{
 /// `unlock::bundle::IdentityBundle::to_canonical_cbor` (#569 path 1)
 /// already made.
 pub fn encode_manifest(manifest: &Manifest) -> Result<SecretBytes, ManifestError> {
+    // §4.2's two writer-side preconditions, in a fixed and pinned order.
+    // The sentinel check runs FIRST (#587): a body whose *version* this
+    // client cannot speak should say so before complaining about the
+    // contents of arrays whose meaning is version-dependent.
+    // `sentinel::tests::the_sentinel_check_outranks_the_repeated_value_check`
+    // makes a future reordering a test failure rather than a silent change.
+    check_v1_sentinels(manifest)?;
     check_no_repeated_array_values(manifest)?;
     Ok(SecretBytes::new(to_canonical_vec(&manifest_to_canonical(
         manifest,

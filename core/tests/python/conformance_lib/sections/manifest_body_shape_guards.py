@@ -12,7 +12,11 @@ from conformance_lib.fixtures import manifest_body_seed
 
 from conformance_lib.canonical import encode_canonical_map_raw
 from conformance_lib.codec.manifest_decode import py_decode_manifest
-from conformance_lib.codec.manifest_encode import _encode_array_header, py_encode_manifest
+from conformance_lib.codec.manifest_encode import (
+    ENCODER_REFUSAL_PREFIX,
+    _encode_array_header,
+    py_encode_manifest,
+)
 from conformance_lib.sections.manifest_body_fixtures import _build_test_block_entry_bytes, _build_test_manifest_bytes
 
 def section_manifest_body_strict_subshapes_guard() -> tuple[bool, list[str]]:
@@ -204,7 +208,26 @@ def section_manifest_body_shape_guard() -> tuple[bool, list[str]]:
             py_decode_manifest(body)
             issues.append(f"{label}: ACCEPTED -- Rust rejects this body")
         except ValueError as e:
-            if want not in str(e):
+            if str(e).startswith(ENCODER_REFUSAL_PREFIX):
+                # #587 gave `py_encode_manifest` a v1-sentinel check, and
+                # `py_decode_manifest` re-encodes through it for the §4.3
+                # step-4 comparison -- so the ENCODER can now answer on this
+                # reader's behalf. Its refusal even carries the field name,
+                # so the `want` substring below cannot tell the two apart:
+                # measured, the `format_version` and `suite_id` rows below
+                # scored PASS with this reader's own sentinel check DELETED,
+                # and this section still printed "15 mutations rejected".
+                #
+                # Same backstop trap #608's review found for the uniqueness
+                # rule, reached from the other side -- there a check was added
+                # to the encoder and MUQ's reader half went vacuous; here the
+                # check was added for #587 and MSH's two version rows did.
+                # The discriminator is the same one, for the same reason.
+                issues.append(
+                    f"{label}: rejected by the ENCODER at the step-4 re-encode, "
+                    f"not by this reader's own check: {e}"
+                )
+            elif want not in str(e):
                 issues.append(
                     f"{label}: rejected, but not by the shape check "
                     f"(message lacks {want!r}): {e}"

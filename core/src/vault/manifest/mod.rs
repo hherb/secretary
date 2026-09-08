@@ -63,6 +63,7 @@ mod encode;
 mod error;
 mod file;
 mod header;
+mod sentinel;
 mod types;
 mod uniqueness;
 
