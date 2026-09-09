@@ -11,6 +11,8 @@ lengths and non-shortest-form heads are rejected at every nesting level.
 
 from __future__ import annotations
 
+from typing import Callable
+
 # ---------------------------------------------------------------------------
 # Span-recording CBOR scanner (§4.2 forward-compat subtree support)
 # ---------------------------------------------------------------------------
@@ -100,6 +102,53 @@ class NonCanonicalItem(ValueError):
         return (type(self), (self._rule, self._detail))
 
 
+class DuplicateMapKey(ValueError):
+    """A map this reader INTERPRETS carries the same key twice (§6.2 rule 5).
+
+    A structured discriminator, for the reason `NonCanonicalItem` is one:
+    a section that keys on message text is satisfied by any rejection
+    whose wording happens to overlap, which is the substring trap #608's
+    review found on this corpus family's encoder side.  Section MPR needs
+    to tell "the reader reported the repeat" apart from "the reader
+    interpreted the second copy and rejected its type", and both are
+    `ValueError`s carrying the key name.
+
+    Scoped to maps the reader interprets. A repeat inside a forward-compat
+    `unknown` subtree is ACCEPTED -- §4.2's table marks rule 5 unenforced
+    there -- so this type is never raised for one, and
+    `_check_canonical_item` deliberately does not look.
+
+    `key` and `label` are read-only, and the rendered message is composed
+    from them at construction, so the two cannot drift; `__reduce__` is
+    explicit for the same reason `NonCanonicalItem` needs one -- the
+    default returns `(cls, self.args)` and `args` here is the single
+    composed message, which this `__init__` cannot be reconstructed from.
+
+    Subclasses `ValueError` deliberately: `conformance_lib.rejection`'s
+    allowlist and `diff_replay.py`'s reject-vs-error split both key on
+    that base, so every existing caller keeps scoring these as a verdict
+    rather than as a harness failure.
+    """
+
+    def __init__(self, label: str, key: str) -> None:
+        super().__init__(f"duplicate {label} key: {key!r}")
+        self._label = label
+        self._key = key
+
+    @property
+    def key(self) -> str:
+        """The repeated key's name, read-only."""
+        return self._key
+
+    @property
+    def label(self) -> str:
+        """The map the repeat was found in, read-only."""
+        return self._label
+
+    def __reduce__(self):
+        return (type(self), (self._label, self._key))
+
+
 def _decode_head(buf: bytes, pos: int) -> tuple[int, int, int | None, int]:
     """Decode the CBOR head at `pos` (RFC 8949 §3).
 
@@ -140,13 +189,23 @@ def _decode_head(buf: bytes, pos: int) -> tuple[int, int, int | None, int]:
     return major, ai, int.from_bytes(buf[pos + 1 : pos + 1 + n], "big"), 1 + n
 
 
-def _scan_item(buf: bytes, pos: int) -> int:
+def _scan_item(buf: bytes, pos: int, visit: Callable[[bytes, int], None] | None = None) -> int:
     """Return the offset one past the single CBOR item starting at `pos`.
 
     Structure only -- indefinite-length forms scan successfully here and are
     rejected by `_check_canonical_item`, because the two are different rules
     (§4.2 table rows 2 and 5 have opposite verdicts).
+
+    `visit`, when given, is called with `(buf, offset)` for every item this
+    traversal reaches -- the root, every array element, and every map KEY as
+    well as every map value, at every depth.  It exists so a whole-body rule
+    can be expressed as a predicate over items instead of as a second copy of
+    this traversal; `reject_floats_and_tags` is the one caller.  Chunks of an
+    indefinite-length string are deliberately not visited: they are fragments
+    of one major-2/3 item, never a tag or a float, and the item itself is.
     """
+    if visit is not None:
+        visit(buf, pos)
     major, ai, arg, head = _decode_head(buf, pos)
     p = pos + head
 
@@ -179,9 +238,9 @@ def _scan_item(buf: bytes, pos: int) -> int:
                 if buf[p] == CBOR_BREAK:
                     return p + 1
                 for _ in range(per):
-                    p = _scan_item(buf, p)
+                    p = _scan_item(buf, p, visit)
         for _ in range(arg * per):
-            p = _scan_item(buf, p)
+            p = _scan_item(buf, p, visit)
         return p
     if major == 6:                            # tag
         if arg is None:
@@ -191,8 +250,46 @@ def _scan_item(buf: bytes, pos: int) -> int:
             # `_decode_head` first. Kept as defence in depth so this
             # primitive does not depend on a caller's validation.
             raise ValueError(f"indefinite-length tag at offset {pos}")
-        return _scan_item(buf, p)
+        return _scan_item(buf, p, visit)
     raise ValueError(f"unreachable CBOR major type {major}")
+
+
+def reject_floats_and_tags(buf: bytes, pos: int = 0) -> None:
+    """Enforce crypto-design §6.2 rule 4 over the WHOLE body, before any key
+    is interpreted (`docs/vault-format.md` §4.2's precedence paragraph, #618).
+
+    The clean-room twin of `core/src/vault/canonical`'s
+    `reject_floats_and_tags`, which `decode_manifest` runs on the parsed tree
+    before `parse_manifest_map` -- keys as well as values, forward-compat
+    `unknown` subtrees included.
+
+    **Rule 4 ONLY, and that scope is load-bearing rather than incidental.**
+    §4.2 orders rule 4 ahead of the repeated-key rule because BOTH reader
+    architectures it admits enforce rule 4 by a walk of this kind, outside
+    the §4.3 step-4 re-encode.  Rules 2 and 3 are the opposite case: a
+    normalising reader can only see them AT that re-encode, i.e. after
+    interpretation, so §4.2 leaves their order against rules 4 and 5
+    unspecified and this walk must not pre-empt them.  Widening it to call
+    `_check_canonical_item` would report rule 2 where `decode_manifest`
+    reports the repeat -- introducing, in the other direction, exactly the
+    divergence this function exists to remove.
+
+    Traversal comes from `_scan_item`'s visitor rather than a second copy of
+    it, so indefinite-length forms -- which this walk must SCAN THROUGH
+    without rejecting, for the reason above -- are handled by the one
+    implementation that already gets them right.
+
+    Raises `NonCanonicalItem` with rule 4; returns `None` on a clean body.
+    """
+
+    def _check(b: bytes, off: int) -> None:
+        major, ai, _, _ = _decode_head(b, off)
+        if major == 6:
+            raise NonCanonicalItem(4, f"CBOR tag at offset {off}")
+        if major == 7 and ai in (25, 26, 27):   # float16 / float32 / float64
+            raise NonCanonicalItem(4, f"float at offset {off}")
+
+    _scan_item(buf, pos, _check)
 
 
 def _scan_map_entries(

@@ -18,7 +18,13 @@ from conformance_lib.codec.manifest_encode import py_encode_manifest
 from conformance_lib.codec.array_uniqueness import first_repeated_value
 from conformance_lib.codec.manifest_schema import BLOCK_ENTRY_KNOWN_KEYS, BLOCK_ENTRY_REQUIRED_KEYS, BLOCK_FINGERPRINT_LEN, KDF_PARAMS_KNOWN_KEYS, KDF_PARAMS_REQUIRED_KEYS, MANIFEST_KNOWN_KEYS, MANIFEST_REQUIRED_KEYS, MANIFEST_VERSION_V1, SALT_LEN, TRASH_ENTRY_KNOWN_KEYS, TRASH_ENTRY_REQUIRED_KEYS, UUID_LEN, VECTOR_CLOCK_ENTRY_KNOWN_KEYS, VECTOR_CLOCK_ENTRY_REQUIRED_KEYS, _decode_manifest_array, _decode_strict_array, _decode_strict_entry_map
 from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
-from conformance_lib.codec.scanner import _check_canonical_item, _decode_head, _scan_map_entries
+from conformance_lib.codec.scanner import (
+    DuplicateMapKey,
+    _check_canonical_item,
+    _decode_head,
+    _scan_map_entries,
+    reject_floats_and_tags,
+)
 from conformance_lib.constants import FORMAT_VERSION, SUITE_ID
 
 class ArraySortOrderViolation(ValueError):
@@ -123,6 +129,23 @@ def py_decode_manifest(data: bytes) -> dict:
     """
     import cbor2
 
+    # §6.2 rule 4 over the WHOLE body, BEFORE any key is interpreted --
+    # §4.2's precedence paragraph (#618), and a byte-for-byte mirror of
+    # `decode_manifest`'s own `reject_floats_and_tags` call, which sits
+    # between the parse and `parse_manifest_map` for the same reason.
+    #
+    # It has to be a separate walk rather than the per-value
+    # `_check_canonical_item` calls below. Those run INSIDE the entry loop,
+    # so for a repeated key they never reach the second copy: the duplicate
+    # check raises first. That made this reader report the repeat where
+    # `decode_manifest` reported the float -- both rejecting, neither
+    # interoperable. `manifest_precedence_kat.json`'s `top__float` and
+    # `top__tag` rows are the two that measured it; the nested rows already
+    # agreed, because a nested float is inside the top-level VALUE that the
+    # loop's `_check_canonical_item` recurses into before any nested parser
+    # sees its own repeat.
+    reject_floats_and_tags(data)
+
     entries, end = _scan_map_entries(data, 0)
     if end != len(data):
         raise ValueError(f"trailing bytes after manifest map: {len(data) - end}")
@@ -137,7 +160,7 @@ def py_decode_manifest(data: bytes) -> dict:
             raise ValueError(f"manifest map key at offset {ks} is not a text string")
         key = cbor2.loads(data[ks:ke])
         if key in seen:
-            raise ValueError(f"duplicate manifest key: {key!r}")
+            raise DuplicateMapKey("manifest", key)
         seen.add(key)
 
         # Rules 2/3/4 apply to every value, known or unknown.

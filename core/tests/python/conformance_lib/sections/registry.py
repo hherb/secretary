@@ -49,6 +49,9 @@ from conformance_lib.sections.manifest_canonicality_cause import (
 from conformance_lib.sections.manifest_canonicality_kat import (
     section_manifest_canonicality_kat,
 )
+from conformance_lib.sections.manifest_precedence_kat import (
+    section_manifest_precedence_kat,
+)
 from conformance_lib.sections.manifest_sentinel_writer import (
     section_manifest_sentinel_writer,
 )
@@ -147,6 +150,8 @@ SECTIONS: tuple[Section, ...] = (
             " (#594, #600)", section_manifest_uniqueness_kat),
     Section("MSN", "manifest §4.2 v1 sentinel writer-half enforcement",
             " (#587)", section_manifest_sentinel_writer),
+    Section("MPR", "manifest §4.2 rejection-precedence cross-language replay",
+            " (#618)", section_manifest_precedence_kat),
     Section("RC", "record unknown-subtree canonicality, both nesting levels",
             " (#592)", section_record_unknown_subtree_canonicality),
     Section("DET", "required-key rejection determinism across hash seeds",
