@@ -1,1 +1,1 @@
-docs/handoffs/2026-09-08-manifest-sentinel-shipped.md
+docs/handoffs/2026-09-09-rejection-precedence-shipped.md
