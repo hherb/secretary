@@ -214,14 +214,26 @@ nothing in the body to point at (#590), and Python's `NonCanonicalBody` is the
 same outcome reached the other way. Naming it `rule1` would assert a
 classification neither implementation performed.
 
-**`manifest_file`'s Python side is uniformly `ParseError`, measured.** Python
+**`manifest_file` is NOT token-compared, and the reason is measured.** Python
 *does* have a manifest-file decoder (`py_decode_manifest_file` over
 `wire/envelopes.py::parse_manifest_file`), and every rejection it can produce is
-a `ParseError` — verified by execution on a truncated seed
-(`"truncated reading manifest.created_at_ms"`) and a bad-magic seed
-(`"manifest bad magic 0x58585858"`). Rust's eight container variants all map to
-`container_malformed`, so the two agree at that granularity, and refining Rust's
-side finer would manufacture a divergence Python has no way to match.
+a single `ParseError` class — verified by execution on a truncated seed, a
+bad-magic seed and a bad-`format_version` seed. Rust's eight container variants
+map to `container_malformed` and agree, but `header.rs` also raises
+`UnsupportedFormatVersion` / `UnsupportedSuiteId`, which map to
+`unsupported_version`. Measured on one file with `format_version = 0x0099`:
+
+| | reports | token |
+|---|---|---|
+| Rust | `UnsupportedFormatVersion(153)` | `unsupported_version` |
+| Python | `ParseError("manifest format_version 0x0099")` | `container_malformed` |
+
+**The mapping cannot fix this.** `UnsupportedFormatVersion` is the same variant
+the *body* sentinel check raises, so a per-variant token cannot tell header-level
+from body-level; and `ParseError` is one class shared by every target's wire
+decoder, so refining it means either message matching — which this repo's
+recorded lessons forbid — or a typed wire-error hierarchy touching all seven
+targets. See §5.1.
 
 The `n/a` rows are Rust-only because they arise inside the crate's own encode and
 signature paths, which Python's diff-replay arms never reach.
@@ -280,12 +292,24 @@ rather than silently defaulting to the loose behaviour. This is the same
 "coverage checked against the manifest" treatment `check-secret-slot-hygiene.sh`
 gives its scan roots.
 
-- **Token-compared:** `manifest_body`, `manifest_file`. They share one error
-  enum, so the Rust mapping is written once.
+- **Token-compared:** `manifest_body`, and only that.
 - **Not token-compared:** `vault_toml`, `record`, `contact_card`, `bundle_file`,
-  `block_file`. Each needs its own Rust taxonomy and a typed Python exception
-  hierarchy for its decoder. `vault_toml` is crash-only and its token would be
-  near-meaningless. An issue is filed for widening.
+  `block_file`, `manifest_file` — six of the seven. The first five each need
+  their own Rust taxonomy and a typed Python exception hierarchy for their
+  decoder, and `vault_toml` is crash-only so its token would be near-meaningless.
+  `manifest_file` is blocked for the different, measured reason in §4.3 (**#640**):
+  its two decoders have incompatible error granularity that no mapping can
+  reconcile. It
+  costs nothing today — the target has ONE seed and that seed accepts — so the
+  target contributes no evidence either way. Two issues are filed: **#641** for the
+  five, **#640** for `manifest_file`'s granularity mismatch.
+
+**This reverses an earlier scoping decision, deliberately.** `manifest_file` was
+included on the argument that it shares the Rust enum and is therefore nearly
+free. Measurement falsified that: sharing an enum is not sharing a granularity.
+The `RuleToken` mapping still covers every `ManifestError` variant exhaustively,
+including the file-level ones, because the match must be total for the compiler
+to enforce classification — those tokens simply never reach a comparison.
 
 ### 5.2 The rule
 
@@ -390,8 +414,9 @@ Every new file is designed as a directory module where it would otherwise pass
   rather than removing it. A divergence inside a tolerated pair remains
   invisible to the harness — by design, and now stated in `docs/` rather than
   implied by a comment.
-- **It does not cover five of the seven targets.** That is recorded in the
-  classification table and filed, not left to inference.
+- **It does not cover six of the seven targets.** That is recorded in the
+  classification table and filed, not left to inference. `manifest_file` is
+  excluded for a measured structural reason (§4.3), not merely for effort.
 - **It does not close #635.** The Rust mapping lives inside the crate precisely
   to work around `pub(crate)`; the integration-test corpora that assert only a
   variant FAMILY are untouched.
@@ -399,7 +424,7 @@ Every new file is designed as a directory module where it would otherwise pass
   eight `manifest_file` variants. Refining it later is additive; over-refining it
   now creates distinctions both languages must maintain with no divergence to
   catch.
-- **`manifest_file` contributes almost nothing today.** Its corpus is a single
-  seed and that seed accepts, so the target's token comparison is exercised only
-  by inputs a future fuzz run produces. It is included because it shares the Rust
-  enum, not because it carries evidence.
+- **The Rust mapping's file-level arms are never exercised by a comparison.**
+  They exist so the exhaustive match compiles and so a new file-level variant is
+  still forced through classification. Do not read a `container_malformed` arm as
+  a claim that anything checks it cross-language.
