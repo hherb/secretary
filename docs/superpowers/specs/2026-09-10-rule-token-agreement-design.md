@@ -233,14 +233,40 @@ reads `getattr(exc, "token", None)`, so `ManifestRejection` subclasses,
 `ParseError` is shared with every other target's wire decoder and must not be
 reparented.
 
-### 4.4 One open item, to be settled against the code during implementation
+### 4.4 Trailing bytes: measured, and it decides a vocabulary rule
 
-Python raises `"trailing bytes after manifest map"`, and Rust's `TrailingBytes`
-is a manifest-*file* variant. Whether `decode_manifest` rejects a body with
-trailing bytes at all — and under which variant — is unresolved here and must be
-measured, not assumed, before the mapping is finalised. If it turns out the two
-disagree on acceptance rather than on which rule, that is a genuine bug this
-slice surfaces and the finding is reported rather than papered over.
+The spec draft left this open. It is now measured, on identical bytes (the
+`top__control_canonical` seed with one `0x00` appended):
+
+| | reports |
+|---|---|
+| Rust `decode_manifest` | `NonCanonicalEncoding { cause: Unclassified, at: None }` |
+| `py_decode_manifest` | `ValueError("trailing bytes after manifest map: 1")` |
+
+Both reject, so this is not an acceptance divergence. It is a **granularity**
+divergence, and it is structural rather than incidental: `from_reader_with_buffer`
+reads one item and performs no EOF check, so Rust's parse discards the trailing
+byte before the §4.3 step-4 comparison ever runs. That comparison then sees only
+"the re-encoded value is shorter than the input" and `classify_non_canonical`
+finds nothing in the body to point at. **Rust cannot distinguish trailing bytes
+from any other re-encode divergence**, however the mapping is written.
+
+So `trailing_bytes` is deliberately **not** a token, and Python's raise carries
+`non_canonical_unclassified`. That is coarsening, which §4 already sanctions
+(`container_malformed` merges eight Rust variants), not a lie: the token's
+meaning is *"the input is not the canonical encoding of the value this reader
+parsed, with no finer classification the two implementations agree on"*, which
+is true of both sides. Python's `detail` still carries its specific message, so
+no diagnostic quality is lost to a human reader.
+
+**This is NOT the #621 pattern and must not be swept into §3's widened
+sentence.** #621 is about the ORDER in which two rules are reported; this is one
+fact that one reader can name and the other cannot. Declaring it
+phase-dependent would invent a spec sentence to describe a granularity limit.
+
+**The generalisable rule this produced:** a token may only draw a distinction
+BOTH implementations can actually make. Where one is structurally blind, the
+token coarsens to what they share.
 
 ---
 
