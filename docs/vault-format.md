@@ -394,6 +394,48 @@ which no reader gets from the re-encode (see the rule-4 row above: a
 normalising parse preserves a tag or a float and re-encodes it identically,
 so every reader enforces rule 4 by a separate whole-body walk).
 
+
+**Which rule a reader reports when a body breaks more than one.** A manifest
+body can violate several rules at once, and a reader rejects it either way —
+so this is an interoperability requirement, not a safety one. Two orderings
+are fixed, and a conformant reader MUST follow both:
+
+1. **crypto-design §6.2 rule 4 outranks the repeated-key rule and every check
+   below it.** The tag/float walk the table above requires covers the whole
+   body and MUST complete before any key is interpreted, so a body containing
+   a tag or a float anywhere is reported as a rule-4 violation even when it
+   also repeats a map key or carries a value of the wrong type.
+
+   Both orderings here presuppose a body that is **well-formed CBOR**. A
+   reader must first be able to determine the body's item boundaries, and one
+   that cannot — a truncated head, a length that overruns the buffer, a text
+   string that is not valid UTF-8, a major-7 value outside `false`/`true`/
+   `null` — reports that instead, whatever else the body also breaks. This is
+   not a further precedence rule so much as the precondition for applying
+   either of these two: a reader that cannot parse the body cannot locate the
+   tag it would otherwise report. Read "every rule below" as scoped to §6.2's
+   numbered rules and to this section's schema checks.
+2. **A repeated map key outranks the type, range and version checks on that
+   key's value.** A reader that finds a key it has already seen MUST report the
+   repeat *without interpreting the second copy*. So a key repeated with a
+   second copy that is malformed for its declared type — a text string where
+   this section requires a byte string, say — is reported as a repeat, never as
+   a type error. Readers that check a slot's vacancy only after parsing the
+   value it holds get this backwards.
+
+**The order of §6.2 rules 1, 2 and 3 against those two is deliberately
+unspecified**, and the reason is architectural rather than an omission. This
+section admits two reader designs, and each necessarily detects those three
+rules at a different point: a reader whose parse normalises encoding-level
+choices can only detect them at the §4.3 step-4 re-encode, which runs *after*
+interpretation, while a byte-retaining reader must detect them during its scan,
+*before* it. Fixing an order between them and the two rules above would outlaw
+one design or the other. A body that breaks one of rules 1-3 *and* one of the
+two above may therefore be reported as either, and an implementation MUST NOT
+rely on which. Rule 4 is not in this category precisely because no reader gets
+it from the re-encode: both designs enforce it by the separate walk, so both
+can be required to run that walk first.
+
 `kdf_params` is duplicated here (also in `vault.toml`) so the manifest signature attests to them. A modified `vault.toml` cannot trick a reader into deriving a wrong `master_kek` without also producing an invalid manifest signature.
 
 ### 4.3 Reading the manifest

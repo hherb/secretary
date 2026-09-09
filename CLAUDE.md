@@ -245,10 +245,11 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 136, over a **62**-file package whose largest module is
-`sections/manifest_canonicality_cause.py` at **472** lines, ahead of
-`sections/required_key_determinism.py` at 390, `merge/records.py` at 383 and
-`codec/manifest_decode.py` at 382. The top slot changed hands twice inside
+was 6849 lines; it is now 136, over a **63**-file package whose largest module is
+`sections/manifest_canonicality_cause.py` at **486** lines, ahead of
+`codec/scanner.py` at 468, `codec/manifest_decode.py` at 405,
+`sections/required_key_determinism.py` at 390 and `merge/records.py` at 383.
+The top slot changed hands twice inside
 #613 alone — 388 at the first pass, 472 after the review round — so treat any
 ordering here as stale on sight (52 files at the #593 split;
 #594 added
@@ -257,10 +258,21 @@ fourth; #600 added `codec/array_uniqueness.py`, and its review round
 `sections/manifest_uniqueness_writer.py`; #604 added
 `sections/manifest_canonicality_cause.py`; #613 added
 `sections/manifest_canonicality_corpus.py`; #587 added
-`sections/manifest_sentinel_writer.py`). Re-measured after #613's review
-round, which grew `manifest_canonicality_cause.py` 300 → 388 → 472 (two new
-floors and a rewritten driver docstring) and `codec/manifest_decode.py`
-309 → 382. `sections/manifest_uniqueness_kat.py` — 425 lines and top of the
+`sections/manifest_sentinel_writer.py`; #618 added
+`sections/manifest_precedence_kat.py`). Re-measured at #618, which put TWO
+`codec/` modules into the top five for the first time — `scanner.py`
+344 → 468 (the `_scan_item` visitor, `DuplicateMapKey`, and the shared
+rule-4 predicate) and `manifest_decode.py` 382 → 405 (the rule-4 pre-pass) —
+displacing `required_key_determinism.py` and `merge/records.py` by two places
+each without either changing at all. **Beware the neighbouring-number
+copy:** #618's first pass wrote `scanner.py` as "382 → 441", taking 382 from
+`manifest_decode.py`'s before-figure on the very next line; the real
+before-figure is 344, so it recorded +59 for a +124 change. It also claimed
+the file count "was stale by one … #587 left 61", which is false in both
+halves — the merge-base said 62 and the merge-base tree held 62. Both were
+caught in review by re-running `wc -l` and `git show <merge-base>:`, which
+is the only way any number in this paragraph should be written.
+`sections/manifest_uniqueness_kat.py` — 425 lines and top of the
 list at #600 — is 340, no longer in the top six at all. A rank stated where
 there is a near-tie is how the next measurement reads as drift.
 
@@ -308,7 +320,9 @@ after a while: not one rule with a gap, seven independent copies of which three
 were wrong. Only the
 `detail` text moved (`status` / `error_class` were stable, and
 `differential_replay.rs` scores reject-vs-reject as agreement without comparing
-`detail`), so no gate was flaky; what it cost was a byte-exact `--diff-replay`
+`detail` — tracked as **#634** since #618 closed, and the reason a WHICH-rule
+divergence between the two implementations is invisible to the one harness
+that exists for cross-language decoder agreement), so no gate was flaky; what it cost was a byte-exact `--diff-replay`
 baseline, which needs `PYTHONHASHSEED` pinned — a trap for the one task that
 wants such a baseline, proving a refactor changed nothing. All seven sites now
 route through `codec/required_keys.py`'s `first_missing_key_in_sorted_order`,
@@ -712,7 +726,128 @@ out — it has been wrong twice:
   `sections/manifest_canonicality_corpus.py`, so MCK and MCC cannot drift
   onto two ideas of which rows the fixture holds. It defines no
   `section*` driver, so Section REG discovers it and reports the full count
-  (26/26 at #613; **27/27** since #587 added Section MSN).
+  (26/26 at #613; 27/27 after #587's Section MSN; **28/28** since #618
+  added Section MPR).
+
+**WHICH rule a rejecting reader names is now normative, and getting there
+found a live divergence (#618).** A body can break several rules at once;
+both implementations reject it either way, so this is interoperability,
+not safety. vault-format §4.2 now fixes two orderings and deliberately
+refuses to fix a third. Four things about it:
+
+- **Rule 4 outranks the repeated-key rule and the checks below it, and
+  that half was genuinely broken.** Not "everything": the bullet two
+  below leaves §6.2 rules 1-3 unordered against it, so the loose
+  phrasing contradicts this list's own third entry, and a clean-room
+  implementer reading it as absolute implements a precedence §4.2
+  declines to fix.
+  `decode_manifest` runs `reject_floats_and_tags` over the whole tree at
+  `decode/mod.rs:131`, six lines before `parse_manifest_map`, so a float or
+  tag anywhere wins. `conformance.py` checked rule 4 **per value inside its
+  entry loop**, which the duplicate check pre-empts — so for a repeated key
+  whose second copy was a float, Rust said rule 4 and Python said "duplicate".
+  Closed by `codec/scanner.py`'s new `reject_floats_and_tags`, built on a
+  `_scan_item` **visitor** rather than a second copy of that traversal.
+- **A repeated key outranks the type checks on its own value**, and a reader
+  must report it *without interpreting the second copy* — #589's `Once::set`
+  closure, restated as a spec obligation. Python agreed only BY
+  CONSTRUCTION (`_validate_manifest_shape` runs after the entry loop); it is
+  now pinned.
+- **§6.2 rules 1-3 are UNSPECIFIED against those two, and that is
+  architectural.** A normalising reader can only see them at the §4.3 step-4
+  re-encode — after interpretation; a byte-retaining reader must see them
+  during its scan — before it. Measured: one body, Rust says the repeat,
+  Python says rule 3, both conformant. Rule 4 escapes this only because
+  NEITHER design gets it from the re-encode, so both can be made to walk
+  first. **The generalisable test**: a rule both architectures see outside
+  the re-encode can be ordered; one only a byte-retaining reader sees early
+  cannot. #621 is the same shape and its comment carries the measurement.
+- **A CROSS-LANGUAGE ROW MUST NOT PIN AN UNSPECIFIED ORDER, and #618's
+  first pass shipped one that did.** The pre-pass is rule 4 ONLY — widening
+  it to `_check_canonical_item` (rules 2+3+4) reintroduces the divergence in
+  the other direction, and left the entire verifier green when measured. To
+  red that, the corpus gained a `top__non_shortest` row requiring the REPEAT
+  for a body breaking rule 3 *and* rule 5. But that pairing is exactly what
+  the bullet above says has two correct answers: a conformant byte-retaining
+  reader reports rule 3 and failed the row. Measured both ways — the widened
+  reader reds precisely that row, 25 others green. **The scope is a property
+  of one implementation, not of `docs/`**, so it belongs in a local
+  assertion: Section **CS** now calls `reject_floats_and_tags` directly and
+  requires it to return cleanly for a rule-2 or rule-3 body, and to reject
+  tags and floats — including in a map KEY position, which nothing pinned
+  before. That is a sharper pin than the row and claims nothing of anyone
+  else's reader. **Generalise it:** before adding a corpus row, check that
+  `docs/` actually requires its answer of every conformant reader; a row is
+  the wrong instrument for an invariant only your own implementation owes.
+
+The corpus is **31 rows over seven levels and six maps** (`Top` and
+`TopVersion` are the same map, differing only in the key they repeat),
+replayed by `core/tests/manifest_precedence_kat.rs` and Section **MPR**.
+Numbers here have moved once already — re-measure. Four things worth knowing:
+
+- **All THREE checks §4.2's second ordering names have a row.** `wrong_type`,
+  `out_of_range` (a `u32` field given 2^40) and `bad_version`
+  (`manifest_version` given 7). #618's first pass enumerated the type check
+  alone, leaving range and version agreeing across the two implementations
+  BY CONSTRUCTION — the state the corpus exists to replace, restated one
+  level down. The two extra rows sit outside the level product because each
+  needs a key the other levels lack.
+- **Nested repeats are planted at BOTH array ends** — `vector_clock[0]` and
+  `trash[0]` against `blocks[1]` and `blocks[1].vector_clock_summary[1]`.
+  Planting only in element 1 catches an element-0-scoped reader and leaves
+  the `skip(1)` MIRROR conformant, which is the half #608's review actually
+  measured. #618's first pass planted only at 1 while its docstring claimed
+  the lesson was applied; a reader skipping element 0's duplicate check
+  scored 31/31. `Level::elem` owns the assignment and
+  `both_array_ends_are_planted` reds a collapse onto either end.
+- **The fixture is checked against the CASE TABLE, not only against the
+  decoder.** `every_row_matches_the_case_table` asserts every column against
+  `Case::{expect,field,map_label}` and `PlantedBody::dup_index`. Without it
+  those methods were reachable only from the `#[ignore]`d generator, so no
+  test under `cargo test` consulted the file that states what §4.2 requires
+  — a decoder change plus a regenerated fixture would simply have become the
+  new contract. The same assertion `manifest_canonicality_kat.rs` makes for
+  `expect_cause`, and for the reason its comment gives.
+- **The `map` column is Python-only, the mirror of `dup_index` being
+  Rust-only.** `ManifestError::DuplicateKey` carries no map name, so the Rust
+  replay checks that column against the table and never against a verdict;
+  Section MPR asserts it against `DuplicateMapKey.label`. It exists because
+  `_LEVEL_KEYS` is MANY-TO-ONE — `block`/`trash` repeat `block_uuid`,
+  `vector_clock`/`block_summary` repeat `counter` — so before it, four levels
+  were mutually interchangeable on the clean-room side and a `block__`↔
+  `trash__` body swap needed no column edit to pass. Neither column
+  identifies a level alone; the PAIR does, which
+  `every_level_is_identified_by_its_map_and_key` pins.
+
+Two structured discriminators do the work (`codec/scanner.py`'s new
+`DuplicateMapKey`, beside `NonCanonicalItem` and for its reason), never
+message text; MPR additionally REJECTS `ENCODER_REFUSAL_PREFIX`, so the
+writer can never answer for the reader, and enforces a row-shape validator
+plus a **body-distinctness floor** borrowed from
+`manifest_canonicality_corpus.body_issues` — without which the reader half
+passed with all 14 rule-4 bodies collapsed onto one, and passed a fixture
+carrying the verbatim pre-#618 defect. A malformed row now yields a `FAIL:`
+line rather than a `KeyError` out of `main()` that would skip RC, DET and
+REG.
+**One limit, shared with the canonicality corpus and tracked as #635:**
+`vault::canonical` is `pub(crate)`, so an integration test cannot name
+`CanonicalError::{FloatRejected,TagRejected}` and both corpora assert the
+`ManifestError::Canonical(_)` FAMILY instead — which is why MPR's `expect`
+vocabulary has one `rule4` word and not two, and why
+`every_row_body_matches_the_case_its_label_names` is the SOLE Rust-side
+discriminator between a float row and a tag row.
+
+**#618 also cost a PRE-EXISTING section a detection, which is #631's
+generalisation landing on the very next slice.** `reject_floats_and_tags`
+runs on the manifest path ahead of the per-value `_check_canonical_item`, so
+for the canonicality corpus's three `*__rule4_float` rows it now answers
+where that per-value check used to. Measured: deleting
+`_check_canonical_item`'s rule-4 arm reds Sections CS **and** MCC at the
+merge-base, and only CS after. Nothing is unpinned tree-wide, but Section CS
+is now the SOLE pin for that arm on the manifest path, and MCC's own
+docstring is the only place that says so. The two rule-4 raise sites are
+also now ONE shared `_reject_rule4_head`, since a masked copy is how the two
+would drift unnoticed.
 
 **The residual, stated exactly, because the obvious wider claim is false.**
 Inside a forward-compat `unknown` subtree the check misses **duplicate map

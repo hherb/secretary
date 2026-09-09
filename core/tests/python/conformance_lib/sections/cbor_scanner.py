@@ -7,10 +7,12 @@ forward-compat `unknown` subtree path depends on.
 from __future__ import annotations
 
 from conformance_lib.codec.scanner import (
+    DuplicateMapKey,
     NonCanonicalItem,
     _check_canonical_item,
     _scan_item,
     _scan_map_entries,
+    reject_floats_and_tags,
 )
 
 def section_cbor_scanner_units() -> tuple[bool, list[str]]:
@@ -69,12 +71,65 @@ def section_cbor_scanner_units() -> tuple[bool, list[str]]:
     # Dropping the base aborts the whole run at this section with a raw
     # traceback and no `FAIL:` line, taking all 14 later sections with it --
     # MCK, MCC, MUQ, RC, DET and REG among them (#614 review).
-    if not issubclass(NonCanonicalItem, ValueError):
-        issues.append(
-            "NonCanonicalItem must subclass ValueError -- conformance_lib.rejection's "
-            "allowlist and diff_replay's reject/error split both key on it, so losing "
-            "the base reclassifies every scanner rejection as a harness failure"
-        )
+    # Swept over BOTH structured discriminators this module defines, not just
+    # the one that had the test: the argument for asserting one type's base
+    # applies verbatim to its sibling, and the reviewer who checks only the
+    # direction the author tested finds nothing (#589's generalisation).
+    for cls in (NonCanonicalItem, DuplicateMapKey):
+        if not issubclass(cls, ValueError):
+            issues.append(
+                f"{cls.__name__} must subclass ValueError -- conformance_lib.rejection's "
+                "allowlist and diff_replay's reject/error split both key on it, so losing "
+                "the base reclassifies every scanner rejection as a harness failure"
+            )
+
+    # --- `reject_floats_and_tags` is §6.2 rule 4 ONLY, and that scope is
+    # --- load-bearing rather than incidental.
+    #
+    # §4.2 orders rule 4 ahead of the repeated-key rule because BOTH reader
+    # architectures it admits enforce rule 4 by a walk of this kind, outside
+    # the §4.3 step-4 re-encode. Rules 2 and 3 are the opposite case, so §4.2
+    # leaves their order against rules 4 and 5 UNSPECIFIED -- and a walk that
+    # folded them in would report rule 2 or 3 where `decode_manifest` reports
+    # the repeat, introducing in the other direction exactly the divergence
+    # this function exists to remove.
+    #
+    # This is the pin the `top__non_shortest` corpus row used to be. That row
+    # required every reader to report the repeat for a body breaking rule 3
+    # AND rule 5, which §4.2 says "may be reported as either" -- so it failed
+    # a conformant byte-retaining reader. The scope is a property of THIS
+    # implementation, so it belongs in a local assertion (#618 review).
+    for label, raw in [
+        # {"a": 1} with a non-shortest-form head on the value (rule 3).
+        ("rule 3 non-shortest head", bytes([0xA1, 0x61, 0x61, 0x18, 0x01])),
+        # {"a": _"x"} -- an indefinite-length text string (rule 2).
+        ("rule 2 indefinite string", bytes([0xA1, 0x61, 0x61, 0x7F, 0x61, 0x78, 0xFF])),
+        # An indefinite-length map, which the walk must scan THROUGH.
+        ("rule 2 indefinite map", bytes([0xBF, 0x61, 0x61, 0x01, 0xFF])),
+    ]:
+        try:
+            reject_floats_and_tags(raw)
+        except NonCanonicalItem as e:
+            issues.append(
+                f"reject_floats_and_tags is rule-4 ONLY, but {label} was rejected as "
+                f"rule {e.rule}: folding rules 2 and 3 into this walk reports them "
+                f"where §4.2 requires the repeat, an ordering §4.2 leaves unspecified"
+            )
+
+    # The positive direction, so the three cases above cannot pass by the walk
+    # having stopped checking anything at all.
+    for label, raw in [
+        ("float in a value", bytes([0xA1, 0x61, 0x61, 0xF9, 0x43, 0x00])),
+        ("tag in a value", bytes([0xA1, 0x61, 0x61, 0xC1, 0x01])),
+        ("float in a KEY", bytes([0xA1, 0xF9, 0x43, 0x00, 0x01])),
+        ("tag nested in an array", bytes([0xA1, 0x61, 0x61, 0x81, 0xC1, 0x01])),
+    ]:
+        try:
+            reject_floats_and_tags(raw)
+            issues.append(f"reject_floats_and_tags must reject a {label} as rule 4")
+        except NonCanonicalItem as e:
+            if e.rule != 4:
+                issues.append(f"{label}: reported rule {e.rule}, expected 4")
 
     # --- THE point: duplicates and wire order survive the scan
     dup = bytes([0xA2, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02])   # {"a":1,"a":2}

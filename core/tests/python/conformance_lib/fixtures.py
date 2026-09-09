@@ -71,6 +71,10 @@ def manifest_uniqueness_kat_path() -> Path:
     return test_data_dir() / "manifest_uniqueness_kat.json"
 
 
+def manifest_precedence_kat_path() -> Path:
+    return test_data_dir() / "manifest_precedence_kat.json"
+
+
 def manifest_body_seed(name: str) -> Path:
     """One committed `cargo-fuzz` seed from `core/fuzz/seeds/manifest_body/`.
 

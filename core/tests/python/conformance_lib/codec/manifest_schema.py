@@ -12,7 +12,13 @@ from __future__ import annotations
 from typing import Any
 
 from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
-from conformance_lib.codec.scanner import _check_canonical_item, _decode_head, _scan_array_items, _scan_map_entries
+from conformance_lib.codec.scanner import (
+    DuplicateMapKey,
+    _check_canonical_item,
+    _decode_head,
+    _scan_array_items,
+    _scan_map_entries,
+)
 
 # ---------------------------------------------------------------------------
 # §4.2/§4.3 manifest BODY decoder/encoder (#585)
@@ -146,7 +152,7 @@ def _decode_strict_entry_map(
                 f"{label} has no forward-compat bag -- unrecognised key {key!r}"
             )
         if key in out:
-            raise ValueError(f"duplicate {label} key: {key!r}")
+            raise DuplicateMapKey(label, key)
 
         _check_canonical_item(data, vs)
 
@@ -238,7 +244,7 @@ def _decode_manifest_entry_map(
             raise ValueError(f"{label} entry map key at offset {ks} is not a text string")
         key = cbor2.loads(data[ks:ke])
         if key in seen:
-            raise ValueError(f"duplicate {label} entry key: {key!r}")
+            raise DuplicateMapKey(f"{label} entry", key)
         seen.add(key)
 
         _check_canonical_item(data, vs)
