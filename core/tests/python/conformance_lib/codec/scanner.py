@@ -125,9 +125,12 @@ class DuplicateMapKey(ValueError):
     composed message, which this `__init__` cannot be reconstructed from.
 
     Subclasses `ValueError` deliberately: `conformance_lib.rejection`'s
-    allowlist and `diff_replay.py`'s reject-vs-error split both key on
-    that base, so every existing caller keeps scoring these as a verdict
-    rather than as a harness failure.
+    `_REJECTION_EXCEPTIONS` allowlist keys on that base, and `diff_replay.py`
+    imports that same tuple rather than listing its own -- one allowlist with
+    two consumers, not two independent checks -- so every existing caller
+    keeps scoring these as a verdict rather than as a harness failure.
+    Section CS asserts the base class for this type and `NonCanonicalItem`
+    alike; losing it aborts the run with a traceback and no `FAIL:` line.
     """
 
     def __init__(self, label: str, key: str) -> None:
@@ -254,6 +257,22 @@ def _scan_item(buf: bytes, pos: int, visit: Callable[[bytes, int], None] | None 
     raise ValueError(f"unreachable CBOR major type {major}")
 
 
+def _reject_rule4_head(major: int, ai: int, off: int) -> None:
+    """Raise if a decoded CBOR head is a tag or a float (§6.2 rule 4).
+
+    ONE implementation, called by `reject_floats_and_tags`'s whole-body walk
+    and by `_check_canonical_item`'s per-value check. They apply the rule at
+    different times and for different reasons, but it is the same rule, and
+    two hand-copies of it in one file are how the two drift -- the more so
+    now that the walk runs first on the manifest path and would mask a
+    divergence in the per-value copy.
+    """
+    if major == 6:
+        raise NonCanonicalItem(4, f"CBOR tag at offset {off}")
+    if major == 7 and ai in (25, 26, 27):   # float16 / float32 / float64
+        raise NonCanonicalItem(4, f"float at offset {off}")
+
+
 def reject_floats_and_tags(buf: bytes, pos: int = 0) -> None:
     """Enforce crypto-design §6.2 rule 4 over the WHOLE body, before any key
     is interpreted (`docs/vault-format.md` §4.2's precedence paragraph, #618).
@@ -279,15 +298,22 @@ def reject_floats_and_tags(buf: bytes, pos: int = 0) -> None:
     without rejecting, for the reason above -- are handled by the one
     implementation that already gets them right.
 
-    Raises `NonCanonicalItem` with rule 4; returns `None` on a clean body.
+    Two failure exits, not one. It raises `NonCanonicalItem` with rule 4 for
+    a tag or a float, and it also PROPAGATES every structural `ValueError`
+    `_scan_item` / `_decode_head` raise -- truncation, a reserved
+    additional-info value, an unterminated indefinite item, a bad chunk.
+    Since this runs first on the manifest path, those errors now surface from
+    here rather than from `_scan_map_entries`; the messages are unchanged, so
+    no verdict moves. Returns `None` on a clean body.
+
+    Section CS pins the SCOPE in both directions: rules 2 and 3 must pass
+    through, tags and floats must be rejected as rule 4, including in a map
+    KEY position.
     """
 
     def _check(b: bytes, off: int) -> None:
         major, ai, _, _ = _decode_head(b, off)
-        if major == 6:
-            raise NonCanonicalItem(4, f"CBOR tag at offset {off}")
-        if major == 7 and ai in (25, 26, 27):   # float16 / float32 / float64
-            raise NonCanonicalItem(4, f"float at offset {off}")
+        _reject_rule4_head(major, ai, off)
 
     _scan_item(buf, pos, _check)
 
@@ -401,11 +427,12 @@ def _check_canonical_item(buf: bytes, pos: int) -> int:
     major, ai, arg, head = _decode_head(buf, pos)
     if ai == CBOR_AI_INDEFINITE:
         raise NonCanonicalItem(2, f"indefinite-length item at offset {pos}")
-    if major == 6:
-        raise NonCanonicalItem(4, f"CBOR tag at offset {pos}")
+    # §6.2 rule 4, through the shared predicate `reject_floats_and_tags`
+    # also calls. Placed exactly where the two hand-copied raises were: after
+    # the rule-2 check and before major 7's simple-value handling, so the
+    # order a body's rules are reported in does not move.
+    _reject_rule4_head(major, ai, pos)
     if major == 7:
-        if ai in (25, 26, 27):        # float16 / float32 / float64
-            raise NonCanonicalItem(4, f"float at offset {pos}")
         if ai > 24:
             # Unreachable: ai in (28, 29, 30) is rejected by `_decode_head`
             # itself (reserved additional-info), and ai == 31 is caught by

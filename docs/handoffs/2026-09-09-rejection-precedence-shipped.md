@@ -99,12 +99,14 @@ not. Python was already non-conformant with a sentence in the spec.
 - **`codec/scanner.py::DuplicateMapKey`** — a typed discriminator beside
   `NonCanonicalItem` and for its reason. Three raise sites converted,
   **message-preserving** (checked: no section matched those strings).
-- **`core/tests/data/manifest_precedence_kat.json`** — 26 rows, six maps.
+- **`core/tests/data/manifest_precedence_kat.json`** — 31 rows, seven levels
+  over six maps. A row for each of the three checks §4.2's ordering 2 names
+  (type, range, version), and nested repeats planted at BOTH array ends.
 - **`core/tests/manifest_precedence_kat.rs`** + a `_helpers/` directory
   (`cases` / `build` / `assert` / `generate`), designed as a directory module
   from the start rather than split later.
 - **Section MPR**, registered — REG **27 → 28**.
-- **4 tests added, 0 removed** (2138 → 2142), plus 1 `#[ignore]` generator.
+- **7 tests added, 0 removed** (2138 → 2145), plus 1 `#[ignore]` generator.
 
 ### Non-vacuity, by mutation
 
@@ -114,7 +116,7 @@ rather than poisoning the next one.
 | # | Mutation | Result |
 |---|---|---|
 | P1 | delete `conformance.py`'s rule-4 pre-pass | RED |
-| P2 | **widen the pre-pass to rules 2+3+4** | RED — *green before `top__non_shortest` existed* |
+| P2 | **widen the pre-pass to rules 2+3+4** | RED — Section CS, *green before that assertion existed* |
 | P3 | rule-4 walk stops rejecting TAGS | RED |
 | P4 | rule-4 walk visits only the ROOT item | RED |
 | P5 | duplicate check moved AFTER the value's canonicality check | RED — *false GREEN first, see §(4)* |
@@ -124,6 +126,12 @@ rather than poisoning the next one.
 | R2 | delete `decode_manifest`'s rule-4 walk | RED — KAT + `rejects_float_in_unknown_value` |
 | R3 | `DuplicateKey` names the FIRST occurrence's ordinal | RED — KAT + 6 lib tests |
 | R4 | five NESTED row bodies replaced by the top-level one | RED both languages — *Rust only, until §(4)'s fix* |
+| P8 | `block__`/`trash__` bodies swapped (their KEYS collide) | RED — needs the `map` column; passed without it |
+| P9 | all 14 `rule4` bodies collapsed onto one | RED — needs the body-distinctness floor |
+| P10 | a row's `map` column deleted | RED as a `FAIL:` line, REG still runs |
+| P11 | reader SKIPS array element 0's duplicate check | RED — 4 rows, needs the element-0 plants |
+| R5 | one row's `expect` hand-edited in the fixture | RED — `every_row_matches_the_case_table` |
+| R6 | `Level::elem` collapsed onto one array end | RED — `both_array_ends_are_planted` |
 
 **R1/R2 and P1 are the pair that matters**: neither implementation's
 precedence survives deleting the mechanism that produces it, in either language.
@@ -274,15 +282,48 @@ CLAUDE.md. Then I measured it: **widening the pre-pass to rules 2+3+4 left the
 ENTIRE verifier green, exit 0, zero FAIL lines.** Three prose statements, zero
 tests.
 
-`manifest_precedence_kat.json`'s `top__non_shortest` row exists solely to red
-that mutation. It is `Level::Top`-only **by the spec, not for convenience**: at a
-nested level the enclosing value's canonicality check fires first in a
-byte-retaining reader, which is exactly the ordering §4.2 declines to fix, so a
-nested row would assert something no conformant reader owes.
-
 **Generalise it:** when you write "this must not be widened, because X", the next
 action is to widen it and watch something red. If nothing does, the constraint is
 a comment.
+
+**And then generalise the fix, which the first pass got wrong.** I reached for a
+corpus ROW — `top__non_shortest`, pairing a repeat with a §6.2 rule-3 violation
+and requiring the repeat to be reported. It reds the mutation, and it is the
+wrong instrument: that pairing is precisely what the paragraph three sections up
+declares **unspecified**, so the row demanded of every reader an answer §4.2 says
+is theirs to choose. A conformant byte-retaining reader fails it. The review
+round moved the pin into Section **CS**, which calls `reject_floats_and_tags`
+directly and requires it to return cleanly for a rule-2 or rule-3 body — sharper,
+local, and claiming nothing of anyone else. **Before adding a corpus row, check
+that `docs/` actually requires its answer of every conformant reader.** A
+cross-language corpus is the wrong home for an invariant only your own
+implementation owes.
+
+### The finding the review round added: this slice REMOVED a detection
+
+`reject_floats_and_tags` runs on the manifest path ahead of the per-value
+`_check_canonical_item`. For the canonicality corpus's three `*__rule4_float`
+rows it therefore now answers where that per-value check used to — so Section
+**MCC** stopped being able to see the per-value arm disappear.
+
+Measured, differentially, which is the only way this class shows up:
+
+| tree | sections that red when `_check_canonical_item`'s rule-4 arm is deleted |
+|---|---|
+| merge-base | Section **CS** and Section **MCC** |
+| this branch | Section **CS** only |
+
+Nothing is unpinned tree-wide — CS's unit cases are a real pin — but CS is now
+the SOLE pin for that arm on the manifest path, and a future edit that weakens
+CS takes this cover with it silently. MCC's own docstring now says so, because
+a maintainer reading that section should not have to rediscover it.
+
+This is #631's generalisation landing on the very next slice: *applying a
+round-trip rule to the section you are writing is not applying it to the tree.*
+Section MPR's module doc claimed the backstop trap was "checked in both
+directions" — both checks were scoped to MPR's own rows. The two rule-4 raise
+sites are now one shared `_reject_rule4_head`, since a masked copy is exactly
+how the two would drift without anything noticing.
 
 ### The measurement trap this slice hit: a stale `.pyc` reported a false GREEN
 

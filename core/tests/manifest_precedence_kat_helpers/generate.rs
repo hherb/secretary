@@ -54,6 +54,12 @@ fn generate_manifest_precedence_kat() {
             "manifest_body_hex": hex::encode(&planted.bytes),
             "expect": expect.name(),
             "field": case.field(),
+            // Python-only, and the mirror of `dup_index` below:
+            // `ManifestError::DuplicateKey` carries no map name, so the
+            // Rust replay checks this column against the case table but
+            // never against a decoder verdict. Section MPR asserts it
+            // against `DuplicateMapKey.label`.
+            "map": case.map_label(),
             // Rust-only: `conformance.py` reports no ordinal, and §4.2
             // does not require one. Recorded so the Rust replay's
             // assertion is data-driven rather than recomputed.

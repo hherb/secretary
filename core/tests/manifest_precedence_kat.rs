@@ -25,6 +25,12 @@
 //! rules above would outlaw one of the two reader architectures §4.2
 //! itself admits.
 //!
+//! **So this corpus carries no row pairing a repeat with a rule 1-3
+//! violation**, and adding one would make it reject a conformant reader.
+//! An earlier revision did carry one; see `Shape`'s doc for what replaced
+//! it and why a local assertion pins that property better than a
+//! cross-language row could.
+//!
 //! # Why it is a corpus and not two unit tests
 //!
 //! Rust pinned point 2 from #589 onward (`Once::set` takes a closure so
@@ -39,7 +45,7 @@
 //! # Reading the fixture
 //!
 //! One row per `(map, second-copy shape)` pair plus one accept control.
-//! `expect` is a closed four-word vocabulary; `field` names the repeated
+//! `expect` is a closed three-word vocabulary; `field` names the repeated
 //! key on the rows that report one; `dup_index` is Rust-only, since §4.2
 //! requires no ordinal and `conformance.py` reports none.
 
@@ -157,6 +163,99 @@ fn every_row_body_matches_the_case_its_label_names() {
     }
 }
 
+/// Every column a row declares must be the one the CASE TABLE derives.
+///
+/// Without this the fixture is SELF-CERTIFYING: `manifest_precedence_kat_replays`
+/// checks the fixture against the decoder and `every_row_body_matches_the_case_
+/// its_label_names` checks its bytes, but nothing checked its EXPECTATION
+/// against `cases.rs` -- the file that states what §4.2 requires. A change to
+/// the decoder's precedence plus a regenerated fixture would simply become the
+/// new contract, and both languages would agree with the edit. Measured before
+/// this existed: `Case::expect` and `Case::field` were reachable only from the
+/// `#[ignore]`d generator, so no test running under `cargo test` consulted the
+/// table at all.
+///
+/// The same assertion `manifest_canonicality_kat.rs` makes for its
+/// `expect_cause` column, and for the reason its comment gives there.
+#[test]
+fn every_row_matches_the_case_table() {
+    let rows = rows();
+    for case in all_cases() {
+        let label = case.label();
+        let row = rows
+            .iter()
+            .find(|r| r["label"].as_str() == Some(label.as_str()))
+            .unwrap_or_else(|| panic!("no fixture row labelled {label}"));
+
+        let hand_edited = |column: &str| {
+            format!(
+                "row {label}: the fixture's `{column}` disagrees with the case table -- \
+                 the row was hand-edited, or the table changed without regenerating it"
+            )
+        };
+        assert_eq!(
+            row["expect"].as_str(),
+            Some(case.expect().name()),
+            "{}",
+            hand_edited("expect")
+        );
+        assert_eq!(
+            field_str(row, "field"),
+            case.field(),
+            "{}",
+            hand_edited("field")
+        );
+        assert_eq!(
+            field_str(row, "map"),
+            case.map_label(),
+            "{}",
+            hand_edited("map")
+        );
+        assert_eq!(
+            row["dup_index"].as_u64().map(|n| n as usize),
+            body_for(&case).dup_index,
+            "{}",
+            hand_edited("dup_index")
+        );
+    }
+}
+
+/// Nested repeats are planted at BOTH ends of their arrays.
+///
+/// #608's review measured that a corpus planting only in `blocks[1]` leaves
+/// `for block in blocks.iter().skip(1)` fully conformant -- the mirror image of
+/// the element-0-scoped reader that planting in element 1 does catch. A corpus
+/// that plants every nested repeat at one end covers one direction and reads as
+/// if it covered both.
+#[test]
+fn both_array_ends_are_planted() {
+    let planted: Vec<usize> = Level::ALL.iter().filter_map(|l| l.elem()).collect();
+    assert!(
+        planted.contains(&0) && planted.contains(&1),
+        "every nested level plants in element {planted:?}: a reader scoped to the \
+         other end of these arrays would be conformant against this corpus"
+    );
+}
+
+/// No two levels share BOTH the map they name and the key they repeat.
+///
+/// Neither column identifies a level alone -- `block` and `trash` repeat the
+/// same key, and the two top-level levels are the same map -- so it is the PAIR
+/// that has to be unique. Section MPR discriminates a row's level by exactly
+/// that pair, and a collision would make two levels' bodies interchangeable on
+/// the clean-room side.
+#[test]
+fn every_level_is_identified_by_its_map_and_key() {
+    let mut seen = std::collections::BTreeSet::new();
+    for level in Level::ALL {
+        assert!(
+            seen.insert((level.map_label(), level.key())),
+            "{level:?} shares its (map, key) pair with an earlier level, so Section \
+             MPR cannot tell their rows apart"
+        );
+    }
+}
+
 /// The corpus reaches every map the decoder parses and every shape the
 /// table declares.
 ///
@@ -183,18 +282,20 @@ fn the_corpus_covers_every_level_and_every_planted_shape() {
         "without the accept control, a reader that rejected every body would score \
          a perfect result"
     );
-    // Outside the product on purpose (see `Shape::NonShortest`), so
-    // `Shape::PLANTED` above does not require it and nothing else would
-    // notice it going missing.
-    assert!(
-        labels.contains(&"top__non_shortest"),
-        "the corpus has no top__non_shortest row: nothing then pins that the \
-         rule-4 walk is rule-4 ONLY, and folding rules 2 and 3 into it would \
-         report rule 3 where §4.2 requires the repeat"
-    );
+    // Outside the product on purpose (each needs a key the other levels
+    // lack), so `Shape::PLANTED` above does not require them and nothing
+    // else would notice one going missing.
+    for want in ["kdf_params__out_of_range", "top_version__bad_version"] {
+        assert!(
+            labels.contains(&want),
+            "the corpus has no row {want}: §4.2's second ordering names the type, \
+             RANGE and VERSION checks, and without this row that ordering is \
+             enumerated for the type check alone"
+        );
+    }
 }
 
-/// Each of the four `expect` words is exercised by at least one row.
+/// Each `expect` word is exercised by at least one row.
 ///
 /// Defence in depth against a table that compiles but reaches only part
 /// of its own vocabulary -- the gap #613 found in the canonicality

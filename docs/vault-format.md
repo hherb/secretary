@@ -400,11 +400,21 @@ body can violate several rules at once, and a reader rejects it either way —
 so this is an interoperability requirement, not a safety one. Two orderings
 are fixed, and a conformant reader MUST follow both:
 
-1. **crypto-design §6.2 rule 4 outranks every rule below.** The tag/float walk
-   the table above requires covers the whole body and MUST complete before any
-   key is interpreted, so a body containing a tag or a float anywhere is
-   reported as a rule-4 violation even when it also repeats a map key or
-   carries a value of the wrong type.
+1. **crypto-design §6.2 rule 4 outranks the repeated-key rule and every check
+   below it.** The tag/float walk the table above requires covers the whole
+   body and MUST complete before any key is interpreted, so a body containing
+   a tag or a float anywhere is reported as a rule-4 violation even when it
+   also repeats a map key or carries a value of the wrong type.
+
+   Both orderings here presuppose a body that is **well-formed CBOR**. A
+   reader must first be able to determine the body's item boundaries, and one
+   that cannot — a truncated head, a length that overruns the buffer, a text
+   string that is not valid UTF-8, a major-7 value outside `false`/`true`/
+   `null` — reports that instead, whatever else the body also breaks. This is
+   not a further precedence rule so much as the precondition for applying
+   either of these two: a reader that cannot parse the body cannot locate the
+   tag it would otherwise report. Read "every rule below" as scoped to §6.2's
+   numbered rules and to this section's schema checks.
 2. **A repeated map key outranks the type, range and version checks on that
    key's value.** A reader that finds a key it has already seen MUST report the
    repeat *without interpreting the second copy*. So a key repeated with a

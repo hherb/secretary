@@ -14,7 +14,21 @@ it.
 What this section pins, stated exactly, because the obvious wider claim is
 false: **the two implementations agree on WHICH §6.2 RULE a body violates,
 having found it by DIFFERENT MECHANISMS.**  It is not a claim that they
-classify by the same route, and they do not.
+classify by the same route.
+
+**With one exception since #618, and it is the three `rule4_float` rows.**
+Those used to be the sharpest case of the sentence above: Rust caught them in
+`reject_floats_and_tags`, a whole-body walk, while this reader caught them
+per-value in `_check_canonical_item`.  §4.2's precedence paragraph then
+required a byte-retaining reader to run its own whole-body rule-4 walk BEFORE
+interpreting any key, so `py_decode_manifest` gained one -- and for these
+three rows the two mechanisms are now the same.  That is the spec's doing, not
+a regression, but it costs this section a detection it used to have:
+deleting `_check_canonical_item`'s rule-4 arm reds Sections CS and MCC at
+#618's merge-base and only CS here, because the pre-pass answers first.
+Section CS's unit cases are now the SOLE pin for that arm on the manifest
+path.  A future edit that weakens CS takes this cover with it, and this
+paragraph is the only place that says so.
 """
 
 from __future__ import annotations

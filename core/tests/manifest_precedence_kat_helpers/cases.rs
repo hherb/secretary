@@ -10,31 +10,40 @@
 
 /// The map a repeat is planted in.
 ///
-/// Six, because these are six DIFFERENT parsers on the Rust side
-/// (`parse_manifest_map`, `parse_kdf_params`, `parse_vector_clock_entry`
-/// for both the top-level array and each block's summary, and the block
-/// and trash entry parsers). Python has fewer -- `_decode_strict_entry_map`
-/// serves `kdf_params` and both vector-clock shapes -- so do not describe
-/// this as "six parsers on both sides".
+/// FIVE distinct parsers cover these levels on the Rust side, not six:
+/// `parse_manifest_map` (serving both [`Level::Top`] and
+/// [`Level::TopVersion`]), `parse_kdf_params`, `parse_vector_clock_entry`
+/// (serving the top-level array AND each block's summary -- one function,
+/// two positions), and the block and trash entry parsers. Python has
+/// fewer still, since `_decode_strict_entry_map` serves `kdf_params` and
+/// both vector-clock shapes. So do not describe this as "one parser per
+/// level" on either side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
-    /// The top-level manifest map.
+    /// The top-level manifest map, repeating `vault_uuid`.
     Top,
+    /// The top-level manifest map, repeating `manifest_version`.
+    ///
+    /// The same parser as [`Level::Top`], and a separate level only
+    /// because [`Shape::BadVersion`] needs a key carrying a version
+    /// check. See that shape for why the corpus owes this one a row.
+    TopVersion,
     /// The `kdf_params` map.
     KdfParams,
-    /// `vector_clock[1]`.
+    /// `vector_clock[0]`.
     VectorClock,
     /// `blocks[1]`.
     Block,
-    /// `trash[1]`.
+    /// `trash[0]`.
     Trash,
     /// `blocks[1].vector_clock_summary[1]` -- the deepest map in the body.
     BlockSummary,
 }
 
 impl Level {
-    pub const ALL: [Level; 6] = [
+    pub const ALL: [Level; 7] = [
         Level::Top,
+        Level::TopVersion,
         Level::KdfParams,
         Level::VectorClock,
         Level::Block,
@@ -46,6 +55,7 @@ impl Level {
     pub fn label(self) -> &'static str {
         match self {
             Level::Top => "top",
+            Level::TopVersion => "top_version",
             Level::KdfParams => "kdf_params",
             Level::VectorClock => "vector_clock",
             Level::Block => "block",
@@ -62,14 +72,79 @@ impl Level {
     pub fn key(self) -> &'static str {
         match self {
             Level::Top => "vault_uuid",
+            Level::TopVersion => "manifest_version",
             Level::KdfParams => "iterations",
             Level::VectorClock | Level::BlockSummary => "counter",
             Level::Block | Level::Trash => "block_uuid",
         }
     }
+
+    /// The map name `conformance.py` reports for a repeat found here.
+    ///
+    /// These are the clean-room reader's own spellings. Six maps, seven
+    /// levels: [`Level::Top`] and [`Level::TopVersion`] necessarily share
+    /// one, being the same map. What is unique per level is the PAIR
+    /// `(map_label, key)`, and that is what
+    /// `every_level_is_identified_by_its_map_and_key` pins -- neither
+    /// column identifies a level on its own, which is exactly why the
+    /// corpus needs both. `map_label` tells `block` from `trash` and
+    /// `vector_clock` from `block_summary`, where the repeated key is
+    /// shared; `key` tells the two top-level rows apart, where the map is.
+    ///
+    /// The two `entry` spellings are not a naming inconsistency: Python
+    /// routes the block and trash maps through `_decode_manifest_entry_map`
+    /// and the rest through `_decode_strict_entry_map`, and the labels
+    /// follow the parser rather than the field.
+    pub fn map_label(self) -> &'static str {
+        match self {
+            Level::Top | Level::TopVersion => "manifest",
+            Level::KdfParams => "kdf_params",
+            Level::VectorClock => "vector_clock",
+            Level::Block => "blocks entry",
+            Level::Trash => "trash entry",
+            Level::BlockSummary => "vector_clock_summary",
+        }
+    }
+
+    /// Which element of its enclosing array a nested level sits in, or
+    /// `None` for the two levels that are not inside an array.
+    ///
+    /// **BOTH ENDS are planted, and that is #608's review lesson in
+    /// full.** Planting every nested repeat in element 1 catches a reader
+    /// scoped to element 0 and leaves its mirror image -- a reader that
+    /// SKIPS element 0, the `for block in blocks.iter().skip(1)` shape
+    /// #608 actually measured -- fully conformant. Planting every repeat
+    /// in element 0 has the same defect in the other direction. So
+    /// `vector_clock` and `trash` plant at 0 while `blocks` and its
+    /// nested summary plant at 1, and `both_array_ends_are_planted` reds
+    /// if a future edit collapses them onto one end.
+    pub fn elem(self) -> Option<usize> {
+        match self {
+            Level::Top | Level::TopVersion | Level::KdfParams => None,
+            Level::VectorClock | Level::Trash => Some(0),
+            Level::Block | Level::BlockSummary => Some(1),
+        }
+    }
 }
 
 /// What the repeated key's SECOND copy contains.
+///
+/// **There is deliberately no shape breaking §6.2 rules 1, 2 or 3**, and
+/// re-adding one would make this corpus reject a CONFORMANT reader. §4.2
+/// fixes the order of rule 4 and of the repeated-key rule, and declares
+/// the order of rules 1-3 against those two unspecified, because the two
+/// reader architectures it admits necessarily detect them at different
+/// points. A row pairing a repeat with, say, a non-shortest-form head
+/// therefore has two correct answers, and demanding either one outlaws a
+/// design §4.2 itself permits.
+///
+/// An earlier revision of this corpus carried exactly such a row
+/// (`top__non_shortest`) to pin that the rule-4 walk is rule-4-ONLY.
+/// That scope is a property of one implementation, not of `docs/`, so it
+/// is now pinned where it belongs: `conformance.py`'s Section CS asserts
+/// directly that `reject_floats_and_tags` returns cleanly for a body
+/// whose only fault is a rule-2 or rule-3 violation. That is a sharper
+/// pin than the row was, and it claims nothing of anyone else's reader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shape {
     /// A body with no repeat at all -- the corpus's accept control.
@@ -92,33 +167,36 @@ pub enum Shape {
     /// REPEAT to win: a reader must not interpret a repeated key's second
     /// copy at all.
     WrongType,
+    /// A second copy of the RIGHT CBOR type whose value overflows the
+    /// key's declared width (a `u32` field given 2^40).
+    ///
+    /// §4.2 ordering 2 names three competing checks -- "the type, range
+    /// and version checks on that key's value" -- and this is the second.
+    /// Without it the corpus enumerated one of the three and the other
+    /// two agreed across the two implementations only BY CONSTRUCTION,
+    /// which is the state this corpus exists to replace.
+    ///
+    /// **Level-restricted**, like [`Shape::BadVersion`]: it needs a key
+    /// whose declared width is narrower than CBOR's, which among the keys
+    /// this corpus repeats is `kdf_params.iterations` (`u32`) alone.
+    /// `counter` is a `u64`, and the uuid keys are byte strings.
+    OutOfRange,
+    /// A second copy that is a well-typed, in-range `u8` carrying a
+    /// version this client does not speak.
+    ///
+    /// The third of §4.2 ordering 2's three competing checks. Its own
+    /// level exists for it ([`Level::TopVersion`]) because `manifest_version`
+    /// is the only key with a version check, and #587 had just made the
+    /// writer half of that check normative -- so the one field whose value
+    /// check landed in the immediately preceding slice had no precedence
+    /// row at all.
+    BadVersion,
     /// A second copy that is a CBOR float.
     ///
     /// Breaks rule 5 AND §6.2 rule 4. §4.2 requires RULE 4 to win,
     /// because it is enforced by a walk of the whole body that completes
     /// before any key is interpreted.
     Float,
-    /// A second copy that is WELL-TYPED but whose head is written in
-    /// non-shortest form (§6.2 rule 3).
-    ///
-    /// The row that pins the rule-4 walk's SCOPE. §4.2 orders rule 4 ahead
-    /// of the repeat because both reader architectures enforce it by a
-    /// separate walk; rules 2 and 3 are explicitly NOT in that ordering,
-    /// so a reader must not fold them into the same walk. Widening
-    /// `conformance.py`'s pre-pass to `_check_canonical_item` -- i.e.
-    /// rules 2, 3 and 4 together -- makes this row report rule 3 where
-    /// `decode_manifest` reports the repeat. Measured: before this row
-    /// existed that widening left the whole verifier GREEN, so the scope
-    /// was documented in three places and pinned in none.
-    ///
-    /// **`Level::Top` only, and the restriction is the spec's, not a
-    /// convenience.** At a nested level a byte-retaining reader checks the
-    /// ENCLOSING value's canonicality -- recursively, before any nested
-    /// parser sees its own repeat -- while a normalising reader has
-    /// already erased the non-shortest head at parse time. That is
-    /// precisely the ordering §4.2 declares unspecified, so a nested row
-    /// here would assert something no conformant reader owes.
-    NonShortest,
     /// A second copy that is a CBOR tag. The rule-4 twin of [`Shape::Float`].
     ///
     /// Both shapes exist because §6.2 rule 4 forbids two different
@@ -139,7 +217,8 @@ impl Shape {
             Shape::Control => "control",
             Shape::WellTyped => "well_typed",
             Shape::WrongType => "wrong_type",
-            Shape::NonShortest => "non_shortest",
+            Shape::OutOfRange => "out_of_range",
+            Shape::BadVersion => "bad_version",
             Shape::Float => "float",
             Shape::Tag => "tag",
         }
@@ -232,14 +311,37 @@ impl Case {
     pub fn expect(&self) -> Expect {
         match self.shape {
             Shape::Control => Expect::Accept,
-            Shape::WellTyped | Shape::WrongType | Shape::NonShortest => Expect::DuplicateKey,
+            Shape::WellTyped | Shape::WrongType | Shape::OutOfRange | Shape::BadVersion => {
+                Expect::DuplicateKey
+            }
             Shape::Float | Shape::Tag => Expect::Rule4,
+        }
+    }
+
+    /// The map name `conformance.py`'s `DuplicateMapKey` must report, or
+    /// `None` where the row reports no repeat.
+    ///
+    /// **Python-only, the mirror of [`PlantedBody::dup_index`] being
+    /// Rust-only.** `ManifestError::DuplicateKey` carries a field name and
+    /// an ordinal but no map name, so the Rust replay cannot assert this
+    /// column; it asserts only that the fixture's value matches this
+    /// table. It exists because `_LEVEL_KEYS` alone is MANY-TO-ONE --
+    /// `block` and `trash` both repeat `block_uuid`, `vector_clock` and
+    /// `block_summary` both repeat `counter` -- so before this column four
+    /// of the levels were mutually interchangeable on the clean-room side
+    /// and a body swap between them passed Section MPR.
+    ///
+    /// [`PlantedBody::dup_index`]: super::build::PlantedBody::dup_index
+    pub fn map_label(&self) -> Option<&'static str> {
+        match self.expect() {
+            Expect::DuplicateKey => Some(self.level.map_label()),
+            _ => None,
         }
     }
 }
 
-/// The whole corpus: one accept control, then every (level, planted
-/// shape) pair.
+/// The whole corpus: one accept control, every (level, planted shape)
+/// pair, then the two level-restricted shapes.
 pub fn all_cases() -> Vec<Case> {
     let mut out = vec![Case {
         level: Level::Top,
@@ -250,11 +352,16 @@ pub fn all_cases() -> Vec<Case> {
             out.push(Case { level, shape });
         }
     }
-    // Not part of the product: see `Shape::NonShortest` for why §4.2 makes
-    // this row top-level-only rather than convenience making it so.
+    // Outside the product because each needs a key the other levels do
+    // not have: a width-narrowed integer, and the one field carrying a
+    // version check. See the two shapes' own docs.
     out.push(Case {
-        level: Level::Top,
-        shape: Shape::NonShortest,
+        level: Level::KdfParams,
+        shape: Shape::OutOfRange,
+    });
+    out.push(Case {
+        level: Level::TopVersion,
+        shape: Shape::BadVersion,
     });
     out
 }

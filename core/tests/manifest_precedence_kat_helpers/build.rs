@@ -71,11 +71,14 @@ fn trash_entry(uuid_byte: u8) -> TrashEntry {
 /// every canonicality body -- which would red this corpus for a reason
 /// that has nothing to do with precedence.
 ///
-/// **Every array holds TWO entries**, and every nested repeat is planted
-/// in the SECOND one (`vector_clock[1]`, `blocks[1]`, `trash[1]`,
-/// `blocks[1].vector_clock_summary[1]`). That is #608's review lesson
-/// applied prospectively: a corpus that plants only in element 0 leaves a
-/// reader scoped to element 0 fully conformant against it.
+/// **Every array holds TWO entries, and repeats are planted at BOTH
+/// ends** -- `vector_clock[0]` and `trash[0]`, against `blocks[1]` and
+/// `blocks[1].vector_clock_summary[1]`. That is #608's review lesson in
+/// full rather than half of it: planting only in element 1 catches a
+/// reader scoped to element 0 and leaves the `skip(1)` mirror image
+/// conformant, and planting only in element 0 has the same defect the
+/// other way. `Level::elem` owns the assignment and
+/// `both_array_ends_are_planted` reds if a future edit collapses them.
 pub fn base_manifest() -> Manifest {
     Manifest {
         manifest_version: 1,
@@ -109,79 +112,57 @@ pub fn baseline_bytes() -> Vec<u8> {
 
 /// The second copy planted for a shape.
 ///
-/// `Shape::WellTyped` clones the value already under the key, so the row
-/// breaks §6.2 rule 5 and nothing else.
-/// A 16-byte value that appears nowhere else in the baseline, so the
-/// non-shortest-form rewrite below can locate exactly one occurrence.
-///
-/// The "needle" arrangement `manifest_canonicality_kat_helpers::build`
-/// uses, and for the same reason: a byte-level edit needs an anchor that
-/// cannot collide, and a collision must be a loud panic rather than a
-/// body edited in the wrong place.
-const NEEDLE: [u8; 16] = [
-    0xC0, 0xDE, 0xF0, 0x0D, 0xBE, 0xEF, 0xCA, 0xFE, 0x13, 0x57, 0x9B, 0xDF, 0x24, 0x68, 0xAC, 0xE0,
-];
-
-/// Rewrite [`NEEDLE`]'s byte-string head from shortest form (`0x50`, the
-/// length in the head's own additional-info bits) to the one-byte-argument
-/// form (`0x58 0x10`) -- the same value, encoded non-shortest, i.e. a
-/// crypto-design §6.2 rule 3 violation and nothing else.
-fn make_needle_head_non_shortest(bytes: &mut Vec<u8>) {
-    let mut found = bytes
-        .windows(NEEDLE.len())
-        .enumerate()
-        .filter(|(_, w)| *w == NEEDLE)
-        .map(|(i, _)| i);
-    let at = found
-        .next()
-        .expect("the needle must appear in the encoded body");
-    assert!(
-        found.next().is_none(),
-        "the needle must be UNIQUE, or this rewrite edits an arbitrary one \
-         of its occurrences"
-    );
-    let head = at
-        .checked_sub(1)
-        .expect("the needle cannot start at offset 0: it is a map value");
-    assert_eq!(
-        bytes[head], 0x50,
-        "expected a shortest-form bstr(16) head before the needle"
-    );
-    // 0x58 = major 2, additional info 24 (a one-byte argument follows).
-    bytes.splice(head..=head, [0x58u8, NEEDLE.len() as u8]);
-}
-
+/// Every value here is well-FORMED CBOR. What varies is whether it is
+/// valid for the key it is planted under, and §4.2 requires the repeat to
+/// be reported without that ever being determined.
 fn second_copy(shape: Shape, original: &Value) -> Value {
     match shape {
+        // Clones the value already under the key, so the row breaks §6.2
+        // rule 5 and nothing else. The base case the others are measured
+        // against.
         Shape::WellTyped => original.clone(),
         // Wrong for every key this corpus repeats: each is a byte string
         // or an unsigned integer.
         Shape::WrongType => Value::Text("not the type this key requires".into()),
+        // Right type, too wide for the key's declared `u32`. Only planted
+        // under `kdf_params.iterations`; see `Shape::OutOfRange`.
+        Shape::OutOfRange => Value::Integer((1u64 << 40).into()),
+        // A well-typed, in-range `u8` naming a manifest version v1 does
+        // not speak. Only planted under `manifest_version`.
+        Shape::BadVersion => Value::Integer(7u64.into()),
         Shape::Float => Value::Float(3.5),
         // Tag 1 (RFC 8949 epoch time) over an integer: a well-formed tag,
         // so the body is rejected for BEING tagged, not for being
         // malformed.
         Shape::Tag => Value::Tag(1, Box::new(Value::Integer(1_700_000_000u64.into()))),
-        // Well-typed for `vault_uuid` (a 16-byte string), and unique in the
-        // body so the head rewrite below can find it. The rule-3 violation
-        // is applied to the ENCODED bytes, because `ciborium` has no
-        // representation for a non-shortest head.
-        Shape::NonShortest => Value::Bytes(NEEDLE.to_vec()),
         Shape::Control => unreachable!("the control plants nothing"),
     }
 }
 
 /// The map a level names, as a mutable entry list.
+///
+/// Every array index comes from [`Level::elem`] rather than being written
+/// here, so a level whose doc says element 0 cannot plant in element 1.
+/// The one index NOT from that table is the enclosing `blocks[1]` for
+/// [`Level::BlockSummary`], which is the block [`Level::Block`] itself
+/// plants in; `elem` names the index within a level's OWN array.
 fn target_map(root: &mut Value, level: Level) -> &mut Vec<(Value, Value)> {
+    let elem = |lvl: Level| {
+        lvl.elem()
+            .unwrap_or_else(|| panic!("{lvl:?} is not inside an array"))
+    };
     match level {
-        Level::Top => as_map(root),
+        Level::Top | Level::TopVersion => as_map(root),
         Level::KdfParams => as_map(field_mut(root, "kdf_params")),
-        Level::VectorClock => as_map(array_elem_mut(field_mut(root, "vector_clock"), 1)),
-        Level::Block => as_map(array_elem_mut(field_mut(root, "blocks"), 1)),
-        Level::Trash => as_map(array_elem_mut(field_mut(root, "trash"), 1)),
+        Level::VectorClock => as_map(array_elem_mut(field_mut(root, "vector_clock"), elem(level))),
+        Level::Block => as_map(array_elem_mut(field_mut(root, "blocks"), elem(level))),
+        Level::Trash => as_map(array_elem_mut(field_mut(root, "trash"), elem(level))),
         Level::BlockSummary => {
-            let block = array_elem_mut(field_mut(root, "blocks"), 1);
-            as_map(array_elem_mut(field_mut(block, "vector_clock_summary"), 1))
+            let block = array_elem_mut(field_mut(root, "blocks"), Level::Block.elem().unwrap());
+            as_map(array_elem_mut(
+                field_mut(block, "vector_clock_summary"),
+                elem(level),
+            ))
         }
     }
 }
@@ -238,8 +219,5 @@ pub fn body_for(case: &Case) -> PlantedBody {
 
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&root, &mut bytes).expect("re-encode the planted body");
-    if case.shape == Shape::NonShortest {
-        make_needle_head_non_shortest(&mut bytes);
-    }
     PlantedBody { bytes, dup_index }
 }

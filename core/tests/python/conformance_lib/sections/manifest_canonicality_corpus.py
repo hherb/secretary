@@ -197,7 +197,7 @@ def body_issues(bodies: list[str]) -> list[str]:
     if not dupes:
         return []
     return [
-        f"corpus rows {dupes} share a manifest body -- the two families' premise is "
-        "one distinct body per position, and a label floor cannot see a body collapse "
-        "(#614 was a body substitution, not a label one)"
+        f"corpus rows {dupes} share a manifest body -- every corpus calling this "
+        "floor claims one distinct body per position, and a label floor cannot see "
+        "a body collapse (#614 was a body substitution, not a label one)"
     ]

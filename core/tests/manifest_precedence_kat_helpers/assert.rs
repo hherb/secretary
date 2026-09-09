@@ -79,6 +79,15 @@ pub fn assert_precedence(
         // rejection from a `CanonicalError` raised at the step-4
         // re-encode; no row in this corpus reaches that far, because
         // every one of them is rejected earlier.
+        //
+        // **Consequence worth stating, because it is not obvious from
+        // here:** this arm cannot tell a FLOAT row from a TAG row, so for
+        // those rows `every_row_body_matches_the_case_its_label_names` is
+        // the SOLE discriminator on the Rust side -- measured, by making
+        // all the rule-4 bodies identical, which left this replay green
+        // and red only the rebuild. Weakening that test takes the
+        // float/tag distinction with it. Section MPR is unaffected: its
+        // `NonCanonicalItem` detail names which of the two fired.
         (Expect::Rule4, Err(ManifestError::Canonical(_))) => {}
 
         (want, Ok(_)) => panic!(
