@@ -1855,7 +1855,9 @@ EOF
 
 **Files:**
 - Create: `core/tests/data/diff_regressions/manifest_body/arraysort_plus_indefinite.bin`
-- Create: `core/tests/data/diff_regressions/manifest_body/README.md`
+- Create: `core/tests/data/diff_regressions/README.md` (one level UP, not inside `manifest_body/` —
+  see the Step 5 correction below: the per-target directory is fed to both decoders as
+  corpus input, so it cannot hold documentation)
 
 **Interfaces:**
 - Consumes: the comparison from Task 7.
@@ -1949,7 +1951,21 @@ Expected: the strict run fails, naming `arraysort_plus_indefinite.bin` (and `tol
 
 - [ ] **Step 5: Write the directory README**
 
-Create `core/tests/data/diff_regressions/manifest_body/README.md`:
+**Correction (found during execution, #634):** the location below is
+unexecutable as written. `differential_replay_full_corpus`'s per-target walk
+feeds every file in `diff_regressions/<target>/` to both decoders as raw
+input bytes, skipping only `.gitkeep` — no extension filter exists. A
+`README.md` committed inside `manifest_body/` was decoded as manifest-body
+bytes by both languages; Python's rejection carried no rule token, which the
+harness (correctly) reports as a failure rather than as this fixture's
+intended disagreement. The content below was written one level UP instead,
+at `core/tests/data/diff_regressions/README.md`, which `corpus_dirs`
+(`core/tests/differential_replay_helpers/corpus.rs:23`) never joins onto any
+target and `fs::read_dir`'s per-target walk never reaches. Every other
+`diff_regressions/<target>/` directory holds only `.gitkeep` for the same
+reason. Read on for the content that was written there instead:
+
+The content originally planned for that (unexecutable) per-target location was relocated to the parent-level README per the correction above; its intent follows:
 
 ```markdown
 # `manifest_body` differential regressions
