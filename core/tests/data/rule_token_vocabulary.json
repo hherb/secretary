@@ -1,5 +1,5 @@
 {
-  "_comment": "The shared RuleToken vocabulary (#634). Read by core/src/vault/manifest/token/tests.rs and by conformance_lib/sections/rule_token_vocabulary.py, so the Rust enum and the Python exception attributes cannot drift onto different spellings. `phase_dependent` is docs/vault-format.md §4.2's 'deliberately unspecified' sentence, expressed as data.",
+  "_comment": "The shared RuleToken vocabulary (#634). Read by core/src/vault/manifest/token/tests/vocabulary.rs and by conformance_lib/sections/rule_token_vocabulary.py, so the Rust enum and the Python exception attributes cannot drift onto different spellings. `phase_dependent` is DERIVED from docs/vault-format.md §4.2's 'deliberately unspecified' paragraphs and is strictly BROADER than them -- it is not that sentence. A per-token flag tolerates every pair its token appears in, which is 58 of the 136 unequal pairs; RuleToken::is_phase_dependent's LIMITS block enumerates the four groups §4.2 does not license and #646 tracks narrowing them. Python reads this column only to compare it against its own hard-coded reading of §4.2; no Python behaviour depends on it.",
   "tokens": {
     "rule2_indefinite_length": {"phase_dependent": true},
     "rule3_non_shortest_form": {"phase_dependent": true},

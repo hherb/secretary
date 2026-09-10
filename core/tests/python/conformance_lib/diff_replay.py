@@ -43,11 +43,16 @@ def run_diff_replay(target: str, input_path: str) -> int:
     that split existed every exception became `{"status": "reject"}` with
     exit 0 -- a `NameError` from a typo, a `RecursionError` on a deeply
     nested subtree, a `cbor2` API break, a missing input file. The Rust
-    caller (`core/tests/differential_replay.rs`) scores reject-vs-reject as
-    AGREEMENT, and 13 of the 27 committed `manifest_body` seeds are
-    Rust-reject rows -- so an internal bug in this script became a green
-    differential test on exactly the inputs whose decode paths are most
-    interesting. Only the exception types the decoders raise DELIBERATELY
+    caller (`core/tests/differential_replay.rs`) scored reject-vs-reject as
+    AGREEMENT unconditionally until #634, and 24 of the 38 committed
+    `manifest_body` seeds are Rust-reject rows -- so an internal bug in this
+    script became a green differential test on exactly the inputs whose decode
+    paths are most interesting.  #634 narrowed that arm to a token comparison
+    for `manifest_body`, which does not retire this split: the other six
+    targets are still scored on the fact of rejection alone (#641), and even
+    for `manifest_body` a phase-dependent token tolerates whatever the other
+    side said.  Both figures moved with the corpus and were re-measured here;
+    they were 13 of 27 when this paragraph was written. Only the exception types the decoders raise DELIBERATELY
     to signal a wire-format violation are verdicts; everything else is a
     harness failure and must be surfaced, not scored.
     """
