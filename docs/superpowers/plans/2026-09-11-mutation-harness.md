@@ -447,7 +447,8 @@ def _validate_probe(raw: object, lang: Lang, where: str) -> PythonProbe | RustPr
 uv run --with pytest pytest scripts/mutation_harness/tests/test_spec.py -q
 ```
 
-Expected: `11 passed`.
+Expected: `10 passed` — count the `def test_` lines in Step 1 if this
+disagrees; the number is derived from that list, not authoritative on its own.
 
 - [ ] **Step 6: Confirm every file is under 500 lines**
 
@@ -1334,7 +1335,9 @@ def run_mutations(
 uv run --with pytest pytest scripts/mutation_harness/tests/ -q
 ```
 
-Expected: `28 passed` (11 spec + 6 journal + 8 gate + 3 report).
+Expected: `27 passed` (10 spec + 6 journal + 8 gate + 3 report). Derived by
+counting the `def test_` lines across those four files — re-count rather than
+trusting this total if it disagrees.
 
 - [ ] **Step 6: Commit**
 
@@ -1379,6 +1382,7 @@ written into the source tree (#516).
 from __future__ import annotations
 
 import dataclasses
+import py_compile
 import textwrap
 from collections.abc import Callable
 from pathlib import Path
@@ -1401,7 +1405,7 @@ def _write(root: Path, rel: str, body: str) -> Path:
     return path
 
 
-def _py_spec(root: Path, **kw) -> MutationSpec:
+def _py_spec(**kw) -> MutationSpec:
     defaults = dict(
         id="C", lang=Lang.PYTHON, path="m.py", gate="true", expect="red",
         probe=PythonProbe(module="m", expr="TOKEN", equals="mutated", syspath="."),
@@ -1410,12 +1414,31 @@ def _py_spec(root: Path, **kw) -> MutationSpec:
     return MutationSpec(**defaults)
 
 
-# --- C1: a size-preserving mutation must still be seen (false green 1) ------
+# --- C1: a stale .pyc must not be served (false green 1) -------------------
 def _build_c1(root: Path) -> MutationSpec:
+    """Pre-create bytecode that would answer with the PRE-mutation value.
+
+    The real-world trap was TIMESTAMP-based: CPython invalidates a `.pyc` on
+    `(source_mtime, size)` with the mtime in whole SECONDS, so a
+    size-preserving edit applied inside one second is served from cache. That
+    is racy to reproduce — it needs two writes in the same whole second — so
+    this control uses an UNCHECKED_HASH `.pyc` (PEP 552) instead, which is
+    served regardless of the source's content, size AND mtime. Verified by
+    execution. Same property under test: does the harness clear
+    `__pycache__` before probing? The harness's defence is deleting the
+    directory, which is invalidation-mode independent.
+
+    Without the pre-created `.pyc` this control is VACUOUS — a fresh temp dir
+    has no bytecode, so it would pass with `clear_pycache` deleted.
+    """
     _write(root, "m.py", 'TOKEN = "aaaaaaa"\n')
-    # Same length, so (mtime, size) bytecode invalidation cannot see it.
+    py_compile.compile(
+        str(root / "m.py"),
+        invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+        doraise=True,
+    )
     return _py_spec(
-        root, id="C1", old='TOKEN = "aaaaaaa"', new='TOKEN = "mutated"',
+        id="C1", old='TOKEN = "aaaaaaa"', new='TOKEN = "mutated"',
         gate="true", expect="green",
         probe=PythonProbe("m", "TOKEN", "mutated", "."),
     )
@@ -1436,7 +1459,7 @@ def _build_c2(root: Path) -> MutationSpec:
     # below the docstring silently overrides it. The file changes; the
     # interpreter binds "real". This is the control the harness exists for.
     return _py_spec(
-        root, id="C2",
+        id="C2",
         old="class Rejection:",
         new='class Rejection:\n    TOKEN = "mutated"',
         probe=PythonProbe("m", "Rejection.TOKEN", "mutated", "."),
@@ -1446,19 +1469,19 @@ def _build_c2(root: Path) -> MutationSpec:
 # --- C4 / C5: ambiguous and absent anchors ---------------------------------
 def _build_c4(root: Path) -> MutationSpec:
     _write(root, "m.py", 'TOKEN = "x"\nOTHER = "x"\n')
-    return _py_spec(root, id="C4", old='"x"', new='"y"')
+    return _py_spec(id="C4", old='"x"', new='"y"')
 
 
 def _build_c5(root: Path) -> MutationSpec:
     _write(root, "m.py", 'TOKEN = "x"\n')
-    return _py_spec(root, id="C5", old="not-present-anywhere", new="y")
+    return _py_spec(id="C5", old="not-present-anywhere", new="y")
 
 
 # --- C6: the gate is already red on the clean tree --------------------------
 def _build_c6(root: Path) -> MutationSpec:
     _write(root, "m.py", 'TOKEN = "real"\n')
     return _py_spec(
-        root, id="C6", old='"real"', new='"mutated"', gate="exit 1",
+        id="C6", old='"real"', new='"mutated"', gate="exit 1",
         probe=PythonProbe("m", "TOKEN", "mutated", "."),
     )
 
@@ -1467,7 +1490,7 @@ def _build_c6(root: Path) -> MutationSpec:
 def _build_c8(root: Path) -> MutationSpec:
     _write(root, "m.py", 'TOKEN = "real"\n')
     return _py_spec(
-        root, id="C8", old='"real"', new='"mutated"', gate="true", expect="red",
+        id="C8", old='"real"', new='"mutated"', gate="true", expect="red",
         probe=PythonProbe("m", "TOKEN", "mutated", "."),
     )
 
@@ -1476,7 +1499,7 @@ def _build_c8(root: Path) -> MutationSpec:
 def _build_c9(root: Path) -> MutationSpec:
     _write(root, "m.py", 'TOKEN = "real"\n')
     return _py_spec(
-        root, id="C9", old='"real"', new='"mutated"',
+        id="C9", old='"real"', new='"mutated"',
         gate="echo something_else_failed; exit 1", expect="red",
         expect_red=("the_test_this_row_claims",),
         probe=PythonProbe("m", "TOKEN", "mutated", "."),
@@ -1487,7 +1510,7 @@ def _build_c9(root: Path) -> MutationSpec:
 def _build_c11(root: Path) -> MutationSpec:
     _write(root, "m.py", 'TOKEN = "real"\n')
     return _py_spec(
-        root, id="C11", old='"real"', new='"mutated"', gate="exit 1", expect="green",
+        id="C11", old='"real"', new='"mutated"', gate="exit 1", expect="green",
         probe=PythonProbe("m", "TOKEN", "mutated", "."),
     )
 
@@ -1559,7 +1582,7 @@ def _build_n1(root: Path) -> MutationSpec:
     _write(root, "m.py", 'TOKEN = "real"\n')
     _write(root, "gate.py", 'import m, sys; sys.exit(0 if m.TOKEN == "real" else 1)\n')
     return _py_spec(
-        root, id="N1", old='"real"', new='"mutated"',
+        id="N1", old='"real"', new='"mutated"',
         gate="python3 gate.py", expect="red",
         probe=PythonProbe("m", "TOKEN", "mutated", "."),
     )
@@ -1568,7 +1591,7 @@ def _build_n1(root: Path) -> MutationSpec:
 def _build_n2(root: Path) -> MutationSpec:
     _write(root, "m.py", 'TOKEN = "real"\n')
     return _py_spec(
-        root, id="N2", old='"real"', new='"mutated"', gate="true", expect="green",
+        id="N2", old='"real"', new='"mutated"', gate="true", expect="green",
         probe=PythonProbe("m", "TOKEN", "mutated", "."),
     )
 
@@ -1595,7 +1618,7 @@ NEGATIVE_CONTROLS: tuple[Control, ...] = (
 )
 ```
 
-**Note on `C3` and `C7`:** neither is an `Outcome` reachable through `run_mutations` on a fixture — `C3` is a refusal to start and `C7` requires corrupting a backup behind the harness. Both are asserted directly in `selftest.py` (Step 2) and by `test_journal.py`'s sha256 test from Task 2. `N3` (a clean tree does not report `BASELINE_DIRTY`) is implied by every other negative control passing, and is asserted explicitly in `selftest.py`.
+**Note on `C3` and `C7`:** neither is an `Outcome` reachable through `run_mutations` on a fixture — `C3` is a refusal to start and `C7` requires corrupting a backup behind the harness. Both are asserted directly in `selftest.py` (Step 2) and by `test_journal.py`'s sha256 test from Task 2. `N3` (a clean tree does not report `BASELINE_DIRTY`) gets its own explicit `check_clean_baseline` in `selftest.py` — a note claiming coverage that no code provides is the overclaim class this repo keeps re-finding.
 
 - [ ] **Step 2: Write `selftest.py`**
 
@@ -1619,7 +1642,7 @@ from pathlib import Path
 from mutation_harness.controls import NEGATIVE_CONTROLS, POSITIVE_CONTROLS, Control
 from mutation_harness.journal import Journal
 from mutation_harness.runner import run_mutations
-from mutation_harness.types import Outcome
+from mutation_harness.types import Lang, MutationSpec, Outcome, PythonProbe
 
 
 def run_control(control: Control) -> tuple[bool, str]:
@@ -1633,10 +1656,25 @@ def run_control(control: Control) -> tuple[bool, str]:
         actual = results[0].outcome
         if actual is not control.expect:
             return False, f"expected {control.expect.value}, got {actual.value}"
-        residue = [p for p in root.rglob("*.orig")]
-        if residue and Journal(root / ".journal").is_dirty():
+        if Journal(root / ".journal").is_dirty():
             return False, "journal left dirty after a completed control"
         return True, actual.value
+
+
+def check_clean_baseline() -> tuple[bool, str]:
+    """N3: a clean tree whose gate passes must not report BASELINE_DIRTY."""
+    with tempfile.TemporaryDirectory(prefix="mutate-n3-") as tmp:
+        root = Path(tmp)
+        (root / "m.py").write_text('TOKEN = "real"\n')
+        spec = MutationSpec(
+            id="N3", lang=Lang.PYTHON, path="m.py",
+            old='"real"', new='"mutated"', gate="true", expect="green",
+            probe=PythonProbe("m", "TOKEN", "mutated", "."),
+        )
+        (result,) = run_mutations((spec,), root, root / ".journal")
+        if result.outcome is Outcome.BASELINE_DIRTY:
+            return False, "a passing gate on a clean tree was reported BASELINE_DIRTY"
+        return True, result.outcome.value
 
 
 def check_journal_refusal() -> tuple[bool, str]:
@@ -1678,13 +1716,17 @@ def run_self_test() -> int:
     print(f"  [{'PASS' if ok else 'FAIL'}] C3: journal refusal -> {detail}")
     failures += 0 if ok else 1
 
+    ok, detail = check_clean_baseline()
+    print(f"  [{'PASS' if ok else 'FAIL'}] N3: clean baseline -> {detail}")
+    failures += 0 if ok else 1
+
     for control in NEGATIVE_CONTROLS:
         ok, detail = run_control(control)
         status = "PASS" if ok else "FAIL"
         print(f"  [{status}] {control.label}: {control.why} -> {detail}")
         failures += 0 if ok else 1
 
-    total = len(POSITIVE_CONTROLS) + len(NEGATIVE_CONTROLS) + 1
+    total = len(POSITIVE_CONTROLS) + len(NEGATIVE_CONTROLS) + 2  # +C3 +N3
     covered = {c.expect for c in POSITIVE_CONTROLS} | {c.expect for c in NEGATIVE_CONTROLS}
     uncovered = sorted(o.value for o in Outcome if o not in covered)
     if uncovered:
@@ -1809,7 +1851,9 @@ if __name__ == "__main__":
 import pytest
 
 from mutation_harness.controls import NEGATIVE_CONTROLS, POSITIVE_CONTROLS
-from mutation_harness.selftest import check_journal_refusal, run_control
+from mutation_harness.selftest import (
+    check_clean_baseline, check_journal_refusal, run_control,
+)
 
 ALL = POSITIVE_CONTROLS + NEGATIVE_CONTROLS
 
@@ -1822,6 +1866,11 @@ def test_control_reaches_its_declared_outcome(control):
 
 def test_journal_refusal_is_visible_to_the_next_invocation():
     ok, detail = check_journal_refusal()
+    assert ok, detail
+
+
+def test_a_clean_baseline_is_not_reported_dirty():
+    ok, detail = check_clean_baseline()
     assert ok, detail
 ```
 
