@@ -64,6 +64,7 @@ mod error;
 mod file;
 mod header;
 mod sentinel;
+mod token;
 mod types;
 mod uniqueness;
 
@@ -81,6 +82,7 @@ pub use file::{
 pub use header::{
     decrypt_manifest_body, encrypt_manifest_body, ManifestHeader, MANIFEST_HEADER_LEN,
 };
+pub use token::RuleToken;
 pub use types::{BlockEntry, KdfParamsRef, Manifest, TrashEntry};
 
 // Re-use the block-layer VectorClockEntry: §4.2's vector_clock entries are

@@ -92,6 +92,18 @@ class NonCanonicalItem(ValueError):
         """The §4.2-table rule number, read-only (see the class docstring)."""
         return self._rule
 
+    # The §4.2-table rule number is per-instance, so the token is derived
+    # per-instance too -- the only class here that needs a property rather
+    # than a class attribute. Rules 2, 3 and 4 are the only numbers this
+    # type is ever constructed with from the manifest path.
+    @property
+    def token(self) -> str:
+        return {
+            2: "rule2_indefinite_length",
+            3: "rule3_non_shortest_form",
+            4: "rule4_tag_or_float",
+        }.get(self._rule, "")
+
     def __reduce__(self):
         # `BaseException.__reduce__` returns `(cls, self.args)`, and
         # `self.args` here is the single COMPOSED message -- so the default
@@ -132,6 +144,10 @@ class DuplicateMapKey(ValueError):
     Section CS asserts the base class for this type and `NonCanonicalItem`
     alike; losing it aborts the run with a traceback and no `FAIL:` line.
     """
+
+    # One token for the whole class: a duplicate map key is always the same
+    # §6.2 rule 5 violation regardless of which map it was found in.
+    token = "duplicate_map_key"
 
     def __init__(self, label: str, key: str) -> None:
         super().__init__(f"duplicate {label} key: {key!r}")
