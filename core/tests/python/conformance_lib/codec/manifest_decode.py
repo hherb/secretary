@@ -16,6 +16,15 @@ from typing import Any
 
 from conformance_lib.codec.manifest_encode import py_encode_manifest
 from conformance_lib.codec.array_uniqueness import first_repeated_value
+from conformance_lib.codec.manifest_rules import (
+    IntegerOutOfRange,
+    MissingRequiredField,
+    NonTextMapKey,
+    RepeatedArrayValue,
+    TrailingBytesAfterMap,
+    UnsupportedVersion,
+    WrongFieldType,
+)
 from conformance_lib.codec.manifest_schema import BLOCK_ENTRY_KNOWN_KEYS, BLOCK_ENTRY_REQUIRED_KEYS, BLOCK_FINGERPRINT_LEN, KDF_PARAMS_KNOWN_KEYS, KDF_PARAMS_REQUIRED_KEYS, MANIFEST_KNOWN_KEYS, MANIFEST_REQUIRED_KEYS, MANIFEST_VERSION_V1, SALT_LEN, TRASH_ENTRY_KNOWN_KEYS, TRASH_ENTRY_REQUIRED_KEYS, UUID_LEN, VECTOR_CLOCK_ENTRY_KNOWN_KEYS, VECTOR_CLOCK_ENTRY_REQUIRED_KEYS, _decode_manifest_array, _decode_strict_array, _decode_strict_entry_map
 from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
 from conformance_lib.codec.scanner import (
@@ -61,6 +70,8 @@ class ArraySortOrderViolation(ValueError):
     scoring these as a verdict rather than as a harness failure.
     """
 
+    token = "array_sort_order"
+
 
 class NonCanonicalBody(ValueError):
     """The §4.3 step-4 re-encode did not reproduce the input byte for byte,
@@ -88,6 +99,8 @@ class NonCanonicalBody(ValueError):
 
     No custom `__init__`, for the reason `ArraySortOrderViolation` states.
     """
+
+    token = "non_canonical_unclassified"
 
 
 def py_decode_manifest(data: bytes) -> dict:
@@ -148,7 +161,7 @@ def py_decode_manifest(data: bytes) -> dict:
 
     entries, end = _scan_map_entries(data, 0)
     if end != len(data):
-        raise ValueError(f"trailing bytes after manifest map: {len(data) - end}")
+        raise TrailingBytesAfterMap(f"trailing bytes after manifest map: {len(data) - end}")
 
     out: dict[str, Any] = {}
     unknown: dict[str, bytes] = {}
@@ -157,7 +170,7 @@ def py_decode_manifest(data: bytes) -> dict:
     for (ks, ke), (vs, ve) in entries:
         kmaj, _, _, _ = _decode_head(data, ks)
         if kmaj != 3:
-            raise ValueError(f"manifest map key at offset {ks} is not a text string")
+            raise NonTextMapKey(f"manifest map key at offset {ks} is not a text string")
         key = cbor2.loads(data[ks:ke])
         if key in seen:
             raise DuplicateMapKey("manifest", key)
@@ -200,7 +213,7 @@ def py_decode_manifest(data: bytes) -> dict:
 
     absent = first_missing_key_in_sorted_order(out, MANIFEST_REQUIRED_KEYS)
     if absent is not None:
-        raise ValueError(f"manifest missing required field: {absent!r}")
+        raise MissingRequiredField(f"manifest missing required field: {absent!r}")
 
     # Type/range/version checks on every known field. Must run AFTER the
     # presence loop above (it indexes `out` unconditionally) and BEFORE the
@@ -279,9 +292,9 @@ def _check_uint(value: Any, field: str, bits: int) -> None:
     be rejected by Rust.
     """
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{field} must be a uint, got {type(value).__name__}")
+        raise WrongFieldType(f"{field} must be a uint, got {type(value).__name__}")
     if not 0 <= value < (1 << bits):
-        raise ValueError(f"{field} is out of range for u{bits}: {value}")
+        raise IntegerOutOfRange(f"{field} is out of range for u{bits}: {value}")
 
 
 def _check_fixed_bytes(value: Any, field: str, n: int) -> None:
@@ -290,9 +303,9 @@ def _check_fixed_bytes(value: Any, field: str, n: int) -> None:
     `WrongLength` for the wrong size).
     """
     if not isinstance(value, bytes):
-        raise ValueError(f"{field} must be a bstr, got {type(value).__name__}")
+        raise WrongFieldType(f"{field} must be a bstr, got {type(value).__name__}")
     if len(value) != n:
-        raise ValueError(f"{field} must be {n} bytes, got {len(value)}")
+        raise WrongFieldType(f"{field} must be {n} bytes, got {len(value)}")
 
 
 def _validate_manifest_shape(out: dict) -> None:
@@ -314,13 +327,13 @@ def _validate_manifest_shape(out: dict) -> None:
     """
     _check_uint(out["manifest_version"], "manifest_version", 8)
     if out["manifest_version"] != MANIFEST_VERSION_V1:
-        raise ValueError(f"unsupported manifest_version: {out['manifest_version']}")
+        raise UnsupportedVersion(f"unsupported manifest_version: {out['manifest_version']}")
     _check_uint(out["format_version"], "format_version", 16)
     if out["format_version"] != FORMAT_VERSION:
-        raise ValueError(f"unsupported format_version: {out['format_version']}")
+        raise UnsupportedVersion(f"unsupported format_version: {out['format_version']}")
     _check_uint(out["suite_id"], "suite_id", 16)
     if out["suite_id"] != SUITE_ID:
-        raise ValueError(f"unsupported suite_id: {out['suite_id']}")
+        raise UnsupportedVersion(f"unsupported suite_id: {out['suite_id']}")
 
     _check_fixed_bytes(out["vault_uuid"], "vault_uuid", UUID_LEN)
     _check_fixed_bytes(out["owner_user_uuid"], "owner_user_uuid", UUID_LEN)
@@ -337,7 +350,7 @@ def _validate_manifest_shape(out: dict) -> None:
     for i, blk in enumerate(out["blocks"]):
         _check_fixed_bytes(blk["block_uuid"], f"blocks[{i}].block_uuid", UUID_LEN)
         if not isinstance(blk["block_name"], str):
-            raise ValueError(f"blocks[{i}].block_name must be tstr")
+            raise WrongFieldType(f"blocks[{i}].block_name must be tstr")
         _check_fixed_bytes(
             blk["fingerprint"], f"blocks[{i}].fingerprint", BLOCK_FINGERPRINT_LEN
         )
@@ -345,7 +358,7 @@ def _validate_manifest_shape(out: dict) -> None:
         _check_uint(blk["created_at_ms"], f"blocks[{i}].created_at_ms", 64)
         _check_uint(blk["last_mod_ms"], f"blocks[{i}].last_mod_ms", 64)
         if not isinstance(blk["recipients"], list):
-            raise ValueError(f"blocks[{i}].recipients must be an array")
+            raise WrongFieldType(f"blocks[{i}].recipients must be an array")
         for j, r in enumerate(blk["recipients"]):
             _check_fixed_bytes(r, f"blocks[{i}].recipients[{j}]", UUID_LEN)
         for j, e in enumerate(blk["vector_clock_summary"]):
@@ -402,4 +415,4 @@ def _check_sorted_and_distinct(rows: list, key: str, label: str) -> None:
         raise ArraySortOrderViolation(f"{label} is not sorted by {key}")
     repeat = first_repeated_value(ids)
     if repeat is not None:
-        raise ValueError(f"{label} has a repeated {key}: {repeat.hex()}")
+        raise RepeatedArrayValue(f"{label} has a repeated {key}: {repeat.hex()}")

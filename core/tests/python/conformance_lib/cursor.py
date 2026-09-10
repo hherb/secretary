@@ -18,6 +18,12 @@ from dataclasses import dataclass
 class ParseError(Exception):
     """Raised on any wire-format violation."""
 
+    # One token for the whole wire layer. This class is shared by EVERY
+    # target's envelope parser, and every rejection it produces is "the
+    # envelope did not parse". Refining it is what #640 is about, and is
+    # the reason `manifest_file` is not token-compared.
+    token = "container_malformed"
+
 
 @dataclass
 class Cursor:
