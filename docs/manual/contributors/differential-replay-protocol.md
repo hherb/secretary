@@ -17,7 +17,7 @@ machine-checked are easy to break silently.
 
 ## What "differential replay" is
 
-The fuzz harness drives six Rust decoders. The point of differential
+The fuzz harness drives seven Rust decoders. The point of differential
 replay is to run those same inputs through a **completely independent**
 Python decoder and assert that the two implementations agree on:
 
@@ -26,6 +26,8 @@ Python decoder and assert that the two implementations agree on:
 2. **What the canonical re-encoded bytes look like, when both accept.**
    Disagreement here means one side has a re-encoding bug that the other
    side's tests didn't catch.
+3. **Which rule each names when both reject** — for targets listed in
+   `differential_replay.rs::TOKEN_COMPARED_TARGETS`. See §3 below.
 
 The Python decoders live in `core/tests/python/conformance_lib/codec/`
 (#593; `conformance.py` is now a thin entrypoint over that package) and
@@ -43,8 +45,9 @@ in a fresh subprocess:
 uv run [--with <pkg>...] conformance.py --diff-replay <TARGET> <INPUT_PATH>
 ```
 
-- `TARGET` is one of the six fuzz target names: `vault_toml`, `record`,
-  `contact_card`, `bundle_file`, `manifest_file`, `block_file`.
+- `TARGET` is one of the seven fuzz target names: `vault_toml`, `record`,
+  `contact_card`, `bundle_file`, `manifest_file`, `manifest_body`,
+  `block_file`.
 - `INPUT_PATH` is a single corpus or seed file path.
 - The subprocess has a per-input wall-clock budget of 60 seconds. If
   Python takes longer (infinite loop on a malformed input, runaway
@@ -70,7 +73,7 @@ There are exactly three valid output shapes:
 
 - `reencoded_b64` is `base64.standard_b64encode(canonical_reencoded).decode("ascii")`.
 - Used for `record`, `contact_card`, `bundle_file`, `manifest_file`,
-  `block_file` — all five "crash + roundtrip-eq" targets.
+  `manifest_body`, `block_file` — all six "crash + roundtrip-eq" targets.
 
 ### 2. Accept with empty re-encoded bytes (`vault_toml` only)
 
@@ -92,25 +95,31 @@ There are exactly three valid output shapes:
 ### 3. Reject
 
 ```json
-{"status": "reject", "error_class": "<short-token>"}
+{"status": "reject", "error_class": "<class name>", "detail": "<message>", "rule": "<token>"}
 ```
 
-- `error_class` is informational and currently NOT compared against the
-  Rust error class. The differential check accepts any `(Err, Err)`
-  pair as agreement (see `differential_replay.rs::differential_replay_full_corpus`
-  the comment around `// Both reject → agreement`).
-- Because it is `type(e).__name__`, the token WIDENS whenever a new
-  exception subclass is introduced. #604 added
-  `codec/scanner.py`'s `NonCanonicalItem(ValueError)`, so every
-  crypto-design §6.2 rule-2/3/4 rejection now reports
-  `"NonCanonicalItem"` where it reported `"ValueError"` before. Nothing
-  compares the token, so no gate moved — recorded here because a
-  protocol-observable change should not be inferred from a diff.
-- This looseness is **intentional but temporary**: when we standardise
-  error taxonomies between the two implementations, we'll tighten the
-  comparison. Until then, prefer descriptive class names — the
-  `type(e).__name__` pattern (e.g. `ValueError`, `ParseError`,
-  `UnicodeDecodeError`) is what the existing handler uses.
+- `error_class` is `type(e).__name__` and `detail` is `str(e)`. Both are
+  informational and neither is compared.
+- **`rule` is compared** (#634), for the targets in
+  `differential_replay.rs::TOKEN_COMPARED_TARGETS` — today `manifest_body`
+  and nothing else. It is one of the tokens in
+  `core/tests/data/rule_token_vocabulary.json`, which the Rust enum
+  `secretary_core::vault::manifest::RuleToken` and Section RTV both check
+  themselves against, so the two languages cannot drift onto different
+  spellings.
+- `rule` is `null` when the rejection carries no token. For a
+  token-compared target that is a **harness failure**, not agreement —
+  default-deny, so a new untokened rejection fails loudly rather than
+  silently restoring the blindness this field removed.
+- A token mismatch is a disagreement **unless either token is
+  phase-dependent**, in which case `docs/vault-format.md` §4.2 declares the
+  order unspecified and both readers are conformant. The predicate lives on
+  `RuleToken::is_phase_dependent`; it IS that sentence, not a list of
+  tolerated pairs.
+- **`manifest_file` is deliberately NOT token-compared** (#640): Rust's
+  header raises `UnsupportedFormatVersion` where Python raises the same
+  `ParseError` it raises for every envelope fault, and no mapping reconciles
+  that. The other five targets are #641.
 
 ### Exit code
 
@@ -135,7 +144,7 @@ The four-way agreement matrix:
 | Accept | Accept | Compare re-encoded bytes (skipped for `vault_toml`). |
 | Accept | Reject | **Disagreement** — one of them has a spec bug. |
 | Reject | Accept | **Disagreement** — one of them has a spec bug. |
-| Reject | Reject | Agreement, even with different error classes. |
+| Reject | Reject | Agreement on the verdict. For a token-compared target the `rule` tokens must also agree, or one must be phase-dependent — see §3. |
 
 When you investigate a disagreement, the rule of thumb:
 

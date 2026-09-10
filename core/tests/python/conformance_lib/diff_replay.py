@@ -23,6 +23,7 @@ from conformance_lib.codec.card import py_decode_contact_card, py_encode_contact
 from conformance_lib.codec.manifest_decode import py_decode_manifest
 from conformance_lib.codec.manifest_encode import py_encode_manifest
 from conformance_lib.codec.manifest_file import py_decode_manifest_file, py_encode_manifest_file
+from conformance_lib.codec.manifest_rules import token_for
 from conformance_lib.codec.record import py_decode_record, py_encode_record
 from conformance_lib.codec.vault_toml import py_decode_vault_toml
 from conformance_lib.rejection import _REJECTION_EXCEPTIONS
@@ -33,7 +34,7 @@ def run_diff_replay(target: str, input_path: str) -> int:
     Output (always to stdout, single line of JSON):
       {"status": "accept", "reencoded_b64": "..."}    # for non-TOML targets
       {"status": "accept", "reencoded_b64": ""}       # for vault_toml (no roundtrip)
-      {"status": "reject", "error_class": "...", "detail": "..."}
+      {"status": "reject", "error_class": "...", "detail": "...", "rule": "<token>" | null}
       {"status": "error",  "error_class": "...", "detail": "..."}
 
     Exit code: 0 for accept|reject; 3 for `status: "error"`.
@@ -132,10 +133,17 @@ def run_diff_replay(target: str, input_path: str) -> int:
             }))
             return 3
     except _REJECTION_EXCEPTIONS as e:
+        # `rule` is the language-neutral token `differential_replay.rs`
+        # compares (#634).  `None` when this rejection carries none, which
+        # the Rust side treats as a HARNESS FAILURE for a token-compared
+        # target rather than as agreement -- default-deny, the same posture
+        # `_REJECTION_EXCEPTIONS` itself takes.  `error_class` and `detail`
+        # are unchanged, so nothing that reads them moves.
         print(json.dumps({
             "status": "reject",
             "error_class": type(e).__name__,
             "detail": str(e),
+            "rule": token_for(e),
         }))
         return 0
     except Exception as e:  # noqa: BLE001 - surfaced as a harness failure
