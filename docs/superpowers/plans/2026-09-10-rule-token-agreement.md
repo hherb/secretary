@@ -12,20 +12,29 @@
 
 > **CORRECTION, final whole-branch review.** This document is an execution log:
 > its embedded code snippets and commit messages record what was written at the
-> time and are deliberately NOT rewritten here. Two claims they carry are now
+> time and are deliberately NOT rewritten here. FOUR claims they carry are now
 > known to be wrong, and the corrected versions live beside the code:
 >
 > 1. **"a predicate that IS the spec sentence"** (Architecture, above, and three
 >    doc-comment snippets below). The predicate is DERIVED from §4.2's
 >    "deliberately unspecified" paragraphs and is strictly BROADER — it is
 >    per-TOKEN, so it tolerates every pair its token appears in. The two
->    families §4.2 does not free are enumerated in
+>    groups §4.2 does not license — FOUR of them, not two — are enumerated in
 >    `RuleToken::is_phase_dependent`'s LIMITS block
 >    (`core/src/vault/manifest/token.rs`).
 > 2. **"an unrecognised or missing token is a harness failure"** (commit-message
 >    snippet below). Only a MISSING token is; an unrecognised one falls through
 >    `tokens_agree` to `false` and is reported as an ordinary disagreement.
 >    Both red the test, so no coverage was lost — the mechanism claim was wrong.
+> 3. **"14 raise sites"** (Task 5 and two later restatements). Thirteen. The
+>    plan's own conversion table lists 13 rows and the shipped commit converted
+>    13; the figure was never re-derived after the table was written.
+> 4. **"adding a variant without adding it to `ALL` is a COMPILE error"** (two
+>    places). It is not, and the shipped code says so at
+>    `RuleToken::ALL`: adding the variant AND its match arm while forgetting
+>    `ALL` compiles and passes, because the length assertion still reads 17.
+>    What catches that pair of edits is the fixture cross-check, and only once
+>    the fixture gains the row.
 >
 > The §4.2 paragraph this plan asked for also over-widened as first written; see
 > the design spec's §3.2 for what it should have said and what it now says.

@@ -72,12 +72,19 @@ live divergences and #621's third survived it.
   DERIVED from §4.2's "deliberately unspecified" paragraphs and strictly
   BROADER than them (it is per-TOKEN, so it tolerates every pair its token
   appears in), still not a pair list, which would drift from §4.2 silently. The
-  THREE families it tolerates that §4.2 does not free are written out in
-  `is_phase_dependent`'s LIMITS block: trailing bytes beside any schema fault,
-  array-sort against rule 4, and array-sort against repeated-array-value — the
-  last measured on both sides from one body that is unsorted AND repeated
-  (this crate says `repeated_array_value`, `conformance.py` says
-  `array_sort_order`), a pair §4.2 pointedly declines to free. A **missing** token is a harness failure; an
+  FOUR groups it tolerates that §4.2 does not license are written out in
+  `is_phase_dependent`'s LIMITS block: (A) trailing bytes beside any schema
+  fault, (B) array-sort against rule 4, (C) §6.2 rules 2/3 and
+  `non_canonical_unclassified` against rule 4, where §4.2 does not read
+  consistently, and (D) any of the four phase-dependent tokens against
+  repeated-array-value, where §4.2 is SILENT rather than ordering it. Group D's
+  array-sort member is measured on both sides from one body that is unsorted
+  AND repeated (this crate says `repeated_array_value`, `conformance.py` says
+  `array_sort_order`) and has no committed witness; #646 owns both halves.
+  **Quantify the breadth, because the enumeration form has been wrong twice**:
+  the predicate tolerates 58 of the 136 unequal pairs, and because all four
+  `NonCanonicalCause` outcomes are phase-dependent, 17 of the 24 rejecting
+  `manifest_body` seeds never compare the Python token at all. A **missing** token is a harness failure; an
   **unrecognised** one is an ordinary disagreement — both red the test, but the
   mechanisms differ, and four documents said otherwise until the final review.
 - **Section RTV**, registered. REG **28 → 29**.
@@ -167,9 +174,14 @@ covers exactly those — but that is the same filtered-target trap #587 recorded
 - **A token may only draw a distinction BOTH implementations can make.** Hence no
   `trailing_bytes` token: `ciborium` performs no EOF check, so Rust's parse
   discards them before the §4.3 comparison and it can only say `Unclassified`.
-- **The repeated-array-value rules stay ordered.** §4.2's widened sentence covers
-  the five array **sort** disciplines only, because both designs check repeats
-  during interpretation.
+- **The repeated-array-value rules are not freed — say that, not "stay
+  ordered".** §4.2's closing paragraph withholds the freedom only "relative to
+  the two fixed orderings above", so it neither frees nor orders them against
+  the array sort disciplines: on that pair the section is SILENT, and the
+  tolerance's group D is the consequence. §4.2's FIRST widening covers the five
+  array **sort** disciplines only, but the edit added a SECOND, independent one
+  — no order among §6.2 rules 1, 2 and 3 themselves — so "the widened sentence"
+  is two paragraphs, not one.
 - **#635 is untouched** — the crate-internal mapping works *around* `pub(crate)`.
 
 ---

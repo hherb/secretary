@@ -128,10 +128,15 @@ There are exactly three valid output shapes:
   declares the order unspecified and both readers are conformant. The
   predicate lives on `RuleToken::is_phase_dependent` and is **derived from**
   §4.2's "deliberately unspecified" paragraphs rather than being them — a
-  per-token predicate is strictly BROADER than a per-pair rule, and the two
-  families it tolerates that §4.2 does not free are written out in that
-  method's own LIMITS block. It is still not a list of tolerated pairs,
-  because such a list drifts from §4.2 silently.
+  per-token predicate is strictly BROADER than a per-pair rule: it tolerates
+  **58 of the 136 unequal token pairs**, and the FOUR groups it tolerates
+  that §4.2 does not license are written out in that method's own LIMITS
+  block. Read "generally declares the order unspecified" above with that in
+  mind — because all four `NonCanonicalCause` outcomes map to phase-dependent
+  tokens, **17 of the 24 rejecting `manifest_body` seeds never compare the
+  Python token at all**. It is still not a list of tolerated pairs, because
+  such a list drifts from §4.2 silently; #646 tracks replacing it with a
+  two-argument relation once §4.2 settles the two groups it leaves open.
 - An **unrecognised** token — one absent from the vocabulary — is never
   agreement, but its mechanism is not the missing-token one above: it falls
   through `tokens_agree` to `false` and is reported as an ordinary

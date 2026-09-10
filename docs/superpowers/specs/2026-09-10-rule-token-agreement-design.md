@@ -203,14 +203,19 @@ rather than being moved.
 **Python token coverage is PARTIAL, and this paragraph said otherwise until the
 final review.** "Every raise site reachable from `py_decode_manifest` is
 converted" was the overclaim. What is actually converted is the schema layer;
-two modules on the same import path keep raising bare `ValueError` — measured,
+THREE modules on the same import path keep raising bare `ValueError` — each
+of the counts below was re-measured in the #645 review and each was too small;
 `codec/scanner.py` has **18** such sites (CBOR well-formedness: truncated heads,
-overrunning lengths, unterminated indefinite items, span mismatches) and
-`codec/manifest_schema.py` has **9**, two of which are the NESTED twins of
-top-level sites that DID get a typed class. Two vocabulary rows also have no
-Python producer at all: `malformed_cbor` and `encoder_refusal` (see §4.3's table
-— its Python column names `cbor2.CBORDecodeError` and the
-`ENCODER_REFUSAL_PREFIX` raisers, neither of which carries a token).
+overrunning lengths, unterminated indefinite items — the span-mismatch raises belong to
+`manifest_schema.py`, not to this module) and
+`codec/manifest_schema.py` has **9**, **FOUR** of which are the NESTED twins of
+top-level sites that DID get a typed class (non-text key and
+missing-required-field, two per entry-map parser), and `codec/manifest_encode.py`
+has **3**, on the path because `manifest_decode.py` imports it and calls it for
+the §4.3 step-4 re-encode. **FIVE** vocabulary rows also have no Python producer
+at all: `malformed_cbor`, `encoder_refusal`, `aead_failure`, `signature_invalid`
+and `internal_error` — the last three because `py_decode_manifest_file` is a
+wire parse performing no AEAD or signature verification (see §4.3's table).
 
 **The POSTURE is fine; only the sentence was wrong.** An untokened rejection
 emits `"rule": null`, and for a token-compared target `differential_replay.rs`
@@ -243,9 +248,11 @@ total. Section RTV's own docstring carries the same correction.
 | `encoder_refusal` | the six `Encode*` variants | `ENCODER_REFUSAL_PREFIX` raisers | no |
 | `internal_error` | `CborEncode`, `Canonical(CborEncode \| CapacityBoundExceeded)`, `SignInternal` | n/a | no |
 
-**Two rows have NO tokened Python producer** (final-review correction): the
-`malformed_cbor` and `encoder_refusal` rows name `cbor2.CBORDecodeError` and the
-`ENCODER_REFUSAL_PREFIX` raisers, and neither carries a `token`. Read those cells
+**FIVE rows have NO tokened Python producer** (#645-review correction of a
+final-review correction that said two): `malformed_cbor` and `encoder_refusal`
+name `cbor2.CBORDecodeError` and the `ENCODER_REFUSAL_PREFIX` raisers, neither
+of which carries a `token`; `aead_failure`, `signature_invalid` and
+`internal_error` have no Python raise site at all. Read those cells
 as "the Python analogue of the rule", not as "a producer that emits this token".
 A body reaching either raises untokened, which is a loud harness failure on a
 token-compared target — see §4.2's coverage paragraph.
@@ -370,7 +377,8 @@ re-derived every time a token is added, and would drift from §4.2 silently.
 
 **Derived is not identical, and the difference must not be written away.** The
 predicate reads ONE token at a time, so marking a token phase-dependent
-tolerates every pair it appears in. Two families are tolerated that §4.2 does
+tolerates every pair it appears in — 58 of the 136 unequal pairs. FOUR groups,
+not two, are tolerated that §4.2 does
 not free, and both are enumerated in `is_phase_dependent`'s own LIMITS block
 rather than here, so the rule and its residual cannot drift apart:
 
@@ -393,7 +401,9 @@ because only one implementation can make it.
 
 A **missing** token on a token-compared target is a harness failure, not a pass —
 the default-deny posture `_REJECTION_EXCEPTIONS` and the hygiene guards already
-take. It fails loudly, naming the exception class that needs typing. An
+take. It fails loudly. (As shipped the message names the target, the input
+path and both tokens; it does NOT name the Python exception class, which lives
+in `PyOutcome::Reject.detail` and is not read by that arm.) An
 **unrecognised** token is a different mechanism and must not be described as the
 same one: it falls through the predicate to `false` and is reported as an
 ordinary disagreement. Both red the test.
@@ -446,7 +456,9 @@ independent pieces of evidence close that.
    it the two languages could drift onto different spellings and every
    comparison would silently become a mismatch — or, worse, a tolerated one.
    REG goes 28 → 29.
-4. **Mutation.** Every new assertion is mutated and watched to red, with the
+4. **Mutation.** Every new assertion is mutated and watched to red — with one
+   deliberate exception, M8: swapping a phase-dependent token for another is
+   tolerated by construction, so nothing catches it and nothing should. With the
    harness clearing `__pycache__` and setting `PYTHONDONTWRITEBYTECODE` — the
    trap the previous slice hit, where a size-preserving Python mutation reported
    a false green because CPython invalidates bytecode on `(mtime, size)` with

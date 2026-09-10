@@ -13,20 +13,26 @@ The cryptographic design and on-disk format are **frozen for v1** because vaults
 ```
 core/                Rust crate `secretary-core` — the security-critical source of truth
 core/src/{crypto,identity,unlock,vault}/   — module per spec section
-core/src/vault/manifest/                   — DIRECTORY module (#564), not manifest.rs; 30 files:
-                                             15 production + 13 sibling `tests.rs` + the 2
-                                             non-`tests.rs` files under `test_support/`
-                                             (`mod.rs`, `surgery.rs`). `ls test_support` shows
-                                             THREE — its own `surgery/tests.rs` is counted in
-                                             the 13, not here. Was 28/14/12 before #587 added
-                                             `sentinel.rs` and its sibling tests, and 26/13/11
-                                             before #589 added `decode/slot.rs`. RE-MEASURE:
+core/src/vault/manifest/                   — DIRECTORY module (#564), not manifest.rs; 34 files:
+                                             16 production + 13 sibling `tests.rs` + the 3 under
+                                             `token/tests/` + the 2 non-`tests.rs` files under
+                                             `test_support/` (`mod.rs`, `surgery.rs`).
+                                             `ls test_support` shows THREE — its own
+                                             `surgery/tests.rs` is counted in the 13, not here.
+                                             `token/tests/` is the one test DIRECTORY (#645
+                                             review split it at 588 lines); none of its three
+                                             files is named `tests.rs`, so it is its own term.
+                                             Said 30 while the tree held 32, then 34. RE-MEASURE,
+                                             every term:
                                              `find core/src/vault/manifest -name '*.rs' | wc -l`
 core/tests/          — integration tests; tests/data/ holds KATs and fuzz regressions
 core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (136 lines; the PEP
                                              723 header is the sole dependency declaration).
                                              `conformance.py:NNN` citations predating #593 are
-                                             stale — the verifier is now a 62-file package.
+                                             stale — the verifier is now a 65-file package.
+                                             RE-MEASURE: `find core/tests/python/conformance_lib
+                                             -name '*.py' | wc -l` — this line said 62 while the
+                                             paragraph below said 65 for a whole slice.
 core/tests/python/conformance_lib/         — DIRECTORY module (#593), the verifier itself: no
                                              dependency on `secretary-core`; proves the spec is
                                              implementable from `docs/` alone. `wire/` parses to
@@ -875,25 +881,40 @@ survived it. Six things:
   stays specific.
 - **`tokens_agree` tolerates a mismatch iff either token is phase-dependent**,
   which is DERIVED from §4.2's "deliberately unspecified" paragraphs and is
-  strictly BROADER than them — do not write "it IS that sentence", which four
-  documents did. A per-TOKEN predicate tolerates every pair its token appears
-  in, and two families are tolerated that §4.2 does not free: (a) trailing
-  bytes, folded into `non_canonical_unclassified` because Rust cannot name them
-  (see the coarsening bullet above), beside ANY schema fault — Python checks
-  trailing bytes right after the rule-4 walk and Rust cannot see them until the
-  §4.3 step-4 re-encode, so the two name different rules and it scores as
-  agreement (measured: `uniq__blocks__duplicate_block_uuid.bin` +`0x00` moves
-  Python from `repeated_array_value` to `non_canonical_unclassified` while
-  Rust's answer cannot move); and (b) `array_sort_order` against
-  `rule4_tag_or_float`, which §4.2's ordering 1 FIXES. Both are recorded in
-  `RuleToken::is_phase_dependent`'s own LIMITS block and deliberately not
-  fixed — narrowing the predicate would manufacture false disagreements on the
-  pairs §4.2 genuinely leaves free. A predicate stays right over a pair list,
-  which would drift from §4.2 silently; a knowably-wider predicate can at
-  least have its residual written down. A MISSING token is a harness failure;
-  an UNRECOGNISED one is an ordinary disagreement (`tokens_agree` returns
-  `false`) — "unrecognised OR missing is a harness failure" is wrong about the
-  first half, though both red the test.
+  strictly BROADER than them — do not write "it IS that sentence", which five
+  documents did, the fifth being the shared JSON fixture BOTH languages read.
+  **State the breadth as a number, because the list-of-exceptions form has now
+  been wrong twice.** A per-TOKEN predicate tolerates every pair its token
+  appears in, so with 4 of the 17 tokens phase-dependent it tolerates **58 of
+  the 136 unequal pairs**; §4.2 frees a strict subset. All four
+  `NonCanonicalCause` outcomes map to phase-dependent tokens, so **every**
+  `NonCanonicalEncoding` rejection Rust makes is scored as agreement whatever
+  Python said — measured on the committed corpus, that is **17 of the 24
+  rejecting `manifest_body` seeds** (7 `arraysort__*`, 4 `keyorder__*`, 3
+  rule-2, 3 rule-3), leaving 7 that reach a real comparison. FOUR groups are
+  tolerated with no §4.2 licence, enumerated in
+  `RuleToken::is_phase_dependent`'s own LIMITS block and tracked by **#646**:
+  (A) trailing bytes, folded into `non_canonical_unclassified` because Rust
+  cannot name them, beside ANY schema fault; (B) `array_sort_order` against
+  `rule4_tag_or_float`, which §4.2's ordering 1 FIXES; (C) rules 2, 3 and
+  `non_canonical_unclassified` against `rule4_tag_or_float`, where §4.2 does
+  not read consistently — ordering 1 puts rule 4 ahead of "§6.2's numbered
+  rules" while the next paragraph declares rules 1-3 unordered against both
+  fixed orderings; and (D) any of the four against `repeated_array_value`,
+  where §4.2 is SILENT rather than ordering it, its closing paragraph
+  withholding the freedom only "relative to the two fixed orderings above".
+  **A CLAUDE.md version of this bullet said §4.2 "pointedly does NOT free"
+  group D — it says no such thing about that pair**, and asserting a spec
+  sentence that does not exist is worse than admitting silence. The group-D
+  `array_sort_order` member is a measured LIVE divergence with no committed
+  witness. Narrowing the predicate by hand would manufacture false
+  disagreements on the pairs §4.2 genuinely leaves free, so #646 pairs the
+  narrowing with the §4.2 decisions it needs. The BREADTH is now pinned as a
+  number by `tolerance_admits_only_phase_dependent_pairs`, so a fifth
+  phase-dependent token cannot widen it silently. A MISSING token is a harness
+  failure; an UNRECOGNISED one is an ordinary disagreement (`tokens_agree`
+  returns `false`) — "unrecognised OR missing is a harness failure" is wrong
+  about the first half, though both red the test.
 - **Only `manifest_body` is token-compared. `manifest_file` is BLOCKED, and the
   reason generalises: sharing an error enum is not sharing a granularity.**
   Measured on one file with `format_version = 0x0099`, Rust says
@@ -908,14 +929,42 @@ survived it. Six things:
   exactly one rule and the comparison would otherwise pass vacuously.
   `diff_regressions/manifest_body/arraysort_plus_indefinite.bin` breaks two at
   once: Rust names `array_sort_order`, Python names `rule2_indefinite_length`,
-  same offset 929, both conformant. Its rationale lives in
-  `diff_regressions/README.md` — ONE LEVEL UP, because the corpus walker feeds
+  same offset 929, both conformant. §4.2's ARRAY-SORT paragraph licenses that
+  pair directly and by name ("out of array sort order and also breaks one of
+  §6.2 rules 1-3"); three documents credited the later "no order among rules 1,
+  2 and 3 themselves" paragraph instead, which is a different sentence and does
+  not reach a pair one of whose members is an array sort discipline —
+  `diff_regressions/README.md` had it right throughout. Its rationale lives in
+  that README — ONE LEVEL UP, because the corpus walker feeds
   every file in a per-target directory to both decoders and skips only
   `.gitkeep`. A README inside the target directory becomes corpus input; that is
-  how it was found.
+  how it was found. The walker's floor is now PER-TARGET
+  (`MIN_CORPUS_INPUTS`), because `seen > 0` was satisfied for `manifest_body`
+  by that one always-present committed file: an emptied `fuzz/seeds/` left the
+  only token-compared target replaying one input, itself a tolerated pair, and
+  the test passed having compared nothing.
+- **Almost none of this runs in CI, and that belongs here rather than only in
+  the handoff (#647).** `differential_replay.rs` is
+  `#![cfg(feature = "differential-replay")]` and no workflow enables the
+  feature, so the file is not even COMPILED in CI: the corpus comparison, the
+  tolerance, its negative control, the witness and `diff_replay.py`'s `rule`
+  field are all local-only. What CI enforces is `manifest/token/tests/` (the
+  blocking `cargo test --workspace`) and Section RTV (the blocking `clean-room
+  conformance` job). Weigh any claim about this slice against that split.
+- **Token coverage is asymmetric between the two sides, and the Python half
+  needed the identity check it did not have.** Rust pins all 35 variant→token
+  mappings (`tests/mapping.rs`, a second independent declaration) plus 6
+  end-to-end decodes. Section RTV originally asked only whether a token was
+  somewhere IN the vocabulary, so a raise site re-pointed at a different but
+  valid token passed every CI gate; it now asserts the exact token per class
+  AND that the set the corpus produces is the expected six. Both directions
+  mutation-proven with sha256-verified restores.
 - **One mutation is GREEN by design and that is not a gap.** Swapping one
   phase-dependent token for another is tolerated by construction, since §4.2
-  declares that order free. Nothing catches it and nothing should. Every other
+  declares that order free. Nothing catches it and nothing should. Note the
+  narrower true statement: the predicate tolerates a phase-dependent token
+  against ANY token, not only against another phase-dependent one, which is
+  what the four groups above are. Every other
   mutation reds: an ordered token swapped for another ordered one (4 differential
   disagreements), a removed token (4 harness failures), a dropped `rule` field
   (25 harness failures), a dropped or flipped vocabulary row (Section RTV), and
@@ -928,10 +977,12 @@ ordering 1: rule 4 outranks "this section's schema checks" and the sort
 disciplines ARE among them, so one paragraph fixed an order another declared
 free. §4.2 now says three things separately: the sort disciplines are
 unordered against §6.2 rules 1-3 and against ordering 2; no order is given
-WITHIN the free set either (which is what actually licenses this branch's own
-witness, `array_sort_order` vs `rule2_indefinite_length` — a pair drawn from
-inside it, which neither "against the fixed orderings" paragraph reaches);
-and ordering 1 still binds them. Deliberately NOT the repeated-value rules,
+among §6.2 rules 1, 2 and 3 THEMSELVES either (a second, independent widening,
+scoped to those three and not to the whole free set — the handoff's "the array
+sort disciplines only" describes the first widening alone); and ordering 1
+still binds them. The witness is licensed by the FIRST of those, not the
+second: §4.2 says in as many words that a body out of array sort order which
+also breaks one of §6.2 rules 1-3 may be reported as either. Deliberately NOT the repeated-value rules,
 because both reader designs check those during interpretation, so that
 ordering stays free of charge.
 
