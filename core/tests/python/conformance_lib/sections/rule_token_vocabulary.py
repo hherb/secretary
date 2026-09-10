@@ -47,11 +47,14 @@ from conformance_lib.rejection import _REJECTION_EXCEPTIONS
 # these carries a token that is in the shared vocabulary; it asserts nothing
 # about classes that are not listed.
 #
-# FIVE tokened classes reachable from `py_decode_manifest` are deliberately
+# FOUR tokened classes reachable from `py_decode_manifest` are deliberately
 # absent, because they are tokened at their own raise sites in other modules:
 # `manifest_decode.ArraySortOrderViolation`, `manifest_decode.NonCanonicalBody`,
-# `scanner.NonCanonicalItem`, `scanner.DuplicateMapKey` and
-# `cursor.ParseError`.
+# `scanner.NonCanonicalItem` and `scanner.DuplicateMapKey`.
+# `cursor.ParseError` also carries a token but is NOT reachable from
+# `py_decode_manifest` -- nothing on that function's import path imports
+# `cursor`; it belongs to the wire ENVELOPE decoders, which is why its token
+# is `container_malformed`.
 #
 # WHAT THIS TUPLE CANNOT DO.  Because it is hand-declared rather than
 # discovered, a class added WITHOUT a token is an ABSENCE here and not a

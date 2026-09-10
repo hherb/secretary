@@ -165,7 +165,7 @@ impl RuleToken {
     /// # LIMITS
     ///
     /// Marking a TOKEN phase-dependent tolerates every pair that token
-    /// appears in. Two families are tolerated that §4.2 orders or leaves
+    /// appears in. THREE families are tolerated that §4.2 orders or leaves
     /// unmentioned. Both are recorded rather than fixed: narrowing the
     /// predicate would manufacture false disagreements on the pairs §4.2
     /// genuinely does leave free, and the mechanism behind each is a
@@ -197,6 +197,17 @@ impl RuleToken {
     ///    disciplines are among them — §4.2 says so in as many words. The
     ///    predicate cannot express that, because it reads one token at a time
     ///    and `ArraySortOrder` is phase-dependent against §6.2 rules 1-3.
+    /// 3. **[`Self::ArraySortOrder`] against [`Self::RepeatedArrayValue`] is
+    ///    tolerated, and §4.2 pointedly does NOT free it.** That section's
+    ///    closing paragraph says the repeated-array-value rules stay ordered,
+    ///    because both designs check them during interpretation. The two
+    ///    nonetheless disagree, for the same one-token-at-a-time reason as
+    ///    family 2. Measured on both sides, from one body whose `blocks`
+    ///    array is both out of order and carries a repeat: this crate says
+    ///    `repeated_array_value` (`DuplicateBlockUuid`, raised by
+    ///    `decode/entries.rs` during the parse), `conformance.py` says
+    ///    `array_sort_order` (its sort check precedes its repeat check), and
+    ///    the harness scores agreement.
     pub fn is_phase_dependent(&self) -> bool {
         match self {
             RuleToken::Rule2IndefiniteLength
@@ -267,8 +278,9 @@ impl ManifestError {
             // --- v1 sentinels, at BOTH layers ----------------------------
             // `header.rs` raises the format/suite pair for the §4.1 file
             // header and `decode/mod.rs` raises all three for the §4.2 body.
-            // (`sentinel.rs` is the WRITER-side check and raises the six
-            // `Encode*` variants instead — #587 kept those apart on purpose,
+            // (`sentinel.rs` is the WRITER-side check and raises the THREE
+            // `EncodeUnsupported*` variants instead; `uniqueness.rs` raises
+            // the other three `Encode*` — #587 kept writer and reader apart,
             // and the #640 argument turns on which sites share a variant, so
             // the file matters.) One token cannot tell the two decode layers
             // apart, which is precisely why `manifest_file` is not

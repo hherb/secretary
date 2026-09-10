@@ -853,7 +853,7 @@ also now ONE shared `_reject_rule4_head`, since a masked copy is how the two
 would drift unnoticed.
 
 **WHICH rule each implementation reports is now COMPARED, not assumed (#634),
-and the tolerance is the spec sentence rather than a list.** `differential_replay.rs`
+and the tolerance is DERIVED from the spec sentence, not identical to it.** `differential_replay.rs`
 exists to prove the two decoders agree, and its reject-vs-reject arm was the
 constant `true` — with a comment saying the comparison could be tightened "when
 we standardize them". That is why #618's two live divergences and #621's third

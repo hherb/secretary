@@ -441,20 +441,19 @@ can be required to run that walk first.
 layer up.** A reader whose encoder sorts those arrays on output detects
 disorder only at the §4.3 step-4 re-encode comparison, after interpretation; a
 byte-retaining reader re-emits its input unconditionally, so its own re-encode
-can never see array disorder and it must check the discipline directly, during
-its scan. So a body that is out of array sort order and also breaks one of
-§6.2 rules 1-3 may be reported as either, and so may one that is out of array
-sort order and also repeats a map key.
+can never see array disorder and it must check the discipline directly, against
+the decoded array elements. So a body that is out of array sort order and also
+breaks one of §6.2 rules 1-3 may be reported as either, and so may one that is
+out of array sort order and also repeats a map key.
 
-**Within that free set no order is given either**, and this needs saying
-separately because the two paragraphs above each order the free set only
-against the two *fixed* orderings. A body that is out of array sort order *and*
-carries an indefinite-length item, say, may be reported as either: a
+**No order is given among §6.2 rules 1, 2 and 3 themselves either.** The
+paragraph above frees the array sort disciplines against those three, but says
+nothing about a body that breaks two of the three — map-key disorder together
+with a non-shortest-form head, say. Neither design separates them: a
 normalising-parse reader reaches both at the one §4.3 step-4 comparison and its
-own classifier decides which it names, while a byte-retaining reader meets the
-encoding rule during its scan and the array discipline only during
-interpretation, so it necessarily names the encoding rule. Neither reader is
-the more conformant.
+own classifier decides which it names, and a byte-retaining reader meets both
+during its scan in whatever order its walk happens to visit them. Either answer
+is conformant.
 
 **Ordering 1 above still binds the array sort disciplines.** They are among
 "this section's schema checks", so a body carrying a tag or a float anywhere is
