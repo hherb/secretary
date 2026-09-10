@@ -21,6 +21,10 @@
 //!
 //! [`ManifestError`]: super::ManifestError
 
+use super::cause::NonCanonicalCause;
+use super::error::ManifestError;
+use crate::vault::canonical::CanonicalError;
+
 /// Which rule a rejecting manifest decoder is reporting.
 ///
 /// Fieldless by construction (#474): every variant is a compile-time
@@ -165,6 +169,100 @@ impl RuleToken {
             | RuleToken::SignatureInvalid
             | RuleToken::EncoderRefusal
             | RuleToken::InternalError => false,
+        }
+    }
+}
+
+impl ManifestError {
+    /// Which rule this rejection is reporting, as a language-neutral token.
+    ///
+    /// **Exhaustive by construction.** Adding a `ManifestError` variant
+    /// without classifying it is a compile error, which is the whole point:
+    /// a wildcard arm would let a new variant fall silently into some
+    /// neighbour's token and present a divergence as agreement. Same ruling
+    /// as #589's `Once` and #608's `Verdict` — make the obligation a type
+    /// obligation, not a convention.
+    ///
+    /// **Advisory, never a verdict.** Nothing in the crate consults this to
+    /// decide acceptance; it exists so two implementations can be compared
+    /// on what they said. Same family as [`NonCanonicalCause`] (#590).
+    pub fn rule_token(&self) -> RuleToken {
+        match self {
+            // --- §4.2 body: canonical form -------------------------------
+            ManifestError::NonCanonicalEncoding { cause, .. } => match cause {
+                NonCanonicalCause::ArraySortOrder => RuleToken::ArraySortOrder,
+                NonCanonicalCause::IndefiniteLength => RuleToken::Rule2IndefiniteLength,
+                NonCanonicalCause::NonShortestForm => RuleToken::Rule3NonShortestForm,
+                NonCanonicalCause::Unclassified => RuleToken::NonCanonicalUnclassified,
+            },
+            // `reject_floats_and_tags` runs before `parse_manifest_map`, so
+            // this is §6.2 rule 4. The DuplicateKey arm is the canonical
+            // encoder's own, reached through the §4.3 step-4 re-encode.
+            ManifestError::Canonical(e) => match e {
+                CanonicalError::FloatRejected { .. } | CanonicalError::TagRejected { .. } => {
+                    RuleToken::Rule4TagOrFloat
+                }
+                CanonicalError::DuplicateKey { .. } => RuleToken::DuplicateMapKey,
+                CanonicalError::CborEncode(_) | CanonicalError::CapacityBoundExceeded { .. } => {
+                    RuleToken::InternalError
+                }
+            },
+
+            // --- §4.2 body: schema ---------------------------------------
+            ManifestError::DuplicateKey { .. } => RuleToken::DuplicateMapKey,
+            ManifestError::MissingField { .. } => RuleToken::MissingField,
+            ManifestError::NotAMap
+            | ManifestError::NonTextKey
+            | ManifestError::WrongType { .. }
+            | ManifestError::InvalidByteLength { .. } => RuleToken::WrongType,
+            ManifestError::IntegerOutOfRange { .. } => RuleToken::IntegerOutOfRange,
+
+            // --- v1 sentinels, at BOTH layers ----------------------------
+            // `header.rs` raises the format/suite pair for the §4.1 file
+            // header and `sentinel.rs` raises all three for the §4.2 body.
+            // One token cannot tell those apart, which is precisely why
+            // `manifest_file` is not token-compared (#640).
+            ManifestError::UnsupportedManifestVersion(_)
+            | ManifestError::UnsupportedFormatVersion(_)
+            | ManifestError::UnsupportedSuiteId(_) => RuleToken::UnsupportedVersion,
+
+            // --- §4.2 arrays ---------------------------------------------
+            ManifestError::VectorClockDuplicateDevice
+            | ManifestError::DuplicateBlockUuid
+            | ManifestError::DuplicateTrashUuid => RuleToken::RepeatedArrayValue,
+
+            // --- the encoder refusing to emit a body ---------------------
+            // Not a property of any input: a caller built a malformed
+            // `Manifest` in memory. Kept apart from the decoder's tokens for
+            // the reason #600 kept the variants apart.
+            ManifestError::EncodeDuplicateBlockUuid
+            | ManifestError::EncodeDuplicateTrashUuid
+            | ManifestError::EncodeVectorClockDuplicateDevice
+            | ManifestError::EncodeUnsupportedManifestVersion(_)
+            | ManifestError::EncodeUnsupportedFormatVersion(_)
+            | ManifestError::EncodeUnsupportedSuiteId(_) => RuleToken::EncoderRefusal,
+
+            // --- CBOR well-formedness ------------------------------------
+            ManifestError::CborDecode(_) => RuleToken::MalformedCbor,
+
+            // --- §4.1 file envelope --------------------------------------
+            ManifestError::BadMagic { .. }
+            | ManifestError::UnsupportedFileKind { .. }
+            | ManifestError::HeaderTruncated { .. }
+            | ManifestError::SectionTruncated { .. }
+            | ManifestError::AeadCtLenMismatch { .. }
+            | ManifestError::TrailingBytes(_)
+            | ManifestError::SigEdWrongLength { .. }
+            | ManifestError::SigPqWrongLength { .. } => RuleToken::ContainerMalformed,
+            ManifestError::AeadFailure => RuleToken::AeadFailure,
+            ManifestError::Ed25519SignatureInvalid | ManifestError::MlDsa65SignatureInvalid => {
+                RuleToken::SignatureInvalid
+            }
+
+            // --- this implementation's own faults ------------------------
+            ManifestError::CborEncode(_) | ManifestError::SignInternal(_) => {
+                RuleToken::InternalError
+            }
         }
     }
 }

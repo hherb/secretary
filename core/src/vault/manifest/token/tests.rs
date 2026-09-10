@@ -112,3 +112,99 @@ fn vocabulary_fixture_matches_the_enum() {
         );
     }
 }
+
+use crate::vault::manifest::ManifestError;
+
+/// The four causes must each keep their own token. Collapsing any two would
+/// make #621's divergence — array sort order vs §6.2 rule 2 — invisible again.
+#[test]
+fn each_non_canonical_cause_has_its_own_token() {
+    use crate::vault::manifest::NonCanonicalCause as C;
+    let pairs = [
+        (C::ArraySortOrder, RuleToken::ArraySortOrder),
+        (C::IndefiniteLength, RuleToken::Rule2IndefiniteLength),
+        (C::NonShortestForm, RuleToken::Rule3NonShortestForm),
+        (C::Unclassified, RuleToken::NonCanonicalUnclassified),
+    ];
+    for (cause, want) in pairs {
+        let err = ManifestError::NonCanonicalEncoding { cause, at: None };
+        assert_eq!(err.rule_token(), want, "cause {:?}", cause);
+    }
+}
+
+/// A repeated map key and a repeated ARRAY value are different rules and must
+/// not share a token: §4.2 orders the first against the type checks and leaves
+/// the second alone.
+#[test]
+fn map_key_repeats_and_array_value_repeats_are_different_tokens() {
+    let map_key = ManifestError::DuplicateKey {
+        field: "manifest",
+        index: 1,
+    };
+    assert_eq!(map_key.rule_token(), RuleToken::DuplicateMapKey);
+    for err in [
+        ManifestError::DuplicateBlockUuid,
+        ManifestError::DuplicateTrashUuid,
+        ManifestError::VectorClockDuplicateDevice,
+    ] {
+        assert_eq!(err.rule_token(), RuleToken::RepeatedArrayValue);
+    }
+}
+
+/// A decoder rejection and an ENCODER refusal are different events (#600,
+/// #587) and must stay different tokens — otherwise a body a caller built
+/// wrong in memory would be compared against a peer's reading of real bytes.
+#[test]
+fn encoder_refusals_are_not_decoder_rejections() {
+    for err in [
+        ManifestError::EncodeDuplicateBlockUuid,
+        ManifestError::EncodeDuplicateTrashUuid,
+        ManifestError::EncodeVectorClockDuplicateDevice,
+        ManifestError::EncodeUnsupportedManifestVersion(7),
+        ManifestError::EncodeUnsupportedFormatVersion(9),
+        ManifestError::EncodeUnsupportedSuiteId(9),
+    ] {
+        assert_eq!(err.rule_token(), RuleToken::EncoderRefusal);
+    }
+    assert_eq!(
+        ManifestError::UnsupportedManifestVersion(7).rule_token(),
+        RuleToken::UnsupportedVersion
+    );
+}
+
+/// The three v1 sentinels share one token at BOTH layers. `header.rs` raises
+/// the same two variants the body sentinel check does, which is exactly why
+/// `manifest_file` cannot be token-compared (#640) — recorded here so the
+/// reason survives beside the mapping that causes it.
+#[test]
+fn every_v1_sentinel_maps_to_unsupported_version() {
+    for err in [
+        ManifestError::UnsupportedManifestVersion(7),
+        ManifestError::UnsupportedFormatVersion(9),
+        ManifestError::UnsupportedSuiteId(9),
+    ] {
+        assert_eq!(err.rule_token(), RuleToken::UnsupportedVersion);
+    }
+}
+
+/// A real decode of a real corrupt body must produce the token the corpus
+/// says. Reading the match arms proves nothing about which arm the decoder
+/// reaches; this drives `decode_manifest` end to end.
+#[test]
+fn a_real_rejection_carries_the_expected_token() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/seeds/manifest_body");
+    let cases = [
+        ("top__rule4_float.bin", RuleToken::Rule4TagOrFloat),
+        ("top__rule2_indefinite_map.bin", RuleToken::Rule2IndefiniteLength),
+        ("top__rule3_non_shortest_int.bin", RuleToken::Rule3NonShortestForm),
+        ("keyorder__top.bin", RuleToken::NonCanonicalUnclassified),
+        ("arraysort__blocks.bin", RuleToken::ArraySortOrder),
+        ("uniq__blocks__duplicate_block_uuid.bin", RuleToken::RepeatedArrayValue),
+    ];
+    for (name, want) in cases {
+        let bytes = std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("read {}: {}", name, e));
+        let err = crate::vault::manifest::decode_manifest(&bytes)
+            .expect_err(&format!("{} must be rejected", name));
+        assert_eq!(err.rule_token(), want, "seed {}", name);
+    }
+}
