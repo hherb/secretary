@@ -69,6 +69,9 @@ from conformance_lib.sections.required_key_determinism import (
     section_required_key_determinism,
 )
 from conformance_lib.sections.revoke import section_revoke_kat
+from conformance_lib.sections.rule_token_vocabulary import (
+    section_rule_token_vocabulary,
+)
 from conformance_lib.sections.sync_pass import section_sync_pass_kat
 from conformance_lib.sections.unknown_map import (
     section5_unknown_map_case_insensitivity,
@@ -152,6 +155,8 @@ SECTIONS: tuple[Section, ...] = (
             " (#587)", section_manifest_sentinel_writer),
     Section("MPR", "manifest §4.2 rejection-precedence cross-language replay",
             " (#618)", section_manifest_precedence_kat),
+    Section("RTV", "rule-token vocabulary agreement, both languages",
+            " (#634)", section_rule_token_vocabulary),
     Section("RC", "record unknown-subtree canonicality, both nesting levels",
             " (#592)", section_record_unknown_subtree_canonicality),
     Section("DET", "required-key rejection determinism across hash seeds",
