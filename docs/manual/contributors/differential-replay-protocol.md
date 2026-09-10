@@ -86,8 +86,13 @@ There are exactly three valid output shapes:
   a canonical re-encode contract — it builds an in-memory `VaultIndex`
   struct and discards the lexical input. Python emits an empty
   `reencoded_b64` and the Rust side
-  ([`differential_replay.rs:130-137`](../../../core/tests/differential_replay.rs#L130-L137))
-  short-circuits the byte comparison for this target.
+  (`differential_replay.rs::differential_replay_full_corpus`'s
+  `if *target == "vault_toml"` arm) short-circuits the byte comparison for
+  this target. A line-anchor citation here was tried before and went stale
+  across an unrelated edit to the same file (twice, in fact — once before
+  #634 and worse afterwards, when splitting the file's helpers into
+  `differential_replay_helpers/` shifted the line numbers further); a symbol
+  reference doesn't need updating every time this file's line count moves.
 - **Do not** invent a re-encode for `vault_toml`. If you do, Rust will
   start comparing bytes and fail because Rust's `rust_decode` arm for
   vault_toml also returns `Vec::new()`. Both sides must stay in sync.
@@ -198,13 +203,16 @@ directories on every run.
 ## Adding a new accept-shape (don't, unless you must)
 
 The three output shapes above are not arbitrary; they're what
-`differential_replay.rs::python_decode` knows how to consume. If you
-genuinely need a new shape (e.g. "accept with a structured error class
-to compare against Rust"), extend **both sides** of the protocol in the
-same commit:
+`differential_replay_helpers::python_bridge::python_decode` knows how to
+consume (moved out of `differential_replay.rs` itself in #634, to keep that
+entry file under the project's 500-LOC guideline — see that file's own
+module doc). If you genuinely need a new shape (e.g. "accept with a
+structured error class to compare against Rust"), extend **both sides** of
+the protocol in the same commit:
 
-1. Update `python_decode` in `differential_replay.rs` to recognise the
-   new shape.
+1. Update `python_decode` in
+   `core/tests/differential_replay_helpers/python_bridge.rs` to recognise
+   the new shape.
 2. Update `run_diff_replay` in `conformance_lib/diff_replay.py` to emit it.
 3. Update this document.
 
