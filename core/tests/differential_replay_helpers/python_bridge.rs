@@ -139,7 +139,20 @@ pub fn python_decode(target: &str, input_path: &std::path::Path) -> PyOutcome {
     };
     match json["status"].as_str() {
         Some("accept") => {
-            let b64 = json["reencoded_b64"].as_str().unwrap_or("");
+            // A missing or non-string `reencoded_b64` is a HARNESS failure,
+            // not an empty acceptance. `unwrap_or("")` decoded to `vec![]`
+            // and handed that back as a VERDICT, which the caller then
+            // scored as an ordinary byte disagreement — the same
+            // degrade-to-a-wrong-answer shape the `rule` field two arms
+            // below is carefully protected against. `vault_toml` compares
+            // no bytes, so there it was swallowed outright.
+            let Some(b64) = json["reencoded_b64"].as_str() else {
+                return PyOutcome::Harness(format!(
+                    "python accepted but its `reencoded_b64` is missing or not a \
+                     string: {}",
+                    stdout_buf.trim()
+                ));
+            };
             use base64::Engine as _;
             match base64::engine::general_purpose::STANDARD.decode(b64) {
                 Ok(v) => PyOutcome::Accept(v),

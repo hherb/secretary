@@ -65,6 +65,41 @@ const NOT_TOKEN_COMPARED_TARGETS: &[&str] = &[
     "block_file",
 ];
 
+/// The committed input floor for each target.
+///
+/// `seen > 0` was not enough, and the gap was specific rather than
+/// theoretical: `corpus_dirs` skips a missing directory silently, and for
+/// `manifest_body` — the ONLY token-compared target —
+/// `tests/data/diff_regressions/manifest_body/` holds one always-present
+/// committed file. So a renamed or emptied `core/fuzz/seeds/manifest_body/`
+/// left the target replaying exactly that one input, which is itself a
+/// TOLERATED pair, and the test passed having compared nothing. That is the
+/// #595 fail-open shape one level up: the mechanism was guarded, the
+/// magnitude was not.
+///
+/// The figures are the counts committed today, so deleting an input reds
+/// rather than quietly shrinking the corpus. A developer with a populated
+/// `core/fuzz/corpus/` sees more, which is why this is a floor and not an
+/// equality. `every_target_is_classified` requires this table to cover
+/// `TARGETS` exactly, so a new target cannot arrive without one.
+const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
+    ("vault_toml", 3),
+    ("record", 3),
+    ("contact_card", 2),
+    ("bundle_file", 1),
+    ("manifest_file", 1),
+    ("manifest_body", 39),
+    ("block_file", 1),
+];
+
+fn min_inputs(target: &str) -> usize {
+    MIN_CORPUS_INPUTS
+        .iter()
+        .find(|(t, _)| *t == target)
+        .map(|(_, n)| *n)
+        .unwrap_or_else(|| panic!("target {target} has no MIN_CORPUS_INPUTS entry"))
+}
+
 /// Do two rule tokens count as agreement?
 ///
 /// Equal tokens always do. Unequal tokens do **only** when at least one is
@@ -75,14 +110,17 @@ const NOT_TOKEN_COMPARED_TARGETS: &[&str] = &[
 ///
 /// **Derived from, and strictly BROADER than, those paragraphs — it is not
 /// them.** A per-token predicate tolerates every pair its token appears in,
-/// and two families are tolerated that §4.2 does not free: trailing bytes
-/// (folded into `NonCanonicalUnclassified`, which §4.2 orders nowhere) beside
-/// any schema fault, and `array_sort_order` against `rule4_tag_or_float`,
-/// which §4.2's ordering 1 fixes. Both are stated in full on
-/// [`RuleToken::is_phase_dependent`]'s own LIMITS block, beside the predicate
-/// rather than beside this caller. Narrowing the predicate to close them
-/// would manufacture false disagreements on the pairs §4.2 genuinely leaves
-/// free, so the residual is recorded, not fixed.
+/// so with 4 of the 17 tokens phase-dependent this tolerates **58 of the 136
+/// unequal pairs**, of which §4.2 frees a strict subset. FOUR groups are
+/// tolerated with no §4.2 licence at all, and on the committed corpus the
+/// cost is that **17 of the 24 rejecting `manifest_body` seeds never compare
+/// the Python token**, because every `NonCanonicalEncoding` cause maps to a
+/// phase-dependent token. All four groups and that measurement are stated in
+/// full on [`RuleToken::is_phase_dependent`]'s own LIMITS block, beside the
+/// predicate rather than beside this caller; #646 tracks closing them.
+/// Narrowing the predicate by hand would manufacture false disagreements on
+/// the pairs §4.2 genuinely leaves free, so the residual is recorded rather
+/// than half-fixed.
 ///
 /// Still deliberately NOT a list of tolerated pairs: a pair list would have
 /// to be re-derived every time a token is added and would drift from §4.2
@@ -176,6 +214,10 @@ fn rust_decode(
                 token: None,
                 detail: format!("{:?}", e),
             }),
+        // NOTE: this arm fills `token`, but `manifest_file` is in
+        // `NOT_TOKEN_COMPARED_TARGETS`, so the value is only ever printed in a
+        // failure message — it is a diagnostic, not coverage. #640 explains why
+        // the target cannot be compared and #641 tracks the other five.
         "manifest_file" => vault::manifest::decode_manifest_file(bytes)
             .and_then(|f| vault::manifest::encode_manifest_file(&f))
             .map(SecretBytes::new)
@@ -323,11 +365,14 @@ fn differential_replay_full_corpus() {
                 }
             }
         }
+        let floor = min_inputs(target);
         assert!(
-            seen > 0,
-            "target {target}: no corpus inputs found — searched {dirs:?}. \
-             A target that replays nothing passes vacuously; either commit \
-             seeds under core/fuzz/seeds/{target}/ or remove it from TARGETS."
+            seen >= floor,
+            "target {target}: replayed {seen} corpus input(s), floor is {floor} \
+             — searched {dirs:?}. A target that replays nothing, or almost \
+             nothing, passes vacuously; either restore the committed inputs \
+             under core/fuzz/seeds/{target}/ or update MIN_CORPUS_INPUTS \
+             deliberately in the same edit."
         );
         eprintln!("[{target}] replayed {seen} input(s)");
     }
@@ -336,7 +381,13 @@ fn differential_replay_full_corpus() {
     // burying it under whatever disagreements it happened to produce.
     assert!(
         harness_failures.is_empty(),
-        "differential harness failures ({}) — the Python side did not produce a verdict:\n{}",
+        "differential harness failures ({}) — the harness could not obtain a \
+         COMPARABLE verdict. Two distinct causes land here and the message \
+         above each line says which: the Python side did not produce a verdict \
+         at all (a crash, a timeout, a non-zero exit, unparseable stdout), or \
+         it produced one carrying no rule token on a token-compared target. \
+         The second is a real, deliberate rejection — it simply did not name a \
+         rule — so do not read every line below as \"Python is broken\":\n{}",
         harness_failures.len(),
         harness_failures.join("\n")
     );
@@ -377,12 +428,36 @@ fn every_target_is_classified() {
         TOKEN_COMPARED_TARGETS.len() + NOT_TOKEN_COMPARED_TARGETS.len(),
         TARGETS.len()
     );
+
+    // The input floor is the other table a new target must not default out
+    // of, and it is the one that decides whether this test compares anything
+    // at all.
+    for target in TARGETS {
+        assert!(
+            MIN_CORPUS_INPUTS.iter().any(|(t, _)| t == target),
+            "target {target} has no MIN_CORPUS_INPUTS entry"
+        );
+    }
+    assert_eq!(
+        MIN_CORPUS_INPUTS.len(),
+        TARGETS.len(),
+        "MIN_CORPUS_INPUTS must cover TARGETS exactly"
+    );
 }
 
-/// The tolerance is derived from vault-format §4.2, so it must tolerate
-/// exactly the pairs §4.2 leaves free and nothing else. This is the NEGATIVE
-/// control the corpus cannot provide: no committed input makes two ORDERED
-/// tokens disagree, so without this test an always-true tolerance would pass.
+/// The NEGATIVE control the corpus cannot provide: no committed input makes
+/// two ORDERED tokens disagree, so without this test an always-true tolerance
+/// would pass.
+///
+/// **It does NOT check that the tolerance is exactly §4.2's free set**, and an
+/// earlier version of this docstring claimed it did — while `tokens_agree`'s
+/// own doc, 300 lines up, says in bold that the predicate is strictly BROADER
+/// than §4.2. Two doc comments in one file asserting opposite strengths for
+/// one predicate is how a reader concludes the residual cannot exist. What is
+/// checked here is reflexivity, one tolerated pair, one denied pair, that two
+/// ORDERED tokens agree only when equal, and — since the residual is a
+/// BREADTH rather than a wrong answer — the exact SIZE of the tolerated set,
+/// so that adding a token or flipping a flag cannot widen it silently.
 #[test]
 fn tolerance_admits_only_phase_dependent_pairs() {
     use secretary_core::vault::manifest::RuleToken;
@@ -396,9 +471,13 @@ fn tolerance_admits_only_phase_dependent_pairs() {
         );
     }
 
-    // #621's pair, BOTH phase-dependent -> tolerated. (§4.2's third
-    // paragraph is what licenses a pair drawn from WITHIN the free set;
-    // the two "against the fixed orderings" paragraphs do not reach it.)
+    // #621's pair, BOTH phase-dependent -> tolerated. §4.2's array-sort
+    // paragraph licenses it DIRECTLY and by name: "a body that is out of
+    // array sort order and also breaks one of §6.2 rules 1-3 may be reported
+    // as either". An earlier comment here credited the later "no order among
+    // rules 1, 2 and 3 themselves" paragraph instead, which is a different
+    // sentence and does not reach a pair one of whose members is an array
+    // sort discipline; `diff_regressions/README.md` had it right throughout.
     assert!(tokens_agree("array_sort_order", "rule2_indefinite_length"));
     assert!(tokens_agree("rule2_indefinite_length", "array_sort_order"));
 
@@ -418,6 +497,35 @@ fn tolerance_admits_only_phase_dependent_pairs() {
             assert_eq!(tokens_agree(a, b), a == b, "{} vs {}", a, b);
         }
     }
+
+    // The BREADTH itself, pinned as a number. The four groups in
+    // `is_phase_dependent`'s LIMITS block are tolerated with no §4.2
+    // licence, so the honest statement of this predicate is "58 of the 136
+    // unequal pairs", not "the pairs §4.2 frees". Asserting the count means
+    // a fifth phase-dependent token, or an 18th token, cannot widen the
+    // tolerance without someone re-deriving this figure against §4.2 and
+    // updating the LIMITS block in the same edit. #646 owns narrowing it.
+    let n = RuleToken::ALL.len();
+    let mut unequal = 0usize;
+    let mut tolerated = 0usize;
+    for a in RuleToken::ALL {
+        for b in RuleToken::ALL {
+            if a >= b {
+                continue;
+            }
+            unequal += 1;
+            if tokens_agree(a.as_str(), b.as_str()) {
+                tolerated += 1;
+            }
+        }
+    }
+    assert_eq!(unequal, n * (n - 1) / 2, "unordered pair count");
+    assert_eq!(
+        tolerated, 58,
+        "the tolerated-pair count moved: re-derive it against vault-format \
+         §4.2 and update RuleToken::is_phase_dependent's LIMITS block, which \
+         states this figure and the four groups it covers"
+    );
 }
 
 /// An unknown token is never a tolerated mismatch. A typo on either side is
