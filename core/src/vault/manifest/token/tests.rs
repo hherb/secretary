@@ -18,10 +18,17 @@ fn token_strings_are_distinct() {
 
 /// `ALL` must really be all of them. A variant missing from the slice is
 /// invisible to the fixture cross-check below and to Python.
+///
+/// Note what this does and does not force, because the obvious reading is
+/// too strong: adding a variant *and nothing else* is a COMPILE error here,
+/// since the match below stops being exhaustive. Adding the variant AND its
+/// arm while forgetting `ALL` compiles and passes — the match then iterates
+/// 17 elements and the assertion still reads 17. See `RuleToken::ALL`'s own
+/// doc for what would catch that pair of edits.
 #[test]
 fn all_lists_every_variant() {
-    // Exhaustive match: adding a variant without adding it to ALL is a
-    // COMPILE error here, not a silent gap.
+    // Exhaustive match over the variants iterated out of `ALL`: adding a
+    // variant without adding an arm here is a COMPILE error.
     for t in RuleToken::ALL {
         match t {
             RuleToken::Rule2IndefiniteLength

@@ -85,9 +85,15 @@ class RepeatedArrayValue(ManifestRejection):
     """One of §4.2's four repeated-value prohibitions.
 
     NOT the same rule as a repeated MAP key, and deliberately a different
-    token: §4.2 orders the map-key rule against the type checks and leaves
-    this one unordered.  `recipients` is §4.2's explicit exception and never
-    reaches here.
+    token.  §4.2 FIXES an ordering for the map-key rule -- ordering 2, ahead
+    of the type, range and version checks -- and fixes none for this one.
+    Read that as "no ordering is stated", never as "§4.2 declares this one
+    free": §4.2 says in as many words that its "deliberately unspecified"
+    paragraphs do NOT extend to the repeated-value rules, because both reader
+    designs check them during interpretation -- `[x, x]` is sorted and
+    re-encodes to itself, so neither design obtains them from the re-encode.
+    That is why this token is deliberately NOT phase-dependent on either side.
+    `recipients` is §4.2's explicit exception and never reaches here.
     """
 
     token = "repeated_array_value"

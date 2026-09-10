@@ -67,8 +67,14 @@ live divergences and #621's third survived it.
   `ValueError` raise sites converted, message-preserving (Sections MUQ and MSH
   match on message fragments).
 - **`tokens_agree`** tolerates a mismatch iff either token is phase-dependent —
-  which IS §4.2's sentence, not a pair list that would drift from it. An
-  unrecognised **or missing** token is a harness failure, never agreement.
+  DERIVED from §4.2's "deliberately unspecified" paragraphs and strictly
+  BROADER than them (it is per-TOKEN, so it tolerates every pair its token
+  appears in), still not a pair list, which would drift from §4.2 silently. The
+  two families it tolerates that §4.2 does not free are written out in
+  `is_phase_dependent`'s LIMITS block: trailing bytes beside any schema fault,
+  and array-sort against rule 4. A **missing** token is a harness failure; an
+  **unrecognised** one is an ordinary disagreement — both red the test, but the
+  mechanisms differ, and four documents said otherwise until the final review.
 - **Section RTV**, registered. REG **28 → 29**.
 - **0 tests removed, 13 added** (10 lib + 3 feature-gated), diffed against a name
   set measured from `main`.
@@ -90,9 +96,26 @@ Everything below was run by the controller, foreground, exit codes captured.
 | six hygiene guards, `--self-test` first | all 0 |
 | `core/fuzz` under the pinned nightly | 0 |
 
-`spec_test_name_freshness.py` exits **1** with 90 unresolved citations — **this
-is pre-existing**, byte-identical to a `main` checkout, and no workflow runs it.
-Filed as **#642**. Do not read it as a regression.
+**Which half of this slice CI actually enforces.** The 10 lib tests are covered
+by `cargo test --release --workspace`, and Section RTV by the blocking
+`clean-room conformance` job. `differential_replay.rs` runs in **no** workflow —
+it is `#![cfg(feature = "differential-replay")]`, the feature is off by default,
+and `test.yml` says so twice in its own comments. So the token COMPARISON, the
+tolerance predicate as exercised over real bytes, and the committed witness are
+gated by local runs only. Nothing in this repo claims otherwise; it is recorded
+here because a reader weighing "is this pinned?" deserves the split rather than
+having to derive it from a Cargo feature flag.
+
+`spec_test_name_freshness.py` exits **1**. The count is **90 on `main`, 93 at
+this branch's pre-review HEAD, 97 after the final review's doc fixes** — all
+three measured, by unpacking each tree with `git archive` and running the script
+in it. Every added citation is the SAME false-positive class as the 90
+(**#642**): a backtick-quoted differential-replay TARGET name in prose — the
+replay-only one and the fuzz-only one — which the script reads as a test-name
+citation and cannot resolve under `core/`. The three new at HEAD come from this
+slice's own prose, and the four added on top come from the review's correction
+to the protocol doc's target-set paragraph. No workflow runs the script. Do not
+read any of it as a regression, and do not quote 90 as the branch figure.
 
 **Format invariants**: `core/fuzz/seeds/` EMPTY, UDL EMPTY, `core/tests/data/` is
 **three ADDED files and zero modified** (checked with `--name-status`), normative

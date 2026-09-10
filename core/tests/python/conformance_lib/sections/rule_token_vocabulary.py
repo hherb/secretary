@@ -1,5 +1,5 @@
 """Section RTV -- the rule-token vocabulary agrees with Rust's, and every
-manifest-body rejection this reader can produce carries one (#634).
+manifest-body rejection the committed corpus REACHES carries one (#634).
 
 WHAT THIS PINS, AND WHAT IT DOES NOT.  It pins the SPELLINGS and the
 phase-dependence flags against the same JSON fixture
@@ -15,6 +15,22 @@ tokened exceptions nowhere: a vocabulary agreeing with a vocabulary is
 vacuous.  Check 3 drives the real decoder over the committed corpus and
 requires every rejection to carry a token, which is what makes the pin
 non-vacuous.
+
+WHAT "EVERY REJECTION" MEANS HERE -- it is the corpus's reach, not the
+decoder's.  Token coverage on this side is NOT total, and the honest sentence
+is narrower than the one this docstring used to carry.  Two modules on
+`py_decode_manifest`'s own import path raise untokened: `codec/scanner.py`
+(18 bare `raise ValueError` well-formedness sites) and
+`codec/manifest_schema.py` (9, two of them the NESTED twins of top-level
+sites that DID get a typed class).  Two vocabulary rows have no Python
+producer at all -- `malformed_cbor` and `encoder_refusal`.  This is
+fail-closed and loud rather than silent: a body reaching one of those sites
+emits `"rule": null`, which `differential_replay.rs` records as a HARNESS
+FAILURE for a token-compared target, never as agreement.  Measured: a
+40-byte prefix of `top__control_canonical.bin` rejects with
+`ValueError("string length 13 overruns buffer at offset 37")` and
+`"rule": null`.  So the posture is right and the coverage is partial; do not
+restate the coverage as complete.
 """
 
 from __future__ import annotations
@@ -26,9 +42,23 @@ from conformance_lib.codec import manifest_rules
 from conformance_lib.codec.manifest_decode import py_decode_manifest
 from conformance_lib.rejection import _REJECTION_EXCEPTIONS
 
-# Every exception class reachable from `py_decode_manifest` that means "this
-# body is non-conformant".  Declared here rather than discovered, so a class
-# added without a token is a FAILURE and not an absence.
+# The `manifest_rules` classes, and only those: a hand-declared SAMPLE, not a
+# census of what `py_decode_manifest` can raise.  Check 1 asserts each of
+# these carries a token that is in the shared vocabulary; it asserts nothing
+# about classes that are not listed.
+#
+# FIVE tokened classes reachable from `py_decode_manifest` are deliberately
+# absent, because they are tokened at their own raise sites in other modules:
+# `manifest_decode.ArraySortOrderViolation`, `manifest_decode.NonCanonicalBody`,
+# `scanner.NonCanonicalItem`, `scanner.DuplicateMapKey` and
+# `cursor.ParseError`.
+#
+# WHAT THIS TUPLE CANNOT DO.  Because it is hand-declared rather than
+# discovered, a class added WITHOUT a token is an ABSENCE here and not a
+# failure -- check 1 iterates this tuple, so a class never added to it is
+# never looked at.  The check that catches an untokened rejection is check 3,
+# which drives the real decoder over the committed corpus, and it catches
+# only what that corpus reaches.
 _TOKENED_CLASSES = (
     manifest_rules.TrailingBytesAfterMap,
     manifest_rules.NonTextMapKey,

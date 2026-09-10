@@ -874,9 +874,26 @@ survived it. Six things:
   no `trailing_bytes` token. That is coarsening, not a lie; the `detail` text
   stays specific.
 - **`tokens_agree` tolerates a mismatch iff either token is phase-dependent**,
-  which IS §4.2's "deliberately unspecified" sentence, not a hand-maintained pair
-  list that would drift from it silently. An unrecognised OR missing token is a
-  harness FAILURE, never agreement — default-deny.
+  which is DERIVED from §4.2's "deliberately unspecified" paragraphs and is
+  strictly BROADER than them — do not write "it IS that sentence", which four
+  documents did. A per-TOKEN predicate tolerates every pair its token appears
+  in, and two families are tolerated that §4.2 does not free: (a) trailing
+  bytes, folded into `non_canonical_unclassified` because Rust cannot name them
+  (see the coarsening bullet above), beside ANY schema fault — Python checks
+  trailing bytes right after the rule-4 walk and Rust cannot see them until the
+  §4.3 step-4 re-encode, so the two name different rules and it scores as
+  agreement (measured: `uniq__blocks__duplicate_block_uuid.bin` +`0x00` moves
+  Python from `repeated_array_value` to `non_canonical_unclassified` while
+  Rust's answer cannot move); and (b) `array_sort_order` against
+  `rule4_tag_or_float`, which §4.2's ordering 1 FIXES. Both are recorded in
+  `RuleToken::is_phase_dependent`'s own LIMITS block and deliberately not
+  fixed — narrowing the predicate would manufacture false disagreements on the
+  pairs §4.2 genuinely leaves free. A predicate stays right over a pair list,
+  which would drift from §4.2 silently; a knowably-wider predicate can at
+  least have its residual written down. A MISSING token is a harness failure;
+  an UNRECOGNISED one is an ordinary disagreement (`tokens_agree` returns
+  `false`) — "unrecognised OR missing is a harness failure" is wrong about the
+  first half, though both red the test.
 - **Only `manifest_body` is token-compared. `manifest_file` is BLOCKED, and the
   reason generalises: sharing an error enum is not sharing a granularity.**
   Measured on one file with `format_version = 0x0099`, Rust says
@@ -904,10 +921,19 @@ survived it. Six things:
   (25 harness failures), a dropped or flipped vocabulary row (Section RTV), and
   the three Rust ones.
 
-`docs/vault-format.md` §4.2's unspecified sentence widened to cover this
-section's five array SORT disciplines alongside §6.2 rules 1-3 (#621) —
-deliberately NOT the repeated-value rules, because both reader designs check
-those during interpretation, so that ordering stays free of charge.
+`docs/vault-format.md` §4.2 gained the array-sort half of that freedom
+(#621), and its SCOPE is narrow on purpose — an earlier draft freed the five
+array SORT disciplines against BOTH fixed orderings, which collided with
+ordering 1: rule 4 outranks "this section's schema checks" and the sort
+disciplines ARE among them, so one paragraph fixed an order another declared
+free. §4.2 now says three things separately: the sort disciplines are
+unordered against §6.2 rules 1-3 and against ordering 2; no order is given
+WITHIN the free set either (which is what actually licenses this branch's own
+witness, `array_sort_order` vs `rule2_indefinite_length` — a pair drawn from
+inside it, which neither "against the fixed orderings" paragraph reaches);
+and ordering 1 still binds them. Deliberately NOT the repeated-value rules,
+because both reader designs check those during interpretation, so that
+ordering stays free of charge.
 
 **The residual, stated exactly, because the obvious wider claim is false.**
 Inside a forward-compat `unknown` subtree the check misses **duplicate map

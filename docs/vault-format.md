@@ -423,27 +423,46 @@ are fixed, and a conformant reader MUST follow both:
    a type error. Readers that check a slot's vacancy only after parsing the
    value it holds get this backwards.
 
-**The order of §6.2 rules 1, 2 and 3, and of this section's five array sort
-disciplines, against those two is deliberately unspecified**, and the reason is
-architectural rather than an omission. This section admits two reader designs,
-and each necessarily detects those rules at a different point: a reader whose
-parse normalises encoding-level choices can only detect them at the §4.3 step-4
-re-encode, which runs *after* interpretation, while a byte-retaining reader
-must detect them during its scan, *before* it. Fixing an order between them and
-the two rules above would outlaw one design or the other. A body that breaks
-one of rules 1-3 *and* one of the two above may therefore be reported as
-either, and an implementation MUST NOT rely on which. Rule 4 is not in this
-category precisely because no reader gets it from the re-encode: both designs
-enforce it by the separate walk, so both can be required to run that walk
-first.
+**The order of §6.2 rules 1, 2 and 3 against those two is deliberately
+unspecified**, and the reason is architectural rather than an omission. This
+section admits two reader designs, and each necessarily detects those rules at
+a different point: a reader whose parse normalises encoding-level choices can
+only detect them at the §4.3 step-4 re-encode, which runs *after*
+interpretation, while a byte-retaining reader must detect them during its scan,
+*before* it. Fixing an order between them and the two rules above would outlaw
+one design or the other. A body that breaks one of rules 1-3 *and* one of the
+two above may therefore be reported as either, and an implementation MUST NOT
+rely on which. Rule 4 is not in this category precisely because no reader gets
+it from the re-encode: both designs enforce it by the separate walk, so both
+can be required to run that walk first.
 
-The five array sort disciplines are in this category for the same reason, one
-layer up. A reader whose encoder sorts those arrays on output detects disorder
-only at the §4.3 step-4 re-encode comparison, after interpretation; a
+**The order of this section's five array sort disciplines against §6.2 rules 1,
+2 and 3, and against ordering 2 above, is unspecified for the same reason, one
+layer up.** A reader whose encoder sorts those arrays on output detects
+disorder only at the §4.3 step-4 re-encode comparison, after interpretation; a
 byte-retaining reader re-emits its input unconditionally, so its own re-encode
 can never see array disorder and it must check the discipline directly, during
-its scan. A body that is both out of array sort order and breaks one of the two
-fixed orderings above may therefore be reported as either.
+its scan. So a body that is out of array sort order and also breaks one of
+§6.2 rules 1-3 may be reported as either, and so may one that is out of array
+sort order and also repeats a map key.
+
+**Within that free set no order is given either**, and this needs saying
+separately because the two paragraphs above each order the free set only
+against the two *fixed* orderings. A body that is out of array sort order *and*
+carries an indefinite-length item, say, may be reported as either: a
+normalising-parse reader reaches both at the one §4.3 step-4 comparison and its
+own classifier decides which it names, while a byte-retaining reader meets the
+encoding rule during its scan and the array discipline only during
+interpretation, so it necessarily names the encoding rule. Neither reader is
+the more conformant.
+
+**Ordering 1 above still binds the array sort disciplines.** They are among
+"this section's schema checks", so a body carrying a tag or a float anywhere is
+reported as a rule-4 violation even when one of its arrays is also out of
+order. That is consistent with the three paragraphs above rather than an
+exception to them: rule 4 is the one rule NEITHER design obtains from the
+re-encode, so both can be required to run its whole-body walk before anything
+else.
 
 This does NOT extend to the repeated-array-value rules. Both reader designs
 check those during interpretation — sortedness and distinctness are independent,

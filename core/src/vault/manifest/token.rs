@@ -83,9 +83,17 @@ pub enum RuleToken {
 impl RuleToken {
     /// Every variant, in declaration order.
     ///
-    /// `token/tests.rs` pins that this really is every variant, by an
-    /// exhaustive match that fails to COMPILE when a variant is added
-    /// without being listed here.
+    /// **Fail-closed in practice, not a compile-time guarantee — say the
+    /// weaker thing.** `token/tests.rs`'s `all_lists_every_variant` matches
+    /// exhaustively over the variants it iterates out of this slice, so
+    /// adding an 18th variant *and nothing else* fails to COMPILE there. It
+    /// does not follow that the list cannot fall behind: an author who adds
+    /// the new arm to that match and forgets this slice compiles clean and
+    /// passes, because the match then still iterates 17 elements and the
+    /// length assertion still reads 17. What would actually catch that pair
+    /// of edits is `vocabulary_fixture_matches_the_enum`, which compares this
+    /// slice's length against `rule_token_vocabulary.json`'s row count — and
+    /// only once the fixture gains the 18th row.
     pub const ALL: &'static [RuleToken] = &[
         RuleToken::Rule2IndefiniteLength,
         RuleToken::Rule3NonShortestForm,
@@ -132,13 +140,16 @@ impl RuleToken {
 
     /// True when the two reader designs `docs/vault-format.md` §4.2 admits
     /// detect this rule at DIFFERENT points, so §4.2 declares its order
-    /// against the section's two fixed orderings unspecified.
+    /// against the section's fixed orderings unspecified.
     ///
-    /// This predicate IS that sentence, which is why the cross-language
-    /// harness derives its tolerance from it rather than from a
-    /// hand-maintained list of tolerated pairs: a pair list would have to be
-    /// re-derived every time a token is added and would drift from §4.2
-    /// silently.
+    /// **DERIVED from §4.2's "deliberately unspecified" paragraphs, and
+    /// strictly BROADER than them.** It is not that sentence, and the
+    /// difference is not cosmetic — see LIMITS below for the two families it
+    /// tolerates that §4.2 does not free. It is still a predicate rather than
+    /// a hand-maintained list of tolerated pairs, because a pair list would
+    /// have to be re-derived every time a token is added and would drift from
+    /// §4.2 silently; a predicate that is knowably wider is easier to state
+    /// the residual of than a list that is silently stale.
     ///
     /// A normalising-parse reader sees these only at the §4.3 step-4
     /// re-encode — after interpretation. A byte-retaining reader must see
@@ -150,6 +161,42 @@ impl RuleToken {
     /// designs check it during interpretation, because `[x, x]` is sorted
     /// and re-encodes to itself, so no reader gets it from the re-encode
     /// either.
+    ///
+    /// # LIMITS
+    ///
+    /// Marking a TOKEN phase-dependent tolerates every pair that token
+    /// appears in. Two families are tolerated that §4.2 orders or leaves
+    /// unmentioned. Both are recorded rather than fixed: narrowing the
+    /// predicate would manufacture false disagreements on the pairs §4.2
+    /// genuinely does leave free, and the mechanism behind each is a
+    /// coarsening this vocabulary took deliberately.
+    ///
+    /// 1. **[`Self::NonCanonicalUnclassified`] is a UNION of two causes and
+    ///    only one of them is phase-dependent.** It covers §6.2 rule-1
+    ///    map-key disorder, which genuinely is, and trailing bytes after the
+    ///    manifest map, which is not — §4.2 gives trailing bytes no ordering
+    ///    at all. The two readers place that check at opposite ends of their
+    ///    pipelines: `conformance.py` tests it immediately after the rule-4
+    ///    walk, before every schema check, while this crate cannot see it
+    ///    until the §4.3 step-4 re-encode, the last step, because `ciborium`
+    ///    performs no EOF check. So a body carrying trailing bytes *and* any
+    ///    schema fault makes the two name genuinely different rules and the
+    ///    harness still scores agreement. Measured on
+    ///    `uniq__blocks__duplicate_block_uuid.bin`: Python says
+    ///    `repeated_array_value`, and with one `0x00` appended it says
+    ///    `non_canonical_unclassified` while this crate's answer cannot move.
+    ///    The same holds for trailing bytes beside a missing field, a wrong
+    ///    type, an out-of-range integer, a duplicate map key or a bad
+    ///    sentinel — a systematic family, not one input. Splitting the union
+    ///    would need a `trailing_bytes` token, which is precisely the
+    ///    distinction only ONE implementation can make (see this module's own
+    ///    doc), so the residual is the price of that coarsening rule.
+    /// 2. **[`Self::ArraySortOrder`] against [`Self::Rule4TagOrFloat`] is
+    ///    ORDERED by §4.2 and tolerated here.** §4.2's ordering 1 puts rule 4
+    ///    ahead of "this section's schema checks", and the five array sort
+    ///    disciplines are among them — §4.2 says so in as many words. The
+    ///    predicate cannot express that, because it reads one token at a time
+    ///    and `ArraySortOrder` is phase-dependent against §6.2 rules 1-3.
     pub fn is_phase_dependent(&self) -> bool {
         match self {
             RuleToken::Rule2IndefiniteLength
@@ -219,9 +266,13 @@ impl ManifestError {
 
             // --- v1 sentinels, at BOTH layers ----------------------------
             // `header.rs` raises the format/suite pair for the §4.1 file
-            // header and `sentinel.rs` raises all three for the §4.2 body.
-            // One token cannot tell those apart, which is precisely why
-            // `manifest_file` is not token-compared (#640).
+            // header and `decode/mod.rs` raises all three for the §4.2 body.
+            // (`sentinel.rs` is the WRITER-side check and raises the six
+            // `Encode*` variants instead — #587 kept those apart on purpose,
+            // and the #640 argument turns on which sites share a variant, so
+            // the file matters.) One token cannot tell the two decode layers
+            // apart, which is precisely why `manifest_file` is not
+            // token-compared (#640).
             ManifestError::UnsupportedManifestVersion(_)
             | ManifestError::UnsupportedFormatVersion(_)
             | ManifestError::UnsupportedSuiteId(_) => RuleToken::UnsupportedVersion,

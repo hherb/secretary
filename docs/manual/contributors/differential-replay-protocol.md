@@ -17,9 +17,14 @@ machine-checked are easy to break silently.
 
 ## What "differential replay" is
 
-The fuzz harness drives seven Rust decoders. The point of differential
-replay is to run those same inputs through a **completely independent**
-Python decoder and assert that the two implementations agree on:
+The fuzz harness drives seven Rust decoders (`core/fuzz/fuzz_targets/`) and
+differential replay drives seven of its own (`differential_replay.rs`'s
+`TARGETS`). **The two sets are not the same set** and neither is "the seven
+targets": they overlap in six, `manifest_body` is replay-only and has no
+fuzz target, and `device_file` is fuzz-only and is not replayed. The point
+of differential replay is to run the corpus through a **completely
+independent** Python decoder and assert that the two implementations agree
+on:
 
 1. **Whether the input is accepted or rejected.** If Rust accepts and
    Python rejects (or vice versa), one of them has a spec-compliance bug.
@@ -45,9 +50,11 @@ in a fresh subprocess:
 uv run [--with <pkg>...] conformance.py --diff-replay <TARGET> <INPUT_PATH>
 ```
 
-- `TARGET` is one of the seven fuzz target names: `vault_toml`, `record`,
-  `contact_card`, `bundle_file`, `manifest_file`, `manifest_body`,
-  `block_file`.
+- `TARGET` is one of the seven **differential-replay** target names:
+  `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_file`,
+  `manifest_body`, `block_file`. Not the fuzz target list — see above:
+  `manifest_body` is here and not there, `device_file` is there and not
+  here.
 - `INPUT_PATH` is a single corpus or seed file path.
 - The subprocess has a per-input wall-clock budget of 60 seconds. If
   Python takes longer (infinite loop on a malformed input, runaway
@@ -117,10 +124,20 @@ There are exactly three valid output shapes:
   default-deny, so a new untokened rejection fails loudly rather than
   silently restoring the blindness this field removed.
 - A token mismatch is a disagreement **unless either token is
-  phase-dependent**, in which case `docs/vault-format.md` §4.2 declares the
-  order unspecified and both readers are conformant. The predicate lives on
-  `RuleToken::is_phase_dependent`; it IS that sentence, not a list of
-  tolerated pairs.
+  phase-dependent**, in which case `docs/vault-format.md` §4.2 generally
+  declares the order unspecified and both readers are conformant. The
+  predicate lives on `RuleToken::is_phase_dependent` and is **derived from**
+  §4.2's "deliberately unspecified" paragraphs rather than being them — a
+  per-token predicate is strictly BROADER than a per-pair rule, and the two
+  families it tolerates that §4.2 does not free are written out in that
+  method's own LIMITS block. It is still not a list of tolerated pairs,
+  because such a list drifts from §4.2 silently.
+- An **unrecognised** token — one absent from the vocabulary — is never
+  agreement, but its mechanism is not the missing-token one above: it falls
+  through `tokens_agree` to `false` and is reported as an ordinary
+  DISAGREEMENT, not as a harness failure. Both red the test, so nothing is
+  lost; "unrecognised or missing is a harness failure" is simply wrong about
+  the first half.
 - **`manifest_file` is deliberately NOT token-compared** (#640): Rust's
   header raises `UnsupportedFormatVersion` where Python raises the same
   `ParseError` it raises for every envelope fault, and no mapping reconciles

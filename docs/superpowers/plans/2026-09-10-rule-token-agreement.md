@@ -10,6 +10,26 @@
 
 **Spec:** [`docs/superpowers/specs/2026-09-10-rule-token-agreement-design.md`](../specs/2026-09-10-rule-token-agreement-design.md)
 
+> **CORRECTION, final whole-branch review.** This document is an execution log:
+> its embedded code snippets and commit messages record what was written at the
+> time and are deliberately NOT rewritten here. Two claims they carry are now
+> known to be wrong, and the corrected versions live beside the code:
+>
+> 1. **"a predicate that IS the spec sentence"** (Architecture, above, and three
+>    doc-comment snippets below). The predicate is DERIVED from §4.2's
+>    "deliberately unspecified" paragraphs and is strictly BROADER — it is
+>    per-TOKEN, so it tolerates every pair its token appears in. The two
+>    families §4.2 does not free are enumerated in
+>    `RuleToken::is_phase_dependent`'s LIMITS block
+>    (`core/src/vault/manifest/token.rs`).
+> 2. **"an unrecognised or missing token is a harness failure"** (commit-message
+>    snippet below). Only a MISSING token is; an unrecognised one falls through
+>    `tokens_agree` to `false` and is reported as an ordinary disagreement.
+>    Both red the test, so no coverage was lost — the mechanism claim was wrong.
+>
+> The §4.2 paragraph this plan asked for also over-widened as first written; see
+> the design spec's §3.2 for what it should have said and what it now says.
+
 ## Global Constraints
 
 - Work in the worktree `/Users/hherb/src/secretary/.worktrees/rule-token-agreement`, branch `feature/rule-token-agreement`. Verify with `pwd && git branch --show-current` before any `cargo` / `git` / `uv` command. **Shell state does not persist between tool calls** — chain or use absolute paths.

@@ -121,9 +121,23 @@ handoffs keep re-finding.
 
 ### 3.2 What the widened sentence still does not do
 
-It does not order the array sort disciplines against rule 4 or against the
-repeated-key rule. Ordering 1 in §4.2 already says rule 4 outranks "every check
-below it", which covers it. No new ordering is asserted by this slice.
+It leaves the array sort disciplines unordered against the repeated-key rule
+(ordering 2). It does **not** free them from rule 4: ordering 1 in §4.2 already
+says rule 4 outranks "every check below it", whose scope note reads that as
+§6.2's numbered rules plus *this section's schema checks* — and the five sort
+disciplines are among those. No new ordering is asserted by this slice.
+
+**As implemented, the first draft of the §4.2 paragraph got this wrong and it
+was corrected in the final review.** It read "The order of §6.2 rules 1, 2 and
+3, and of this section's five array sort disciplines, against **those two** is
+deliberately unspecified" — freeing the sort disciplines from ordering 1 as
+well, which this subsection expressly declines to do. It also failed to license
+the pair this slice's own committed witness needs (`array_sort_order` vs
+`rule2_indefinite_length`), because both paragraphs spoke only about the free
+set *against the two fixed orderings*, and that pair is drawn from WITHIN the
+free set. §4.2 now states three things separately: sort-vs-rules-1-3 and
+sort-vs-ordering-2 are free; no order is given within the free set either; and
+ordering 1 still binds the sort disciplines.
 
 ---
 
@@ -176,15 +190,36 @@ never consulted in an acceptance decision.
 
 New module `core/tests/python/conformance_lib/codec/manifest_rules.py` holding a
 base `ManifestRejection(ValueError)` with a `token` class attribute, and one
-subclass per token that the manifest decoder can raise. Every raise site
-reachable from `py_decode_manifest` is converted to one, **message-preserving** —
-several conformance sections match on message fragments (Section MUQ names the
-repeated id; Section MSH does `if want not in str(e)`), so a changed message is a
-silently broken section. #618 set the precedent when it introduced
-`DuplicateMapKey` the same way.
+subclass per token that the manifest decoder can raise. The SCHEMA-level raise
+sites reachable from `py_decode_manifest` are converted to one,
+**message-preserving** — several conformance sections match on message fragments
+(Section MUQ names the repeated id; Section MSH does `if want not in str(e)`), so
+a changed message is a silently broken section. #618 set the precedent when it
+introduced `DuplicateMapKey` the same way.
 
 `scanner.py`'s existing `NonCanonicalItem` and `DuplicateMapKey` gain tokens
 rather than being moved.
+
+**Python token coverage is PARTIAL, and this paragraph said otherwise until the
+final review.** "Every raise site reachable from `py_decode_manifest` is
+converted" was the overclaim. What is actually converted is the schema layer;
+two modules on the same import path keep raising bare `ValueError` — measured,
+`codec/scanner.py` has **18** such sites (CBOR well-formedness: truncated heads,
+overrunning lengths, unterminated indefinite items, span mismatches) and
+`codec/manifest_schema.py` has **9**, two of which are the NESTED twins of
+top-level sites that DID get a typed class. Two vocabulary rows also have no
+Python producer at all: `malformed_cbor` and `encoder_refusal` (see §4.3's table
+— its Python column names `cbor2.CBORDecodeError` and the
+`ENCODER_REFUSAL_PREFIX` raisers, neither of which carries a token).
+
+**The POSTURE is fine; only the sentence was wrong.** An untokened rejection
+emits `"rule": null`, and for a token-compared target `differential_replay.rs`
+records that as a HARNESS FAILURE, never as agreement — fail-closed and loud.
+Measured: a 40-byte prefix of `top__control_canonical.bin` yields
+`{"status": "reject", "error_class": "ValueError", "detail": "string length 13
+overruns buffer at offset 37", "rule": null}`. Closing the remaining sites is
+tokening work, not a design change; until then do not restate the coverage as
+total. Section RTV's own docstring carries the same correction.
 
 ### 4.3 The mapping
 
@@ -207,6 +242,13 @@ rather than being moved.
 | `signature_invalid` | `Ed25519SignatureInvalid`, `MlDsa65SignatureInvalid` | n/a | no |
 | `encoder_refusal` | the six `Encode*` variants | `ENCODER_REFUSAL_PREFIX` raisers | no |
 | `internal_error` | `CborEncode`, `Canonical(CborEncode \| CapacityBoundExceeded)`, `SignInternal` | n/a | no |
+
+**Two rows have NO tokened Python producer** (final-review correction): the
+`malformed_cbor` and `encoder_refusal` rows name `cbor2.CBORDecodeError` and the
+`ENCODER_REFUSAL_PREFIX` raisers, and neither carries a `token`. Read those cells
+as "the Python analogue of the rule", not as "a producer that emits this token".
+A body reaching either raises untokened, which is a loud harness failure on a
+token-compared target — see §4.2's coverage paragraph.
 
 **`non_canonical_unclassified` is honest silence on both sides, not "rule 1".**
 Rust's `Unclassified` cause exists precisely because map-key disorder leaves
@@ -317,18 +359,44 @@ For a token-compared target where both sides rejected:
 
 ```
 tokens equal                         -> agreement
-either token is phase-dependent      -> agreement (§4.2 leaves the order free)
+either token is phase-dependent      -> agreement (usually because §4.2 leaves
+                                        the order free; see the residual below)
 otherwise                            -> DISAGREEMENT
 ```
 
-The tolerance is a **predicate derived from the spec sentence**, not a
+The tolerance is a **predicate derived from the spec paragraphs**, not a
 hand-maintained list of pairs. That matters: a pair list would have to be
-re-derived every time a token is added, and would drift from §4.2 silently. The
-predicate cannot, because `is_phase_dependent` is the sentence.
+re-derived every time a token is added, and would drift from §4.2 silently.
+
+**Derived is not identical, and the difference must not be written away.** The
+predicate reads ONE token at a time, so marking a token phase-dependent
+tolerates every pair it appears in. Two families are tolerated that §4.2 does
+not free, and both are enumerated in `is_phase_dependent`'s own LIMITS block
+rather than here, so the rule and its residual cannot drift apart:
+
+1. `non_canonical_unclassified` is a UNION of §6.2 rule-1 map-key disorder,
+   which is genuinely phase-dependent, and trailing bytes, which §4.2 orders
+   nowhere — see §4.4, whose closing paragraph says outright that declaring
+   trailing bytes phase-dependent "would invent a spec sentence". Folding them
+   into a phase-dependent token does exactly that, implicitly. The two readers
+   place the trailing-bytes check at opposite ends of their pipelines, so a body
+   carrying trailing bytes plus any schema fault makes them name different rules
+   and still scores as agreement.
+2. `array_sort_order` against `rule4_tag_or_float` is ORDERED by §4.2's
+   ordering 1 (rule 4 outranks this section's schema checks, the sort
+   disciplines among them) and tolerated here.
+
+Neither is closed, deliberately: narrowing the predicate would manufacture false
+disagreements on the pairs §4.2 genuinely leaves free, and splitting the union
+would need a `trailing_bytes` token — the exact distinction §4.4 rules out
+because only one implementation can make it.
 
 A **missing** token on a token-compared target is a harness failure, not a pass —
 the default-deny posture `_REJECTION_EXCEPTIONS` and the hygiene guards already
-take. It fails loudly, naming the exception class that needs typing.
+take. It fails loudly, naming the exception class that needs typing. An
+**unrecognised** token is a different mechanism and must not be described as the
+same one: it falls through the predicate to `false` and is reported as an
+ordinary disagreement. Both red the test.
 
 ### 5.3 Protocol change
 
@@ -344,6 +412,13 @@ commit, per its own "extend both sides in lockstep" rule. Two stale facts in tha
 document are corrected while it is open: it says "six fuzz target names" and omits
 `manifest_body`, and its reject-shape section says `error_class` is "currently NOT
 compared", which this slice changes.
+
+**That first correction was made wrongly and re-corrected in the final review.**
+The list became seven names but kept the phrase "fuzz target names", which
+conflates two different sets: `core/fuzz/fuzz_targets/` holds seven targets and
+`manifest_body` is not among them, while `device_file` is a fuzz target that
+differential replay never runs. The correct phrase is "the seven
+DIFFERENTIAL-REPLAY target names", and the two sets overlap in six.
 
 ---
 

@@ -68,16 +68,36 @@ const NOT_TOKEN_COMPARED_TARGETS: &[&str] = &[
 /// Do two rule tokens count as agreement?
 ///
 /// Equal tokens always do. Unequal tokens do **only** when at least one is
-/// phase-dependent, which is `docs/vault-format.md` §4.2's "deliberately
-/// unspecified" sentence: those rules are detected at different points by the
-/// two reader designs §4.2 admits, so ordering them would outlaw one design.
+/// phase-dependent, which is DERIVED from `docs/vault-format.md` §4.2's
+/// "deliberately unspecified" paragraphs: those rules are detected at
+/// different points by the two reader designs §4.2 admits, so ordering them
+/// would outlaw one design.
 ///
-/// Deliberately NOT a list of tolerated pairs. A pair list would have to be
-/// re-derived every time a token is added and would drift from §4.2 silently;
-/// this predicate cannot, because it IS the sentence.
+/// **Derived from, and strictly BROADER than, those paragraphs — it is not
+/// them.** A per-token predicate tolerates every pair its token appears in,
+/// and two families are tolerated that §4.2 does not free: trailing bytes
+/// (folded into `NonCanonicalUnclassified`, which §4.2 orders nowhere) beside
+/// any schema fault, and `array_sort_order` against `rule4_tag_or_float`,
+/// which §4.2's ordering 1 fixes. Both are stated in full on
+/// [`RuleToken::is_phase_dependent`]'s own LIMITS block, beside the predicate
+/// rather than beside this caller. Narrowing the predicate to close them
+/// would manufacture false disagreements on the pairs §4.2 genuinely leaves
+/// free, so the residual is recorded, not fixed.
 ///
-/// An unrecognised token on either side is never agreement — default-deny, so
-/// a typo fails loudly instead of degrading to "something differs".
+/// Still deliberately NOT a list of tolerated pairs: a pair list would have
+/// to be re-derived every time a token is added and would drift from §4.2
+/// silently, where a predicate that is knowably wider can at least have its
+/// residual written down.
+///
+/// An unrecognised token on either side is never agreement. Note the
+/// MECHANISM, which is not the one the neighbouring `is_none()` guard uses:
+/// an unknown non-null token falls through to `false` here and is reported as
+/// an ordinary DISAGREEMENT, while a *missing* token is caught before this
+/// function is reached and reported as a harness failure. Both red the test,
+/// so nothing is lost — but "unrecognised or missing is a harness failure" is
+/// wrong about half of it.
+///
+/// [`RuleToken::is_phase_dependent`]: secretary_core::vault::manifest::RuleToken::is_phase_dependent
 fn tokens_agree(rust: &str, python: &str) -> bool {
     use secretary_core::vault::manifest::RuleToken;
     let lookup = |s: &str| RuleToken::ALL.iter().find(|t| t.as_str() == s).copied();
@@ -376,7 +396,9 @@ fn tolerance_admits_only_phase_dependent_pairs() {
         );
     }
 
-    // #621's pair: one phase-dependent, one not -> tolerated.
+    // #621's pair, BOTH phase-dependent -> tolerated. (§4.2's third
+    // paragraph is what licenses a pair drawn from WITHIN the free set;
+    // the two "against the fixed orderings" paragraphs do not reach it.)
     assert!(tokens_agree("array_sort_order", "rule2_indefinite_length"));
     assert!(tokens_agree("rule2_indefinite_length", "array_sort_order"));
 
@@ -398,9 +420,12 @@ fn tolerance_admits_only_phase_dependent_pairs() {
     }
 }
 
-/// An unknown token is a harness failure, never a tolerated mismatch. A typo
-/// on either side must fail loudly rather than degrade to "something differs,
-/// probably fine".
+/// An unknown token is never a tolerated mismatch. A typo on either side is
+/// reported as an ordinary DISAGREEMENT — `tokens_agree` returns `false` and
+/// the corpus loop records the pair — not as a harness failure, which is the
+/// separate `is_none()` branch above for a MISSING token. Both red the test;
+/// only the message differs. What must never happen is the third outcome:
+/// degrading to "something differs, probably fine".
 #[test]
 fn an_unknown_token_is_never_tolerated() {
     assert!(!tokens_agree("array_sort_order", "not_a_real_token"));
