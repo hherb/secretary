@@ -46,7 +46,9 @@ branches deliberately left alone, unchanged ruling.
 | `4b65f240` | restore its rationale one level up |
 | `67fa49bf` | `cargo fmt` a file Task 3 committed unformatted |
 | `15d9f572` | CLAUDE.md, ROADMAP, README |
-| *(this)* | the baton — a commit cannot cite its own SHA |
+| `91d3d8ef` | the baton |
+| `e9b75025` | final review's fix wave — 12 findings |
+| `4e101e20` | six defects the fix wave itself introduced, two inside normative §4.2 |
 
 ### The defect
 
@@ -70,9 +72,12 @@ live divergences and #621's third survived it.
   DERIVED from §4.2's "deliberately unspecified" paragraphs and strictly
   BROADER than them (it is per-TOKEN, so it tolerates every pair its token
   appears in), still not a pair list, which would drift from §4.2 silently. The
-  two families it tolerates that §4.2 does not free are written out in
+  THREE families it tolerates that §4.2 does not free are written out in
   `is_phase_dependent`'s LIMITS block: trailing bytes beside any schema fault,
-  and array-sort against rule 4. A **missing** token is a harness failure; an
+  array-sort against rule 4, and array-sort against repeated-array-value — the
+  last measured on both sides from one body that is unsorted AND repeated
+  (this crate says `repeated_array_value`, `conformance.py` says
+  `array_sort_order`), a pair §4.2 pointedly declines to free. A **missing** token is a harness failure; an
   **unrecognised** one is an ordinary disagreement — both red the test, but the
   mechanisms differ, and four documents said otherwise until the final review.
 - **Section RTV**, registered. REG **28 → 29**.
