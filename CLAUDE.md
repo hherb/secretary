@@ -245,10 +245,13 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 136, over a **63**-file package whose largest module is
+was 6849 lines; it is now 136, over a **65**-file package whose largest module is
 `sections/manifest_canonicality_cause.py` at **486** lines, ahead of
-`codec/scanner.py` at 468, `codec/manifest_decode.py` at 405,
+`codec/scanner.py` at 484, `codec/manifest_decode.py` at 418,
 `sections/required_key_determinism.py` at 390 and `merge/records.py` at 383.
+Re-measured at #634, which grew `scanner.py` 468 -> 484 and
+`manifest_decode.py` 405 -> 418 (both gained rule tokens) and added
+`sections/rule_token_vocabulary.py` plus `codec/manifest_rules.py`.
 The top slot changed hands twice inside
 #613 alone — 388 at the first pass, 472 after the review round — so treat any
 ordering here as stale on sight (52 files at the #593 split;
@@ -319,10 +322,10 @@ already wrote `sorted(...)` by hand, which is what a hand-copied rule looks like
 after a while: not one rule with a gap, seven independent copies of which three
 were wrong. Only the
 `detail` text moved (`status` / `error_class` were stable, and
-`differential_replay.rs` scores reject-vs-reject as agreement without comparing
-`detail` — tracked as **#634** since #618 closed, and the reason a WHICH-rule
-divergence between the two implementations is invisible to the one harness
-that exists for cross-language decoder agreement), so no gate was flaky; what it cost was a byte-exact `--diff-replay`
+`differential_replay.rs` did not compare `detail`, and until #634 scored EVERY
+reject-vs-reject pair as agreement — the reason a WHICH-rule divergence was
+invisible to the one harness that exists for cross-language decoder
+agreement), so no gate was flaky; what it cost was a byte-exact `--diff-replay`
 baseline, which needs `PYTHONHASHSEED` pinned — a trap for the one task that
 wants such a baseline, proving a refactor changed nothing. All seven sites now
 route through `codec/required_keys.py`'s `first_missing_key_in_sorted_order`,
@@ -726,8 +729,8 @@ out — it has been wrong twice:
   `sections/manifest_canonicality_corpus.py`, so MCK and MCC cannot drift
   onto two ideas of which rows the fixture holds. It defines no
   `section*` driver, so Section REG discovers it and reports the full count
-  (26/26 at #613; 27/27 after #587's Section MSN; **28/28** since #618
-  added Section MPR).
+  (26/26 at #613; 27/27 after #587's Section MSN; 28/28 after #618's Section
+  MPR; **29/29** since #634 added Section RTV).
 
 **WHICH rule a rejecting reader names is now normative, and getting there
 found a live divergence (#618).** A body can break several rules at once;
@@ -848,6 +851,63 @@ is now the SOLE pin for that arm on the manifest path, and MCC's own
 docstring is the only place that says so. The two rule-4 raise sites are
 also now ONE shared `_reject_rule4_head`, since a masked copy is how the two
 would drift unnoticed.
+
+**WHICH rule each implementation reports is now COMPARED, not assumed (#634),
+and the tolerance is the spec sentence rather than a list.** `differential_replay.rs`
+exists to prove the two decoders agree, and its reject-vs-reject arm was the
+constant `true` — with a comment saying the comparison could be tightened "when
+we standardize them". That is why #618's two live divergences and #621's third
+survived it. Six things:
+
+- **`ManifestError::rule_token()` (`manifest/token.rs`) is an EXHAUSTIVE match
+  over all 35 variants** onto a 17-token `RuleToken` vocabulary, so a new variant
+  cannot be added without classifying it — the compiler refuses. Verified by
+  execution: planting an unclassified variant reds with `E0004`. It lives inside
+  the crate because it must read `CanonicalError`'s variants to keep §6.2 rule 4
+  apart from rule 5, and `vault::canonical` is `pub(crate)` so an integration
+  test sees only the `Canonical(_)` family (#635).
+- **The vocabulary is deliberately COARSER than either error enum**, and the rule
+  is: *a token may only draw a distinction BOTH implementations can make.* The
+  worked example is trailing bytes — `ciborium` performs no EOF check, so Rust's
+  parse discards them before the §4.3 step-4 comparison and it can only ever say
+  `Unclassified`, while `conformance.py` names them exactly. There is therefore
+  no `trailing_bytes` token. That is coarsening, not a lie; the `detail` text
+  stays specific.
+- **`tokens_agree` tolerates a mismatch iff either token is phase-dependent**,
+  which IS §4.2's "deliberately unspecified" sentence, not a hand-maintained pair
+  list that would drift from it silently. An unrecognised OR missing token is a
+  harness FAILURE, never agreement — default-deny.
+- **Only `manifest_body` is token-compared. `manifest_file` is BLOCKED, and the
+  reason generalises: sharing an error enum is not sharing a granularity.**
+  Measured on one file with `format_version = 0x0099`, Rust says
+  `UnsupportedFormatVersion` (token `unsupported_version`) and Python says
+  `ParseError` (token `container_malformed`). No mapping reconciles it —
+  `header.rs` and the BODY sentinel check raise the same variant, so a per-variant
+  token cannot tell the layers apart, and `ParseError` is one class shared by every
+  target's wire decoder (#640). The other five targets are #641. The classification
+  table must PARTITION `TARGETS`, so a new target cannot default into the loose
+  behaviour.
+- **The tolerance has a committed WITNESS**, because every other corpus row breaks
+  exactly one rule and the comparison would otherwise pass vacuously.
+  `diff_regressions/manifest_body/arraysort_plus_indefinite.bin` breaks two at
+  once: Rust names `array_sort_order`, Python names `rule2_indefinite_length`,
+  same offset 929, both conformant. Its rationale lives in
+  `diff_regressions/README.md` — ONE LEVEL UP, because the corpus walker feeds
+  every file in a per-target directory to both decoders and skips only
+  `.gitkeep`. A README inside the target directory becomes corpus input; that is
+  how it was found.
+- **One mutation is GREEN by design and that is not a gap.** Swapping one
+  phase-dependent token for another is tolerated by construction, since §4.2
+  declares that order free. Nothing catches it and nothing should. Every other
+  mutation reds: an ordered token swapped for another ordered one (4 differential
+  disagreements), a removed token (4 harness failures), a dropped `rule` field
+  (25 harness failures), a dropped or flipped vocabulary row (Section RTV), and
+  the three Rust ones.
+
+`docs/vault-format.md` §4.2's unspecified sentence widened to cover this
+section's five array SORT disciplines alongside §6.2 rules 1-3 (#621) —
+deliberately NOT the repeated-value rules, because both reader designs check
+those during interpretation, so that ordering stays free of charge.
 
 **The residual, stated exactly, because the obvious wider claim is false.**
 Inside a forward-compat `unknown` subtree the check misses **duplicate map
