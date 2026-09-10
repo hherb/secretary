@@ -423,18 +423,33 @@ are fixed, and a conformant reader MUST follow both:
    a type error. Readers that check a slot's vacancy only after parsing the
    value it holds get this backwards.
 
-**The order of §6.2 rules 1, 2 and 3 against those two is deliberately
-unspecified**, and the reason is architectural rather than an omission. This
-section admits two reader designs, and each necessarily detects those three
-rules at a different point: a reader whose parse normalises encoding-level
-choices can only detect them at the §4.3 step-4 re-encode, which runs *after*
-interpretation, while a byte-retaining reader must detect them during its scan,
-*before* it. Fixing an order between them and the two rules above would outlaw
-one design or the other. A body that breaks one of rules 1-3 *and* one of the
-two above may therefore be reported as either, and an implementation MUST NOT
-rely on which. Rule 4 is not in this category precisely because no reader gets
-it from the re-encode: both designs enforce it by the separate walk, so both
-can be required to run that walk first.
+**The order of §6.2 rules 1, 2 and 3, and of this section's five array sort
+disciplines, against those two is deliberately unspecified**, and the reason is
+architectural rather than an omission. This section admits two reader designs,
+and each necessarily detects those rules at a different point: a reader whose
+parse normalises encoding-level choices can only detect them at the §4.3 step-4
+re-encode, which runs *after* interpretation, while a byte-retaining reader
+must detect them during its scan, *before* it. Fixing an order between them and
+the two rules above would outlaw one design or the other. A body that breaks
+one of rules 1-3 *and* one of the two above may therefore be reported as
+either, and an implementation MUST NOT rely on which. Rule 4 is not in this
+category precisely because no reader gets it from the re-encode: both designs
+enforce it by the separate walk, so both can be required to run that walk
+first.
+
+The five array sort disciplines are in this category for the same reason, one
+layer up. A reader whose encoder sorts those arrays on output detects disorder
+only at the §4.3 step-4 re-encode comparison, after interpretation; a
+byte-retaining reader re-emits its input unconditionally, so its own re-encode
+can never see array disorder and it must check the discipline directly, during
+its scan. A body that is both out of array sort order and breaks one of the two
+fixed orderings above may therefore be reported as either.
+
+This does NOT extend to the repeated-array-value rules. Both reader designs
+check those during interpretation — sortedness and distinctness are independent,
+and a body carrying a repeat re-encodes to itself byte for byte, so no reader
+obtains them from the re-encode. Their order relative to the two fixed orderings
+above is therefore not given away here.
 
 `kdf_params` is duplicated here (also in `vault.toml`) so the manifest signature attests to them. A modified `vault.toml` cannot trick a reader into deriving a wrong `master_kek` without also producing an invalid manifest signature.
 
