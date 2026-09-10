@@ -1,4 +1,7 @@
-use super::*;
+//! The token set: spellings, completeness, phase-dependence, and the shared
+//! JSON fixture.
+
+use super::super::*;
 
 /// Every token spells itself distinctly. Two tokens sharing a string would
 /// make the Python side unable to tell them apart, and the divergence would
@@ -120,108 +123,41 @@ fn vocabulary_fixture_matches_the_enum() {
     }
 }
 
-use crate::vault::manifest::ManifestError;
-
-/// The four causes must each keep their own token. Collapsing any two would
-/// make #621's divergence — array sort order vs §6.2 rule 2 — invisible again.
+/// A variant's SPELLING, not just its variant identity.
+///
+/// `token_strings_are_distinct` proves no two tokens share a string and
+/// `vocabulary_fixture_matches_the_enum` looks each row up BY `as_str()`, so
+/// swapping two spellings of the same phase-dependence class — `missing_field`
+/// with `wrong_type`, say, or `aead_failure` with `signature_invalid` — passes
+/// both, and passes every mapping test above, which compare variants rather
+/// than strings. The Python side reads only the string, so a permutation is a
+/// silent cross-language rename.
 #[test]
-fn each_non_canonical_cause_has_its_own_token() {
-    use crate::vault::manifest::NonCanonicalCause as C;
-    let pairs = [
-        (C::ArraySortOrder, RuleToken::ArraySortOrder),
-        (C::IndefiniteLength, RuleToken::Rule2IndefiniteLength),
-        (C::NonShortestForm, RuleToken::Rule3NonShortestForm),
-        (C::Unclassified, RuleToken::NonCanonicalUnclassified),
+fn each_variant_spells_itself_the_same_way_forever() {
+    let want = [
+        (RuleToken::Rule2IndefiniteLength, "rule2_indefinite_length"),
+        (RuleToken::Rule3NonShortestForm, "rule3_non_shortest_form"),
+        (RuleToken::Rule4TagOrFloat, "rule4_tag_or_float"),
+        (
+            RuleToken::NonCanonicalUnclassified,
+            "non_canonical_unclassified",
+        ),
+        (RuleToken::ArraySortOrder, "array_sort_order"),
+        (RuleToken::RepeatedArrayValue, "repeated_array_value"),
+        (RuleToken::DuplicateMapKey, "duplicate_map_key"),
+        (RuleToken::MissingField, "missing_field"),
+        (RuleToken::WrongType, "wrong_type"),
+        (RuleToken::IntegerOutOfRange, "integer_out_of_range"),
+        (RuleToken::UnsupportedVersion, "unsupported_version"),
+        (RuleToken::MalformedCbor, "malformed_cbor"),
+        (RuleToken::ContainerMalformed, "container_malformed"),
+        (RuleToken::AeadFailure, "aead_failure"),
+        (RuleToken::SignatureInvalid, "signature_invalid"),
+        (RuleToken::EncoderRefusal, "encoder_refusal"),
+        (RuleToken::InternalError, "internal_error"),
     ];
-    for (cause, want) in pairs {
-        let err = ManifestError::NonCanonicalEncoding { cause, at: None };
-        assert_eq!(err.rule_token(), want, "cause {:?}", cause);
-    }
-}
-
-/// A repeated map key and a repeated ARRAY value are different rules and must
-/// not share a token: §4.2 orders the first against the type checks and leaves
-/// the second alone.
-#[test]
-fn map_key_repeats_and_array_value_repeats_are_different_tokens() {
-    let map_key = ManifestError::DuplicateKey {
-        field: "manifest",
-        index: 1,
-    };
-    assert_eq!(map_key.rule_token(), RuleToken::DuplicateMapKey);
-    for err in [
-        ManifestError::DuplicateBlockUuid,
-        ManifestError::DuplicateTrashUuid,
-        ManifestError::VectorClockDuplicateDevice,
-    ] {
-        assert_eq!(err.rule_token(), RuleToken::RepeatedArrayValue);
-    }
-}
-
-/// A decoder rejection and an ENCODER refusal are different events (#600,
-/// #587) and must stay different tokens — otherwise a body a caller built
-/// wrong in memory would be compared against a peer's reading of real bytes.
-#[test]
-fn encoder_refusals_are_not_decoder_rejections() {
-    for err in [
-        ManifestError::EncodeDuplicateBlockUuid,
-        ManifestError::EncodeDuplicateTrashUuid,
-        ManifestError::EncodeVectorClockDuplicateDevice,
-        ManifestError::EncodeUnsupportedManifestVersion(7),
-        ManifestError::EncodeUnsupportedFormatVersion(9),
-        ManifestError::EncodeUnsupportedSuiteId(9),
-    ] {
-        assert_eq!(err.rule_token(), RuleToken::EncoderRefusal);
-    }
-    assert_eq!(
-        ManifestError::UnsupportedManifestVersion(7).rule_token(),
-        RuleToken::UnsupportedVersion
-    );
-}
-
-/// The three v1 sentinels share one token at BOTH layers. `header.rs` raises
-/// the same two variants the body sentinel check does, which is exactly why
-/// `manifest_file` cannot be token-compared (#640) — recorded here so the
-/// reason survives beside the mapping that causes it.
-#[test]
-fn every_v1_sentinel_maps_to_unsupported_version() {
-    for err in [
-        ManifestError::UnsupportedManifestVersion(7),
-        ManifestError::UnsupportedFormatVersion(9),
-        ManifestError::UnsupportedSuiteId(9),
-    ] {
-        assert_eq!(err.rule_token(), RuleToken::UnsupportedVersion);
-    }
-}
-
-/// A real decode of a real corrupt body must produce the token the corpus
-/// says. Reading the match arms proves nothing about which arm the decoder
-/// reaches; this drives `decode_manifest` end to end.
-#[test]
-fn a_real_rejection_carries_the_expected_token() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/seeds/manifest_body");
-    let cases = [
-        ("top__rule4_float.bin", RuleToken::Rule4TagOrFloat),
-        (
-            "top__rule2_indefinite_map.bin",
-            RuleToken::Rule2IndefiniteLength,
-        ),
-        (
-            "top__rule3_non_shortest_int.bin",
-            RuleToken::Rule3NonShortestForm,
-        ),
-        ("keyorder__top.bin", RuleToken::NonCanonicalUnclassified),
-        ("arraysort__blocks.bin", RuleToken::ArraySortOrder),
-        (
-            "uniq__blocks__duplicate_block_uuid.bin",
-            RuleToken::RepeatedArrayValue,
-        ),
-    ];
-    for (name, want) in cases {
-        let bytes =
-            std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("read {}: {}", name, e));
-        let err = crate::vault::manifest::decode_manifest(&bytes)
-            .expect_err(&format!("{} must be rejected", name));
-        assert_eq!(err.rule_token(), want, "seed {}", name);
+    assert_eq!(want.len(), RuleToken::ALL.len());
+    for (token, spelling) in want {
+        assert_eq!(token.as_str(), spelling, "{token:?} changed its spelling");
     }
 }

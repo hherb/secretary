@@ -28,7 +28,21 @@ use crate::vault::canonical::CanonicalError;
 /// Which rule a rejecting manifest decoder is reporting.
 ///
 /// Fieldless by construction (#474): every variant is a compile-time
-/// constant, so no decrypted manifest content can ride along.
+/// constant, so no decrypted manifest content can ride along. Note the
+/// difference from [`NonCanonicalCause`], which the payload guard credits as
+/// data-free by recursion because it carries `#[error(...)]` and sits in a
+/// payload position: this type carries neither, so no guard has jurisdiction
+/// over it and the fieldlessness is a review property, not a checked one.
+///
+/// **Public API with no in-crate consumer, deliberately and not yet settled.**
+/// It is `pub` only because `core/tests/differential_replay.rs` is an
+/// integration test; nothing in the crate reads it. The vocabulary is designed
+/// to grow as #640/#641 make more targets comparable, and for a `pub` enum
+/// without `#[non_exhaustive]` that growth is a breaking change downstream —
+/// "additive" is true of the vocabulary and false of the semver surface.
+/// **#648** tracks choosing between `#[non_exhaustive]` and a
+/// `#[doc(hidden)] pub` re-export; do not read the current shape as a decision
+/// already taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RuleToken {
     /// crypto-design §6.2 rule 2 — an indefinite-length item.
@@ -84,7 +98,7 @@ impl RuleToken {
     /// Every variant, in declaration order.
     ///
     /// **Fail-closed in practice, not a compile-time guarantee — say the
-    /// weaker thing.** `token/tests.rs`'s `all_lists_every_variant` matches
+    /// weaker thing.** `token/tests/vocabulary.rs`'s `all_lists_every_variant` matches
     /// exhaustively over the variants it iterates out of this slice, so
     /// adding an 18th variant *and nothing else* fails to COMPILE there. It
     /// does not follow that the list cannot fall behind: an author who adds
@@ -144,8 +158,9 @@ impl RuleToken {
     ///
     /// **DERIVED from §4.2's "deliberately unspecified" paragraphs, and
     /// strictly BROADER than them.** It is not that sentence, and the
-    /// difference is not cosmetic — see LIMITS below for the two families it
-    /// tolerates that §4.2 does not free. It is still a predicate rather than
+    /// difference is not cosmetic — see LIMITS below for the FOUR groups of
+    /// pairs it tolerates without a §4.2 licence, and for how much of the
+    /// committed corpus that costs. It is still a predicate rather than
     /// a hand-maintained list of tolerated pairs, because a pair list would
     /// have to be re-derived every time a token is added and would drift from
     /// §4.2 silently; a predicate that is knowably wider is easier to state
@@ -164,14 +179,36 @@ impl RuleToken {
     ///
     /// # LIMITS
     ///
-    /// Marking a TOKEN phase-dependent tolerates every pair that token
-    /// appears in. THREE families are tolerated that §4.2 orders or leaves
-    /// unmentioned. Both are recorded rather than fixed: narrowing the
-    /// predicate would manufacture false disagreements on the pairs §4.2
-    /// genuinely does leave free, and the mechanism behind each is a
-    /// coarsening this vocabulary took deliberately.
+    /// Marking a TOKEN phase-dependent tolerates EVERY pair that token
+    /// appears in, so the tolerated set is far wider than the set §4.2
+    /// frees, and the honest way to state it is a count rather than a short
+    /// list of exceptions. Four of the seventeen tokens are phase-dependent,
+    /// so of the 136 unequal token pairs **58 are tolerated** — every pair
+    /// with at least one phase-dependent member. §4.2 licenses a strict
+    /// subset of those 58.
     ///
-    /// 1. **[`Self::NonCanonicalUnclassified`] is a UNION of two causes and
+    /// **What that costs on the committed corpus, measured rather than
+    /// argued.** All four [`NonCanonicalCause`] outcomes map to
+    /// phase-dependent tokens, so every `NonCanonicalEncoding` rejection
+    /// this crate makes is scored as agreement whatever `conformance.py`
+    /// said. `core/fuzz/seeds/manifest_body/` holds 38 bodies of which 24
+    /// are rejected by both implementations, and **17 of those 24** make
+    /// this crate answer with a phase-dependent token: 7 `arraysort__*`,
+    /// 4 `keyorder__*`, 3 `*__rule2_indefinite_map`, 3
+    /// `*__rule3_non_shortest_int`. Only 7 reach a real comparison — the 3
+    /// `*__rule4_float` rows and the 4 `uniq__*` rows. Do not read the
+    /// committed witness under `tests/data/diff_regressions/manifest_body/`
+    /// as evidence against this: it is itself one of the tolerated pairs, so
+    /// it proves the tolerance FIRES, not that it is tight.
+    ///
+    /// The four GROUPS below are tolerated with no §4.2 licence. They are
+    /// recorded rather than closed, because a per-token predicate cannot
+    /// express a pairwise ordering at all and narrowing it by hand would
+    /// manufacture false disagreements on the pairs §4.2 genuinely does
+    /// leave free. Closing them needs §4.2 to settle groups C and D and a
+    /// two-argument tolerance derived from that text, which is **#646**.
+    ///
+    /// A. **[`Self::NonCanonicalUnclassified`] is a UNION of two causes and
     ///    only one of them is phase-dependent.** It covers §6.2 rule-1
     ///    map-key disorder, which genuinely is, and trailing bytes after the
     ///    manifest map, which is not — §4.2 gives trailing bytes no ordering
@@ -191,23 +228,43 @@ impl RuleToken {
     ///    would need a `trailing_bytes` token, which is precisely the
     ///    distinction only ONE implementation can make (see this module's own
     ///    doc), so the residual is the price of that coarsening rule.
-    /// 2. **[`Self::ArraySortOrder`] against [`Self::Rule4TagOrFloat`] is
+    /// B. **[`Self::ArraySortOrder`] against [`Self::Rule4TagOrFloat`] is
     ///    ORDERED by §4.2 and tolerated here.** §4.2's ordering 1 puts rule 4
     ///    ahead of "this section's schema checks", and the five array sort
     ///    disciplines are among them — §4.2 says so in as many words. The
     ///    predicate cannot express that, because it reads one token at a time
     ///    and `ArraySortOrder` is phase-dependent against §6.2 rules 1-3.
-    /// 3. **[`Self::ArraySortOrder`] against [`Self::RepeatedArrayValue`] is
-    ///    tolerated, and §4.2 pointedly does NOT free it.** That section's
-    ///    closing paragraph says the repeated-array-value rules stay ordered,
-    ///    because both designs check them during interpretation. The two
-    ///    nonetheless disagree, for the same one-token-at-a-time reason as
-    ///    family 2. Measured on both sides, from one body whose `blocks`
-    ///    array is both out of order and carries a repeat: this crate says
+    /// C. **[`Self::Rule2IndefiniteLength`], [`Self::Rule3NonShortestForm`]
+    ///    and [`Self::NonCanonicalUnclassified`] against
+    ///    [`Self::Rule4TagOrFloat`], where §4.2 does not read consistently.**
+    ///    Ordering 1 says rule 4 outranks "every check below it", scoped to
+    ///    "§6.2's numbered rules", which includes rules 1, 2 and 3; the
+    ///    paragraph immediately after declares the order of rules 1, 2 and 3
+    ///    against BOTH fixed orderings unspecified. The two sentences cannot
+    ///    both govern this pair. There is no live divergence today, because
+    ///    both implementations run the whole-body rule-4 walk first — which
+    ///    is exactly what #618 established, and exactly what this harness is
+    ///    the negative control for. The control is switched off precisely
+    ///    when the other rule is 1, 2 or 3.
+    /// D. **[`Self::ArraySortOrder`], [`Self::Rule2IndefiniteLength`],
+    ///    [`Self::Rule3NonShortestForm`] and
+    ///    [`Self::NonCanonicalUnclassified`] against
+    ///    [`Self::RepeatedArrayValue`], where §4.2 is SILENT.** Its closing
+    ///    paragraph withholds the freedom from the repeated-array-value
+    ///    rules only "relative to the two fixed orderings above", and none
+    ///    of these four is one of those two — so the section neither frees
+    ///    nor orders these pairs. **An earlier version of this block said
+    ///    §4.2 "pointedly does NOT free it" and that the repeated-array-value
+    ///    rules "stay ordered"; §4.2 says neither of those things about this
+    ///    pair, and a comment asserting a spec sentence that does not exist
+    ///    is worse than one admitting silence.** The `ArraySortOrder` member
+    ///    is a MEASURED live divergence: from one body whose `blocks` array
+    ///    is both out of order and carries a repeat, this crate says
     ///    `repeated_array_value` (`DuplicateBlockUuid`, raised by
-    ///    `decode/entries.rs` during the parse), `conformance.py` says
+    ///    `decode/entries.rs` during the parse) and `conformance.py` says
     ///    `array_sort_order` (its sort check precedes its repeat check), and
-    ///    the harness scores agreement.
+    ///    the harness scores agreement. It has no committed witness; #646
+    ///    owns both halves.
     pub fn is_phase_dependent(&self) -> bool {
         match self {
             RuleToken::Rule2IndefiniteLength
@@ -255,7 +312,18 @@ impl ManifestError {
             },
             // `reject_floats_and_tags` runs before `parse_manifest_map`, so
             // this is §6.2 rule 4. The DuplicateKey arm is the canonical
-            // encoder's own, reached through the §4.3 step-4 re-encode.
+            // ENCODER's own (#586), and it is NOT reachable from a decoded
+            // body: `parse_manifest_map` routes each key either to a `Once`
+            // slot or to `UnknownBag`, never both, and `UnknownBag` is a
+            // `BTreeMap` — so a parsed `Manifest` cannot re-encode into a
+            // `CanonicalMap` carrying a repeat, and the §4.3 step-4 re-encode
+            // never raises it. Its producer is `encode_manifest` on a
+            // caller-built `Manifest` whose `unknown` bag collides with a
+            // known key. An earlier comment here said "reached through the
+            // §4.3 step-4 re-encode", which is the opposite. It keeps
+            // `DuplicateMapKey` rather than `EncoderRefusal` because the
+            // rule it names is the repeated-map-key rule either way, and no
+            // corpus input reaches it on the compared path.
             ManifestError::Canonical(e) => match e {
                 CanonicalError::FloatRejected { .. } | CanonicalError::TagRejected { .. } => {
                     RuleToken::Rule4TagOrFloat
