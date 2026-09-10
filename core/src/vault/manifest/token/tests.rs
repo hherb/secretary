@@ -195,14 +195,24 @@ fn a_real_rejection_carries_the_expected_token() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/seeds/manifest_body");
     let cases = [
         ("top__rule4_float.bin", RuleToken::Rule4TagOrFloat),
-        ("top__rule2_indefinite_map.bin", RuleToken::Rule2IndefiniteLength),
-        ("top__rule3_non_shortest_int.bin", RuleToken::Rule3NonShortestForm),
+        (
+            "top__rule2_indefinite_map.bin",
+            RuleToken::Rule2IndefiniteLength,
+        ),
+        (
+            "top__rule3_non_shortest_int.bin",
+            RuleToken::Rule3NonShortestForm,
+        ),
         ("keyorder__top.bin", RuleToken::NonCanonicalUnclassified),
         ("arraysort__blocks.bin", RuleToken::ArraySortOrder),
-        ("uniq__blocks__duplicate_block_uuid.bin", RuleToken::RepeatedArrayValue),
+        (
+            "uniq__blocks__duplicate_block_uuid.bin",
+            RuleToken::RepeatedArrayValue,
+        ),
     ];
     for (name, want) in cases {
-        let bytes = std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("read {}: {}", name, e));
+        let bytes =
+            std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("read {}: {}", name, e));
         let err = crate::vault::manifest::decode_manifest(&bytes)
             .expect_err(&format!("{} must be rejected", name));
         assert_eq!(err.rule_token(), want, "seed {}", name);
