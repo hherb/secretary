@@ -24,6 +24,19 @@ An undrained journal makes the NEXT invocation refuse to run (see
 by a stalled worker. A journal whose index cannot be parsed fails CLOSED with
 a typed `CorruptJournal` rather than silently reporting a possibly-mutated
 tree as clean.
+
+`install_handlers()` registers a PROCESS-LIFETIME `atexit` hook — by design,
+for real usage: a genuinely mutated tree at shutdown must be reported, and
+"process lifetime" is what makes that report reliable regardless of which
+code path exits. `uninstall_handlers()` (fix round 3) exists ONLY for the
+one self-test control that deliberately corrupts its own backup to prove
+`RESTORE_FAILED` is observable (`selftest.check_restore_failed_is_observable`)
+— its journal is left permanently dirty by construction, so the hook fires
+at INTERPRETER shutdown, long after that control already made its assertion,
+printing a `JOURNAL DRAIN FAILED` line after an otherwise-green summary. Do
+not call it from anywhere else: a real `RestoreFailed` legitimately wants
+that shutdown message, and suppressing it there would be the exact failure
+mode this harness exists to prevent, reproduced in its own output.
 """
 
 from __future__ import annotations
@@ -39,6 +52,16 @@ import tempfile
 from pathlib import Path
 
 JOURNAL_NAME = "mutation-journal.json"
+
+# Maps a resolved journal DIRECTORY to the live `Journal` instance whose
+# `install_handlers()` registered an atexit hook for it. Exists solely so
+# `uninstall_handlers()` is reachable from a caller that does not hold the
+# exact instance object `run_mutations()` constructs internally (`mutate.py`
+# drives it through a CLI-argv interface with no channel for one) —
+# `atexit.unregister` matches a bound method by identity of its `__self__`,
+# not by equality of the underlying object, so a FRESH `Journal(same_dir)`
+# cannot unregister an EARLIER instance's hook; only the original object can.
+_INSTALLED: dict[str, "Journal"] = {}
 
 
 class RestoreFailed(RuntimeError):
@@ -205,6 +228,45 @@ class Journal:
         atexit.register(self._drain_quietly)
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, self._on_signal)
+        _INSTALLED[str(self.dir.resolve())] = self
+
+    def uninstall_handlers(self) -> None:
+        """Undo the `atexit` half of `install_handlers()`. See the module
+        docstring for WHO should call this (only one self-test control) and
+        why — a real `RestoreFailed` legitimately wants the shutdown
+        message, so this must never run on the general path.
+
+        Signal dispositions are deliberately NOT restored. `install_handlers`
+        does not record what SIGINT/SIGTERM pointed at before it ran, and
+        every control in a `--self-test` run calls `install_handlers()` on
+        its own throwaway `Journal`, each overwriting the process-global
+        signal handler set by whichever control ran before it — none of
+        them uninstall. By the time this method could run, "prior" would
+        usually mean some EARLIER control's now-defunct instance, pointing
+        at a temp directory `tempfile.TemporaryDirectory` has already
+        removed. Restoring to that would be worse than leaving the CURRENT
+        handler in place: a real signal arriving after such a restore would
+        try to drain a journal that no longer exists (silently reading as
+        "nothing to restore", via `Journal.__init__`'s `mkdir(exist_ok=True)`
+        recreating an empty directory) instead of draining whichever
+        control's mutation is actually in flight. Leaving it alone keeps the
+        existing, already-accepted risk profile (every control's signal
+        handler is already clobbered by the next one that installs) rather
+        than introducing a new, actively worse one.
+        """
+        atexit.unregister(self._drain_quietly)
+        key = str(self.dir.resolve())
+        if _INSTALLED.get(key) is self:
+            del _INSTALLED[key]
+
+    @classmethod
+    def installed_for(cls, directory: Path | str) -> "Journal | None":
+        """Return the `Journal` instance whose `install_handlers()` is
+        currently live for `directory`, or `None`. The one intended caller
+        is `selftest.check_restore_failed_is_observable`, which needs the
+        EXACT instance `run_mutations()` constructed internally in order to
+        call `uninstall_handlers()` on it."""
+        return _INSTALLED.get(str(Path(directory).resolve()))
 
     def _drain_quietly(self) -> None:
         try:

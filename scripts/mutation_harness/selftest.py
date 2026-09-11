@@ -215,13 +215,33 @@ def check_restore_failed_is_observable() -> tuple[bool, str]:
         finally:
             mutate.REPO_ROOT = saved_repo_root
 
-        if code != 3:
-            return False, f"expected exit 3 on a restore failure, got {code}"
-        if "RESTORE_FAILED" not in out.getvalue():
-            return False, "rendered output did not include a RESTORE_FAILED row"
-        if "ABORTED" not in err.getvalue():
-            return False, "stderr did not report the abort"
-        return True, "RESTORE_FAILED reaches mutate.main, renders, and exits 3"
+        # `run_mutations()` (inside `mutate.main`) constructed its OWN
+        # `Journal(journal_dir)` internally and called `install_handlers()`
+        # on it — this control never gets a direct reference to that
+        # instance, only the directory it used, so `Journal.installed_for`
+        # is how it is found. This journal is left dirty BY DESIGN (the
+        # backup this control's own gate deleted can never be restored), so
+        # its atexit hook would otherwise fire at INTERPRETER shutdown, long
+        # after this function has already made its assertion, printing a
+        # `JOURNAL DRAIN FAILED` line after an otherwise-green summary (fix
+        # round 3, the finding that motivated `uninstall_handlers`). In a
+        # `finally` so it runs even if an assertion below fails. This is
+        # the ONLY call site in the tree — see `journal.py`'s module
+        # docstring for why a real `RestoreFailed` must never take this
+        # path: the control's actual claim (exit 3, RESTORE_FAILED rendered,
+        # ABORTED on stderr) is asserted first, unchanged by this cleanup.
+        installed = Journal.installed_for(journal_dir)
+        try:
+            if code != 3:
+                return False, f"expected exit 3 on a restore failure, got {code}"
+            if "RESTORE_FAILED" not in out.getvalue():
+                return False, "rendered output did not include a RESTORE_FAILED row"
+            if "ABORTED" not in err.getvalue():
+                return False, "stderr did not report the abort"
+            return True, "RESTORE_FAILED reaches mutate.main, renders, and exits 3"
+        finally:
+            if installed is not None:
+                installed.uninstall_handlers()
 
 
 def run_self_test() -> int:
