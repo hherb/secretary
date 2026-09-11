@@ -1,6 +1,6 @@
 """`run_mutations`' step ORDERING, as distinct from its outcomes.
 
-Spec §5.6 puts the liveness comparison (step 4) before the gate run (step 5),
+Spec §5.6 puts the liveness comparison (step 3) before the gate run (step 4),
 and `runner.py` short-circuits on a dead row rather than running the gate and
 letting `classify` discard the result. Every outcome-shaped assertion in this
 tree is blind to that: `classify` carries its OWN `if not liveness.live` arm,

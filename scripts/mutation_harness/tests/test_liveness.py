@@ -150,3 +150,50 @@ def test_differing_rust_artifacts_are_live():
 
     assert result.live is True
     assert "lib.rlib" in result.detail
+
+
+# --- Fix-round-3, Finding B: the timeout PLUMBING, not just its handling ---
+#
+# Everything above pins what happens once a timeout is REPORTED (a
+# `TimeoutExpired`, a `BUILD_TIMED_OUT` sentinel). Nothing pinned that the
+# `timeout` kwarg each function receives is actually the one handed to
+# `subprocess.run` -- deleting `timeout=timeout` at either call site left
+# 108/108 unit tests and 19/19 `--self-test` green (measured). These two
+# tests monkeypatch `subprocess.run` in this module's own namespace with a
+# fake that records the kwargs it was called with, so they pin the PLUMBING
+# rather than exercising a timeout path.
+
+
+class _FakeCompletedProcess:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_observe_python_passes_its_timeout_argument_to_subprocess_run(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return _FakeCompletedProcess(returncode=0, stdout="'ok'", stderr="")
+
+    monkeypatch.setattr(liveness.subprocess, "run", fake_run)
+
+    liveness.observe_python(PROBE, tmp_path, timeout=123)
+
+    assert captured.get("timeout") == 123
+
+
+def test_rust_artifact_hashes_passes_its_timeout_argument_to_subprocess_run(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return _FakeCompletedProcess(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(liveness.subprocess, "run", fake_run)
+
+    liveness.rust_artifact_hashes("secretary-core", tmp_path, timeout=456)
+
+    assert captured.get("timeout") == 456
