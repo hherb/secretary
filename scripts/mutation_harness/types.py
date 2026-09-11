@@ -53,6 +53,26 @@ class PythonProbe:
 
 
 @dataclasses.dataclass(frozen=True)
+class PythonObservation:
+    """ONE reading of a `PythonProbe`, taken before AND after the mutation.
+
+    The Python proof is a before/after COMPARISON, exactly like the Rust one
+    (`rust_artifact_hashes` twice, then `compare_rust_artifacts`). This type
+    is the Python analogue of one of those hash dicts: a single reading, with
+    no verdict attached. The verdict is `liveness.compare_python_probe`'s.
+
+    `ok=False` means the reading could not be taken at all (the module is not
+    a dotted identifier, the child exited non-zero, or it outlived its
+    timeout) and `value` is then meaningless — a missing reading is never
+    evidence of a change, in either direction.
+    """
+
+    ok: bool
+    value: str
+    error: str
+
+
+@dataclasses.dataclass(frozen=True)
 class RustProbe:
     """Compare the CONTENT hash of the artifacts cargo names. Spec §5.1."""
 

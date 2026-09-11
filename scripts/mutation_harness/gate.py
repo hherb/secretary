@@ -1,9 +1,22 @@
 """Run a gate command and classify the result. Spec §5.5.
 
-`classify` checks LIVENESS FIRST. That ordering is the whole point of #644:
-a mutation that did not run and a mutation that ran without reddening any
-test produce the same gate output, and reporting them identically is what
-converted "this test is non-vacuous" into an unfounded claim.
+Separating "did not run" from "ran and reddened nothing" is the whole point
+of #644: the two produce the same gate output, and reporting them
+identically is what converted "this test is non-vacuous" into an unfounded
+claim. That separation is enforced in TWO places, and only one of them is
+reachable in the real pipeline — say so, rather than letting this file's
+comment claim the work:
+
+* `runner.run_mutations` short-circuits: a row whose liveness comparison
+  failed never reaches `run_gate` at all. That is the live enforcement, and
+  it is what stops a dead row burning the run's most expensive step. Pinned
+  by `test_runner.py::test_a_not_live_row_never_executes_its_gate`, which
+  asserts the gate command is NEVER EXECUTED for a not-live row — an
+  assertion on the ORDERING rather than on the outcome, because the outcome
+  is what `classify` below independently preserves.
+* `classify`'s own `if not liveness.live` is therefore DEFENCE IN DEPTH for
+  any future caller that hands it a dead row directly, and is what
+  `test_gate.py`'s unit tests exercise.
 """
 
 from __future__ import annotations
@@ -63,7 +76,10 @@ def classify(
     """Return the row's outcome and any `expect_red` names that were absent."""
     if not liveness.live:
         # Deliberately BEFORE any gate reasoning. A row that measured nothing
-        # must never be reported as a row that measured a green.
+        # must never be reported as a row that measured a green. Defence in
+        # depth: `run_mutations` never calls this with a dead row, because it
+        # never runs the gate for one — see the module docstring for which of
+        # the two is the live enforcement and what pins each.
         return Outcome.NOT_LIVE, ()
 
     if gate.timed_out:

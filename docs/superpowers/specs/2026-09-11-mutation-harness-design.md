@@ -154,20 +154,41 @@ probe  = { package = "secretary-core" }
 
 ### 5.1 Prove the mutation is live before running anything
 
-The two languages get **different mechanisms of different strength**, and the
-harness reports which one it used rather than implying they are equivalent.
+**Both mechanisms are before/after COMPARISONS.** A reading is taken on the
+clean tree, a second after the substitution, and the two must DIFFER. What the
+two languages differ in is **what a change proves**, not whether a change is
+required — and the harness reports which mechanism it used rather than implying
+they are equivalent.
+
+> The Python half did not have that shape until the final whole-branch review.
+> It checked only the post-condition `observed == probe.equals`, never the
+> pre-mutation value, so a no-op mutation (`TOKEN = "real"` → `TOKEN = "real"
+> # edited`) whose `equals` was copied from the spec's `old` side reported
+> `live=True` and then `GREEN_AS_EXPECTED` — a false green of this document's
+> own §1 class, emitted by the harness written to detect them, reachable by one
+> plausible author error. "Observes the value the interpreter binds" was an
+> accurate description of the mechanism and the restatement of the gap.
 
 **Python — strong.** Spawn a fresh interpreter, put `probe.syspath` on
-`sys.path`, import `probe.module`, evaluate `probe.expr`, and require it to
-equal `probe.equals`. This observes the value **the interpreter sees**, not the
-bytes in the file, which is exactly what mechanism 2 defeated. A fresh process
-is mandatory: a hash salt and a module cache cannot be varied from inside a
-running interpreter.
+`sys.path`, import `probe.module`, evaluate `probe.expr` — before the
+substitution and again after it. Require that the observed value **changed**,
+and that it changed **to** `probe.equals`. Both conditions, and the reported
+detail says which one failed; a value that did not move measured nothing and is
+`NOT_LIVE` whatever it happens to equal. This observes the value **the
+interpreter binds**, not the bytes in the file, which is exactly what mechanism
+2 defeated. A fresh process is mandatory: a hash salt and a module cache cannot
+be varied from inside a running interpreter.
 
 **Rust — weaker, and named as such.** `cargo build --message-format=json` emits
 a `compiler-artifact` message naming the exact `filenames` produced for the
 package. The harness hashes those files' **contents** before and after the
 mutation and requires the hash to change.
+
+An ABSENT reading on either side — cargo naming no artifacts, a probe that
+could not run, either subprocess outliving its timeout — is `live=False`, never
+`live=True`. The difference between a measurement and the absence of one is not
+evidence of a change, and over-reporting liveness is the one direction this
+document exists to rule out.
 
 Verified during design: for `-p secretary-core` the message names
 `libsecretary_core.rlib` at a stable path, so the artifact set needs no globbing
@@ -239,9 +260,17 @@ gate command is free to exit 124 on its own.
 
 1. **Baseline.** Run the gate on the clean tree; require green. Otherwise
    `BASELINE_DIRTY` and abort — a red baseline makes every subsequent row
-   meaningless. Cached across mutations sharing a gate command.
-2. **Journal**, then apply the substitution.
-3. **Liveness probe.** On failure: `NOT_LIVE`, restore, continue to the next row.
+   meaningless. Cached across mutations sharing a gate command. A baseline
+   that TIMED OUT is `GATE_TIMEOUT`, not `BASELINE_DIRTY`: a gate that did
+   not finish is not a gate that failed, and "your tests are already red"
+   sends a reader to fix tests that may be perfectly green.
+2. **Observe the probe on the clean tree**, then **journal**, then apply the
+   substitution. The clean-tree reading is half of §5.1's comparison and must
+   be taken before the file changes.
+3. **Liveness comparison.** Observe again and require the reading to have
+   moved, to the declared value. On failure: `NOT_LIVE`, restore, continue to
+   the next row — without running the gate, which is what makes step 3
+   preceding step 4 an ordering rather than a formality.
 4. **Run the gate**, capturing exit code and output. A timeout short-circuits
    classification: it is recorded as `GATE_TIMEOUT` and never reasoned about
    as a red or green gate result, even though its exit code would otherwise
@@ -278,6 +307,14 @@ Controls operate on fixtures under a `mktemp -d`, never the source tree.
 | `C9` | Gate red but no `expect_red` name present | `WRONG_TESTS_RED` |
 | `C10` | Rust mutation leaving the artifact byte-identical | `NOT_LIVE` |
 | `C11` | Live mutation declared `green` whose gate goes red | `UNEXPECTED_RED` |
+| `C12` | The POST-MUTATION gate outlives its timeout | `GATE_TIMEOUT`, never credited as a catch |
+| `C13` | The BASELINE gate outlives its timeout | `GATE_TIMEOUT`, never `BASELINE_DIRTY` |
+
+`C12` and `C13` post-date this document's brief: `C12` came from the review
+that found a timed-out gate credited as a catch (§5.5's tenth outcome), and
+`C13` from the final whole-branch review, which found the same collapse one
+step earlier — `run_mutations` cached its baseline as `not run_gate(...).is_red`
+and discarded `GateResult.timed_out` along with it.
 
 **Negative controls — the harness must stay silent:**
 

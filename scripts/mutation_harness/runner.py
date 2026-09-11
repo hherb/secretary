@@ -4,10 +4,19 @@ Step ordering is load-bearing:
 
 1. Baseline the gate on the CLEAN tree. A baseline that is already red and a
    mutation that did not run produce the same gate output; separating them is
-   half of requirement 5.
-2. Journal, then apply.
-3. Probe liveness. A row that fails here measured NOTHING and says so.
-4. Run the gate.
+   half of requirement 5. A baseline that TIMED OUT is a third thing again —
+   `GATE_TIMEOUT`, not `BASELINE_DIRTY`: a gate that did not finish is not a
+   gate that failed, and collapsing the two is the same class of error `C12`
+   exists to prevent one step later (final whole-branch review, Finding 7).
+2. Observe the probe on the CLEAN tree, then journal, then apply. BOTH
+   languages take a before-reading now; see `_observe`.
+3. Observe again and COMPARE. A row whose observed value did not move
+   measured NOTHING and says so.
+4. Run the gate — only if step 3 proved the mutation live. The short-circuit
+   lives here, not only in `classify`: a gate that runs for a dead mutation
+   burns the run's most expensive step to produce a result that must be
+   discarded. Pinned by `test_runner.py`'s
+   `test_a_not_live_row_never_executes_its_gate`.
 5. Classify.
 6. Restore and sha256-verify.
 
@@ -35,11 +44,18 @@ from pathlib import Path
 from mutation_harness.gate import classify, run_gate
 from mutation_harness.journal import Journal, RestoreFailed
 from mutation_harness.liveness import (
-    clear_pycache, compare_rust_artifacts, probe_python, rust_artifact_hashes,
+    clear_pycache, compare_python_probe, compare_rust_artifacts, observe_python,
+    rust_artifact_hashes,
 )
 from mutation_harness.types import (
-    Lang, LivenessResult, MutationResult, MutationSpec, Outcome,
+    GateResult, Lang, LivenessResult, MutationResult, MutationSpec, Outcome,
+    PythonObservation,
 )
+
+# One reading of whichever probe a spec declares: a `PythonObservation` for
+# `Lang.PYTHON`, cargo's artifact-hash map for `Lang.RUST`. Deliberately
+# opaque to `run_mutations`, which only ever hands a pair back to `_compare`.
+Observation = PythonObservation | dict[str, str]
 
 
 def apply_substitution(path: Path, old: str, new: str) -> bool:
@@ -55,25 +71,35 @@ def apply_substitution(path: Path, old: str, new: str) -> bool:
     return True
 
 
-def _probe(spec: MutationSpec, repo_root: Path, rust_before: dict) -> LivenessResult:
+def _observe(spec: MutationSpec, repo_root: Path) -> Observation:
+    """Take ONE reading for `spec`'s probe. Called twice: before the
+    substitution and after it. The two branches are symmetric — each is a
+    reading with no verdict attached, and `_compare` owns the verdict."""
     if spec.lang is Lang.PYTHON:
-        # This call and the baseline `clear_pycache(repo_root)` above are
-        # BOTH defences against false-green mechanism 1 (stale bytecode),
-        # and mutation-testing them individually shows the baseline call
-        # alone always suffices in this pipeline: it sweeps the WHOLE
-        # `repo_root` unconditionally, fires before any spec's probe, and
-        # nothing this harness spawns ever writes NEW bytecode (every
-        # subprocess runs under `python_env()`'s
-        # `PYTHONDONTWRITEBYTECODE=1`) — so nothing can repopulate a stale
-        # `.pyc` for this call to still need to clear. Kept anyway as
-        # defence in depth against a future change to either assumption
-        # (e.g. a scoped baseline sweep, or a subprocess that regains
-        # bytecode writing) — see `controls.py`'s `C1` docstring for the
-        # measured claim this control actually pins.
+        # This call and the baseline `clear_pycache(repo_root)` in
+        # `run_mutations` are BOTH defences against false-green mechanism 1
+        # (stale bytecode), and mutation-testing them individually shows the
+        # baseline call alone always suffices in this pipeline: it sweeps the
+        # WHOLE `repo_root` unconditionally, fires before any spec's probe,
+        # and nothing this harness spawns ever writes NEW bytecode (every
+        # subprocess runs under `python_env()`'s `PYTHONDONTWRITEBYTECODE=1`)
+        # — so nothing can repopulate a stale `.pyc` for this call to still
+        # need to clear. Kept anyway as defence in depth against a future
+        # change to either assumption (e.g. a scoped baseline sweep, or a
+        # subprocess that regains bytecode writing) — see `controls.py`'s
+        # `C1` docstring for the measured claim that control actually pins.
         clear_pycache(repo_root / Path(spec.path).parent)
-        return probe_python(spec.probe, repo_root)
-    after = rust_artifact_hashes(spec.probe.package, repo_root)
-    return compare_rust_artifacts(rust_before, after)
+        return observe_python(spec.probe, repo_root)
+    return rust_artifact_hashes(spec.probe.package, repo_root)
+
+
+def _compare(
+    spec: MutationSpec, before: Observation, after: Observation
+) -> LivenessResult:
+    """Turn a before/after pair of readings into the row's liveness verdict."""
+    if spec.lang is Lang.PYTHON:
+        return compare_python_probe(spec.probe, before, after)
+    return compare_rust_artifacts(before, after)
 
 
 def run_mutations(
@@ -82,23 +108,32 @@ def run_mutations(
     journal = Journal(journal_dir)
     journal.install_handlers()
     results: list[MutationResult] = []
-    baselines: dict[str, bool] = {}
+    # The whole `GateResult`, not a bool: `is_red` alone cannot tell a gate
+    # that FAILED apart from one that never FINISHED, and `timed_out` is the
+    # only thing that can (see `GateResult.timed_out`). Collapsing them here
+    # would report a baseline that never ran as `BASELINE_DIRTY`, an outcome
+    # a reader would act on by fixing tests that may be perfectly green.
+    baselines: dict[str, GateResult] = {}
 
     for spec in specs:
         target = (repo_root / spec.path).resolve()
 
         if spec.gate not in baselines:
             clear_pycache(repo_root)
-            baselines[spec.gate] = not run_gate(
-                spec.gate, repo_root, timeout=spec.timeout
-            ).is_red
-        if not baselines[spec.gate]:
-            results.append(MutationResult(spec=spec, outcome=Outcome.BASELINE_DIRTY))
+            baselines[spec.gate] = run_gate(spec.gate, repo_root, timeout=spec.timeout)
+        baseline = baselines[spec.gate]
+        if baseline.timed_out:
+            results.append(
+                MutationResult(spec=spec, outcome=Outcome.GATE_TIMEOUT, gate=baseline)
+            )
+            continue
+        if baseline.is_red:
+            results.append(
+                MutationResult(spec=spec, outcome=Outcome.BASELINE_DIRTY, gate=baseline)
+            )
             continue
 
-        rust_before: dict[str, str] = {}
-        if spec.lang is Lang.RUST:
-            rust_before = rust_artifact_hashes(spec.probe.package, repo_root)
+        before = _observe(spec, repo_root)
 
         entry = journal.record(target)
         try:
@@ -106,7 +141,7 @@ def run_mutations(
                 results.append(MutationResult(spec=spec, outcome=Outcome.NOT_APPLIED))
                 continue
 
-            liveness = _probe(spec, repo_root, rust_before)
+            liveness = _compare(spec, before, _observe(spec, repo_root))
             if not liveness.live:
                 results.append(
                     MutationResult(spec=spec, outcome=Outcome.NOT_LIVE, liveness=liveness)

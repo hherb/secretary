@@ -46,7 +46,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from mutation_harness.journal import Journal, RestoreFailed  # noqa: E402
+from mutation_harness.journal import (  # noqa: E402
+    CorruptJournal, Journal, RestoreFailed,
+)
 from mutation_harness.report import render_json, render_markdown  # noqa: E402
 from mutation_harness.runner import run_mutations  # noqa: E402
 from mutation_harness.selftest import run_self_test  # noqa: E402
@@ -68,7 +70,17 @@ def main(argv: list[str]) -> int:
     journal_dir = Path(args.journal_dir)
 
     if args.drain:
-        restored = Journal(journal_dir).drain()
+        try:
+            restored = Journal(journal_dir).drain()
+        except (CorruptJournal, RestoreFailed, OSError) as exc:
+            # Same ruling as the spec-read handler below: a journal that
+            # cannot be opened, parsed or restored is a user-facing failure
+            # with a remedy (read the message, inspect the backup blobs by
+            # hand), not a traceback. `CorruptJournal` says where the blobs
+            # are; swallowing it into a stack trace buries that (final
+            # whole-branch review, Finding 5).
+            print(f"mutate: {exc}", file=sys.stderr)
+            return 2
         for path in restored:
             print(f"restored {path}")
         print(f"{len(restored)} file(s) restored")
@@ -83,7 +95,11 @@ def main(argv: list[str]) -> int:
     # Refuse to start on an undrained journal. This is the structural fix for
     # a mutation left applied: it can no longer wait to be noticed by a
     # routine `git status`.
-    journal = Journal(journal_dir)
+    try:
+        journal = Journal(journal_dir)
+    except (CorruptJournal, OSError) as exc:
+        print(f"mutate: {exc}", file=sys.stderr)
+        return 2
     if journal.is_dirty():
         print("mutate: REFUSING TO RUN — an earlier run left files mutated:", file=sys.stderr)
         for path in journal.dirty_paths():

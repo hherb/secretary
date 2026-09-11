@@ -4,6 +4,24 @@ An unknown key is an ERROR, never ignored. A typo'd key that silently
 degrades a check is the failure mode `payload_guard`'s `ControlExpectation`
 already records; the same ruling applies here.
 
+**A wrong-TYPED value is an error too, and `str()` coercion is not
+validation** (final whole-branch review, Findings 4/5 — the fifth instance of
+this defect class on this branch, which is why it is closed by rule rather
+than per site). Every string-typed field is required to BE a string:
+
+* Coercion was WIDER than previously recorded. `gate = { a = 1 }` became the
+  literal shell command `{'a': 1}` — a spec typo turned into an executed
+  command line — and `new = [1, 2]` spliced `[1, 2]` into a source file, both
+  silently.
+* Two fields reached an UNHASHABLE-type crash before any `str()` could help:
+  `expect = ["red"]` raised a bare `TypeError: unhashable type: 'list'` out
+  of the `in VALID_EXPECT` test, and `lang = { a = 1 }` the same out of
+  `Lang(...)`'s enum lookup — neither a `SpecError`, so neither reached
+  `mutate.main`'s handler as an exit-2 `mutate:` line.
+
+`_require_str` is therefore applied before any field is USED, and the two
+membership tests come after it.
+
 Deliberately NOT checked here: whether `old` occurs exactly once in `path`.
 Spec §5.5 makes that `Outcome.NOT_APPLIED`, a per-row outcome, so the runner
 owns it. Parse-time validation is structure only.
@@ -71,16 +89,20 @@ def _validate_one(raw: dict, repo_root: Path, index: int) -> MutationSpec:
     if missing:
         raise SpecError(f"{where}: missing required key(s) {missing}")
 
+    # Every string-typed field is type-checked BEFORE it is used — see the
+    # module docstring. `lang` and `expect` are first because an unhashable
+    # value makes their membership tests raise `TypeError`, not `SpecError`.
     try:
-        lang = Lang(raw["lang"])
+        lang = Lang(_require_str(raw, "lang", where))
     except ValueError:
         raise SpecError(f"{where}: lang must be 'python' or 'rust'") from None
 
-    expect = raw["expect"]
+    expect = _require_str(raw, "expect", where)
     if expect not in VALID_EXPECT:
         raise SpecError(f"{where}: expect must be one of {sorted(VALID_EXPECT)}")
 
-    _require_path_inside_repo(raw["path"], repo_root, where)
+    path = _require_str(raw, "path", where)
+    _require_path_inside_repo(path, repo_root, where)
 
     expect_red = raw.get("expect_red", [])
     if not isinstance(expect_red, list) or not all(isinstance(s, str) for s in expect_red):
@@ -95,19 +117,37 @@ def _validate_one(raw: dict, repo_root: Path, index: int) -> MutationSpec:
 
     timeout = _validate_timeout(raw.get("timeout", DEFAULT_TIMEOUT), where)
 
+    note = raw.get("note", "")
+    if not isinstance(note, str):
+        raise SpecError(f"{where}: note must be a string, got {type(note).__name__}")
+
     return MutationSpec(
-        id=str(raw["id"]),
+        id=_require_str(raw, "id", where),
         lang=lang,
-        path=str(raw["path"]),
-        old=str(raw["old"]),
-        new=str(raw["new"]),
-        gate=str(raw["gate"]),
+        path=path,
+        old=_require_str(raw, "old", where),
+        new=_require_str(raw, "new", where),
+        gate=_require_str(raw, "gate", where),
         expect=expect,
         probe=_validate_probe(raw["probe"], lang, where),
         expect_red=tuple(expect_red),
-        note=str(raw.get("note", "")),
+        note=note,
         timeout=timeout,
     )
+
+
+def _require_str(raw: dict, key: str, where: str) -> str:
+    """A spec field that must BE a string, never one coerced into one.
+
+    `str()` on a TOML table or array produces a plausible-looking value —
+    `{'a': 1}` for `gate`, `[1, 2]` for `new` — that is then executed as a
+    shell command or spliced into a source file. Refusing is the only
+    fail-closed reading.
+    """
+    value = raw[key]
+    if not isinstance(value, str):
+        raise SpecError(f"{where}: {key} must be a string, got {type(value).__name__}")
+    return value
 
 
 def _validate_timeout(raw_timeout: object, where: str) -> int:
@@ -123,9 +163,9 @@ def _validate_timeout(raw_timeout: object, where: str) -> int:
 
 def _require_path_inside_repo(rel: str, repo_root: Path, where: str) -> None:
     """`..` and absolute paths are rejected. The harness mutates tracked
-    source files; escaping the repo is never a legitimate spec."""
-    if not isinstance(rel, str):
-        raise SpecError(f"{where}: path must be a string, got {type(rel).__name__}")
+    source files; escaping the repo is never a legitimate spec. `rel` has
+    already been through `_require_str`, so the path arithmetic below cannot
+    be reached by a non-string."""
     resolved = (repo_root / rel).resolve()
     root = repo_root.resolve()
     if not resolved.is_relative_to(root):
@@ -144,9 +184,9 @@ def _validate_probe(raw: object, lang: Lang, where: str) -> PythonProbe | RustPr
         raise SpecError(f"{where}: probe missing key(s) {missing} for lang={lang.value}")
     if lang is Lang.PYTHON:
         return PythonProbe(
-            module=str(raw["module"]),
-            expr=str(raw["expr"]),
-            equals=str(raw["equals"]),
-            syspath=str(raw["syspath"]),
+            module=_require_str(raw, "module", f"{where}: probe"),
+            expr=_require_str(raw, "expr", f"{where}: probe"),
+            equals=_require_str(raw, "equals", f"{where}: probe"),
+            syspath=_require_str(raw, "syspath", f"{where}: probe"),
         )
-    return RustProbe(package=str(raw["package"]))
+    return RustProbe(package=_require_str(raw, "package", f"{where}: probe"))

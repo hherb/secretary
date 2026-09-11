@@ -120,3 +120,60 @@ def test_a_non_string_path_is_rejected(tmp_path):
     bad = MINIMAL_PY.replace('path = "a.py"', "path = 5")
     with pytest.raises(SpecError, match="path must be a string"):
         parse_spec(bad, tmp_path)
+
+
+# --- Final whole-branch review, Findings 4/5: wrong-shaped input -----------
+#
+# `str()` coercion is not validation. Two of these used to raise an UNTYPED
+# `TypeError: unhashable type` (never reaching `mutate.main`'s SpecError
+# handler, so never an exit-2 `mutate:` line); the rest coerced silently into
+# a plausible-looking value that was then EXECUTED as a shell command or
+# spliced into a source file.
+
+
+@pytest.mark.parametrize(
+    "field, bad_toml",
+    [
+        ("expect", 'expect = ["red"]'),
+        ("lang", "lang = { a = 1 }"),
+        ("gate", "gate = { a = 1 }"),
+        ("new", "new = [1, 2]"),
+        ("old", "old = 7"),
+        ("id", "id = 1"),
+    ],
+    ids=["expect-list", "lang-table", "gate-table", "new-array", "old-int", "id-int"],
+)
+def test_a_wrong_typed_field_is_a_spec_error(tmp_path, field, bad_toml):
+    (tmp_path / "a.py").write_text("x = 1\n")
+    original = next(line for line in MINIMAL_PY.splitlines() if line.startswith(f"{field} ="))
+    bad = MINIMAL_PY.replace(original, bad_toml)
+    assert bad != MINIMAL_PY, f"failed to substitute {field}"
+
+    with pytest.raises(SpecError):
+        parse_spec(bad, tmp_path)
+
+
+def test_a_wrong_typed_note_is_a_spec_error(tmp_path):
+    (tmp_path / "a.py").write_text("x = 1\n")
+    with pytest.raises(SpecError, match="note must be a string"):
+        parse_spec(MINIMAL_PY + "note = 5\n", tmp_path)
+
+
+def test_a_wrong_typed_probe_field_is_a_spec_error(tmp_path):
+    """The probe's own fields had the same `str()` coercion — a non-string
+    `module` would have been coerced and then failed the dotted-identifier
+    check at probe time, a whole pipeline later."""
+    (tmp_path / "a.py").write_text("x = 1\n")
+    bad = MINIMAL_PY.replace('module = "a"', "module = 5")
+    with pytest.raises(SpecError, match="module must be a string"):
+        parse_spec(bad, tmp_path)
+
+
+def test_a_coerced_gate_never_reaches_the_spec(tmp_path):
+    """The consequence, spelled out: before this fix `gate = { a = 1 }`
+    produced the literal shell command `{'a': 1}`, i.e. a spec typo became an
+    executed command line."""
+    (tmp_path / "a.py").write_text("x = 1\n")
+    bad = MINIMAL_PY.replace('gate = "true"', "gate = { a = 1 }")
+    with pytest.raises(SpecError, match="gate must be a string"):
+        parse_spec(bad, tmp_path)

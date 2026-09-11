@@ -71,14 +71,18 @@ def _build_c1(root: Path) -> MutationSpec:
     **What this pins, stated precisely (fix round 2, Finding 2).** `runner.py`
     has TWO `clear_pycache` call sites: a BASELINE sweep of the whole
     `repo_root`, fired once per distinct gate command before any spec
-    touching it runs; and a PRE-PROBE sweep inside `_probe`, scoped to the
-    mutated file's directory, fired for every Python spec right before its
-    probe. An earlier version of this docstring said the harness clears
-    `__pycache__` "before probing" as if that named the pre-probe call
+    touching it runs; and a PRE-PROBE sweep inside `_observe`, scoped to the
+    mutated file's directory, fired for every Python spec right before each of
+    its two readings. An earlier version of this docstring said the harness
+    clears `__pycache__` "before probing" as if that named the pre-probe call
     specifically. Measured false: deleting EITHER call site alone still
-    leaves this single-spec control PASSING; only deleting BOTH reds it. So
-    C1 pins "at least one of the two calls runs before the probe", not that
-    the pre-probe call individually matters here.
+    leaves this single-spec control PASSING; only deleting BOTH reds it —
+    re-measured after the Python proof became a before/after comparison,
+    where a surviving stale `.pyc` answers BOTH readings with the
+    pre-mutation value and the row lands on `NOT_LIVE` rather than
+    `GREEN_AS_EXPECTED`. So C1 pins "at least one of the two calls runs
+    before each reading", not that the pre-probe call individually matters
+    here.
 
     That is not a gap in this control so much as a structural fact about the
     pipeline it exercises, and it does not go away for any single-spec
@@ -262,6 +266,33 @@ def _build_c12(root: Path) -> MutationSpec:
     )
 
 
+# --- C13: the BASELINE gate outlives its timeout ---------------------------
+def _build_c13(root: Path) -> MutationSpec:
+    """A baseline that did not FINISH is not a baseline that FAILED.
+
+    `C12`'s twin, one step earlier in `run_mutations`. `C12` times out the
+    POST-mutation gate; this one times out the gate on the CLEAN tree, before
+    any mutation is applied. Until the final whole-branch review the runner
+    cached the baseline as `not run_gate(...).is_red`, discarding
+    `GateResult.timed_out` — so a baseline that never finished was reported
+    `BASELINE_DIRTY`, which reads as "your tests are already failing" and
+    sends a reader to fix tests that may be perfectly green. That is the exact
+    collapse `C12` exists to prevent, at the other end of the same loop.
+
+    The gate is unconditionally slow (`sleep 5` against a 1-second
+    `timeout`), which is the OPPOSITE of what `C9`/`C11` needed: those want
+    the baseline to pass so the post-mutation run is the thing under test,
+    while this control's whole subject IS the baseline run. Nothing is ever
+    applied, so `m.py` and the probe exist only to make this a well-formed
+    spec — neither is ever read.
+    """
+    _write(root, "m.py", 'TOKEN = "real"\n')
+    return _py_spec(
+        id="C13", old='"real"', new='"mutated"', gate="sleep 5", expect="red",
+        timeout=1, probe=PythonProbe("m", "TOKEN", "mutated", "."),
+    )
+
+
 # --- Rust fixture: a standalone crate, deliberately outside any workspace ---
 def _build_rust_crate(root: Path, lib_body: str) -> None:
     _write(
@@ -395,6 +426,8 @@ POSITIVE_CONTROLS: tuple[Control, ...] = (
     Control("C11", "live, declared green, gate goes red", _build_c11, Outcome.UNEXPECTED_RED),
     Control("C12", "the gate outlives its timeout — never credited as a catch",
             _build_c12, Outcome.GATE_TIMEOUT),
+    Control("C13", "the BASELINE gate outlives its timeout — not a dirty baseline",
+            _build_c13, Outcome.GATE_TIMEOUT),
 )
 
 NEGATIVE_CONTROLS: tuple[Control, ...] = (

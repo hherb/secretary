@@ -213,3 +213,67 @@ def test_a_sigterm_mid_mutation_is_restored_by_the_installed_signal_handler(tmp_
     assert returncode == 128 + signal.SIGTERM
     assert target.read_text() == "original\n"
     assert not Journal(journal_dir).is_dirty()
+
+
+# --- Final whole-branch review, Finding 5: structurally-malformed index -----
+
+
+@pytest.mark.parametrize(
+    "body, because",
+    [
+        ('["not", "an", "object"]', "top-level list -> AttributeError on .get"),
+        ('{"entries": 5}', "entries is an int -> TypeError on iteration"),
+        ('{"entries": null}', "entries is null -> TypeError on iteration"),
+        ('{"entries": [7]}', "entry is not an object -> TypeError on **"),
+        ('{"entries": [{"path": "/tmp/x"}]}', "entry missing keys -> TypeError on **"),
+        ('{"entries": [{"path": "/tmp/x", "sha256": "d", "backup_name": "b", "x": 1}]}',
+         "entry has an extra key -> TypeError on **"),
+        ('{"entries": [{"path": 1, "sha256": "d", "backup_name": "b"}]}',
+         "entry field is not a string -> silently accepted"),
+    ],
+    ids=["top-list", "entries-int", "entries-null", "entry-int", "entry-short",
+         "entry-extra-key", "entry-wrong-type"],
+)
+def test_a_structurally_malformed_index_fails_closed_as_corrupt_journal(
+    tmp_path, body, because
+):
+    """`_load` special-cased `JSONDecodeError` only, so an index that was
+    valid JSON but the wrong SHAPE escaped as an untyped `AttributeError` or
+    `TypeError` — bypassing the one message that tells a reader backup blobs
+    remain on disk and a human must decide what to do with them.
+
+    The last row is the quietest: a non-string field was accepted outright
+    and became a `JournalEntry` whose `path` is an int, failing much later
+    inside a restore.
+    """
+    journal_dir = tmp_path / "jdir"
+    journal_dir.mkdir()
+    (journal_dir / "mutation-journal.json").write_text(body)
+
+    with pytest.raises(CorruptJournal, match="do not proceed without manual review") as exc:
+        Journal(journal_dir)
+
+    assert str(journal_dir) in str(exc.value), because
+
+
+def test_a_non_utf8_index_fails_closed_as_corrupt_journal(tmp_path):
+    """`read_text()` raises `UnicodeDecodeError` (a ValueError, not a
+    JSONDecodeError) before `json.loads` is ever reached."""
+    journal_dir = tmp_path / "jdir"
+    journal_dir.mkdir()
+    (journal_dir / "mutation-journal.json").write_bytes(b"\xff\xfe not utf-8")
+
+    with pytest.raises(CorruptJournal):
+        Journal(journal_dir)
+
+
+def test_a_well_formed_index_still_loads(tmp_path):
+    """The negative control: the validation above must not reject the shape
+    this module actually writes."""
+    target = tmp_path / "f.txt"
+    target.write_text("original\n")
+    Journal(tmp_path / "jdir").record(target)
+
+    reopened = Journal(tmp_path / "jdir")
+
+    assert reopened.dirty_paths() == [str(target.resolve())]

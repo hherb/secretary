@@ -9,11 +9,28 @@ detection, so it must be proven to detect the three mechanisms that actually
 fooled this project. C2 is the one it exists for.
 
 `GATE_TIMEOUT` coverage (spec §9 criterion 1's tenth outcome) comes from
-`controls.C12`, exercised through the same `POSITIVE_CONTROLS` loop as every
-other control below — there is no separate code path for it here. The
-outcome-coverage check at the end of `run_self_test` is what makes that
-"genuinely covered" rather than an unchecked claim: it fails if any control
-table stops mentioning an `Outcome` member, `GATE_TIMEOUT` included.
+`controls.C12` and `controls.C13`, exercised through the same
+`POSITIVE_CONTROLS` loop as every other control below — there is no separate
+code path for it here. `check_outcome_coverage` is what makes that "genuinely
+covered" rather than an unchecked claim: it fails if any control table stops
+mentioning an `Outcome` member, `GATE_TIMEOUT` included.
+
+**Everything `run_self_test` runs is DECLARED, not hand-invoked, and the run
+is then CENSUSED against that declaration.** Controls come from the two
+`Control` tables; everything else comes from `STANDALONE_CHECKS`, and the
+printed total and the outcome-coverage set are both derived from those three
+tuples. The final whole-branch review found the previous shape fail-open:
+`total` was `len(POSITIVE) + len(NEGATIVE) + 5` and the coverage set carried a
+hardcoded `| {Outcome.RESTORE_FAILED}`, so deleting a check's INVOCATION — the
+function left intact — printed "18/18 checks passed" and a green coverage line
+having actually run 17.
+
+Deriving the total from the tables is only HALF that fix, which the fix round
+measured rather than assumed: with the total derived and the invocation LOOP
+deleted, `--self-test` printed "19/19 checks passed", exit 0, having run 14 —
+the same fail-open one level up, because a denominator read off a declaration
+says nothing about what ran. `execution_census` closes it: labels are
+collected as they execute and compared against `declared_labels()`.
 
 Fix round 2 closed a real vacuity here (Finding 1): `check_journal_refusal`
 used to exercise only the `Journal` API, never `mutate.py`'s own refusal
@@ -29,9 +46,11 @@ initializing, so the import is safe there.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
 import tempfile
+from collections.abc import Callable, Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -244,59 +263,150 @@ def check_restore_failed_is_observable() -> tuple[bool, str]:
                 installed.uninstall_handlers()
 
 
+def check_outcome_coverage() -> tuple[bool, str]:
+    """Every `Outcome` in spec §5.5 must be reachable by SOME control or check.
+
+    The covered set is DERIVED — `Control.expect` from both control tables,
+    plus `Check.covers` from the registry below — never hand-listed. Until the
+    final whole-branch review it carried a hardcoded `| {Outcome.RESTORE_FAILED}`
+    that was true only because one particular check happened to still be
+    invoked: deleting that check's INVOCATION left this line printing
+    "every outcome has a control or check" with nothing behind the claim.
+    """
+    covered = (
+        {c.expect for c in POSITIVE_CONTROLS}
+        | {c.expect for c in NEGATIVE_CONTROLS}
+        | {c.covers for c in STANDALONE_CHECKS if c.covers is not None}
+    )
+    uncovered = sorted(o.value for o in Outcome if o not in covered)
+    if uncovered:
+        return False, f"no control or check reaches {uncovered}"
+    return True, f"all {len(Outcome)} outcomes reachable"
+
+
+@dataclasses.dataclass(frozen=True)
+class Check:
+    """A self-test check that is NOT a `Control` row.
+
+    `Control` covers everything a `MutationSpec` pointed at a fixture tree can
+    reach. These four cannot be expressed that way — they drive `mutate.main`
+    itself, inspect a fixture tree AFTER a run, or corrupt a backup behind the
+    harness — so they are hand-written functions. Being hand-written is
+    exactly why they need a registry: `run_self_test` derives its printed
+    TOTAL and its outcome-coverage set from this tuple, so a dropped check can
+    no longer leave both unchanged.
+
+    `covers` names the `Outcome` this check is the sole evidence for, or
+    `None` when it proves something other than outcome reachability.
+    """
+
+    label: str
+    why: str
+    run: Callable[[], tuple[bool, str]]
+    covers: Outcome | None = None
+
+
+# The registry. Adding a check means adding a row here; there is no other way
+# to get one invoked, which is the property the final whole-branch review's
+# Finding 2 asked for: previously `total` was `len(POSITIVE) + len(NEGATIVE) +
+# 5` and the coverage set carried a hardcoded `RESTORE_FAILED`, so deleting a
+# check's INVOCATION (leaving the function intact) printed "18/18 checks
+# passed" and a green coverage line having run 17. That is the dual of a trap
+# this repo already documents for `conformance.py` — a section that exists but
+# is never registered produces no output and no failure — inside the command
+# CLAUDE.md tells contributors to trust.
+STANDALONE_CHECKS: tuple[Check, ...] = (
+    Check("C3", "journal refusal", check_journal_refusal),
+    Check("N3", "clean baseline", check_clean_baseline),
+    Check("no-bytecode", "PYTHONDONTWRITEBYTECODE", check_no_bytecode_written),
+    # The sole evidence for RESTORE_FAILED: reaching it needs a backup
+    # corrupted behind the harness, which no `Control` fixture can drive.
+    Check("RESTORE_FAILED", "observable via mutate.main",
+          check_restore_failed_is_observable, Outcome.RESTORE_FAILED),
+    # Counted like any other check rather than printed as a free extra line
+    # (fix round 2, Finding 6), and now derived rather than hardcoded as the
+    # `+ 5` that finding produced.
+    Check("outcome coverage", "every outcome in §5.5 has a control or check",
+          check_outcome_coverage),
+)
+
+
+def declared_labels() -> tuple[str, ...]:
+    """Every label `--self-test` is obliged to run, in run order."""
+    return (
+        tuple(c.label for c in POSITIVE_CONTROLS)
+        + tuple(c.label for c in STANDALONE_CHECKS)
+        + tuple(c.label for c in NEGATIVE_CONTROLS)
+    )
+
+
+def execution_census(declared: Sequence[str], executed: Sequence[str]) -> tuple[bool, str]:
+    """Did the run actually EXECUTE what the three tables declare?
+
+    Deriving the printed total from the tables (Finding 2's fix) closes a
+    dropped table ROW — the count moves — but on its own it re-creates the
+    same fail-open one level up, which is what deleting the whole
+    `STANDALONE_CHECKS` loop demonstrated during the fix: five declared checks
+    never ran and `--self-test` still printed "19/19 checks passed", exit 0,
+    because the denominator is a property of the DECLARATION and the loop is
+    what turns a declaration into a measurement.
+
+    So the labels are collected as they run and compared against the
+    declaration, both directions plus repeats. A dropped loop is now a named
+    FAIL rather than a silently shorter table. This is the terminal check —
+    nothing inside `run_self_test` validates that THIS call happens, which is
+    why it is also unit-tested (`test_controls.py`) as a pure function rather
+    than only exercised through the one call site.
+    """
+    missing = sorted(set(declared) - set(executed))
+    unexpected = sorted(set(executed) - set(declared))
+    repeated = sorted({label for label in executed if executed.count(label) > 1})
+    problems = []
+    if missing:
+        problems.append(f"declared but never ran: {missing}")
+    if unexpected:
+        problems.append(f"ran but is not declared: {unexpected}")
+    if repeated:
+        problems.append(f"ran more than once: {repeated}")
+    if problems:
+        return False, "; ".join(problems)
+    return True, f"all {len(declared)} declared checks ran, each exactly once"
+
+
 def run_self_test() -> int:
     failures = 0
+    executed: list[str] = []
     print("mutation harness self-test")
     print("=" * 60)
 
     for control in POSITIVE_CONTROLS:
         ok, detail = run_control(control)
+        executed.append(control.label)
         status = "PASS" if ok else "FAIL"
         print(f"  [{status}] {control.label}: {control.why} -> {detail}")
         failures += 0 if ok else 1
 
-    ok, detail = check_journal_refusal()
-    print(f"  [{'PASS' if ok else 'FAIL'}] C3: journal refusal -> {detail}")
-    failures += 0 if ok else 1
-
-    ok, detail = check_clean_baseline()
-    print(f"  [{'PASS' if ok else 'FAIL'}] N3: clean baseline -> {detail}")
-    failures += 0 if ok else 1
-
-    ok, detail = check_no_bytecode_written()
-    print(f"  [{'PASS' if ok else 'FAIL'}] no-bytecode: PYTHONDONTWRITEBYTECODE -> {detail}")
-    failures += 0 if ok else 1
-
-    ok, detail = check_restore_failed_is_observable()
-    print(f"  [{'PASS' if ok else 'FAIL'}] RESTORE_FAILED: observable via mutate.main -> {detail}")
-    failures += 0 if ok else 1
+    for check in STANDALONE_CHECKS:
+        ok, detail = check.run()
+        executed.append(check.label)
+        status = "PASS" if ok else "FAIL"
+        print(f"  [{status}] {check.label}: {check.why} -> {detail}")
+        failures += 0 if ok else 1
 
     for control in NEGATIVE_CONTROLS:
         ok, detail = run_control(control)
+        executed.append(control.label)
         status = "PASS" if ok else "FAIL"
         print(f"  [{status}] {control.label}: {control.why} -> {detail}")
         failures += 0 if ok else 1
 
-    # +C3 +N3 +no-bytecode +RESTORE_FAILED-check +this coverage line itself
-    # (fix round 2, Finding 6 — the coverage line is a counted check too,
-    # not a free pass omitted from the denominator).
-    total = len(POSITIVE_CONTROLS) + len(NEGATIVE_CONTROLS) + 5
-    covered = (
-        {c.expect for c in POSITIVE_CONTROLS}
-        | {c.expect for c in NEGATIVE_CONTROLS}
-        # Proven above by check_restore_failed_is_observable rather than by
-        # a Control row (it needs a backup corrupted behind the harness, not
-        # a fixture `run_mutations` can be pointed at directly) — a REAL
-        # assertion now, not an excuse (fix round 2, Finding 4).
-        | {Outcome.RESTORE_FAILED}
-    )
-    uncovered = sorted(o.value for o in Outcome if o not in covered)
-    if uncovered:
-        print(f"  [FAIL] outcome coverage: no control or check reaches {uncovered}")
+    declared = declared_labels()
+    census_ok, census_detail = execution_census(declared, executed)
+    if not census_ok:
+        print(f"  [FAIL] execution census: {census_detail}")
         failures += 1
-    else:
-        print("  [PASS] outcome coverage: every outcome has a control or check")
 
+    total = len(declared)
     print("=" * 60)
     print(f"{total - failures}/{total} checks passed")
     return 1 if failures else 0

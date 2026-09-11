@@ -148,20 +148,61 @@ class Journal:
         self.index_path = self.dir / JOURNAL_NAME
         self._entries: list[JournalEntry] = self._load()
 
+    def _corrupt(self, reason: str) -> CorruptJournal:
+        """One message for every way the index can be unusable.
+
+        `CorruptJournal`'s value is the second half of this text — that backup
+        blobs remain on disk and a human must decide. Until the final
+        whole-branch review only `JSONDecodeError` got it: a structurally
+        malformed but syntactically VALID index escaped as an untyped
+        `AttributeError` (a top-level JSON list, where `.get` does not exist)
+        or `TypeError` (`entries` an int/null, or entry objects with the wrong
+        keys reaching `JournalEntry(**e)`), so the one thing a reader needed to
+        be told was exactly what they did not get.
+        """
+        return CorruptJournal(
+            f"journal index {self.index_path} {reason}; a target this journal "
+            f"was tracking may already be mutated with no readable record of "
+            f"it. Backup blobs, if any, remain in {self.dir} — do not proceed "
+            f"without manual review."
+        )
+
     def _load(self) -> list[JournalEntry]:
         if not self.index_path.exists():
             return []
         try:
             raw = json.loads(self.index_path.read_text())
-        except json.JSONDecodeError as exc:
-            raise CorruptJournal(
-                f"journal index {self.index_path} is corrupt and could not "
-                f"be parsed ({exc}); a target this journal was tracking may "
-                f"already be mutated with no readable record of it. Backup "
-                f"blobs, if any, remain in {self.dir} — do not proceed "
-                f"without manual review."
-            ) from exc
-        return [JournalEntry(**e) for e in raw.get("entries", [])]
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise self._corrupt(f"is corrupt and could not be parsed ({exc})") from exc
+        if not isinstance(raw, dict):
+            raise self._corrupt(
+                f"is a JSON {type(raw).__name__}, not an object with an 'entries' key"
+            )
+        entries = raw.get("entries", [])
+        if not isinstance(entries, list):
+            raise self._corrupt(
+                f"has an 'entries' value of type {type(entries).__name__}, not a list"
+            )
+        return [self._entry_from(item, position) for position, item in enumerate(entries)]
+
+    def _entry_from(self, item: object, position: int) -> JournalEntry:
+        """Validate ONE index row before it becomes a `JournalEntry`.
+
+        The field set is read off the dataclass rather than written out again,
+        so adding a field cannot leave this check validating the old shape.
+        """
+        where = f"entry #{position}"
+        if not isinstance(item, dict):
+            raise self._corrupt(f"has {where} of type {type(item).__name__}, not an object")
+        expected = {field.name for field in dataclasses.fields(JournalEntry)}
+        if set(item) != expected:
+            raise self._corrupt(
+                f"has {where} with keys {sorted(item)}, expected exactly {sorted(expected)}"
+            )
+        wrong = sorted(key for key, value in item.items() if not isinstance(value, str))
+        if wrong:
+            raise self._corrupt(f"has {where} with non-string value(s) for {wrong}")
+        return JournalEntry(**item)
 
     def _flush(self) -> None:
         payload = {"entries": [dataclasses.asdict(e) for e in self._entries]}
