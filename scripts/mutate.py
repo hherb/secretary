@@ -27,6 +27,12 @@ USAGE
     uv run scripts/mutate.py <spec.toml> [--json] [--journal-dir DIR]
     uv run scripts/mutate.py --drain [--journal-dir DIR]
 
+EXIT CODES: 0 every row matched its declaration; 1 a rendered table with at
+least one unsuccessful row; 2 refused to start (an undrained journal from an
+earlier run, or a spec that could not be read/parsed); 3 aborted mid-run —
+a restore could not be completed or verified (`RestoreFailed`), rendering
+whatever was measured before the abort.
+
 Read docs/superpowers/specs/2026-09-11-mutation-harness-design.md first.
 Write the spec to the session scratchpad, never into the source tree (#516).
 """
@@ -40,7 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from mutation_harness.journal import Journal  # noqa: E402
+from mutation_harness.journal import Journal, RestoreFailed  # noqa: E402
 from mutation_harness.report import render_json, render_markdown  # noqa: E402
 from mutation_harness.runner import run_mutations  # noqa: E402
 from mutation_harness.selftest import run_self_test  # noqa: E402
@@ -88,11 +94,30 @@ def main(argv: list[str]) -> int:
 
     try:
         specs = parse_spec(Path(args.spec).read_text(), REPO_ROOT)
-    except SpecError as exc:
+    except (SpecError, OSError) as exc:
+        # OSError alongside SpecError: `Path.read_text()` above raises it
+        # (FileNotFoundError / PermissionError / ...) for a bad spec PATH,
+        # before `parse_spec` ever runs — a missing or unreadable spec is a
+        # user-facing usage error, same as a malformed one, not a traceback
+        # (fix round 2, Finding 5).
         print(f"mutate: {exc}", file=sys.stderr)
         return 2
 
-    results = run_mutations(specs, REPO_ROOT, journal_dir)
+    try:
+        results = run_mutations(specs, REPO_ROOT, journal_dir)
+    except RestoreFailed as exc:
+        # A restore failure aborts the run (fail-closed is right — see
+        # journal.py), but the mutations measured before the abort are
+        # still real evidence. Render them, RESTORE_FAILED row included,
+        # rather than only ever printing a traceback (fix round 2,
+        # Finding 4). Exit 3 is distinct from 1 (a rendered table with an
+        # unsuccessful row) and 2 (refused to start / bad spec) — this is
+        # "started, then had to stop".
+        partial = getattr(exc, "partial_results", [])
+        print(render_json(partial) if args.json else render_markdown(partial))
+        print(f"mutate: ABORTED — {exc}", file=sys.stderr)
+        return 3
+
     print(render_json(results) if args.json else render_markdown(results))
     return 0 if all(r.outcome.is_success for r in results) else 1
 

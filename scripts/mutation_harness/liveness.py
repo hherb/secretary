@@ -13,6 +13,28 @@ They are NOT of equal strength and the harness reports which one it used:
   different bytes. It does not prove the mutated expression is reached at
   runtime.
 
+  **A further, structural limit, found while building `controls.py`'s `C10`
+  (fix round 1) and independently confirmed and sharpened in fix round 2's
+  review with a decisive experiment: two trailing comments of IDENTICAL
+  length and line count but different bytes still change the artifact hash;
+  two back-to-back builds of an untouched file are bit-identical; reverting
+  reproduces the original hash exactly.** `rustc` embeds a whole-file
+  content checksum into `.rmeta` for every `SourceFile` that contributes to
+  the crate (used to validate debuginfo against source), independent of
+  whether any exported item's span moved. Consequently: **no same-file
+  textual edit to a file the crate's build graph actually reads can ever be
+  `NOT_LIVE` under this liveness proof** — not "a comment placed badly", a
+  property of the mechanism itself, since artifact bytes are a content
+  function of the whole source file, not of which bytes an item's compiled
+  behaviour depends on. This is the SAFE direction to be wrong in (it can
+  only over-report liveness, never under-report it — a cosmetic edit reads
+  as "live" rather than a semantically dead one reading as "not live"), but
+  a reader deciding how much to trust a Rust `live=True` verdict needs to
+  know it proves only "the compiler saw a byte change somewhere in this
+  file", not "the mutated expression's behaviour changed". The only way to
+  test a genuinely compiler-invisible Rust edit under this proof is to
+  mutate a file the build graph does not read at all — see `C10`.
+
 Never a source hash and never an mtime. mtime is the mechanism behind
 false-green mechanism 1.
 """

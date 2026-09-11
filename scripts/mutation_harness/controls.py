@@ -63,12 +63,41 @@ def _build_c1(root: Path) -> MutationSpec:
     is racy to reproduce — it needs two writes in the same whole second — so
     this control uses an UNCHECKED_HASH `.pyc` (PEP 552) instead, which is
     served regardless of the source's content, size AND mtime. Verified by
-    execution. Same property under test: does the harness clear
-    `__pycache__` before probing? The harness's defence is deleting the
-    directory, which is invalidation-mode independent.
+    execution.
 
     Without the pre-created `.pyc` this control is VACUOUS — a fresh temp dir
     has no bytecode, so it would pass with `clear_pycache` deleted.
+
+    **What this pins, stated precisely (fix round 2, Finding 2).** `runner.py`
+    has TWO `clear_pycache` call sites: a BASELINE sweep of the whole
+    `repo_root`, fired once per distinct gate command before any spec
+    touching it runs; and a PRE-PROBE sweep inside `_probe`, scoped to the
+    mutated file's directory, fired for every Python spec right before its
+    probe. An earlier version of this docstring said the harness clears
+    `__pycache__` "before probing" as if that named the pre-probe call
+    specifically. Measured false: deleting EITHER call site alone still
+    leaves this single-spec control PASSING; only deleting BOTH reds it. So
+    C1 pins "at least one of the two calls runs before the probe", not that
+    the pre-probe call individually matters here.
+
+    That is not a gap in this control so much as a structural fact about the
+    pipeline it exercises, and it does not go away for any single-spec
+    fixture: the baseline sweep is UNSCOPED (the whole `repo_root`, not the
+    one file this spec will touch) and runs before ANY spec's probe, and
+    nothing this harness spawns as a subprocess ever WRITES a `.pyc` in the
+    first place (every subprocess runs under `python_env()`'s
+    `PYTHONDONTWRITEBYTECODE=1`, checked separately below) — so once the
+    baseline sweep has fired even once, there is nothing left under
+    `repo_root` for a later pre-probe sweep to ever need to clean up. Making
+    the pre-probe call INDIVIDUALLY load-bearing would need a spec sharing a
+    gate with an EARLIER spec (so the baseline sweep is skipped for it) whose
+    stale `.pyc` is created AFTER the baseline sweep already ran — and this
+    harness has no mechanism that creates one mid-run to arrange that with.
+    Scoping the baseline sweep, or a `Control` shape that supports more than
+    one `MutationSpec`, would each be a `runner.py`/Task-5-design change out
+    of proportion to this finding; the docstring is corrected instead, per
+    the design's own "an accurate weaker claim beats an inaccurate stronger
+    one" guidance.
     """
     _write(root, "m.py", 'TOKEN = "aaaaaaa"\n')
     py_compile.compile(

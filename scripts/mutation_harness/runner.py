@@ -19,6 +19,13 @@ additive: no existing spec's behaviour changes. Two calls sharing one
 `spec.gate` string but different `timeout` values would share a cached
 baseline keyed only on the command text; no control in this tree does that,
 and it is not otherwise exercised.
+
+A `RestoreFailed` raised from the `finally` block below carries the PARTIAL
+`results` list as `exc.partial_results`, attached just before the re-raise.
+Without it, the row this function itself builds for `RESTORE_FAILED` was
+unreachable by any caller — the `raise` propagates past this function's own
+`return results`, so `mutate.py` could only see the bare exception, never a
+result to render (fix round 2, Finding 4).
 """
 
 from __future__ import annotations
@@ -50,6 +57,19 @@ def apply_substitution(path: Path, old: str, new: str) -> bool:
 
 def _probe(spec: MutationSpec, repo_root: Path, rust_before: dict) -> LivenessResult:
     if spec.lang is Lang.PYTHON:
+        # This call and the baseline `clear_pycache(repo_root)` above are
+        # BOTH defences against false-green mechanism 1 (stale bytecode),
+        # and mutation-testing them individually shows the baseline call
+        # alone always suffices in this pipeline: it sweeps the WHOLE
+        # `repo_root` unconditionally, fires before any spec's probe, and
+        # nothing this harness spawns ever writes NEW bytecode (every
+        # subprocess runs under `python_env()`'s
+        # `PYTHONDONTWRITEBYTECODE=1`) — so nothing can repopulate a stale
+        # `.pyc` for this call to still need to clear. Kept anyway as
+        # defence in depth against a future change to either assumption
+        # (e.g. a scoped baseline sweep, or a subprocess that regains
+        # bytecode writing) — see `controls.py`'s `C1` docstring for the
+        # measured claim this control actually pins.
         clear_pycache(repo_root / Path(spec.path).parent)
         return probe_python(spec.probe, repo_root)
     after = rust_artifact_hashes(spec.probe.package, repo_root)
@@ -104,10 +124,17 @@ def run_mutations(
         finally:
             try:
                 journal.restore(entry)
-            except RestoreFailed:
+            except RestoreFailed as exc:
                 results.append(
                     MutationResult(spec=spec, outcome=Outcome.RESTORE_FAILED)
                 )
+                # Attach the PARTIAL results so a caller catching this
+                # exception (mutate.py) can still render what was measured
+                # before the abort, RESTORE_FAILED row included. Without
+                # this, `results` — including the row two lines up — is
+                # unreachable: the `raise` below propagates past this
+                # function's own `return results` (fix round 2, Finding 4).
+                exc.partial_results = results
                 raise
 
     return results
