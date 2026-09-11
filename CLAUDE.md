@@ -192,6 +192,33 @@ uv run scripts/check-test-support-placement.py
 # actual behaviour don't drift apart.
 bash scripts/check-secret-slot-hygiene.sh --self-test
 bash scripts/check-secret-slot-hygiene.sh
+
+# Mutation testing: run the harness, do not hand-roll one (#644)
+# This repo cites mutation results as evidence in CLAUDE.md and in every
+# handoff. Until #644 nothing checked that the mutation took effect, and
+# three distinct mechanisms had each produced a GREEN that proved nothing:
+# stale bytecode on a size-preserving edit, a later class-body assignment
+# silently overriding an earlier splice, and a mutation left applied by a
+# stalled worker. All three were caught by someone finding a result
+# SURPRISING, which stops working the moment a mutation is expected to be
+# green by design — there a false green and a true green are
+# indistinguishable by inspection.
+#
+# Write the spec to the session SCRATCHPAD, never the source tree (#516).
+# `--self-test` first, as with every other guard: it reproduces all three
+# false greens as positive controls plus a fourth (a timed-out gate credited
+# as a catch), and C2 (a splice overridden by a later assignment) is the one
+# the harness exists for.
+uv run scripts/mutate.py --self-test
+uv run scripts/mutate.py "$SCRATCH/mutations.toml"
+#
+# An interrupted run leaves a JOURNAL rather than a mutated tree, and the
+# next invocation REFUSES to start until it is drained:
+uv run scripts/mutate.py --drain
+
+# The harness's own unit tests (63 tests). Use the MODULE form — a bare
+# `pytest` invocation intermittently hangs at 0% CPU on some machines:
+uv run --with pytest python3 -m pytest scripts/mutation_harness -q
 ```
 
 ### Python paths
@@ -1458,6 +1485,7 @@ When adding any other dependency on a security-critical path, follow the same pa
 - `#![forbid(unsafe_code)]` is set in the root workspace lints — do not introduce `unsafe`. If a primitive truly needs FFI, isolate it in its own crate behind a reviewed boundary.
 - Clippy must stay clean with `-D warnings`. Don't ship a PR with new warnings expecting them to be cleaned up later.
 - KATs in `core/tests/data/*.json` are pinned against published vectors (NIST FIPS 203 / 204, RFC 8032 / 7748 / 5869 / 9106, BIP-39 Trezor canonical). When upgrading a primitive crate, re-run KATs explicitly — a passing test suite is necessary but not sufficient.
+- The mutation harness's (#644, `scripts/mutation_harness/`) two liveness proofs are **not of equal strength**, and a mutation report names which one was used. Python observes the value a FRESH INTERPRETER binds — strong: it is what the real class-body-splice false green needed to be caught. Rust only observes that `cargo build`'s named artifacts changed CONTENT — weaker: it proves the compiler emitted different bytes, not that the mutated expression's behaviour changed at runtime. `rustc` embeds a whole-file content checksum into `.rmeta` for every `SourceFile` that contributes to the crate, so **no same-file textual edit to a file the crate's build graph actually reads can ever be reported `NOT_LIVE`** under the Rust proof — measured twice during the build (a comment before an item moved its span; a comment on the file's last line still changed the checksum). The only way to test a genuinely compiler-invisible Rust edit is to mutate a file the build graph does not read at all (`scripts/mutation_harness/controls.py`'s `C10`, which mutates a `README.md` no `mod` declares).
 
 ### Swift log hygiene: default-deny at `privacy: .public` (#467)
 
