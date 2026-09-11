@@ -24,7 +24,14 @@ def test_record_then_restore_round_trips(tmp_path):
 
 
 def test_journal_is_written_before_the_mutation(tmp_path):
-    """A kill immediately after record() must leave a recoverable journal."""
+    """A kill immediately after record() must leave a recoverable journal.
+
+    This test's first version never applied a mutation, so it pinned that
+    `record()` persists the index, not the ORDERING its name claims (PR #652
+    review). The mutation is applied now, and a FRESH journal — what the
+    next invocation constructs — must drain back to the original bytes from
+    what is on disk alone.
+    """
     target = tmp_path / "f.txt"
     target.write_text("original\n")
     j = Journal(tmp_path / "jdir")
@@ -32,6 +39,12 @@ def test_journal_is_written_before_the_mutation(tmp_path):
     on_disk = json.loads((tmp_path / "jdir" / "mutation-journal.json").read_text())
     assert on_disk["entries"][0]["path"] == str(target.resolve())
     assert on_disk["entries"][0]["sha256"] == hashlib.sha256(b"original\n").hexdigest()
+
+    target.write_text("mutated\n")
+    del j
+
+    assert Journal(tmp_path / "jdir").drain() == [str(target.resolve())]
+    assert target.read_text() == "original\n"
 
 
 def test_a_fresh_journal_in_the_same_dir_sees_the_dirty_entry(tmp_path):
@@ -50,6 +63,23 @@ def test_a_fresh_journal_in_the_same_dir_sees_the_dirty_entry(tmp_path):
     assert not reopened.is_dirty()
 
 
+def test_a_blob_written_but_never_indexed_is_not_a_record(tmp_path):
+    """The kill window BETWEEN the blob write and the index replace: the
+    orphan blob is inert, the index is clean, and — because the target is
+    never mutated before the index is durable — the file is untouched."""
+    target = tmp_path / "f.txt"
+    target.write_text("original\n")
+    j = Journal(tmp_path / "jdir")
+    entry = j.record(target)
+    (tmp_path / "jdir" / "mutation-journal.json").unlink()  # the index never landed
+
+    reopened = Journal(tmp_path / "jdir")
+    assert not reopened.is_dirty()
+    assert reopened.drain() == []
+    assert (tmp_path / "jdir" / entry.backup_name).exists()
+    assert target.read_text() == "original\n"
+
+
 def test_restore_verifies_sha256_and_raises_on_mismatch(tmp_path, monkeypatch):
     target = tmp_path / "f.txt"
     target.write_text("original\n")
@@ -60,6 +90,42 @@ def test_restore_verifies_sha256_and_raises_on_mismatch(tmp_path, monkeypatch):
     target.write_text("mutated\n")
     with pytest.raises(RestoreFailed, match="sha256"):
         j.restore(entry)
+
+
+def test_a_corrupt_blob_is_refused_before_the_target_is_touched(tmp_path):
+    """The first version wrote the blob over the target and hashed what it
+    had written, so a corrupt-but-readable blob destroyed the mutated file
+    as well as failing the restore (PR #652 review)."""
+    target = tmp_path / "f.txt"
+    target.write_text("original\n")
+    j = Journal(tmp_path / "jdir")
+    entry = j.record(target)
+    (tmp_path / "jdir" / entry.backup_name).write_text("tampered\n")
+    target.write_text("mutated\n")
+
+    with pytest.raises(RestoreFailed, match="left untouched"):
+        j.restore(entry)
+
+    assert target.read_text() == "mutated\n"
+    assert j.is_dirty()
+
+
+def test_a_target_that_cannot_be_written_is_a_typed_restore_failure(tmp_path):
+    """A write or re-read `OSError` used to escape untyped, past the
+    `RESTORE_FAILED` row and the documented exit 3."""
+    nested = tmp_path / "gone"
+    nested.mkdir()
+    target = nested / "f.txt"
+    target.write_text("original\n")
+    j = Journal(tmp_path / "jdir")
+    entry = j.record(target)
+    target.unlink()
+    nested.rmdir()
+
+    with pytest.raises(RestoreFailed, match="could not be written"):
+        j.restore(entry)
+
+    assert j.is_dirty()
 
 
 def test_drain_on_a_clean_journal_is_a_no_op(tmp_path):
@@ -141,6 +207,85 @@ def test_restore_raises_restorefailed_when_the_backup_is_missing(tmp_path):
 
     # Fail-closed: the entry must still be there for a future retry.
     assert j.is_dirty()
+
+
+# --- PR #652 review: entry identity, drain-all, the `entries` key ----------
+
+
+def test_restoring_one_of_two_same_named_same_content_files_keeps_the_other_recorded(tmp_path):
+    """Two paths with the same basename and identical bytes share one
+    content-addressed blob; removing entries by BLOB NAME dropped the
+    sibling's record while its file stayed mutated — `is_dirty()` False,
+    file dirty: false-green mechanism 3 inside the journal."""
+    a = tmp_path / "x" / "mod.rs"
+    b = tmp_path / "y" / "mod.rs"
+    for path in (a, b):
+        path.parent.mkdir()
+        path.write_text("same\n")
+    j = Journal(tmp_path / "jdir")
+    entry_a = j.record(a)
+    j.record(b)
+    a.write_text("mut-a\n")
+    b.write_text("mut-b\n")
+
+    j.restore(entry_a)
+
+    assert a.read_text() == "same\n"
+    assert b.read_text() == "mut-b\n"
+    assert j.is_dirty()
+    assert Journal(tmp_path / "jdir").dirty_paths() == [str(b.resolve())]
+
+
+def test_drain_attempts_every_entry_and_names_what_is_still_mutated(tmp_path):
+    """Stopping at the first failure left later entries mutated and unnamed,
+    and every subsequent `--drain` re-hit the same entry first."""
+    files = {}
+    for name in ("a", "b", "c"):
+        path = tmp_path / f"{name}.txt"
+        path.write_text(f"{name}-original\n")
+        files[name] = path
+    j = Journal(tmp_path / "jdir")
+    entries = {name: j.record(path) for name, path in files.items()}
+    for name, path in files.items():
+        path.write_text(f"{name}-mutated\n")
+    (tmp_path / "jdir" / entries["b"].backup_name).unlink()
+
+    with pytest.raises(RestoreFailed) as info:
+        j.drain()
+
+    assert files["a"].read_text() == "a-original\n"
+    assert files["c"].read_text() == "c-original\n"
+    assert files["b"].read_text() == "b-mutated\n"
+    assert j.dirty_paths() == [str(files["b"].resolve())]
+    message = str(info.value)
+    assert "1 of 3" in message and str(files["b"].resolve()) in message
+    assert "still mutated" in message
+
+
+@pytest.mark.parametrize("body", ["{}", '{"entrys": [{"path": "x", "sha256": "y", "backup_name": "z"}]}'],
+                         ids=["empty-object", "misspelt-key"])
+def test_an_index_without_an_entries_key_is_corrupt_not_clean(tmp_path, body):
+    """`.get("entries", [])` read both of these as a CLEAN journal."""
+    journal_dir = tmp_path / "jdir"
+    journal_dir.mkdir()
+    (journal_dir / "mutation-journal.json").write_text(body)
+
+    with pytest.raises(CorruptJournal, match="no 'entries' key"):
+        Journal(journal_dir)
+
+
+def test_signal_dispositions_are_recorded_and_handed_back(tmp_path):
+    before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    j = Journal(tmp_path / "jdir")
+    try:
+        j.install_handlers()
+        assert signal.getsignal(signal.SIGTERM) == j._on_signal
+        j.restore_signal_dispositions()
+        assert {sig: signal.getsignal(sig) for sig in before} == before
+        j.restore_signal_dispositions()  # idempotent
+        assert {sig: signal.getsignal(sig) for sig in before} == before
+    finally:
+        j.uninstall_handlers()
 
 
 _SIGNAL_WORKER_SCRIPT = """\
@@ -277,3 +422,20 @@ def test_a_well_formed_index_still_loads(tmp_path):
     reopened = Journal(tmp_path / "jdir")
 
     assert reopened.dirty_paths() == [str(target.resolve())]
+
+
+def test_dispositions_stay_ignored_once_a_signal_has_been_handled(tmp_path):
+    """`_on_signal`'s `sys.exit` unwinds through `run_mutations`'s `finally`,
+    which used to re-arm the default disposition — so a second Ctrl-C could
+    interrupt the `atexit` drain mid-write."""
+    j = Journal(tmp_path / "jdir")
+    before = signal.getsignal(signal.SIGTERM)
+    try:
+        j.install_handlers()
+        j._signalled = True  # what `_on_signal` records first
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        j.restore_signal_dispositions()
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGTERM, before)
+        j.uninstall_handlers()

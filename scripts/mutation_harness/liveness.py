@@ -47,6 +47,17 @@ reports which mechanism it used rather than implying they are equivalent:
   test a genuinely compiler-invisible Rust edit under this proof is to
   mutate a file the build graph does not read at all — see `C10`.
 
+**The two proofs classify a mutation that BREAKS the module oppositely, on
+purpose, and both directions are pinned** (PR #652 review). A Python
+mutation that makes the module unimportable yields no post-reading, so the
+row is `NOT_LIVE`: the proof's contract is "the bound value moved to the
+declared value", and with no value there is nothing to compare — under-
+reporting costs a re-run, which is the safe direction. A Rust mutation that
+makes the crate fail to BUILD is `live=True`: the compiler demonstrably saw
+the change, and there is no declared value to miss. A build that fails on
+the CLEAN tree is neither — it is an absent baseline, `NOT_LIVE` whatever
+the mutated build does.
+
 Never a source hash and never an mtime. mtime is the mechanism behind
 false-green mechanism 1.
 """
@@ -57,13 +68,14 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess
+import sys
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
-from mutation_harness.types import LivenessResult, PythonObservation, PythonProbe
-
-MECHANISM_INTERPRETER = "interpreter"
-MECHANISM_ARTIFACT = "artifact"
+from mutation_harness.subproc import run_bounded
+from mutation_harness.types import (
+    LivenessResult, PythonObservation, PythonProbe, RustObservation, RustReadingKind,
+)
 
 # Every subprocess this module spawns is bounded, for the same reason
 # `run_gate` is: a probe or a build that never finishes must be reported as
@@ -72,17 +84,15 @@ MECHANISM_ARTIFACT = "artifact"
 PROBE_TIMEOUT_SECONDS = 300
 BUILD_TIMEOUT_SECONDS = 3600
 
-# Sentinel keys `rust_artifact_hashes` may return INSTEAD of real artifact
-# hashes. Both are recognised by `compare_rust_artifacts` before any set
-# comparison, because neither is a measurement: a sentinel that merely
-# differed from the other side would read as evidence of a change.
-BUILD_FAILED = "<build-failed>"
-BUILD_TIMED_OUT = "<build-timed-out>"
-
 # Spec §5.2: applied uniformly, never a per-mutation judgement call. The
 # mutation whose green must not be believed is precisely the size-preserving
-# one that nobody flags as risky.
+# one that nobody flags as risky. `PYTHONDONTWRITEBYTECODE=1` stops WRITES;
+# `PYTHONPYCACHEPREFIX` is REMOVED because with it set CPython reads bytecode
+# from a mirror tree OUTSIDE the repo, which `clear_pycache` never sweeps — a
+# stale `.pyc` there would survive every sweep and false-green mechanism 1
+# would be back for any user who sets that variable (PR #652 review).
 _NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
+_BYTECODE_RELOCATORS = ("PYTHONPYCACHEPREFIX",)
 
 
 class PycacheNotCleared(RuntimeError):
@@ -103,6 +113,8 @@ class PycacheNotCleared(RuntimeError):
 def python_env() -> dict[str, str]:
     """The environment every Python subprocess runs under."""
     env = dict(os.environ)
+    for key in _BYTECODE_RELOCATORS:
+        env.pop(key, None)
     env.update(_NO_BYTECODE)
     return env
 
@@ -113,6 +125,11 @@ def clear_pycache(root: Path) -> int:
     CPython invalidates a `.pyc` on `(source_mtime, size)` with the mtime
     stored in whole SECONDS, so a size-preserving mutation applied and
     reverted inside one second is served from cache and never runs.
+
+    LIMIT: `Path.rglob` does not descend into symlinked directories and
+    silently skips directories it cannot read, so a cache reachable only
+    through either is neither removed nor reported (#653; the same `rglob`
+    gap `payload_guard` records as #510).
     """
     removed = 0
     for cache in Path(root).rglob("__pycache__"):
@@ -147,6 +164,11 @@ def observe_python(
     The Python analogue of one `rust_artifact_hashes` call: a reading, not a
     verdict. `run_mutations` calls it twice — once on the clean tree, once
     after the substitution — and `compare_python_probe` decides.
+
+    The child is `sys.executable`, the interpreter running the harness, not
+    whatever `python3` is first on `PATH`: under `uv run` the two coincide,
+    and anywhere else the probe would silently measure a different Python
+    from the one the gate runs under.
     """
     # Defence in depth: `module` is spliced raw into the generated source
     # (unlike `syspath`/`expr`, which land inside `!r`-escaped literals), so
@@ -163,24 +185,24 @@ def observe_python(
         )
     syspath = str((Path(repo_root) / probe.syspath).resolve())
     source = _PROBE_SOURCE.format(syspath=syspath, module=probe.module, expr=probe.expr)
-    try:
-        proc = subprocess.run(
-            ["python3", "-c", source],
-            capture_output=True,
-            text=True,
-            cwd=str(repo_root),
-            env=python_env(),
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
+    run = run_bounded(
+        [sys.executable, "-c", source], cwd=repo_root, env=python_env(), timeout=timeout
+    )
+    if run.timed_out:
         return PythonObservation(
             ok=False, value="", error=f"probe did not finish within {timeout}s"
         )
-    if proc.returncode != 0:
+    if run.returncode != 0:
         return PythonObservation(
-            ok=False, value="", error=f"probe failed to run: {proc.stderr.strip()[:400]}"
+            ok=False, value="", error=f"probe failed to run: {run.stderr.strip()[:400]}"
         )
-    return PythonObservation(ok=True, value=proc.stdout.strip(), error="")
+    value = run.stdout.strip()
+    if not value:
+        # A module that swallows stdout, or exits 0 at import time, prints
+        # nothing; an empty string is not a reading and must not become a
+        # baseline that any later value "moves away from".
+        return PythonObservation(ok=False, value="", error="probe printed no value")
+    return PythonObservation(ok=True, value=value, error="")
 
 
 def compare_python_probe(
@@ -201,25 +223,24 @@ def compare_python_probe(
        carrying a timestamp) would read as the mutation having taken effect.
 
     A reading that could not be taken on EITHER side is `live=False`: a
-    missing baseline is not evidence of a change.
+    missing baseline is not evidence of a change, and a module the mutation
+    made unimportable yields no value to compare (see the module docstring
+    for why that is the opposite of the Rust ruling, deliberately).
     """
     if not before.ok:
         return LivenessResult(
             live=False,
-            mechanism=MECHANISM_INTERPRETER,
             detail=f"the pre-mutation probe produced no value ({before.error}); "
                    f"there is no baseline to compare against",
         )
     if not after.ok:
         return LivenessResult(
             live=False,
-            mechanism=MECHANISM_INTERPRETER,
             detail=f"the post-mutation probe produced no value ({after.error})",
         )
     if before.value == after.value:
         return LivenessResult(
             live=False,
-            mechanism=MECHANISM_INTERPRETER,
             detail=f"the bound value did NOT change: the interpreter observed "
                    f"{after.value} both before and after the substitution, so this "
                    f"mutation measured nothing",
@@ -228,94 +249,155 @@ def compare_python_probe(
     if after.value != expected:
         return LivenessResult(
             live=False,
-            mechanism=MECHANISM_INTERPRETER,
             detail=f"the bound value changed {before.value} -> {after.value}, but the "
                    f"spec declared it would become {expected}",
         )
-    return LivenessResult(
-        True, MECHANISM_INTERPRETER, f"changed {before.value} -> {after.value}"
-    )
+    return LivenessResult(True, f"changed {before.value} -> {after.value}")
+
+
+def package_id_names(package_id: str, package: str) -> bool:
+    """Does cargo's `package_id` denote exactly `package`?
+
+    The spellings cargo's `PackageIdSpec` documents. Cargo >= 1.77 emits a
+    URL-shaped id — `<source>#<name>@<version>`, or `<source>#<version>`
+    when the source URL's last path segment IS the name (`path+file:///…/
+    mutdemo#0.0.0`, `git+https://…/serde?branch=master#1.0.0`, with the
+    segment percent-decoded and a trailing `.git` dropped); older cargo
+    emits `<name> <version> (<source>)`. The first version tested
+    `package in package_id`, a substring match that `secretary-core-fuzz`
+    satisfies for `secretary-core` and `core` satisfies for everything; its
+    successor read the last path segment WITH the query string attached. A
+    spelling this still misses fails CLOSED — the artifact is simply not
+    counted, and an empty reading is `NOT_LIVE`.
+    """
+    if "#" in package_id:
+        source, _, tail = package_id.rpartition("#")
+        if "@" in tail:
+            name = tail.split("@", 1)[0]
+        else:
+            segment = urlsplit(source).path.rstrip("/").rsplit("/", 1)[-1]
+            name = unquote(segment).removesuffix(".git")
+        return name == package
+    return package_id.split(" ", 1)[0] == package
 
 
 def rust_artifact_hashes(
     package: str, repo_root: Path, timeout: int = BUILD_TIMEOUT_SECONDS
-) -> dict[str, str]:
+) -> RustObservation:
     """Build `package` and hash the CONTENTS of every artifact cargo names.
 
     Cargo's JSON gives absolute paths, so no globbing against the ~13,000
     files in `target/release/deps/` is needed. Verified during design: for
     `-p secretary-core` the set is `target/release/libsecretary_core.rlib`
     plus a hash-suffixed `.rmeta`.
+
+    Only an exit-0 build whose every named artifact could be read is a
+    measurement. A non-zero exit is `BUILD_FAILED` even if cargo named some
+    artifacts on the way down (the first version consulted the exit code only
+    when the artifact map was EMPTY, so a failed build that had already
+    emitted a build-script binary read as a successful measurement); an
+    artifact cargo named but that is gone or unreadable when hashed is
+    `ARTIFACT_MISSING`, not a silently shorter map (which a parallel cargo run
+    rewriting `target/` between the two readings produced, and which the set
+    comparison then reported as "changed").
     """
-    try:
-        proc = subprocess.run(
-            ["cargo", "build", "--release", "-p", package, "--message-format=json"],
-            capture_output=True,
-            text=True,
-            cwd=str(repo_root),
-            timeout=timeout,
+    run = run_bounded(
+        ["cargo", "build", "--release", "-p", package, "--message-format=json"],
+        cwd=repo_root,
+        env=None,
+        timeout=timeout,
+    )
+    if run.timed_out:
+        return RustObservation(
+            RustReadingKind.BUILD_TIMED_OUT, detail=f"did not finish within {timeout}s"
         )
-    except subprocess.TimeoutExpired:
-        # A sentinel rather than `{}`: an empty dict is also what "cargo named
-        # no artifacts" produces, and the two deserve different diagnostics.
-        # Both are fail-CLOSED in `compare_rust_artifacts`.
-        return {BUILD_TIMED_OUT: f"build did not finish within {timeout}s"}
+    if run.returncode != 0:
+        stderr_digest = hashlib.sha256(run.stderr.encode()).hexdigest()[:16]
+        return RustObservation(
+            RustReadingKind.BUILD_FAILED,
+            detail=f"failed (cargo exited {run.returncode}; stderr sha256 {stderr_digest}…)",
+        )
     hashes: dict[str, str] = {}
-    for line in proc.stdout.splitlines():
+    for line in run.stdout.splitlines():
         try:
             msg = json.loads(line)
         except json.JSONDecodeError:
             continue
         if msg.get("reason") != "compiler-artifact":
             continue
-        if package not in msg.get("package_id", ""):
+        if not package_id_names(msg.get("package_id", ""), package):
             continue
         for filename in msg.get("filenames", []):
-            path = Path(filename)
-            if path.exists():
-                hashes[filename] = hashlib.sha256(path.read_bytes()).hexdigest()
-    if not hashes and proc.returncode != 0:
-        # A build failure IS a live mutation signal, but a caller cannot tell
-        # it apart from "cargo produced nothing", so say which happened.
-        hashes[BUILD_FAILED] = hashlib.sha256(proc.stderr.encode()).hexdigest()
-    return hashes
+            try:
+                data = Path(filename).read_bytes()
+            except OSError as exc:
+                return RustObservation(
+                    RustReadingKind.ARTIFACT_MISSING,
+                    detail=f"named {filename} but it could not be read ({exc})",
+                )
+            hashes[filename] = hashlib.sha256(data).hexdigest()
+    return RustObservation(RustReadingKind.ARTIFACTS, hashes)
 
 
-def compare_rust_artifacts(before: dict[str, str], after: dict[str, str]) -> LivenessResult:
-    """The artifact set must differ. Identical bytes mean the mutation never
-    reached the compiler.
+def compare_rust_artifacts(before: RustObservation, after: RustObservation) -> LivenessResult:
+    """The artifact CONTENTS must differ, over the SAME artifact set.
 
-    **An ABSENT side is `live=False`, not `live=True`** (final whole-branch
-    review, Finding 6). An empty `before` with a non-empty `after` used to
-    fall through to the "changed" arm and report the mutation live, which is
-    the one fail-OPEN direction in this module: there was no baseline, so the
-    difference is between a measurement and the absence of one. Narrow —
-    `rust_artifact_hashes` returns a `BUILD_FAILED` sentinel rather than `{}`
-    whenever cargo failed, so reaching it needs cargo to exit 0 while naming
-    nothing — but the direction is what matters. Over-reporting liveness is
-    exactly what #644 exists to stop; under-reporting it costs a re-run.
+    Dispatch is on `kind` before any hash is looked at (PR #652 review, the
+    Critical): the first version recognised `BUILD_TIMED_OUT` and emptiness
+    and nothing else, so a `BUILD_FAILED` baseline fell through to the set
+    comparison, and two failing builds whose stderr differed — a shifted
+    line number in a diagnostic, a "Blocking waiting for file lock" line from
+    a parallel session — scored `live=True` with no artifact ever produced.
+
+    * A `before` that is not a measurement is an ABSENT BASELINE: `live=False`
+      whatever `after` is. There is nothing to have moved away from.
+    * An `after` that FAILED TO BUILD is `live=True` — the compiler saw the
+      change (the deliberate asymmetry with the Python proof; see the module
+      docstring). An `after` that timed out or lost an artifact is not a
+      reading: `live=False`.
+    * Two measurements over DIFFERENT artifact sets are not comparable: a
+      set change is a build-graph or `target/` event, not this mutation's
+      effect, and reporting it as "changed" was the second fail-open.
     """
-    for label, side in (("pre-mutation", before), ("post-mutation", after)):
-        if BUILD_TIMED_OUT in side:
-            return LivenessResult(
-                False, MECHANISM_ARTIFACT, f"the {label} cargo build {side[BUILD_TIMED_OUT]}"
-            )
-    absent = [label for label, side in (("pre-mutation", before), ("post-mutation", after))
-              if not side]
-    if absent:
+    if not before.is_measurement:
         return LivenessResult(
-            False,
-            MECHANISM_ARTIFACT,
-            f"cargo named no artifacts in the {' and '.join(absent)} build; "
-            f"there is no baseline to compare against",
+            live=False,
+            detail=f"the pre-mutation cargo build {before.detail}; "
+                   f"there is no baseline to compare against",
         )
-    if before == after:
+    if after.kind is RustReadingKind.BUILD_FAILED:
         return LivenessResult(
-            False,
-            MECHANISM_ARTIFACT,
-            f"artifact contents unchanged across {len(after)} file(s)",
+            live=True, detail=f"the mutated tree no longer builds: the post-mutation cargo build {after.detail}"
+        )
+    if not after.is_measurement:
+        return LivenessResult(live=False, detail=f"the post-mutation cargo build {after.detail}")
+    if not before.hashes:
+        return LivenessResult(
+            live=False,
+            detail="cargo named no artifacts in the pre-mutation build; "
+                   "there is no baseline to compare against",
+        )
+    if not after.hashes:
+        return LivenessResult(
+            live=False,
+            detail="cargo named no artifacts in the post-mutation build; "
+                   "nothing was measured after the substitution",
+        )
+    if set(before.hashes) != set(after.hashes):
+        only_before = sorted(Path(k).name for k in set(before.hashes) - set(after.hashes))
+        only_after = sorted(Path(k).name for k in set(after.hashes) - set(before.hashes))
+        return LivenessResult(
+            live=False,
+            detail=f"the artifact SET changed rather than artifact contents "
+                   f"(only before: {only_before}; only after: {only_after}); that is a "
+                   f"build-graph or target/ event, not a measurement of this mutation",
+        )
+    if before.hashes == after.hashes:
+        return LivenessResult(
+            live=False,
+            detail=f"artifact contents unchanged across {len(after.hashes)} file(s)",
         )
     changed = sorted(
-        Path(k).name for k in set(before) | set(after) if before.get(k) != after.get(k)
+        Path(k).name for k in before.hashes if before.hashes[k] != after.hashes[k]
     )
-    return LivenessResult(True, MECHANISM_ARTIFACT, f"changed: {', '.join(changed)}")
+    return LivenessResult(True, f"changed: {', '.join(changed)}")

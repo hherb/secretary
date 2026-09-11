@@ -22,11 +22,15 @@ from __future__ import annotations
 
 import dataclasses
 import py_compile
+import shlex
+import sys
 import textwrap
 from collections.abc import Callable
 from pathlib import Path
 
-from mutation_harness.types import Lang, MutationSpec, Outcome, PythonProbe, RustProbe
+from mutation_harness.types import (
+    Expect, Lang, MutationSpec, Outcome, PythonProbe, RustProbe,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -35,6 +39,13 @@ class Control:
     why: str
     build: Callable[[Path], MutationSpec]
     expect: Outcome
+
+
+# The interpreter a control's GATE runs under: the same one the harness and
+# its probes run under (`liveness.observe_python` uses `sys.executable` for
+# exactly this reason), not whatever `python3` is first on PATH — the two
+# coincide under `uv run` and do not have to (fix-wave review).
+PY = shlex.quote(sys.executable)
 
 
 def _write(root: Path, rel: str, body: str) -> Path:
@@ -46,7 +57,7 @@ def _write(root: Path, rel: str, body: str) -> Path:
 
 def _py_spec(**kw) -> MutationSpec:
     defaults = dict(
-        id="C", lang=Lang.PYTHON, path="m.py", gate="true", expect="red",
+        id="C", lang=Lang.PYTHON, path="m.py", gate="true", expect=Expect.RED,
         probe=PythonProbe(module="m", expr="TOKEN", equals="mutated", syspath="."),
     )
     defaults.update(kw)
@@ -111,7 +122,7 @@ def _build_c1(root: Path) -> MutationSpec:
     )
     return _py_spec(
         id="C1", old='TOKEN = "aaaaaaa"', new='TOKEN = "mutated"',
-        gate="true", expect="green",
+        gate="true", expect=Expect.GREEN,
         probe=PythonProbe("m", "TOKEN", "mutated", "."),
     )
 
@@ -162,7 +173,7 @@ def _build_c6(root: Path) -> MutationSpec:
 def _build_c8(root: Path) -> MutationSpec:
     _write(root, "m.py", 'TOKEN = "real"\n')
     return _py_spec(
-        id="C8", old='"real"', new='"mutated"', gate="true", expect="red",
+        id="C8", old='"real"', new='"mutated"', gate="true", expect=Expect.RED,
         probe=PythonProbe("m", "TOKEN", "mutated", "."),
     )
 
@@ -195,7 +206,41 @@ def _build_c9(root: Path) -> MutationSpec:
     )
     return _py_spec(
         id="C9", old='"real"', new='"mutated"',
-        gate="python3 gate.py", expect="red",
+        gate=f"{PY} gate.py", expect=Expect.RED,
+        expect_red=("the_test_this_row_claims",),
+        probe=PythonProbe("m", "TOKEN", "mutated", "."),
+    )
+
+
+# --- C14: the named test PASSES while another fails --------------------------
+def _build_c14(root: Path) -> MutationSpec:
+    """`expect_red` must be satisfied only by a test reported RED.
+
+    `C9`'s gate never prints the claimed name at all; this one prints it on a
+    PASSING line, exactly as libtest does for every test it runs (`test
+    answer_is_42 ... ok`), while a DIFFERENT test fails. A substring match
+    over the whole output — the first version of `classify` — found the name
+    and reported `RED_AS_EXPECTED`: "caught by the test this row claims"
+    with the claimed test green. That could not be seen by any `cargo test`
+    gate, the repo's primary gate, because libtest always names passing
+    tests (PR #652 review). The gate is conditional on the mutation, as C9's
+    is, so the baseline stays green.
+    """
+    _write(root, "m.py", 'TOKEN = "real"\n')
+    _write(
+        root, "gate.py",
+        '''
+        import m, sys
+        print("test the_test_this_row_claims ... ok")
+        if m.TOKEN == "real":
+            sys.exit(0)
+        print("test some_other_test ... FAILED")
+        sys.exit(1)
+        ''',
+    )
+    return _py_spec(
+        id="C14", old='"real"', new='"mutated"',
+        gate=f"{PY} gate.py", expect=Expect.RED,
         expect_red=("the_test_this_row_claims",),
         probe=PythonProbe("m", "TOKEN", "mutated", "."),
     )
@@ -218,7 +263,7 @@ def _build_c11(root: Path) -> MutationSpec:
         'import m, sys\nsys.exit(0 if m.TOKEN == "real" else 1)\n',
     )
     return _py_spec(
-        id="C11", old='"real"', new='"mutated"', gate="python3 gate.py", expect="green",
+        id="C11", old='"real"', new='"mutated"', gate=f"{PY} gate.py", expect=Expect.GREEN,
         probe=PythonProbe("m", "TOKEN", "mutated", "."),
     )
 
@@ -242,8 +287,9 @@ def _build_c12(root: Path) -> MutationSpec:
       applied — see runner.py's ordering) finishes instantly and the
       baseline is reported clean;
     - the POST-MUTATION run (delay.txt == "5") genuinely outlives the
-      1-second `MutationSpec.timeout` this control sets, so `run_gate`'s own
-      `subprocess.run(..., timeout=1)` raises `TimeoutExpired` for real.
+      1-second `MutationSpec.timeout` this control sets, so `run_gate`'s
+      `subproc.run_bounded` genuinely hits its `communicate(timeout=1)`
+      expiry, kills the process group, and reports `returncode=None`.
 
     `m.py` exists only so a `PythonProbe` can observe the mutation the same
     way every other Python control does — it re-reads delay.txt at IMPORT
@@ -261,7 +307,7 @@ def _build_c12(root: Path) -> MutationSpec:
     )
     return _py_spec(
         id="C12", path="delay.txt", old="0", new="5",
-        gate="sleep $(cat delay.txt)", expect="red", timeout=1,
+        gate="sleep $(cat delay.txt)", expect=Expect.RED, timeout=1,
         probe=PythonProbe("m", "DELAY", "5", "."),
     )
 
@@ -288,7 +334,7 @@ def _build_c13(root: Path) -> MutationSpec:
     """
     _write(root, "m.py", 'TOKEN = "real"\n')
     return _py_spec(
-        id="C13", old='"real"', new='"mutated"', gate="sleep 5", expect="red",
+        id="C13", old='"real"', new='"mutated"', gate="sleep 5", expect=Expect.RED,
         timeout=1, probe=PythonProbe("m", "TOKEN", "mutated", "."),
     )
 
@@ -367,7 +413,7 @@ def _build_c10(root: Path) -> MutationSpec:
         id="C10", lang=Lang.RUST, path="README.md",
         old="notes: unchanged",
         new="notes: mutated, but cargo never reads this file",
-        gate="cargo test --release", expect="red", probe=RustProbe("mutdemo"),
+        gate="cargo test --release", expect=Expect.RED, probe=RustProbe("mutdemo"),
     )
 
 
@@ -388,18 +434,18 @@ def _build_n4(root: Path) -> MutationSpec:
     )
     return MutationSpec(
         id="N4", lang=Lang.RUST, path="src/lib.rs", old="    42", new="    43",
-        gate="cargo test --release", expect="red",
+        gate="cargo test --release", expect=Expect.RED,
         expect_red=("answer_is_42",), probe=RustProbe("mutdemo"),
     )
 
 
-# --- N1 / N2 / N3: the harness must stay silent ----------------------------
+# --- N1 / N2: the harness must stay silent (N3 is `selftest.check_clean_baseline`) ---
 def _build_n1(root: Path) -> MutationSpec:
     _write(root, "m.py", 'TOKEN = "real"\n')
     _write(root, "gate.py", 'import m, sys; sys.exit(0 if m.TOKEN == "real" else 1)\n')
     return _py_spec(
         id="N1", old='"real"', new='"mutated"',
-        gate="python3 gate.py", expect="red",
+        gate=f"{PY} gate.py", expect=Expect.RED,
         probe=PythonProbe("m", "TOKEN", "mutated", "."),
     )
 
@@ -407,7 +453,7 @@ def _build_n1(root: Path) -> MutationSpec:
 def _build_n2(root: Path) -> MutationSpec:
     _write(root, "m.py", 'TOKEN = "real"\n')
     return _py_spec(
-        id="N2", old='"real"', new='"mutated"', gate="true", expect="green",
+        id="N2", old='"real"', new='"mutated"', gate="true", expect=Expect.GREEN,
         probe=PythonProbe("m", "TOKEN", "mutated", "."),
     )
 
@@ -422,6 +468,8 @@ POSITIVE_CONTROLS: tuple[Control, ...] = (
     Control("C6", "the gate is red before any mutation", _build_c6, Outcome.BASELINE_DIRTY),
     Control("C8", "live, gate green, declared red", _build_c8, Outcome.UNEXPECTED_GREEN),
     Control("C9", "red, but not the test the row claims", _build_c9, Outcome.WRONG_TESTS_RED),
+    Control("C14", "the claimed test PASSES (`... ok`) while another fails",
+            _build_c14, Outcome.WRONG_TESTS_RED),
     Control("C10", "a Rust edit that emits identical artifacts", _build_c10, Outcome.NOT_LIVE),
     Control("C11", "live, declared green, gate goes red", _build_c11, Outcome.UNEXPECTED_RED),
     Control("C12", "the gate outlives its timeout — never credited as a catch",

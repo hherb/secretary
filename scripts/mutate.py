@@ -27,11 +27,21 @@ USAGE
     uv run scripts/mutate.py <spec.toml> [--json] [--journal-dir DIR]
     uv run scripts/mutate.py --drain [--journal-dir DIR]
 
-EXIT CODES: 0 every row matched its declaration; 1 a rendered table with at
-least one unsuccessful row; 2 refused to start (an undrained journal from an
-earlier run, or a spec that could not be read/parsed); 3 aborted mid-run —
-a restore could not be completed or verified (`RestoreFailed`), rendering
-whatever was measured before the abort.
+EXIT CODES for a spec run: 0 every row matched its declaration; 1 a
+rendered table with at least one unsuccessful row; 2 refused to start (an
+undrained or corrupt journal, or a spec that could not be read or parsed —
+including a `path` that is not an existing file); 3 aborted mid-run because
+a restore could not be completed or verified (`RestoreFailed`) — THE TREE MAY
+BE DIRTY, run `--drain`; 4 aborted mid-run by an error of the harness's own
+(a probe interpreter missing, a build tool missing, a `__pycache__` that would
+not clear), with the tree restored and the traceback on stderr. Both aborts
+render whatever was measured before them. `--self-test` exits 0/1 (1 = at
+least one check failed); `--drain` exits 0/2 (2 = the journal could not be
+opened or fully restored).
+
+For every non-success row the run also prints a DIAGNOSTIC block to stderr —
+why liveness failed, or the tail of the gate's output — so the table can stay
+five columns and still be actionable.
 
 Read docs/superpowers/specs/2026-09-11-mutation-harness-design.md first.
 Write the spec to the session scratchpad, never into the source tree (#516).
@@ -42,6 +52,7 @@ from __future__ import annotations
 import argparse
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -49,8 +60,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mutation_harness.journal import (  # noqa: E402
     CorruptJournal, Journal, RestoreFailed,
 )
-from mutation_harness.report import render_json, render_markdown  # noqa: E402
-from mutation_harness.runner import run_mutations  # noqa: E402
+from mutation_harness.report import (  # noqa: E402
+    render_diagnostics, render_json, render_markdown,
+)
+from mutation_harness.runner import RunAborted, run_mutations  # noqa: E402
 from mutation_harness.selftest import run_self_test  # noqa: E402
 from mutation_harness.spec import SpecError, parse_spec  # noqa: E402
 
@@ -121,21 +134,33 @@ def main(argv: list[str]) -> int:
 
     try:
         results = run_mutations(specs, REPO_ROOT, journal_dir)
-    except RestoreFailed as exc:
-        # A restore failure aborts the run (fail-closed is right — see
-        # journal.py), but the mutations measured before the abort are
-        # still real evidence. Render them, RESTORE_FAILED row included,
-        # rather than only ever printing a traceback (fix round 2,
-        # Finding 4). Exit 3 is distinct from 1 (a rendered table with an
-        # unsuccessful row) and 2 (refused to start / bad spec) — this is
-        # "started, then had to stop".
-        partial = getattr(exc, "partial_results", [])
-        print(render_json(partial) if args.json else render_markdown(partial))
+    except RunAborted as exc:
+        # An abort renders the mutations measured before it — they are still
+        # real evidence — then says why it stopped. Exit 3 (a restore could
+        # not be trusted; the tree may be dirty) and exit 4 (the harness
+        # itself failed; the tree was restored) are distinct from 1 (a
+        # rendered table with an unsuccessful row) and 2 (refused to start),
+        # because each has a different remedy. The traceback is printed for
+        # a harness error, where it is the diagnostic; a restore failure's
+        # message already names the path and both hashes.
+        partial = list(exc.partial_results)
+        _render(partial, args.json)
+        if not exc.restore_failed and exc.__cause__ is not None:
+            traceback.print_exception(exc.__cause__, file=sys.stderr)
         print(f"mutate: ABORTED — {exc}", file=sys.stderr)
-        return 3
+        return 3 if exc.restore_failed else 4
 
-    print(render_json(results) if args.json else render_markdown(results))
+    _render(results, args.json)
     return 0 if all(r.outcome.is_success for r in results) else 1
+
+
+def _render(results, as_json: bool) -> None:
+    """The table on stdout; the per-row diagnostics for every non-success
+    row on stderr, so the pasted evidence stays five columns."""
+    print(render_json(results) if as_json else render_markdown(results))
+    diagnostics = render_diagnostics(results)
+    if diagnostics:
+        print(diagnostics, file=sys.stderr)
 
 
 if __name__ == "__main__":

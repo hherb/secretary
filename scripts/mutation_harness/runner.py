@@ -22,19 +22,21 @@ Step ordering is load-bearing:
 
 `spec.timeout` is threaded to BOTH `run_gate` calls made for a spec — the
 baseline run and the post-mutation run — because it names a property of the
-gate command, not of one particular invocation. A spec that never sets it
-gets `run_gate`'s prior hardcoded default (3600s) on both calls, so this is
-additive: no existing spec's behaviour changes. Two calls sharing one
-`spec.gate` string but different `timeout` values would share a cached
-baseline keyed only on the command text; no control in this tree does that,
-and it is not otherwise exercised.
+gate command, not of one particular invocation. The baseline cache is keyed
+on `(gate, timeout)`: keyed on the command text alone, a spec with
+`timeout = 1` that timed out poisoned a later spec sharing the command but
+allowing the full budget into `GATE_TIMEOUT` (PR #652 review).
 
-A `RestoreFailed` raised from the `finally` block below carries the PARTIAL
-`results` list as `exc.partial_results`, attached just before the re-raise.
-Without it, the row this function itself builds for `RESTORE_FAILED` was
-unreachable by any caller — the `raise` propagates past this function's own
-`return results`, so `mutate.py` could only see the bare exception, never a
-result to render (fix round 2, Finding 4).
+**Every abort carries what was measured before it** (PR #652 review). Only
+`RestoreFailed` used to: it had `partial_results` bolted on as an undeclared
+attribute, read back with a `getattr` default, and every OTHER exception —
+a spec `path` that does not exist, a probe interpreter that is not on `PATH`,
+`PycacheNotCleared` — escaped `mutate.main` as a bare traceback that dropped
+every row already measured and exited 1, the code documented for "a rendered
+table with an unsuccessful row". `run_mutations` now raises ONE typed
+`RunAborted` for either, with the partial results as a declared field and a
+`restore_failed` flag telling the caller which exit code the abort is (3: the
+tree may be dirty; 4: the tree was restored, the harness itself failed).
 """
 
 from __future__ import annotations
@@ -49,13 +51,33 @@ from mutation_harness.liveness import (
 )
 from mutation_harness.types import (
     GateResult, Lang, LivenessResult, MutationResult, MutationSpec, Outcome,
-    PythonObservation,
+    PythonObservation, RustObservation,
 )
 
-# One reading of whichever probe a spec declares: a `PythonObservation` for
-# `Lang.PYTHON`, cargo's artifact-hash map for `Lang.RUST`. Deliberately
-# opaque to `run_mutations`, which only ever hands a pair back to `_compare`.
-Observation = PythonObservation | dict[str, str]
+# One reading of whichever probe a spec declares. Deliberately opaque to
+# `run_mutations`, which only ever hands a pair back to `_compare`.
+Observation = PythonObservation | RustObservation
+
+
+class RunAborted(Exception):
+    """`run_mutations` stopped before finishing every row.
+
+    `partial_results` is every row measured before the abort. When the cause
+    is a `RestoreFailed`, that includes the aborting row's OWN measurement if
+    it completed (a four-hour gate's verdict is not thrown away because the
+    restore after it failed — fix-wave review), followed by a
+    `RESTORE_FAILED` row for the same spec. `restore_failed` is True iff the
+    cause was a `RestoreFailed`, i.e. the tree may still be mutated;
+    otherwise the restore succeeded and the failure is the harness's own
+    (the original exception is `__cause__`).
+    """
+
+    def __init__(
+        self, reason: str, partial_results: tuple[MutationResult, ...], *, restore_failed: bool
+    ) -> None:
+        super().__init__(reason)
+        self.partial_results = partial_results
+        self.restore_failed = restore_failed
 
 
 def apply_substitution(path: Path, old: str, new: str) -> bool:
@@ -63,11 +85,19 @@ def apply_substitution(path: Path, old: str, new: str) -> bool:
 
     Zero and two-or-more are both refusals. There is no first-wins guess: an
     ambiguous mutation is precisely the shape that produced false green 2.
+
+    Works on BYTES, encoding `old`/`new` as UTF-8: `read_text()` /
+    `write_text()` used the locale encoding and universal newlines, so a
+    CRLF file was silently rewritten LF-only — every line changed, which the
+    Rust artifact proof then reported as "live" for the wrong reason — and a
+    non-UTF-8 file raised out of the run (PR #652 review). The journal
+    hashes bytes; the substitution now edits the same thing it hashes.
     """
-    text = path.read_text()
-    if text.count(old) != 1:
+    data = path.read_bytes()
+    needle, replacement = old.encode(), new.encode()
+    if data.count(needle) != 1:
         return False
-    path.write_text(text.replace(old, new, 1))
+    path.write_bytes(data.replace(needle, replacement, 1))
     return True
 
 
@@ -102,74 +132,92 @@ def _compare(
     return compare_rust_artifacts(before, after)
 
 
+def _baseline_verdict(
+    spec: MutationSpec, repo_root: Path, baselines: dict[tuple[str, int], GateResult]
+) -> MutationResult | None:
+    """Step 1. A row decided by the baseline alone, or `None` to proceed."""
+    key = (spec.gate, spec.timeout)
+    if key not in baselines:
+        clear_pycache(repo_root)
+        baselines[key] = run_gate(spec.gate, repo_root, timeout=spec.timeout)
+    baseline = baselines[key]
+    # The whole `GateResult`, not a bool: `is_red` alone cannot tell a gate
+    # that FAILED apart from one that never FINISHED — and now refuses to
+    # try. Collapsing them here would report a baseline that never ran as
+    # `BASELINE_DIRTY`, an outcome a reader would act on by fixing tests
+    # that may be perfectly green.
+    if baseline.timed_out:
+        return MutationResult(spec=spec, outcome=Outcome.GATE_TIMEOUT, gate=baseline)
+    if baseline.is_red:
+        return MutationResult(spec=spec, outcome=Outcome.BASELINE_DIRTY, gate=baseline)
+    return None
+
+
+def _mutate_and_measure(
+    spec: MutationSpec, target: Path, repo_root: Path, before: Observation
+) -> MutationResult:
+    """Steps 3-5, on a target the caller has already journaled."""
+    if not apply_substitution(target, spec.old, spec.new):
+        return MutationResult(spec=spec, outcome=Outcome.NOT_APPLIED)
+
+    liveness = _compare(spec, before, _observe(spec, repo_root))
+    if not liveness.live:
+        return MutationResult(spec=spec, outcome=Outcome.NOT_LIVE, liveness=liveness)
+
+    gate = run_gate(spec.gate, repo_root, timeout=spec.timeout)
+    outcome, missing = classify(spec, gate, liveness)
+    return MutationResult(
+        spec=spec, outcome=outcome, liveness=liveness, gate=gate, missing_reds=missing,
+    )
+
+
 def run_mutations(
     specs: tuple[MutationSpec, ...], repo_root: Path, journal_dir: Path
 ) -> list[MutationResult]:
     journal = Journal(journal_dir)
     journal.install_handlers()
     results: list[MutationResult] = []
-    # The whole `GateResult`, not a bool: `is_red` alone cannot tell a gate
-    # that FAILED apart from one that never FINISHED, and `timed_out` is the
-    # only thing that can (see `GateResult.timed_out`). Collapsing them here
-    # would report a baseline that never ran as `BASELINE_DIRTY`, an outcome
-    # a reader would act on by fixing tests that may be perfectly green.
-    baselines: dict[str, GateResult] = {}
-
-    for spec in specs:
-        target = (repo_root / spec.path).resolve()
-
-        if spec.gate not in baselines:
-            clear_pycache(repo_root)
-            baselines[spec.gate] = run_gate(spec.gate, repo_root, timeout=spec.timeout)
-        baseline = baselines[spec.gate]
-        if baseline.timed_out:
-            results.append(
-                MutationResult(spec=spec, outcome=Outcome.GATE_TIMEOUT, gate=baseline)
-            )
-            continue
-        if baseline.is_red:
-            results.append(
-                MutationResult(spec=spec, outcome=Outcome.BASELINE_DIRTY, gate=baseline)
-            )
-            continue
-
-        before = _observe(spec, repo_root)
-
-        entry = journal.record(target)
-        try:
-            if not apply_substitution(target, spec.old, spec.new):
-                results.append(MutationResult(spec=spec, outcome=Outcome.NOT_APPLIED))
+    baselines: dict[tuple[str, int], GateResult] = {}
+    current = "<no row started>"
+    try:
+        for spec in specs:
+            current = spec.id
+            decided = _baseline_verdict(spec, repo_root, baselines)
+            if decided is not None:
+                results.append(decided)
                 continue
 
-            liveness = _compare(spec, before, _observe(spec, repo_root))
-            if not liveness.live:
-                results.append(
-                    MutationResult(spec=spec, outcome=Outcome.NOT_LIVE, liveness=liveness)
-                )
-                continue
-
-            gate = run_gate(spec.gate, repo_root, timeout=spec.timeout)
-            outcome, missing = classify(spec, gate, liveness)
-            results.append(
-                MutationResult(
-                    spec=spec, outcome=outcome, liveness=liveness,
-                    gate=gate, missing_reds=missing,
-                )
-            )
-        finally:
+            before = _observe(spec, repo_root)
+            target = (repo_root / spec.path).resolve()
+            entry = journal.record(target)
+            measured: MutationResult | None = None
             try:
-                journal.restore(entry)
-            except RestoreFailed as exc:
-                results.append(
-                    MutationResult(spec=spec, outcome=Outcome.RESTORE_FAILED)
-                )
-                # Attach the PARTIAL results so a caller catching this
-                # exception (mutate.py) can still render what was measured
-                # before the abort, RESTORE_FAILED row included. Without
-                # this, `results` — including the row two lines up — is
-                # unreachable: the `raise` below propagates past this
-                # function's own `return results` (fix round 2, Finding 4).
-                exc.partial_results = results
-                raise
-
+                measured = _mutate_and_measure(spec, target, repo_root, before)
+            finally:
+                try:
+                    journal.restore(entry)
+                except RestoreFailed as exc:
+                    # Step 6 failed. Keep what step 5 measured, then say the
+                    # tree may be dirty. Raised from inside the `finally` so
+                    # it also wins over any exception step 3-5 raised — a
+                    # restore that cannot be trusted is the more urgent fact.
+                    if measured is not None:
+                        results.append(measured)
+                    results.append(MutationResult(spec=spec, outcome=Outcome.RESTORE_FAILED))
+                    raise RunAborted(str(exc), tuple(results), restore_failed=True) from exc
+            results.append(measured)
+    except RunAborted:
+        raise
+    except Exception as exc:  # noqa: BLE001 - re-raised typed, with the partial table
+        raise RunAborted(
+            f"row {current}: {type(exc).__name__}: {exc}", tuple(results), restore_failed=False
+        ) from exc
+    finally:
+        # The `atexit` drain stays registered for the life of the process
+        # (see journal.py); the SIGNAL dispositions are process-global state
+        # this run borrowed and now hands back, so a signal after the run —
+        # in a test process, in a `--self-test` that runs thirty of these —
+        # reaches whatever handled it before, not a `Journal` whose
+        # directory is gone.
+        journal.restore_signal_dispositions()
     return results

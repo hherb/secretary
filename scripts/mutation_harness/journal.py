@@ -9,9 +9,9 @@ The index and the backup blobs use DIFFERENT durability mechanisms, on
 purpose (fix round 1, finding 1): a backup is write-once to a fresh,
 content-addressed name, so `_fsync_write`'s straightforward
 open("wb")+write+fsync is safe — a torn write can only corrupt its OWN
-bytes, and `restore()`'s post-write sha256 check catches that. The index
-instead accumulates every prior entry in ONE file that gets REWRITTEN on
-every `record()`/`restore()`; a naive truncating write there can destroy an
+bytes, and `restore()`'s sha256 check catches that. The index instead
+accumulates every prior entry in ONE file that gets REWRITTEN on every
+`record()`/`restore()`; a naive truncating write there can destroy an
 already-durable prior entry if the process dies while writing the new,
 larger state — turning a correctly-recorded-and-mutated file into one with
 no readable record at all. `_atomic_replace_write` avoids that by never
@@ -21,22 +21,49 @@ directory so the rename itself survives a kill.
 
 An undrained journal makes the NEXT invocation refuse to run (see
 `selftest`/`mutate`), which is the structural fix for a mutation left applied
-by a stalled worker. A journal whose index cannot be parsed fails CLOSED with
-a typed `CorruptJournal` rather than silently reporting a possibly-mutated
-tree as clean.
+by a stalled worker. A journal whose index cannot be parsed — or is missing
+its `entries` key, which the first version read as an empty list — fails
+CLOSED with a typed `CorruptJournal` rather than silently reporting a
+possibly-mutated tree as clean.
+
+**`restore()` verifies the blob BEFORE it touches the target** (PR #652
+review). The first version wrote the blob over the target and hashed what it
+had written, so a corrupt-but-readable blob destroyed the mutated file as
+well as failing the restore. And it converted only a blob READ failure to
+`RestoreFailed`; a target write or re-read `OSError` escaped untyped, past the
+`RESTORE_FAILED` row and the documented exit 3. Both are typed now.
+
+**`drain()` attempts EVERY entry before raising** (PR #652 review). Stopping
+at the first failure left later entries mutated and unnamed, and every
+subsequent `--drain` re-hit the same entry first, so the rest were
+unreachable until that one was repaired by hand.
 
 `install_handlers()` registers a PROCESS-LIFETIME `atexit` hook — by design,
 for real usage: a genuinely mutated tree at shutdown must be reported, and
 "process lifetime" is what makes that report reliable regardless of which
-code path exits. `uninstall_handlers()` (fix round 3) exists ONLY for the
-one self-test control that deliberately corrupts its own backup to prove
-`RESTORE_FAILED` is observable (`selftest.check_restore_failed_is_observable`)
-— its journal is left permanently dirty by construction, so the hook fires
-at INTERPRETER shutdown, long after that control already made its assertion,
-printing a `JOURNAL DRAIN FAILED` line after an otherwise-green summary. Do
-not call it from anywhere else: a real `RestoreFailed` legitimately wants
-that shutdown message, and suppressing it there would be the exact failure
-mode this harness exists to prevent, reproduced in its own output.
+code path exits. It also records what SIGINT/SIGTERM pointed at before it
+ran, and `restore_signal_dispositions()` hands them back — `run_mutations`
+calls it in its own `finally`, so the dispositions are process-global state
+each run BORROWS rather than overwrites. (The first version left every
+run's handler installed: in a pytest process a SIGTERM landed in whichever
+`Journal` had installed last, whose temp directory was gone, and became an
+in-test `SystemExit` that the runner recorded as an ordinary failure and
+kept going past.) `uninstall_handlers()` (fix round 3) undoes the `atexit`
+half and exists ONLY for the one self-test control that deliberately
+corrupts its own backup to prove `RESTORE_FAILED` is observable
+(`selftest.check_restore_failed_is_observable`) — its journal is left
+permanently dirty by construction, so the hook fires at INTERPRETER
+shutdown, long after that control already made its assertion, printing a
+`JOURNAL DRAIN FAILED` line after an otherwise-green summary. Do not call it
+from anywhere else: a real `RestoreFailed` legitimately wants that shutdown
+message, and suppressing it there would be the exact failure mode this
+harness exists to prevent, reproduced in its own output.
+
+LIMIT, documented rather than closed: `_atomic_replace_write` fsyncs the
+directory AFTER `os.replace`, and on a filesystem where directory fsync
+raises, a `--drain` restores the file, then fails to flush the index, so the
+entry never leaves it — every later `--drain` repeats the restore and the
+same failure, and the error it prints names the fsync, not the loop.
 """
 
 from __future__ import annotations
@@ -52,6 +79,7 @@ import tempfile
 from pathlib import Path
 
 JOURNAL_NAME = "mutation-journal.json"
+_HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 
 # Maps a resolved journal DIRECTORY to the live `Journal` instance whose
 # `install_handlers()` registered an atexit hook for it. Exists solely so
@@ -67,9 +95,11 @@ _INSTALLED: dict[str, "Journal"] = {}
 class RestoreFailed(RuntimeError):
     """A restore could not be completed or verified. Always fatal —
     continuing would run the next mutation against a poisoned tree. Raised
-    both for a post-write sha256 mismatch and for a backup blob that could
-    not even be read (e.g. missing) — both are the same failure class: this
-    restore cannot be trusted, so it must not be treated as done."""
+    for a backup blob that cannot be read, a blob whose bytes do not match
+    the recorded sha256 (refused BEFORE the target is touched), a target
+    that cannot be written or re-read, and a post-write sha256 mismatch —
+    all one failure class: this restore cannot be trusted, so it must not
+    be treated as done."""
 
 
 class CorruptJournal(RuntimeError):
@@ -147,6 +177,8 @@ class Journal:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.index_path = self.dir / JOURNAL_NAME
         self._entries: list[JournalEntry] = self._load()
+        self._previous_dispositions: dict[int, object] = {}
+        self._signalled = False
 
     def _corrupt(self, reason: str) -> CorruptJournal:
         """One message for every way the index can be unusable.
@@ -178,7 +210,11 @@ class Journal:
             raise self._corrupt(
                 f"is a JSON {type(raw).__name__}, not an object with an 'entries' key"
             )
-        entries = raw.get("entries", [])
+        if "entries" not in raw:
+            # `.get("entries", [])` read `{}` — and `{"entrys": [...]}` — as
+            # a CLEAN journal, the one thing this constructor must never do.
+            raise self._corrupt(f"has no 'entries' key (keys: {sorted(raw)})")
+        entries = raw["entries"]
         if not isinstance(entries, list):
             raise self._corrupt(
                 f"has an 'entries' value of type {type(entries).__name__}, not a list"
@@ -227,8 +263,8 @@ class Journal:
         return entry
 
     def restore(self, entry: JournalEntry) -> None:
-        """Restore, then VERIFY. A mismatch — or a backup that cannot even
-        be read — aborts rather than continuing."""
+        """Verify the blob, restore, then VERIFY the target. Any failure
+        aborts as `RestoreFailed` with the entry left in the index."""
         backup_path = self.dir / entry.backup_name
         try:
             data = backup_path.read_bytes()
@@ -237,14 +273,34 @@ class Journal:
                 f"restore of {entry.path} failed: backup {backup_path} "
                 f"could not be read ({exc})"
             ) from exc
-        Path(entry.path).write_bytes(data)
-        actual = _sha256(Path(entry.path).read_bytes())
+        blob_digest = _sha256(data)
+        if blob_digest != entry.sha256:
+            raise RestoreFailed(
+                f"restore of {entry.path} refused: backup {backup_path} does not match "
+                f"the recorded sha256 (expected {entry.sha256}, got {blob_digest}); "
+                f"the target was left untouched"
+            )
+        try:
+            Path(entry.path).write_bytes(data)
+            actual = _sha256(Path(entry.path).read_bytes())
+        except OSError as exc:
+            raise RestoreFailed(
+                f"restore of {entry.path} failed: the target could not be written "
+                f"or re-read ({exc})"
+            ) from exc
         if actual != entry.sha256:
             raise RestoreFailed(
                 f"restore of {entry.path} failed sha256 verification: "
                 f"expected {entry.sha256}, got {actual}"
             )
-        self._entries = [e for e in self._entries if e.backup_name != entry.backup_name]
+        # By entry VALUE (path + sha256 + blob name), not by blob name alone:
+        # two paths with the same basename and identical bytes share one
+        # content-addressed blob, and removing by name dropped the sibling's
+        # record while its file stayed mutated — `is_dirty()` False, file
+        # dirty (PR #652 review). Two EQUAL entries — the same path recorded
+        # twice with the same bytes — both go, correctly: one restore put
+        # that file at exactly those bytes.
+        self._entries = [e for e in self._entries if e != entry]
         self._flush()
 
     def drain(self) -> list[str]:
@@ -256,45 +312,61 @@ class Journal:
         first-mutation snapshot instead of the true original — draining
         LIFO always peels back to the earliest recorded state, the way
         nested exception handling unwinds. Returns the paths restored, in
-        the order restored."""
-        restored = []
+        the order restored.
+
+        Every entry is ATTEMPTED; failures are collected and raised once,
+        naming what was restored, what was not, and what is still mutated.
+        """
+        restored: list[str] = []
+        failures: list[str] = []
         for entry in reversed(list(self._entries)):
-            self.restore(entry)
+            try:
+                self.restore(entry)
+            except RestoreFailed as exc:
+                failures.append(str(exc))
+                continue
             restored.append(entry.path)
+        if failures:
+            raise RestoreFailed(
+                f"{len(failures)} of {len(failures) + len(restored)} journal entries could "
+                f"not be restored: " + " | ".join(failures)
+                + f"; restored: {restored}; still mutated: {self.dirty_paths()}"
+            )
         return restored
 
     def install_handlers(self) -> None:
         """Drain on normal exit AND on SIGINT/SIGTERM. A SIGKILL cannot be
-        trapped, which is exactly why the on-disk journal exists."""
+        trapped, which is exactly why the on-disk journal exists. The prior
+        signal dispositions are recorded so `restore_signal_dispositions`
+        can hand them back."""
         atexit.register(self._drain_quietly)
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            signal.signal(sig, self._on_signal)
+        for sig in _HANDLED_SIGNALS:
+            self._previous_dispositions[sig] = signal.signal(sig, self._on_signal)
         _INSTALLED[str(self.dir.resolve())] = self
+
+    def restore_signal_dispositions(self) -> None:
+        """Put SIGINT/SIGTERM back the way `install_handlers` found them.
+        Idempotent; a no-op if nothing was installed. The `atexit` hook is
+        deliberately untouched — see the module docstring.
+
+        Once `_on_signal` has fired this is ALSO a no-op: the handler's
+        `sys.exit` unwinds through `run_mutations`'s `finally`, and re-arming
+        the default disposition there would let a second Ctrl-C interrupt
+        the `atexit` drain mid-`write_bytes` (fix-wave review). The process
+        is exiting; both signals stay ignored until it does."""
+        if self._signalled:
+            return
+        for sig, previous in self._previous_dispositions.items():
+            # `signal.signal` reports `None` for a handler installed from C;
+            # `SIG_DFL` is the only disposition we can hand back for that.
+            signal.signal(sig, signal.SIG_DFL if previous is None else previous)
+        self._previous_dispositions = {}
 
     def uninstall_handlers(self) -> None:
         """Undo the `atexit` half of `install_handlers()`. See the module
         docstring for WHO should call this (only one self-test control) and
         why — a real `RestoreFailed` legitimately wants the shutdown
-        message, so this must never run on the general path.
-
-        Signal dispositions are deliberately NOT restored. `install_handlers`
-        does not record what SIGINT/SIGTERM pointed at before it ran, and
-        every control in a `--self-test` run calls `install_handlers()` on
-        its own throwaway `Journal`, each overwriting the process-global
-        signal handler set by whichever control ran before it — none of
-        them uninstall. By the time this method could run, "prior" would
-        usually mean some EARLIER control's now-defunct instance, pointing
-        at a temp directory `tempfile.TemporaryDirectory` has already
-        removed. Restoring to that would be worse than leaving the CURRENT
-        handler in place: a real signal arriving after such a restore would
-        try to drain a journal that no longer exists (silently reading as
-        "nothing to restore", via `Journal.__init__`'s `mkdir(exist_ok=True)`
-        recreating an empty directory) instead of draining whichever
-        control's mutation is actually in flight. Leaving it alone keeps the
-        existing, already-accepted risk profile (every control's signal
-        handler is already clobbered by the next one that installs) rather
-        than introducing a new, actively worse one.
-        """
+        message, so this must never run on the general path."""
         atexit.unregister(self._drain_quietly)
         key = str(self.dir.resolve())
         if _INSTALLED.get(key) is self:
@@ -316,5 +388,13 @@ class Journal:
             print(f"mutate: JOURNAL DRAIN FAILED: {exc}", file=sys.stderr)
 
     def _on_signal(self, signum, _frame) -> None:
+        # Re-entrancy guard: a second SIGINT during the drain would re-enter
+        # `restore()` mid-write. Ignore both signals for the rest of the
+        # process (`restore_signal_dispositions` honours `_signalled`). The
+        # cost is stated plainly: a restore hung on a dead mount can then be
+        # ended only by SIGKILL — which the on-disk journal survives.
+        self._signalled = True
+        for sig in _HANDLED_SIGNALS:
+            signal.signal(sig, signal.SIG_IGN)
         self._drain_quietly()
         sys.exit(128 + signum)

@@ -1,7 +1,7 @@
 import pytest
 
 from mutation_harness import selftest
-from mutation_harness.controls import NEGATIVE_CONTROLS, POSITIVE_CONTROLS
+from mutation_harness.controls import NEGATIVE_CONTROLS, POSITIVE_CONTROLS, Control, _build_n2
 from mutation_harness.selftest import STANDALONE_CHECKS, run_control
 from mutation_harness.types import Outcome
 
@@ -49,10 +49,7 @@ def test_every_check_function_in_selftest_is_registered():
 
 def test_the_declared_label_set_is_the_union_of_the_three_tables():
     """Finding 2's other half: the printed total is `len(declared_labels())`,
-    so this is what the denominator is made of. A table that stops being
-    consulted here stops being counted — which is the intended signal, and is
-    only safe because `execution_census` separately proves the declared set
-    was actually RUN."""
+    so this is what the denominator is made of."""
     declared = selftest.declared_labels()
 
     assert set(declared) == (
@@ -61,6 +58,20 @@ def test_the_declared_label_set_is_the_union_of_the_three_tables():
         | {c.label for c in STANDALONE_CHECKS}
     )
     assert len(declared) == len(set(declared)), f"duplicate label in {declared}"
+
+
+def test_the_declared_labels_are_exactly_these():
+    """The test above compares the tables to THEMSELVES, so dropping a row
+    and its function left both layers green with "16/16 checks passed", exit
+    0 (PR #652 review, measured). A count that moves silently is not a
+    signal; this pins the set by name, the way the Rust corpora pin
+    `want_re_encode == 17`. Adding a check means editing this tuple, on
+    purpose."""
+    assert selftest.declared_labels() == (
+        "C1", "C2", "C4", "C5", "C6", "C8", "C9", "C14", "C10", "C11", "C12", "C13",
+        "C3", "N3", "no-bytecode", "RESTORE_FAILED", "outcome coverage",
+        "N1", "N2", "N4",
+    )
 
 
 def test_the_execution_census_catches_a_dropped_invocation():
@@ -108,11 +119,7 @@ def test_every_outcome_but_restore_failed_has_a_control():
     It is still covered, by the `RESTORE_FAILED` row in `STANDALONE_CHECKS`,
     whose `covers` field is what puts it into `check_outcome_coverage`'s
     derived set — just not by a row in either `Control` tuple, which is what
-    this assertion is scoped to.
-    Also proves the post-brief `GATE_TIMEOUT` addition is a real table
-    entry: it is a distinct `Outcome` from `RESTORE_FAILED`, so its presence
-    in `covered` here is exactly what makes this assertion — rather than a
-    wider one — pass."""
+    this assertion is scoped to."""
     covered = {c.expect for c in POSITIVE_CONTROLS} | {c.expect for c in NEGATIVE_CONTROLS}
     uncovered = {o for o in Outcome if o not in covered}
     assert uncovered == {Outcome.RESTORE_FAILED}, (
@@ -127,3 +134,85 @@ def test_the_registry_is_the_sole_cover_for_restore_failed():
     else in this file would notice which check lost it."""
     covering = {c.label for c in STANDALONE_CHECKS if c.covers is Outcome.RESTORE_FAILED}
     assert covering == {"RESTORE_FAILED"}
+
+
+# --- PR #652 review: `run_self_test` itself, which no pytest exercised -----
+#
+# `return 1 if failures else 0` -> `return 0` left the whole suite green.
+# These drive the real loop over a one-row table each.
+
+
+def _quiet(monkeypatch, capsys, positive=(), standalone=(), negative=()):
+    monkeypatch.setattr(selftest, "POSITIVE_CONTROLS", tuple(positive))
+    monkeypatch.setattr(selftest, "STANDALONE_CHECKS", tuple(standalone))
+    monkeypatch.setattr(selftest, "NEGATIVE_CONTROLS", tuple(negative))
+    code = selftest.run_self_test()
+    return code, capsys.readouterr().out
+
+
+def test_run_self_test_exits_1_when_a_control_misses_its_declared_outcome(monkeypatch, capsys):
+    wrong = Control("W1", "expects the wrong outcome", _build_n2, Outcome.NOT_LIVE)
+
+    code, out = _quiet(monkeypatch, capsys, positive=(wrong,))
+
+    assert code == 1
+    assert "[FAIL] W1" in out and "0/1 checks passed" in out
+
+
+def test_run_self_test_exits_0_when_every_check_passes(monkeypatch, capsys):
+    fine = Control("F1", "a by-design green", _build_n2, Outcome.GREEN_AS_EXPECTED)
+
+    code, out = _quiet(monkeypatch, capsys, negative=(fine,))
+
+    assert code == 0
+    assert "1/1 checks passed" in out
+
+
+def test_a_check_that_raises_is_a_named_fail_and_the_run_continues(monkeypatch, capsys):
+    """An exception used to escape the loop: every later check went unrun
+    and the census never executed."""
+    def boom():
+        raise RuntimeError("fixture exploded")
+
+    def fine():
+        return True, "ok"
+
+    checks = (selftest.Check("X1", "raises", boom), selftest.Check("X2", "fine", fine))
+
+    code, out = _quiet(monkeypatch, capsys, standalone=checks)
+
+    assert code == 1
+    assert "[FAIL] X1" in out and "RuntimeError: fixture exploded" in out
+    assert "[PASS] X2" in out
+    assert "1/2 checks passed" in out
+
+
+def test_run_self_test_censuses_what_ran_against_what_is_declared(monkeypatch, capsys):
+    """The disclosed "terminal turtle": nothing inside `run_self_test`
+    verified that it CALLS `execution_census`. This does, by recording the
+    call."""
+    calls = []
+
+    def recording_census(declared, executed):
+        calls.append((tuple(declared), tuple(executed)))
+        return True, "recorded"
+
+    monkeypatch.setattr(selftest, "execution_census", recording_census)
+    fine = Control("F1", "a by-design green", _build_n2, Outcome.GREEN_AS_EXPECTED)
+
+    _quiet(monkeypatch, capsys, negative=(fine,))
+
+    assert calls == [(("F1",), ("F1",))]
+
+
+def test_a_failed_census_is_reported_beside_the_count_not_inside_it(monkeypatch, capsys):
+    """Folding the census into `failures` let the numerator go NEGATIVE when
+    every check and the census failed ("-1/19 checks passed")."""
+    monkeypatch.setattr(selftest, "execution_census", lambda d, e: (False, "planted"))
+    wrong = Control("W1", "expects the wrong outcome", _build_n2, Outcome.NOT_LIVE)
+
+    code, out = _quiet(monkeypatch, capsys, positive=(wrong,))
+
+    assert code == 1
+    assert "0/1 checks passed; census FAILED" in out
+    assert "-1/" not in out

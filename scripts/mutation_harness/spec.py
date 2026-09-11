@@ -24,7 +24,17 @@ membership tests come after it.
 
 Deliberately NOT checked here: whether `old` occurs exactly once in `path`.
 Spec §5.5 makes that `Outcome.NOT_APPLIED`, a per-row outcome, so the runner
-owns it. Parse-time validation is structure only.
+owns it. Parse-time validation is structure only — but "structure" includes
+that `path` names an existing FILE and `probe.syspath` an existing DIRECTORY
+(PR #652 review): a typo'd path used to pass containment, burn the full
+baseline gate, and then traceback out of `journal.record`, and a typo'd
+`syspath` silently probed whatever `cwd`/site-packages resolved for the
+module. Both are `SpecError` now, before any gate runs.
+
+Document-level keys are checked too. `parse_spec` used to read only
+`doc["mutation"]`, so a `timeout` or `expect_red` written at the top level
+instead of inside a `[[mutation]]` block was inert — the exact "silently
+degrades a check" shape the first paragraph forbids.
 """
 
 from __future__ import annotations
@@ -32,7 +42,9 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from mutation_harness.types import Lang, MutationSpec, PythonProbe, RustProbe
+from mutation_harness.types import (
+    DEFAULT_GATE_TIMEOUT_SECONDS, Expect, Lang, MutationSpec, PythonProbe, RustProbe,
+)
 
 TOP_LEVEL_KEYS = frozenset(
     {
@@ -40,11 +52,10 @@ TOP_LEVEL_KEYS = frozenset(
         "note", "probe", "timeout",
     }
 )
-DEFAULT_TIMEOUT = 3600
+DOCUMENT_KEYS = frozenset({"mutation"})
 REQUIRED_KEYS = frozenset({"id", "lang", "path", "old", "new", "gate", "expect", "probe"})
 PYTHON_PROBE_KEYS = frozenset({"module", "expr", "equals", "syspath"})
 RUST_PROBE_KEYS = frozenset({"package"})
-VALID_EXPECT = frozenset({"red", "green"})
 
 
 class SpecError(ValueError):
@@ -57,6 +68,12 @@ def parse_spec(text: str, repo_root: Path) -> tuple[MutationSpec, ...]:
     except tomllib.TOMLDecodeError as exc:
         raise SpecError(f"spec is not valid TOML: {exc}") from None
 
+    unknown_document_keys = sorted(set(doc) - DOCUMENT_KEYS)
+    if unknown_document_keys:
+        raise SpecError(
+            f"unknown top-level key(s) {unknown_document_keys}; every setting belongs "
+            f"inside a [[mutation]] block"
+        )
     raw_rows = doc.get("mutation")
     if raw_rows is not None and not isinstance(raw_rows, list):
         raise SpecError(
@@ -92,22 +109,30 @@ def _validate_one(raw: dict, repo_root: Path, index: int) -> MutationSpec:
     # Every string-typed field is type-checked BEFORE it is used — see the
     # module docstring. `lang` and `expect` are first because an unhashable
     # value makes their membership tests raise `TypeError`, not `SpecError`.
+    # The `_require_str` call sits OUTSIDE each `except ValueError`:
+    # `SpecError` IS a `ValueError`, so inside it the type-check's own
+    # message was swallowed and re-raised as the enum's.
+    lang_text = _require_str(raw, "lang", where)
     try:
-        lang = Lang(_require_str(raw, "lang", where))
+        lang = Lang(lang_text)
     except ValueError:
         raise SpecError(f"{where}: lang must be 'python' or 'rust'") from None
 
-    expect = _require_str(raw, "expect", where)
-    if expect not in VALID_EXPECT:
-        raise SpecError(f"{where}: expect must be one of {sorted(VALID_EXPECT)}")
+    expect_text = _require_str(raw, "expect", where)
+    try:
+        expect = Expect(expect_text)
+    except ValueError:
+        raise SpecError(
+            f"{where}: expect must be one of {sorted(e.value for e in Expect)}"
+        ) from None
 
     path = _require_str(raw, "path", where)
-    _require_path_inside_repo(path, repo_root, where)
+    _require_existing_file_inside_repo(path, repo_root, where)
 
     expect_red = raw.get("expect_red", [])
     if not isinstance(expect_red, list) or not all(isinstance(s, str) for s in expect_red):
         raise SpecError(f"{where}: expect_red must be a list of strings")
-    if expect_red and expect != "red":
+    if expect_red and expect is not Expect.RED:
         # `classify` only ever consults `expect_red` when `expect == "red"`
         # (spec §5.5); a non-empty list on a `green` row would be silently
         # inert. An assertion the author believes applies but never runs is
@@ -115,7 +140,7 @@ def _validate_one(raw: dict, repo_root: Path, index: int) -> MutationSpec:
         # no-op.
         raise SpecError(f"{where}: expect_red is meaningless with expect='green'")
 
-    timeout = _validate_timeout(raw.get("timeout", DEFAULT_TIMEOUT), where)
+    timeout = _validate_timeout(raw.get("timeout", DEFAULT_GATE_TIMEOUT_SECONDS), where)
 
     note = raw.get("note", "")
     if not isinstance(note, str):
@@ -129,7 +154,7 @@ def _validate_one(raw: dict, repo_root: Path, index: int) -> MutationSpec:
         new=_require_str(raw, "new", where),
         gate=_require_str(raw, "gate", where),
         expect=expect,
-        probe=_validate_probe(raw["probe"], lang, where),
+        probe=_validate_probe(raw["probe"], lang, repo_root, where),
         expect_red=tuple(expect_red),
         note=note,
         timeout=timeout,
@@ -161,7 +186,7 @@ def _validate_timeout(raw_timeout: object, where: str) -> int:
     return raw_timeout
 
 
-def _require_path_inside_repo(rel: str, repo_root: Path, where: str) -> None:
+def _require_inside_repo(rel: str, repo_root: Path, where: str, what: str) -> Path:
     """`..` and absolute paths are rejected. The harness mutates tracked
     source files; escaping the repo is never a legitimate spec. `rel` has
     already been through `_require_str`, so the path arithmetic below cannot
@@ -169,10 +194,23 @@ def _require_path_inside_repo(rel: str, repo_root: Path, where: str) -> None:
     resolved = (repo_root / rel).resolve()
     root = repo_root.resolve()
     if not resolved.is_relative_to(root):
-        raise SpecError(f"{where}: path {rel!r} resolves outside the repository root")
+        raise SpecError(f"{where}: {what} {rel!r} resolves outside the repository root")
+    return resolved
 
 
-def _validate_probe(raw: object, lang: Lang, where: str) -> PythonProbe | RustProbe:
+def _require_existing_file_inside_repo(rel: str, repo_root: Path, where: str) -> None:
+    if not _require_inside_repo(rel, repo_root, where, "path").is_file():
+        raise SpecError(f"{where}: path {rel!r} is not an existing file")
+
+
+def _require_existing_dir_inside_repo(rel: str, repo_root: Path, where: str) -> None:
+    if not _require_inside_repo(rel, repo_root, where, "probe syspath").is_dir():
+        raise SpecError(f"{where}: probe syspath {rel!r} is not an existing directory")
+
+
+def _validate_probe(
+    raw: object, lang: Lang, repo_root: Path, where: str
+) -> PythonProbe | RustProbe:
     if not isinstance(raw, dict):
         raise SpecError(f"{where}: probe must be a table")
     allowed = PYTHON_PROBE_KEYS if lang is Lang.PYTHON else RUST_PROBE_KEYS
@@ -183,10 +221,12 @@ def _validate_probe(raw: object, lang: Lang, where: str) -> PythonProbe | RustPr
     if missing:
         raise SpecError(f"{where}: probe missing key(s) {missing} for lang={lang.value}")
     if lang is Lang.PYTHON:
+        syspath = _require_str(raw, "syspath", f"{where}: probe")
+        _require_existing_dir_inside_repo(syspath, repo_root, where)
         return PythonProbe(
             module=_require_str(raw, "module", f"{where}: probe"),
             expr=_require_str(raw, "expr", f"{where}: probe"),
             equals=_require_str(raw, "equals", f"{where}: probe"),
-            syspath=_require_str(raw, "syspath", f"{where}: probe"),
+            syspath=syspath,
         )
     return RustProbe(package=_require_str(raw, "package", f"{where}: probe"))
