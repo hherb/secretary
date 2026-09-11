@@ -99,5 +99,11 @@ def test_a_python_mutation_may_not_carry_a_rust_probe(tmp_path):
 
 
 def test_empty_spec_is_an_error(tmp_path):
-    with pytest.raises(SpecError, match="no .mutation. blocks"):
+    with pytest.raises(SpecError, match=r"no \[\[mutation\]\] blocks"):
         parse_spec("", tmp_path)
+
+
+def test_a_single_table_instead_of_an_array_is_rejected(tmp_path):
+    """`[mutation]` is a table; the format is an array of tables."""
+    with pytest.raises(SpecError, match="array of tables"):
+        parse_spec('[mutation]\nid = "M1"\n', tmp_path)

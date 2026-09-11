@@ -36,8 +36,12 @@ def parse_spec(text: str, repo_root: Path) -> tuple[MutationSpec, ...]:
         raise SpecError(f"spec is not valid TOML: {exc}") from None
 
     raw_rows = doc.get("mutation")
+    if raw_rows is not None and not isinstance(raw_rows, list):
+        raise SpecError(
+            "spec's 'mutation' must be an array of tables — write [[mutation]], not [mutation]"
+        )
     if not raw_rows:
-        raise SpecError("spec contains no [mutation] blocks")
+        raise SpecError("spec contains no [[mutation]] blocks")
 
     seen: set[str] = set()
     specs: list[MutationSpec] = []
