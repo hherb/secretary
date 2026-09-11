@@ -207,24 +207,40 @@ bash scripts/check-secret-slot-hygiene.sh
 # CI — a deliberate scope decision (design spec's "Out of scope"), not a gap.
 #
 # Write the spec to the session SCRATCHPAD, never the source tree (#516).
-# `--self-test` first, as with every other guard: it reproduces all three
-# false greens as positive controls plus a fourth (a timed-out gate credited
-# as a catch, C12, and its baseline twin C13), and C2 (a splice overridden by
-# a later assignment) is the one the harness exists for. Every one of the ten
-# `Outcome` values has a check; `RESTORE_FAILED`'s is a `STANDALONE_CHECKS`
-# registry row, not a `Control` row, because reaching it needs corrupting a
-# backup behind the harness. 19 checks — the number is DERIVED from the three
-# tables and censused against the labels that actually ran, so re-measure
-# rather than quoting this one.
+# `--self-test` first, as with every other guard. It reproduces false greens
+# 1 and 2 as `Control` rows (C1 stale bytecode; C2 a splice overridden by a
+# later assignment — the one the harness exists for), false green 3 as the
+# standalone check C3 (an undrained journal, driven through the REAL
+# entrypoint with a valid spec so the exit code discriminates), a timed-out
+# gate credited as a catch (C12, and its baseline twin C13), and a claimed
+# test that PASSES while another fails (C14 — libtest prints `test x ... ok`
+# for every passing test, so a whole-output substring match credited it as
+# the catch; PR #652 review). Every one of the ten `Outcome` values has a
+# check; `RESTORE_FAILED`'s is a `STANDALONE_CHECKS` registry row, not a
+# `Control` row, because reaching it needs corrupting a backup behind the
+# harness. 20 checks — the number is DERIVED from the three tables, censused
+# against the labels that actually ran, AND pinned by name in
+# `test_controls.py` (a dropped row plus its function used to leave both
+# layers green at "16/16"); re-measure rather than quoting this one.
 uv run scripts/mutate.py --self-test
 uv run scripts/mutate.py "$SCRATCH/mutations.toml"
+#
+# Exit codes: 0 every row as declared; 1 a rendered table with a finding;
+# 2 refused to start (dirty/corrupt journal, bad spec — including a `path`
+# that is not an existing file); 3 aborted, a restore could not be trusted,
+# THE TREE MAY BE DIRTY; 4 aborted by a harness error, tree restored,
+# traceback on stderr. Every non-success row also prints a DIAGNOSTIC block
+# to stderr (why liveness failed, or the tail of the gate output), so the
+# five-column table the handoff pastes stays five columns.
 #
 # An interrupted run leaves a JOURNAL rather than a mutated tree, and the
 # next invocation REFUSES to start until it is drained:
 uv run scripts/mutate.py --drain
 
-# The harness's own unit tests (108 tests; RE-MEASURE). Use the MODULE form — a bare
-# `pytest` invocation intermittently hangs at 0% CPU on some machines:
+# The harness's own unit tests (238 tests; RE-MEASURE). Use the MODULE form — a bare
+# `pytest` invocation intermittently hangs at 0% CPU on some machines. The two
+# cargo-backed controls (C10, N4) take minutes and queue on the package-cache
+# lock behind any parallel cargo; `-k "not C10 and not N4"` is the fast loop:
 uv run --with pytest python3 -m pytest scripts/mutation_harness -q
 ```
 
@@ -1492,9 +1508,10 @@ When adding any other dependency on a security-critical path, follow the same pa
 - `#![forbid(unsafe_code)]` is set in the root workspace lints — do not introduce `unsafe`. If a primitive truly needs FFI, isolate it in its own crate behind a reviewed boundary.
 - Clippy must stay clean with `-D warnings`. Don't ship a PR with new warnings expecting them to be cleaned up later.
 - KATs in `core/tests/data/*.json` are pinned against published vectors (NIST FIPS 203 / 204, RFC 8032 / 7748 / 5869 / 9106, BIP-39 Trezor canonical). When upgrading a primitive crate, re-run KATs explicitly — a passing test suite is necessary but not sufficient.
-- The mutation harness's (#644, `scripts/mutation_harness/`) two liveness proofs are **both before/after COMPARISONS** — each takes a reading on the clean tree, one after the substitution, and requires the two to DIFFER. A reading that did not MOVE is `NOT_LIVE` whatever it equals, and an ABSENT reading on either side (cargo naming no artifacts, a probe that could not run, either subprocess outliving its timeout) is `NOT_LIVE` too. **The Python half was a post-condition check, not a comparison, until the final whole-branch review**: it asked only `observed == probe.equals`, so a no-op mutation whose `equals` was copied from the spec's `old` side reported `live=True, GREEN_AS_EXPECTED` — a false green of #644's own class, emitted by the harness built to detect them, and reachable by one plausible author error (measured in both directions; the fix reds it as `NOT_LIVE`).
+- The mutation harness's (#644, `scripts/mutation_harness/`) two liveness proofs are **both before/after COMPARISONS** — each takes a reading on the clean tree, one after the substitution, and requires the two to DIFFER. A reading that did not MOVE is `NOT_LIVE` whatever it equals. An ABSENT BASELINE — cargo naming no artifacts, a build that FAILED on the clean tree, a probe that could not run or printed nothing, a subprocess outliving its timeout — is `NOT_LIVE` whatever the mutated side did, and a mutated-side reading that could not be taken (a timeout, an artifact cargo named but that had vanished when hashed, a changed artifact SET) is `NOT_LIVE` too. The one deliberate asymmetry, pinned in both directions: a mutated tree that no longer BUILDS is live under the Rust proof (the compiler demonstrably saw the change), while a module the mutation made unimportable is `NOT_LIVE` under the Python one (no value to compare; under-reporting costs a re-run). **Until the PR #652 review the Rust `BUILD_FAILED` reading was a sentinel KEY inside the hash map that the comparison never looked for**, so a failed baseline fell through to the set comparison and two differently-failing builds — a shifted diagnostic line, a "Blocking waiting for file lock" line from a parallel session — scored `live=True` with no artifact ever produced: the fail-open direction, in the mechanism built to close it, while the module's own comment said both sentinels were recognised. The reading is now a typed `RustObservation` whose `kind` the comparison must dispatch on before it can reach a hash, and the FIRST thing this branch's fix wave did was run the harness against that fix (undo the guard; the named test reds; restored, sha256-verified). **The Python half was a post-condition check, not a comparison, until the final whole-branch review**: it asked only `observed == probe.equals`, so a no-op mutation whose `equals` was copied from the spec's `old` side reported `live=True, GREEN_AS_EXPECTED` — a false green of #644's own class, emitted by the harness built to detect them, and reachable by one plausible author error (measured in both directions; the fix reds it as `NOT_LIVE`).
 - **The asymmetry between the two is about what a change PROVES, not about which one detects a change**, and an earlier version of this bullet inverted exactly that. A mutation report names which mechanism was used. Python observes the value a FRESH INTERPRETER binds — strong: it is what the real class-body-splice false green needed to be caught. Rust observes only that `cargo build`'s named artifacts changed CONTENT — weaker: it proves the compiler emitted different bytes, not that the mutated expression's behaviour changed at runtime. `rustc` embeds a whole-file content checksum into `.rmeta` for every `SourceFile` that contributes to the crate, so **no same-file textual edit to a file the crate's build graph actually reads can ever be reported `NOT_LIVE`** under the Rust proof — measured twice during the build (a comment before an item moved its span; a comment on the file's last line still changed the checksum). The only way to test a genuinely compiler-invisible Rust edit is to mutate a file the build graph does not read at all (`scripts/mutation_harness/controls.py`'s `C10`, which mutates a `README.md` no `mod` declares).
-- **`--self-test`'s own accounting is derived from its three tables AND censused against what ran**, which took two rounds because the obvious half is not the whole fix. Its printed total was `len(POSITIVE) + len(NEGATIVE) + 5` and its outcome-coverage set carried a hardcoded `RESTORE_FAILED`, so deleting a check's INVOCATION — the function left intact — printed "18/18 checks passed" and a green coverage line having run 17. Deriving the total from a `STANDALONE_CHECKS` registry closes that, and **on its own re-creates the same fail-open one level up** (measured: with the total derived and the whole invocation loop deleted, `--self-test` printed "19/19 checks passed", exit 0, having run 14 — a denominator read off a DECLARATION says nothing about what RAN). `execution_census` compares the labels that executed against `declared_labels()`, both directions plus repeats. Generalise it: deriving a count from a table proves the table was READ, never that its rows were EXECUTED. One residual is disclosed rather than fixed: nothing inside `run_self_test` verifies that it actually CALLS `execution_census`, so a future edit dropping that one call site would go undetected by `--self-test` itself (it is unit-tested directly in `test_controls.py` instead).
+- **`--self-test`'s own accounting is derived from its three tables AND censused against what ran**, which took two rounds because the obvious half is not the whole fix. Its printed total was `len(POSITIVE) + len(NEGATIVE) + 5` and its outcome-coverage set carried a hardcoded `RESTORE_FAILED`, so deleting a check's INVOCATION — the function left intact — printed "18/18 checks passed" and a green coverage line having run 17. Deriving the total from a `STANDALONE_CHECKS` registry closes that, and **on its own re-creates the same fail-open one level up** (measured: with the total derived and the whole invocation loop deleted, `--self-test` printed "19/19 checks passed", exit 0, having run 14 — a denominator read off a DECLARATION says nothing about what RAN). `execution_census` compares the labels that executed against `declared_labels()`, both directions plus repeats. Generalise it: deriving a count from a table proves the table was READ, never that its rows were EXECUTED. The residual the first version disclosed — nothing verified that `run_self_test` actually CALLS `execution_census` — is closed by a pytest that substitutes a recording census and asserts the call (PR #652 review), alongside pytests for the exit code and for a check that RAISES (now a named `FAIL` that lets the rest run, where it used to abort the loop before the census).
+- **The value types refuse the states the design calls impossible (PR #652 review).** Until that review the guarantee that `NOT_LIVE` and `UNEXPECTED_GREEN` never share a row was a property of `runner.py`'s control flow alone: `MutationResult` had no `__post_init__`, so a `NO | UNEXPECTED_GREEN` row was representable and rendered; `MutationSpec.expect` was a free string, so `expect="Red"` built a spec that classified a live green as `GREEN_AS_EXPECTED` (exit 0) — reachable by every control and test, which build the dataclass directly and never pass through `spec.py`; and `GateResult.is_red` read `exit_code` without consulting `timed_out`. Now `_row_shape_problem` refuses every contradictory row (mutation-proven: disabling it reds `test_a_self_contradictory_row_is_unrepresentable`), `expect` is an `Expect` enum, `is_red` RAISES on a timed-out result, and the Rust reading is the `RustObservation` sum above. Two more contracts from the same review: `expect_red` counts a name only on an output LINE carrying `FAIL` (control C14; mutation-proven), and every abort — not only `RestoreFailed` — carries the rows measured before it as `RunAborted.partial_results`, with exit 3 (tree may be dirty) kept apart from exit 4 (harness error, tree restored), where a typo'd `path` used to be a bare traceback with exit 1 and no table.
 
 ### Swift log hygiene: default-deny at `privacy: .public` (#467)
 

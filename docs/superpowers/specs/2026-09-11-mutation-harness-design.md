@@ -139,12 +139,15 @@ probe  = { package = "secretary-core" }
   that silently degrades a check is the failure mode `ControlExpectation`
   already records for the payload guard.
 - `expect_red` is optional but, when present, holds strings that MUST each
-  appear in the gate's combined stdout+stderr **when the gate is red**. Matching
-  is a plain substring test, uniform across languages, because the two gate
-  families report differently: `cargo test` prints failing test names, while
-  `conformance.py` prints one `FAIL: <reason>` line per failed section. A
-  substring is the only predicate that spans both without the spec having to
-  declare which parser to use. Without `expect_red` a mutation passes on
+  appear on a LINE of the gate's combined stdout+stderr that also carries the
+  marker `FAIL` **when the gate is red**. Line-scoped rather than a whole-output
+  substring (PR #652 review) because `cargo test` prints `test <name> ... ok`
+  for every PASSING test as well as `... FAILED` for failing ones: a plain
+  substring credited a passing claimed test as the catch, and
+  `WRONG_TESTS_RED` could not fire for a cargo gate at all. The one marker
+  spans both gate families without the spec declaring a parser — libtest's
+  `FAILED`, pytest's `FAILED`, `conformance.py`'s `FAIL: <reason>` — and never
+  matches a passing line. Without `expect_red` a mutation passes on
   "something red", which is not the claim a mutation table makes.
 - `path` must resolve inside the repository root after `realpath`.
 
@@ -244,10 +247,10 @@ conclusions and the current workflow renders them identically.
 | `UNEXPECTED_RED` | Declared `green`, gate failed |
 | `WRONG_TESTS_RED` | Gate failed, but an `expect_red` name did not appear |
 | `NOT_APPLIED` | `old` absent, or matched more than once |
-| `NOT_LIVE` | Applied, but the probe did not observe it — **proves nothing** |
+| `NOT_LIVE` | Applied, but the probe did not observe it MOVE to the declared value, or a reading could not be taken on either side — **proves nothing** |
 | `BASELINE_DIRTY` | The gate already failed on the clean tree |
-| `RESTORE_FAILED` | Post-restore sha256 mismatch; run aborted |
-| `GATE_TIMEOUT` | The gate did not finish; nothing was measured. |
+| `RESTORE_FAILED` | A restore could not be trusted — the backup unreadable, the backup's bytes not matching the recorded sha256 (refused before the target is touched), the target unwritable, or a post-restore sha256 mismatch; run aborted, exit 3 |
+| `GATE_TIMEOUT` | The gate did not finish (baseline or post-mutation); nothing was measured. |
 
 `NOT_LIVE` and `UNEXPECTED_GREEN` are the pair that matters, and they can never
 render as the same row. `GATE_TIMEOUT` is the same shape one step later: a
@@ -296,15 +299,16 @@ Controls operate on fixtures under a `mktemp -d`, never the source tree.
 
 | ID | Control | Required outcome |
 |---|---|---|
-| `C1` | Size-preserving Python mutation, applied and reverted inside one second | reported **live** (mechanism 1 defeated) |
+| `C1` | Size-preserving Python mutation behind a pre-created UNCHECKED_HASH `.pyc` that answers with the pre-mutation value (the one-second mtime race is real but racy to reproduce; the unchecked-hash `.pyc` is served regardless of mtime and size) | reported **live** (mechanism 1 defeated) |
 | `C2` | `token = ''` spliced after a `class X:` header, overridden by the real assignment below the docstring | **`NOT_LIVE`** (mechanism 2) |
-| `C3` | A journal left undrained by a simulated kill | next invocation **refuses to run** and names the file (mechanism 3) |
+| `C3` | A journal left undrained by a simulated kill — a **standalone check**, not a `Control` row, because it drives `mutate.main` with a VALID spec | next invocation **refuses to run** (exit 2) and names the file; without the refusal the spec would run and exit 1 (mechanism 3) |
 | `C4` | `old` matching twice | `NOT_APPLIED` |
 | `C5` | `old` matching zero times | `NOT_APPLIED` |
 | `C6` | Gate red on the clean fixture | `BASELINE_DIRTY` |
-| `C7` | Restored bytes altered behind the harness | `RESTORE_FAILED` and abort |
+| `RESTORE_FAILED` | The backup blob deleted behind the harness by the gate — a **standalone check** through `mutate.main` (the row this table's first version called `C7`) | `RESTORE_FAILED` rendered, abort, exit 3 |
 | `C8` | Live mutation, gate green, declared `red` | `UNEXPECTED_GREEN` |
 | `C9` | Gate red but no `expect_red` name present | `WRONG_TESTS_RED` |
+| `C14` | Gate red, the `expect_red` name printed on a PASSING `... ok` line while a different test fails (libtest's shape) | `WRONG_TESTS_RED` — PR #652 review; a whole-output substring match credited it as the catch |
 | `C10` | Rust mutation leaving the artifact byte-identical | `NOT_LIVE` |
 | `C11` | Live mutation declared `green` whose gate goes red | `UNEXPECTED_RED` |
 | `C12` | The POST-MUTATION gate outlives its timeout | `GATE_TIMEOUT`, never credited as a catch |
@@ -339,14 +343,28 @@ slice pastes **generated** evidence rather than re-typing scrollback:
 | # | Mutation | Live | Outcome | Reds |
 |---|---|---|---|---|
 | M1 | tokens_agree returns `r == p` | yes (artifact) | RED_AS_EXPECTED | tolerance_admits_only_phase_dependent_pairs |
-| M8 | ArraySortOrderViolation.token swapped | yes (interpreter) | GREEN_AS_EXPECTED | — |
+| M8 | ArraySortOrderViolation.token swapped | yes (interpreter) | UNEXPECTED_RED | — |
 ```
+
+(The `M8` row is the harness's real first result, #651: the handoff that
+recorded it as "GREEN, by design" was measured against a different gate. An
+earlier draft of this example showed `GREEN_AS_EXPECTED`, contradicting the
+slice's own headline.)
 
 The **Live** column names the mechanism, because the Rust and Python proofs are
 not of equal strength and a reader weighing the evidence deserves the split.
+For every non-success row a DIAGNOSTIC block goes to stderr — the liveness
+detail, or the tail of the gate output — so the table stays five columns and
+is still actionable (PR #652 review).
 
-Exit status: `0` when every outcome matches its declaration, `1` otherwise.
-`--json` emits the same data machine-readably.
+Exit status: `0` when every outcome matches its declaration; `1` a rendered
+table with at least one row that did not; `2` refused to start (an undrained
+or corrupt journal, a spec that could not be read or parsed, a `path` that is
+not an existing file); `3` aborted mid-run because a restore could not be
+trusted — the tree may be dirty; `4` aborted mid-run by an error of the
+harness's own, the tree restored and the traceback on stderr. Both aborts
+render what was measured before them. `--json` emits the same data
+machine-readably, including `timed_out` beside `exit_code`.
 
 ---
 
@@ -387,7 +405,10 @@ Exit status: `0` when every outcome matches its declaration, `1` otherwise.
    project keeps re-finding, reproduced inside its own success criteria. Do not
    restore it: say what must hold, or say what does hold, never both at once.
 2. Each of `C1`, `C2`, `C3` is **mutation-proven**: disabling the corresponding
-   harness mechanism reds exactly that control.
+   harness mechanism reds that control. For `C1` "the mechanism" is BOTH
+   `clear_pycache` call sites in `runner.py` — deleting either alone leaves
+   it green, as its docstring records; "exactly that control" was an
+   overclaim in an earlier draft of this line.
 3. A real spec covering a known mutation from a shipped slice reproduces that
    slice's recorded result, run end to end.
 4. An undrained journal blocks the next invocation, and `--drain` clears it with
