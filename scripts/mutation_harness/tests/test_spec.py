@@ -107,3 +107,16 @@ def test_a_single_table_instead_of_an_array_is_rejected(tmp_path):
     """`[mutation]` is a table; the format is an array of tables."""
     with pytest.raises(SpecError, match="array of tables"):
         parse_spec('[mutation]\nid = "M1"\n', tmp_path)
+
+
+def test_a_non_table_array_element_is_rejected(tmp_path):
+    """`mutation = [1, 2]` must be a SpecError, not a TypeError."""
+    with pytest.raises(SpecError, match="must be a table"):
+        parse_spec("mutation = [1, 2]\n", tmp_path)
+
+
+def test_a_non_string_path_is_rejected(tmp_path):
+    """A wrong-typed field must not reach the path arithmetic."""
+    bad = MINIMAL_PY.replace('path = "a.py"', "path = 5")
+    with pytest.raises(SpecError, match="path must be a string"):
+        parse_spec(bad, tmp_path)

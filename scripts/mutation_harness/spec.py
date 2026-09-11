@@ -57,6 +57,9 @@ def parse_spec(text: str, repo_root: Path) -> tuple[MutationSpec, ...]:
 def _validate_one(raw: dict, repo_root: Path, index: int) -> MutationSpec:
     where = f"[[mutation]] #{index + 1}"
 
+    if not isinstance(raw, dict):
+        raise SpecError(f"{where}: each [[mutation]] must be a table, got {type(raw).__name__}")
+
     unknown = sorted(set(raw) - TOP_LEVEL_KEYS)
     if unknown:
         raise SpecError(f"{where}: unknown key(s) {unknown}")
@@ -96,6 +99,8 @@ def _validate_one(raw: dict, repo_root: Path, index: int) -> MutationSpec:
 def _require_path_inside_repo(rel: str, repo_root: Path, where: str) -> None:
     """`..` and absolute paths are rejected. The harness mutates tracked
     source files; escaping the repo is never a legitimate spec."""
+    if not isinstance(rel, str):
+        raise SpecError(f"{where}: path must be a string, got {type(rel).__name__}")
     resolved = (repo_root / rel).resolve()
     root = repo_root.resolve()
     if not resolved.is_relative_to(root):
