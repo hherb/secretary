@@ -212,8 +212,8 @@ harness itself will not proceed.
 
 ### 5.5 Distinguish "did not red" from "did not run"
 
-The outcome is an enum, not a boolean. These are opposite conclusions and the
-current workflow renders them identically.
+The outcome is a ten-member enum, not a boolean. These are opposite
+conclusions and the current workflow renders them identically.
 
 | Outcome | Meaning |
 |---|---|
@@ -226,9 +226,14 @@ current workflow renders them identically.
 | `NOT_LIVE` | Applied, but the probe did not observe it — **proves nothing** |
 | `BASELINE_DIRTY` | The gate already failed on the clean tree |
 | `RESTORE_FAILED` | Post-restore sha256 mismatch; run aborted |
+| `GATE_TIMEOUT` | The gate did not finish; nothing was measured. |
 
 `NOT_LIVE` and `UNEXPECTED_GREEN` are the pair that matters, and they can never
-render as the same row.
+render as the same row. `GATE_TIMEOUT` is the same shape one step later: a
+timed-out gate's exit code (124) satisfies the same "the gate failed" test a
+genuine catch does, so it must be distinguished from `RED_AS_EXPECTED` by an
+explicit flag on the result, never inferred from the exit code alone — a real
+gate command is free to exit 124 on its own.
 
 ### 5.6 The per-mutation state machine
 
@@ -237,7 +242,10 @@ render as the same row.
    meaningless. Cached across mutations sharing a gate command.
 2. **Journal**, then apply the substitution.
 3. **Liveness probe.** On failure: `NOT_LIVE`, restore, continue to the next row.
-4. **Run the gate**, capturing exit code and output.
+4. **Run the gate**, capturing exit code and output. A timeout short-circuits
+   classification: it is recorded as `GATE_TIMEOUT` and never reasoned about
+   as a red or green gate result, even though its exit code would otherwise
+   satisfy "the gate failed."
 5. **Classify** against `expect` and `expect_red`.
 6. **Restore**, sha256-verify, drain the journal entry.
 
@@ -329,9 +337,11 @@ Exit status: `0` when every outcome matches its declaration, `1` otherwise.
 
 1. `uv run scripts/mutate.py --self-test` exits 0, with all eleven positive
    and four negative controls asserting their specific outcome — not merely
-   "something fired". Every one of the nine outcomes in §5.5 has at least one
-   control; an outcome reachable in code but unasserted is the vacuity this
-   harness exists to remove.
+   "something fired". Every one of the ten outcomes in §5.5 has at least one
+   control (`GATE_TIMEOUT` is the tenth, added in fix round 1 for the
+   Important finding below; a control for it is not yet written — a later
+   task adds it); an outcome reachable in code but unasserted is the vacuity
+   this harness exists to remove.
 2. Each of `C1`, `C2`, `C3` is **mutation-proven**: disabling the corresponding
    harness mechanism reds exactly that control.
 3. A real spec covering a known mutation from a shipped slice reproduces that

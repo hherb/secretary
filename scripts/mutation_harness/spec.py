@@ -81,6 +81,13 @@ def _validate_one(raw: dict, repo_root: Path, index: int) -> MutationSpec:
     expect_red = raw.get("expect_red", [])
     if not isinstance(expect_red, list) or not all(isinstance(s, str) for s in expect_red):
         raise SpecError(f"{where}: expect_red must be a list of strings")
+    if expect_red and expect != "red":
+        # `classify` only ever consults `expect_red` when `expect == "red"`
+        # (spec §5.5); a non-empty list on a `green` row would be silently
+        # inert. An assertion the author believes applies but never runs is
+        # worse than a missing one, so this is parse-time, not a runtime
+        # no-op.
+        raise SpecError(f"{where}: expect_red is meaningless with expect='green'")
 
     return MutationSpec(
         id=str(raw["id"]),

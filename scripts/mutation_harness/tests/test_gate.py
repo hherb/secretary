@@ -1,4 +1,7 @@
+import pytest
+
 from mutation_harness.gate import classify, run_gate
+from mutation_harness.spec import SpecError, parse_spec
 from mutation_harness.types import (
     GateResult, Lang, LivenessResult, MutationSpec, Outcome, RustProbe,
 )
@@ -64,3 +67,60 @@ def test_run_gate_captures_exit_code_and_combined_output(tmp_path):
     assert ok.exit_code == 0 and "hello" in ok.output
     bad = run_gate("echo oops >&2; exit 3", tmp_path)
     assert bad.exit_code == 3 and "oops" in bad.output and bad.is_red
+
+
+def test_run_gate_records_a_timeout(tmp_path):
+    result = run_gate("sleep 5", tmp_path, timeout=1)
+    assert result.timed_out is True
+    assert result.exit_code == 124
+
+
+def test_a_timed_out_gate_is_not_credited_as_a_catch(tmp_path):
+    """Regression for the Important finding (fix round 1): `run_gate`'s
+    TimeoutExpired handler returns exit_code=124, which satisfies
+    `GateResult.is_red` — so for an `expect="red"` row with an empty
+    `expect_red` (a legitimate, common shape; `_spec()`'s default), a naive
+    `classify` would read the timeout as a catch and report
+    `RED_AS_EXPECTED`. "The gate did not finish" must never render as "the
+    mutation was caught"; it must be `GATE_TIMEOUT` instead.
+    """
+    result = run_gate("sleep 5", tmp_path, timeout=1)
+    outcome, missing = classify(_spec(), result, LIVE)
+    assert outcome is Outcome.GATE_TIMEOUT
+    assert outcome is not Outcome.RED_AS_EXPECTED
+    assert missing == ()
+
+
+def test_a_genuine_exit_code_124_without_a_timeout_still_classifies_as_caught(tmp_path):
+    """The outcome must key on `GateResult.timed_out`, never on `exit_code ==
+    124` by itself — a real gate command is free to exit 124 on its own
+    (nothing reserves it), and inferring a timeout from the exit code alone
+    would be the same collapse `GATE_TIMEOUT` exists to prevent, in a new
+    place.
+    """
+    result = run_gate("exit 124", tmp_path)
+    assert result.exit_code == 124
+    assert result.timed_out is False
+    outcome, missing = classify(_spec(), result, LIVE)
+    assert outcome is Outcome.RED_AS_EXPECTED
+    assert missing == ()
+
+
+def test_parse_spec_rejects_expect_red_on_a_green_row(tmp_path):
+    """`classify` only ever consults `expect_red` when `expect == 'red'`; a
+    non-empty list on a `green` row is silently inert at runtime, so it must
+    be rejected at parse time instead."""
+    text = """
+[[mutation]]
+id = "M1"
+lang = "rust"
+path = "a.rs"
+old = "a"
+new = "b"
+gate = "true"
+expect = "green"
+expect_red = ["some_test"]
+probe = { package = "p" }
+"""
+    with pytest.raises(SpecError, match="expect_red is meaningless"):
+        parse_spec(text, tmp_path)

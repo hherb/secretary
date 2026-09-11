@@ -24,6 +24,7 @@ class Outcome(enum.Enum):
     NOT_LIVE = "NOT_LIVE"
     BASELINE_DIRTY = "BASELINE_DIRTY"
     RESTORE_FAILED = "RESTORE_FAILED"
+    GATE_TIMEOUT = "GATE_TIMEOUT"
 
     @property
     def is_success(self) -> bool:
@@ -80,6 +81,13 @@ class MutationSpec:
 class GateResult:
     exit_code: int
     output: str
+    # Set ONLY by `run_gate`'s own `TimeoutExpired` handler — never inferred
+    # from `exit_code == 124`. A real gate command is free to exit 124 on its
+    # own (it is an ordinary shell exit code, not reserved), and inferring a
+    # timeout from it would collapse "the gate finished and reported 124" and
+    # "the gate never finished" onto the same signal — the exact collapse
+    # this field exists to keep apart.
+    timed_out: bool = False
 
     @property
     def is_red(self) -> bool:
