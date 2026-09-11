@@ -202,13 +202,17 @@ bash scripts/check-secret-slot-hygiene.sh
 # stalled worker. All three were caught by someone finding a result
 # SURPRISING, which stops working the moment a mutation is expected to be
 # green by design — there a false green and a true green are
-# indistinguishable by inspection.
+# indistinguishable by inspection. Runs in NO workflow: a per-slice
+# investigative tool invoked by hand, its results enforced by review, not
+# CI — a deliberate scope decision (design spec's "Out of scope"), not a gap.
 #
 # Write the spec to the session SCRATCHPAD, never the source tree (#516).
 # `--self-test` first, as with every other guard: it reproduces all three
 # false greens as positive controls plus a fourth (a timed-out gate credited
 # as a catch), and C2 (a splice overridden by a later assignment) is the one
-# the harness exists for.
+# the harness exists for. Every one of the ten `Outcome` values has a check;
+# `RESTORE_FAILED`'s is a direct self-test check, not a `Control` row, because
+# reaching it needs corrupting a backup behind the harness.
 uv run scripts/mutate.py --self-test
 uv run scripts/mutate.py "$SCRATCH/mutations.toml"
 #
