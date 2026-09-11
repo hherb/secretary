@@ -335,13 +335,20 @@ Exit status: `0` when every outcome matches its declaration, `1` otherwise.
 
 ## 9. Success criteria
 
-1. `uv run scripts/mutate.py --self-test` exits 0, with all eleven positive
-   and four negative controls asserting their specific outcome — not merely
-   "something fired". Every one of the ten outcomes in §5.5 has at least one
-   control (`GATE_TIMEOUT` is the tenth, added in fix round 1 for the
-   Important finding below; a control for it is not yet written — a later
-   task adds it); an outcome reachable in code but unasserted is the vacuity
-   this harness exists to remove.
+1. `uv run scripts/mutate.py --self-test` exits 0, with every positive and
+   negative control asserting its specific outcome — not merely "something
+   fired".
+   **Outcome coverage is the criterion, and it is stated as a requirement on
+   the finished harness rather than as a claim about the current tree.** Each
+   of the ten outcomes in §5.5 must have at least one control by the time this
+   spec is satisfied; an outcome reachable in code but unasserted is exactly
+   the vacuity this harness exists to remove. `GATE_TIMEOUT` is the tenth,
+   added after a review found that a timed-out gate was being credited as a
+   catch, and the task that builds the control table owns its control.
+   The earlier wording of this criterion asserted universal coverage and
+   admitted an exception to it in the same sentence — the overclaim shape this
+   project keeps re-finding, reproduced inside its own success criteria. Do not
+   restore it: say what must hold, or say what does hold, never both at once.
 2. Each of `C1`, `C2`, `C3` is **mutation-proven**: disabling the corresponding
    harness mechanism reds exactly that control.
 3. A real spec covering a known mutation from a shipped slice reproduces that
