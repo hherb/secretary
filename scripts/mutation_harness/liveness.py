@@ -26,7 +26,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from mutation_harness.types import LivenessResult, PythonProbe, RustProbe
+from mutation_harness.types import LivenessResult, PythonProbe
 
 MECHANISM_INTERPRETER = "interpreter"
 MECHANISM_ARTIFACT = "artifact"
@@ -35,6 +35,21 @@ MECHANISM_ARTIFACT = "artifact"
 # mutation whose green must not be believed is precisely the size-preserving
 # one that nobody flags as risky.
 _NO_BYTECODE = {"PYTHONDONTWRITEBYTECODE": "1"}
+
+
+class PycacheNotCleared(RuntimeError):
+    """A `__pycache__` directory survived its removal attempt.
+
+    This is fatal, not advisory: `clear_pycache` exists solely to defeat
+    false-green mechanism 1 (a stale `.pyc` served under a bytecode cache
+    whose invalidation key — `(source_mtime, size)` stored to whole SECONDS —
+    a size-preserving mutation applied and reverted within one second can
+    satisfy). A caller that believes the cache is clear when it is not is
+    about to believe a probe or gate result that may have run against
+    pre-mutation bytecode. Returning a count that overstates what was
+    actually removed would make the one function guarding against this
+    mechanism fail OPEN — the exact direction this project exists to avoid.
+    """
 
 
 def python_env() -> dict[str, str]:
@@ -53,9 +68,18 @@ def clear_pycache(root: Path) -> int:
     """
     removed = 0
     for cache in Path(root).rglob("__pycache__"):
-        if cache.is_dir():
-            shutil.rmtree(cache, ignore_errors=True)
-            removed += 1
+        if not cache.is_dir():
+            continue
+        shutil.rmtree(cache, ignore_errors=True)
+        if cache.exists():
+            # rmtree's return tells us nothing; the EXISTENCE CHECK is the
+            # verdict. A cache that survives removal must not be silently
+            # counted as cleared.
+            raise PycacheNotCleared(
+                f"could not remove {cache}; a stale .pyc could serve a "
+                f"pre-mutation value and make a mutation result meaningless"
+            )
+        removed += 1
     return removed
 
 
@@ -69,6 +93,19 @@ print(repr(eval({expr!r}, {{"__builtins__": __builtins__}}, vars(_m))))
 
 def probe_python(probe: PythonProbe, repo_root: Path) -> LivenessResult:
     """Assert a FRESH interpreter observes the mutated value."""
+    # Defence in depth: `module` is spliced raw into the generated source
+    # (unlike `syspath`/`expr`, which land inside `!r`-escaped literals), so
+    # a `module` value is required to be a plain dotted identifier sequence
+    # before it is ever allowed near the template. Specs are author-
+    # controlled files in this repo, so this does not close a real threat
+    # surface today (`expr` already reaches `eval`), but there is no reason
+    # for `module` to be the one field with a different discipline.
+    if not all(part.isidentifier() for part in probe.module.split(".")):
+        return LivenessResult(
+            False,
+            MECHANISM_INTERPRETER,
+            f"probe module {probe.module!r} is not a dotted identifier",
+        )
     syspath = str((Path(repo_root) / probe.syspath).resolve())
     source = _PROBE_SOURCE.format(syspath=syspath, module=probe.module, expr=probe.expr)
     proc = subprocess.run(
