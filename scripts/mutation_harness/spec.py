@@ -17,8 +17,12 @@ from pathlib import Path
 from mutation_harness.types import Lang, MutationSpec, PythonProbe, RustProbe
 
 TOP_LEVEL_KEYS = frozenset(
-    {"id", "lang", "path", "old", "new", "gate", "expect", "expect_red", "note", "probe"}
+    {
+        "id", "lang", "path", "old", "new", "gate", "expect", "expect_red",
+        "note", "probe", "timeout",
+    }
 )
+DEFAULT_TIMEOUT = 3600
 REQUIRED_KEYS = frozenset({"id", "lang", "path", "old", "new", "gate", "expect", "probe"})
 PYTHON_PROBE_KEYS = frozenset({"module", "expr", "equals", "syspath"})
 RUST_PROBE_KEYS = frozenset({"package"})
@@ -89,6 +93,8 @@ def _validate_one(raw: dict, repo_root: Path, index: int) -> MutationSpec:
         # no-op.
         raise SpecError(f"{where}: expect_red is meaningless with expect='green'")
 
+    timeout = _validate_timeout(raw.get("timeout", DEFAULT_TIMEOUT), where)
+
     return MutationSpec(
         id=str(raw["id"]),
         lang=lang,
@@ -100,7 +106,19 @@ def _validate_one(raw: dict, repo_root: Path, index: int) -> MutationSpec:
         probe=_validate_probe(raw["probe"], lang, where),
         expect_red=tuple(expect_red),
         note=str(raw.get("note", "")),
+        timeout=timeout,
     )
+
+
+def _validate_timeout(raw_timeout: object, where: str) -> int:
+    """Seconds before `run_gate` gives up. `bool` is excluded explicitly —
+    it is a subclass of `int` in Python, and `timeout = true` would
+    otherwise silently parse as `timeout = 1`."""
+    if isinstance(raw_timeout, bool) or not isinstance(raw_timeout, int):
+        raise SpecError(f"{where}: timeout must be a positive integer (seconds)")
+    if raw_timeout <= 0:
+        raise SpecError(f"{where}: timeout must be a positive integer (seconds)")
+    return raw_timeout
 
 
 def _require_path_inside_repo(rel: str, repo_root: Path, where: str) -> None:

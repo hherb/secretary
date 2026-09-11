@@ -10,6 +10,15 @@ Step ordering is load-bearing:
 4. Run the gate.
 5. Classify.
 6. Restore and sha256-verify.
+
+`spec.timeout` is threaded to BOTH `run_gate` calls made for a spec — the
+baseline run and the post-mutation run — because it names a property of the
+gate command, not of one particular invocation. A spec that never sets it
+gets `run_gate`'s prior hardcoded default (3600s) on both calls, so this is
+additive: no existing spec's behaviour changes. Two calls sharing one
+`spec.gate` string but different `timeout` values would share a cached
+baseline keyed only on the command text; no control in this tree does that,
+and it is not otherwise exercised.
 """
 
 from __future__ import annotations
@@ -60,7 +69,9 @@ def run_mutations(
 
         if spec.gate not in baselines:
             clear_pycache(repo_root)
-            baselines[spec.gate] = not run_gate(spec.gate, repo_root).is_red
+            baselines[spec.gate] = not run_gate(
+                spec.gate, repo_root, timeout=spec.timeout
+            ).is_red
         if not baselines[spec.gate]:
             results.append(MutationResult(spec=spec, outcome=Outcome.BASELINE_DIRTY))
             continue
@@ -82,7 +93,7 @@ def run_mutations(
                 )
                 continue
 
-            gate = run_gate(spec.gate, repo_root)
+            gate = run_gate(spec.gate, repo_root, timeout=spec.timeout)
             outcome, missing = classify(spec, gate, liveness)
             results.append(
                 MutationResult(

@@ -71,6 +71,12 @@ class MutationSpec:
     probe: PythonProbe | RustProbe
     expect_red: tuple[str, ...] = ()
     note: str = ""
+    # Seconds before `run_gate` gives up on THIS spec's gate command, for
+    # both the baseline run and the post-mutation run (runner.py threads it
+    # to both `run_gate` calls it makes for this spec). Default matches
+    # `run_gate`'s own prior hardcoded default, so an existing spec that
+    # never mentions `timeout` behaves exactly as before this field existed.
+    timeout: int = 3600
 
     @property
     def expects_red(self) -> bool:
