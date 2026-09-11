@@ -6,8 +6,10 @@ base `27b7b0ca` (`main`, immediately after PR #645 merged).
 This slice is **(a)** from the previous baton's §(3) queue, chosen by the user
 options-plus-recommendation. It builds the harness #644 asked for.
 
-**Two issues filed:** [#649](https://github.com/hherb/secretary/issues/649),
-[#651](https://github.com/hherb/secretary/issues/651). The slice closes **#644**.
+**Four issues filed:** [#649](https://github.com/hherb/secretary/issues/649),
+[#651](https://github.com/hherb/secretary/issues/651), and from the PR #652
+review's fix wave [#653](https://github.com/hherb/secretary/issues/653),
+[#654](https://github.com/hherb/secretary/issues/654). The slice closes **#644**.
 
 **The headline: on its first real spec the harness contradicted a shipped
 handoff, and the handoff was wrong.** That is §(1)'s last subsection, and it is
@@ -31,7 +33,8 @@ deliberately left alone, unchanged ruling.
 
 ## (1) What shipped
 
-22 commits. `docs/superpowers/specs/2026-09-11-mutation-harness-design.md` is
+23 commits before the PR #652 review, plus the fix wave in §(1b).
+`docs/superpowers/specs/2026-09-11-mutation-harness-design.md` is
 the binding spec; `docs/superpowers/plans/2026-09-11-mutation-harness.md` is
 the plan.
 
@@ -80,9 +83,10 @@ flow and emits the markdown result table the handoff pastes.
   Original bytes and their sha256 are fsynced before the first byte changes,
   the index is written with `os.replace` + directory fsync, and an undrained
   journal **blocks the next invocation** rather than waiting to be noticed.
-- **`--self-test`, 19 checks**, reproducing all three founding false greens as
-  controls, with every one of the ten outcomes covered.
-- **110 unit tests.**
+- **`--self-test`, 20 checks** (RE-MEASURE), reproducing false greens 1 and 2
+  as `Control` rows and false green 3 as the standalone check C3, with every
+  one of the ten outcomes covered.
+- **238 unit tests** (RE-MEASURE).
 
 ### The result that matters: it contradicted a shipped handoff on first use
 
@@ -129,17 +133,116 @@ The four worth carrying:
 
 | Gate | Result |
 |---|---|
-| `uv run scripts/mutate.py --self-test` | 0 — **19/19** |
-| `uv run --with pytest python3 -m pytest scripts/mutation_harness -q` | 0 — **110 passed** |
+| `uv run scripts/mutate.py --self-test` | 0 — **20/20** |
+| `uv run --with pytest python3 -m pytest scripts/mutation_harness -q` | 0 — **238 passed** |
 | `uv run core/tests/python/conformance.py` | 0 — 0 FAIL, REG **29/29** |
 | six hygiene guards, `--self-test` first | all 0 |
 
-**Branch scope, verified:** `CLAUDE.md`, `ROADMAP.md`, two `docs/superpowers/`
-files, and `scripts/`. **No Rust, no FFI, no `core/`, no crypto, no on-disk
+**Branch scope, verified:** `CLAUDE.md`, `ROADMAP.md`, the `NEXT_SESSION.md`
+symlink, this handoff, two `docs/superpowers/` files, and `scripts/`. **No Rust, no FFI, no `core/`, no crypto, no on-disk
 format.** `scripts/` is not a workspace member, so `check-secret-slot-hygiene.sh`'s
 manifest census is untouched. README checked and deliberately NOT edited — none
 of the six hygiene guards is named there either, so the split is established
-rather than inferred. Every file under 500 lines (largest 438).
+rather than inferred. Every file under 500 lines (largest 486, `controls.py`;
+RE-MEASURE).
+
+---
+
+## (1b) The PR #652 review fix wave
+
+Five review agents (code, tests, silent failures, types, comments) over the
+branch above, every finding verified by execution before it was acted on. One
+Critical and seventeen Importants; all closed in code except the four
+type-shape suggestions now in #654 and the `rglob` limit in #653.
+
+**The Critical was a false green inside the harness.** `compare_rust_artifacts`
+recognised the `BUILD_TIMED_OUT` sentinel and not `BUILD_FAILED`, so a baseline
+build that FAILED fell through to the set comparison and two differently-
+failing builds scored `live=True` — while `liveness.py`'s own comment said
+both sentinels were recognised. The reading is now a typed `RustObservation`
+whose `kind` the comparison must dispatch on before it can reach a hash, and
+the language asymmetry is pinned in both directions (a build the mutation
+broke is live; a module it made unimportable is `NOT_LIVE`).
+
+**The rest, by mechanism:**
+
+- The value types refuse every self-contradictory row (`MutationResult`),
+  `expect` is an `Expect` enum (a typo'd `"Red"` used to classify a live green
+  as `GREEN_AS_EXPECTED`, exit 0), `GateResult.is_red` raises on a timed-out
+  result, and `--json` carries `timed_out` beside `exit_code`.
+- `expect_red` counts a name only on a line carrying `FAIL` (libtest names
+  passing tests too); control **C14** pins it — self-test is now 20 checks.
+- `Journal.restore` verifies the blob BEFORE overwriting the target, converts a
+  target write/re-read `OSError` to `RestoreFailed`, and removes entries by
+  identity rather than by blob name; `drain()` attempts every entry; an index
+  without an `entries` key is corrupt, not clean; signal dispositions are
+  handed back after every run and the handler is re-entrancy-guarded.
+- Every abort carries its partial table as a typed `RunAborted`: exit 3 (a
+  restore could not be trusted, tree may be dirty) is kept apart from exit 4
+  (harness error, tree restored, traceback on stderr) — a typo'd `path` used to
+  be a bare traceback with exit 1 and no table. `parse_spec` now also rejects a
+  non-existent `path`, a non-existent `probe.syspath`, and a stray
+  document-level key.
+- One `subproc.run_bounded` for the gate and both probes: the whole process
+  group is killed on timeout, output is decoded with `errors="replace"`, the
+  gate runs under `bash -o pipefail`, and the probe interpreter is
+  `sys.executable`. A cargo-named artifact that cannot be read is
+  `ARTIFACT_MISSING`, a changed artifact SET is not a measurement, and the
+  package-id match is exact in both cargo spellings.
+- Non-success rows print a diagnostic block to stderr; the substitution works
+  on bytes (CRLF and non-UTF-8 files survive); the baseline cache is keyed on
+  `(gate, timeout)`; `PYTHONPYCACHEPREFIX` is stripped from every subprocess.
+- Tests: the target's BYTES are asserted after every control and unit run
+  (moving `journal.record` after the substitution used to leave both layers
+  green with the file mutated); the 20 labels are pinned by name; `run_self_test`
+  itself has pytests (exit code, a raising check, the census call); cargo's
+  JSON parsing, `BUILD_FAILED` on both sides, the kill window between blob and
+  index, and `_validate_timeout` all have tests for the first time.
+- Docs: ROADMAP's "18/18" and "63 tests", CLAUDE.md's "108 tests", the design
+  spec's two-value exit contract, its `C7` row, its C1 mechanism and its
+  `GREEN_AS_EXPECTED` M8 example — all corrected against measurement.
+
+**Verified by the harness itself before being believed** — three rows, each
+undoing one fix, gate = the unit suite:
+
+```
+| # | Mutation | Live | Outcome | Reds |
+|---|---|---|---|---|
+| FW1 | undo the Critical: a BUILD_FAILED baseline compared as a measurement | yes (interpreter) | RED_AS_EXPECTED | test_a_failed_baseline_build_is_an_absent_baseline_whatever_the_mutated_build_does |
+| FW2 | undo the expect_red fix: any line names a red | yes (interpreter) | RED_AS_EXPECTED | test_a_claimed_test_that_passes_while_another_fails_is_wrong_tests_red |
+| FW3 | undo MutationResult's shape check: every contradictory row constructs | yes (interpreter) | RED_AS_EXPECTED | test_a_self_contradictory_row_is_unrepresentable |
+```
+
+Exit 0, tree clean afterwards, restores sha256-verified.
+
+**A second review round over the fix wave itself found three more Importants
+and eight suggestions, all closed with tests** — the ratio this document
+records for every task held for the fix wave too:
+
+- `subproc.run_bounded` had dropped `subprocess.run`'s kill-on-ANY-exception,
+  so the `SystemExit` the journal's signal handler raises on Ctrl-C left the
+  gate running against a tree the handler was restoring underneath it — the
+  hazard the module's own docstring claimed to close, reintroduced on the
+  signal path. Now `with Popen(...)` plus `except BaseException: killpg`;
+  `test_subproc.py` interrupts a real gate with an alarm and asserts the
+  grandchild is dead.
+- `names_a_red` had scoped the MARKER to a line but left the NAME a substring,
+  so `…_names_that_key_at_the_top_level` failing credited a claim on
+  `…_names_that_key`. The name is now a whole token (not adjacent to an
+  identifier character, dot, slash or hyphen; `mod::name` and `name[case]`
+  still accepted). The `cargo test -q` limit — no per-test lines, so a
+  genuine catch reports `WRONG_TESTS_RED` — is documented as fail-closed.
+- The `RESTORE_FAILED` row had REPLACED the aborting row's own measurement,
+  contradicting `RunAborted`'s docstring; the measured row is now kept ahead
+  of it (`test_a_restore_failure_keeps_the_rows_own_measurement`).
+- Smaller: control gates run under `sys.executable` like the probes;
+  `RustObservation` is hashable; the "no baseline" message no longer blames
+  the baseline for an empty post-mutation reading; `package_id_names` strips
+  a git query string and percent-decodes; the census failure is reported
+  beside the count rather than folded into a numerator that could go
+  negative; the signal handler's `SIG_IGN` now survives the unwind through
+  `run_mutations`'s `finally`; the post-`record` abort path has a test; three
+  stale comments corrected.
 
 ---
 
@@ -157,10 +260,12 @@ rather than inferred. Every file under 500 lines (largest 438).
   the plan's one DECLARED uncertainty and it resolved by falsifying the plan —
   the C10 fixture was changed to mutate a file the build graph never reads,
   **not** weakened to fit.
-- **`execution_census` has a terminal turtle**: nothing inside `run_self_test`
-  verifies it calls the census. Disclosed in its docstring and in `CLAUDE.md`.
-- **A dropped registry entry signals via a MOVING COUNT, not a red** — exit 0,
-  "18/19". A reader who does not know the expected number gets nothing.
+- ~~**`execution_census` has a terminal turtle**~~ — closed in the fix wave: a
+  pytest substitutes a recording census and asserts `run_self_test` calls it.
+- ~~**A dropped registry entry signals via a MOVING COUNT, not a red**~~ — closed
+  in the fix wave: the 20 labels are pinned by name. (The rendering this bullet
+  quoted, "18/19", was never reachable — a dropped row shrinks the denominator
+  too, so it printed "18/18", exit 0; the review measured it.)
 - **It does not make a mutation SET complete.** Choosing which mutations to run
   is still a design act; the harness makes each row's result trustworthy.
 
@@ -201,10 +306,11 @@ targets carrying decrypted user content. Larger; scope it to those two.
 closes it. Checkable in four commands:
 
 ```bash
-uv run scripts/mutate.py --self-test                                   # 19/19, exit 0
-uv run --with pytest python3 -m pytest scripts/mutation_harness -q     # 110 passed
+uv run scripts/mutate.py --self-test                                   # 20/20, exit 0
+uv run --with pytest python3 -m pytest scripts/mutation_harness -q     # 238 passed
 grep -c "execution_census" scripts/mutation_harness/selftest.py        # >= 1
 grep -c "did NOT change" scripts/mutation_harness/liveness.py          # >= 1
+grep -c "is_measurement" scripts/mutation_harness/liveness.py          # >= 1 (the Critical's fix)
 ```
 
 ---
@@ -278,8 +384,8 @@ cd /Users/hherb/src/secretary/.worktrees/mutation-harness
 pwd && git branch --show-current && git worktree list
 
 # --- the gates this slice is about ---
-uv run scripts/mutate.py --self-test                                 # 19/19, exit 0
-uv run --with pytest python3 -m pytest scripts/mutation_harness -q   # 110 passed
+uv run scripts/mutate.py --self-test                                 # 20/20, exit 0
+uv run --with pytest python3 -m pytest scripts/mutation_harness -q   # 238 passed
 
 # NOTE the module form. `uv run --with pytest pytest` intermittently HANGS here.
 
@@ -329,6 +435,16 @@ p = PythonProbe(module='m', expr='TOKEN', equals='real', syspath='.')
 print(compare_python_probe(p, ok('real'), ok('real')).detail)
 "
 # -> the bound value did NOT change ... so this mutation measured nothing
+
+# And the PR #652 Critical — a failed BASELINE build is an absent baseline:
+uv run --no-project python3 -c "
+import sys; sys.path.insert(0, 'scripts')
+from mutation_harness.liveness import compare_rust_artifacts
+from mutation_harness.types import RustObservation, RustReadingKind
+failed = lambda d: RustObservation(RustReadingKind.BUILD_FAILED, detail=d)
+print(compare_rust_artifacts(failed('exit 101, stderr a'), failed('exit 101, stderr b')).live)
+"
+# -> False  (it printed True before the fix)
 ```
 
 ---
