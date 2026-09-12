@@ -40,8 +40,8 @@ least one check failed); `--drain` exits 0/2 (2 = the journal could not be
 opened or fully restored).
 
 For every non-success row the run also prints a DIAGNOSTIC block to stderr —
-why liveness failed, or the tail of the gate's output — so the table can stay
-five columns and still be actionable.
+why liveness failed, or the tail of the gate's output — so the table carries
+only what a reader needs to INTERPRET a row and stays actionable.
 
 Read docs/superpowers/specs/2026-09-11-mutation-harness-design.md first.
 Write the spec to the session scratchpad, never into the source tree (#516).
@@ -156,7 +156,9 @@ def main(argv: list[str]) -> int:
 
 def _render(results, as_json: bool) -> None:
     """The table on stdout; the per-row diagnostics for every non-success
-    row on stderr, so the pasted evidence stays five columns."""
+    row on stderr, so the pasted evidence stays interpretation-only. Not
+    stated as a column COUNT: #651 added a sixth and left five documents
+    asserting five (#656 review)."""
     print(render_json(results) if as_json else render_markdown(results))
     diagnostics = render_diagnostics(results)
     if diagnostics:

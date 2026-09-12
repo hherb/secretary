@@ -12,9 +12,14 @@ as `NO | NOT_LIVE` with none of the four reasons `compare_python_probe`
 composes, and gate output was rendered by nothing at all — the handoff's own
 `UNEXPECTED_RED` (#651) had to be re-diagnosed by re-running the gate by hand.
 
-The GATE is one of those interpretation columns (#651). It was left out on the
-five-column reasoning above, and that is what #651 is: a row measured under
-`differential_replay`'s per-token tolerance was pasted into a handoff and
+That rule is stated as a RULE rather than as a column count on purpose. It read
+"the table stays FIVE columns" until #651 added a sixth, at which point five
+documents still asserted the count — the sweep is cheaper if nothing carries the
+number in the first place.
+
+The GATE is one of those interpretation columns (#651). Leaving it out was a
+reading of the rule above, and getting it wrong is what #651 is: a row measured
+under `differential_replay`'s per-token tolerance was pasted into a handoff and
 written up as "nothing catches it", a claim about every gate. Section RTV reds
 the same mutation. A gate is not a diagnostic — it is half of what a row MEANS,
 because an outcome without its instrument is under-specified the moment more
@@ -52,25 +57,39 @@ def _cell(text: str) -> str:
     in the manifest/conformance decoders this harness mutates). Empty or
     whitespace-only input renders as `—` so a cell is never blank — a blank
     cell next to a real pipe is itself ambiguous table syntax.
+
+    **Backslashes are escaped FIRST, and that order is the whole point.** A
+    row splitter treats backslash escapes by PARITY: `\\\\` is an escaped
+    backslash, which leaves a `|` after it bare. So escaping only the pipe
+    turned an input that already carried a backslash before one — ordinary
+    BRE alternation, `grep 'a\\|b'`, and a realistic gate now that gates are
+    rendered — into `\\\\|`, i.e. a literal backslash followed by a
+    DELIMITER, silently adding a column to that row (#656 review). Escaping
+    the backslash first keeps the parity right.
     """
     collapsed = " ".join(text.split())
     if not collapsed:
         return "—"
-    return collapsed.replace("|", "\\|")
+    return collapsed.replace("\\", "\\\\").replace("|", "\\|")
 
 
 def _code_span(text: str) -> str:
     """Wrap already-`_cell`-safe `text` as CommonMark inline code.
 
-    CommonMark's rule for a backtick INSIDE a code span is a fence longer
-    than the longest backtick run in the content; rather than computing
-    that, a value containing a backtick is left UNFENCED instead — it has
-    already been through `_cell`, so it is still a single-line, pipe-escaped
-    table cell, just not monospaced. Simpler than a variable-length fence,
-    and correctness (no broken fence, no swallowed table structure) does not
-    depend on which choice is made — only the styling does.
+    A code span cannot express an escape: inside one, `\\|` is a literal
+    backslash-pipe and a backtick ends the span. So a value carrying either
+    is left UNFENCED — it has been through `_cell`, so it is still a
+    single-line, parity-correct table cell, just not monospaced, and the
+    inline parser then resolves the escapes `_cell` wrote back to the
+    characters the author typed.
+
+    CommonMark's rule for a backtick inside a code span is a fence longer
+    than the longest backtick run in the content; not computing that is the
+    same trade, made for the same reason. Correctness — no broken fence, no
+    swallowed table structure, no doubled backslash on screen — does not
+    depend on which choice is made here; only the styling does.
     """
-    return text if "`" in text else f"`{text}`"
+    return text if "`" in text or "\\" in text else f"`{text}`"
 
 
 def _live_cell(result: MutationResult) -> str:

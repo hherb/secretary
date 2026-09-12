@@ -156,7 +156,7 @@ def test_a_harness_error_mid_run_exits_4_with_the_partial_table_and_a_traceback(
 
 
 def test_a_non_success_row_prints_its_diagnostic_to_stderr(fixture_repo):
-    """The five-column table stays as it was; the reason goes to stderr."""
+    """The table stays interpretation-only; the reason goes to stderr."""
     (fixture_repo / "m.py").write_text(
         'class Rejection:\n    """doc"""\n\n    TOKEN = "real"\n'
     )

@@ -1,7 +1,8 @@
 import json
-import re
 
-from mutation_harness.report import render_diagnostics, render_json, render_markdown
+from mutation_harness.report import (
+    _HEADER, render_diagnostics, render_json, render_markdown,
+)
 from mutation_harness.types import (
     Expect, GateResult, Lang, LivenessResult, MutationResult, MutationSpec, Outcome,
     PythonProbe, RustProbe, TIMEOUT_EXIT_CODE,
@@ -37,10 +38,54 @@ def _dead(**spec_kw):
 
 
 def _unescaped_pipe_count(line: str) -> int:
-    """Count only the pipes that would be read as column delimiters —
-    i.e. not a `\\|` that `_cell` produced to escape a literal pipe in the
-    mutated text."""
-    return len(re.findall(r"(?<!\\)\|", line))
+    """Count the pipes a GFM row splitter would treat as DELIMITERS.
+
+    Scanned by backslash PARITY, deliberately not by a lookbehind. The
+    `(?<!\\\\)\\|` this replaces was the exact inverse of `_cell`'s
+    `replace("|", "\\\\|")`, so it agreed with the implementation by
+    construction and could not see a `_cell` that forgot to escape
+    backslashes — which is what `_cell` did. `grep 'a\\|b'` came out as
+    `\\\\|`: an escaped backslash followed by a BARE pipe, which adds a
+    column to that row while this oracle reported no change (#656 review).
+    """
+    count = 0
+    i = 0
+    while i < len(line):
+        if line[i] == "\\":
+            i += 2
+            continue
+        if line[i] == "|":
+            count += 1
+        i += 1
+    return count
+
+
+def _split_cells(line: str) -> list[str]:
+    """Split one rendered row the way a GFM row splitter would.
+
+    On DELIMITER pipes only, by the same backslash parity
+    `_unescaped_pipe_count` uses. Splitting on raw `|` made this helper
+    disagree with the renderer for any row carrying an escaped pipe — it
+    counted the cell as two and the length assert below fired, blaming the
+    row shape for what was the helper's own reading (#656 review).
+    """
+    cells = []
+    buf = []
+    i = 0
+    while i < len(line):
+        if line[i] == "\\" and i + 1 < len(line):
+            buf.append(line[i:i + 2])
+            i += 2
+            continue
+        if line[i] == "|":
+            cells.append("".join(buf).strip())
+            buf = []
+            i += 1
+            continue
+        buf.append(line[i])
+        i += 1
+    cells.append("".join(buf).strip())
+    return cells
 
 
 def _cells_by_column(out: str, row: int = _DATA_ROW_INDEX) -> dict:
@@ -51,9 +96,23 @@ def _cells_by_column(out: str, row: int = _DATA_ROW_INDEX) -> dict:
     that index, so the very change this file gained a Gate column for
     would have repointed them without a single failure. Reading the
     header line makes a moved column a KeyError instead.
+
+    The DELIMITER row is checked here too, because nothing else read it and
+    the count-changing edit is exactly the one that breaks it: `_HEADER` is a
+    single literal holding both lines, so adding a column means editing two
+    halves, and under GFM a delimiter row whose cell count differs from the
+    header's means the block is not a table at all — it renders as a
+    paragraph of literal pipes. Total failure of this module's only
+    deliverable, and it reddened nothing (#656 review).
     """
-    names = [c.strip() for c in out.splitlines()[0].split("|")]
-    values = [c.strip() for c in out.splitlines()[row].split("|")]
+    lines = out.splitlines()
+    names = _split_cells(lines[0])
+    delims = _split_cells(lines[1])
+    values = _split_cells(lines[row])
+    assert len(delims) == len(names), (
+        f"delimiter row has {len(delims)} cells, header has {len(names)} — "
+        "GFM renders this as a paragraph, not a table"
+    )
     assert len(names) == len(values), f"row {row} has {len(values)} cells, header has {len(names)}"
     return dict(zip(names, values))
 
@@ -228,3 +287,47 @@ def test_json_carries_the_gate_beside_the_outcome_it_produced():
     of what produced it."""
     payload = json.loads(render_json([_red(gate="uv run x.py")]))
     assert payload[0]["gate"] == "uv run x.py"
+
+
+def test_the_column_set_and_its_order_are_pinned():
+    """`_cells_by_column` buys rename-detection by giving ORDER up.
+
+    It maps header name to cell, so a header and its rows reordered TOGETHER
+    still resolve every lookup, and a renamed column turns a silent wrong
+    answer into a `KeyError` only for the two columns read through it. Both
+    were measured as unpinned: moving Gate to last position, header and rows
+    alike, reddened nothing, and renaming `Outcome` to `Result` reddened
+    nothing (#656 review). Three of the six columns are still asserted by
+    whole-output substring, which is position-blind by construction, so this
+    is the one assertion that fixes the shape.
+    """
+    assert _HEADER.splitlines()[0] == "| # | Mutation | Gate | Live | Outcome | Reds |"
+
+
+def test_a_backslash_before_a_pipe_in_the_gate_does_not_add_a_column():
+    """BRE alternation is a realistic gate, and it defeated the old escape.
+
+    `_cell` escaped `|` and not `\\`, so `grep 'a\\|b'` rendered as `\\\\|` —
+    a row splitter reads escapes by PARITY, sees an escaped backslash, and
+    takes the pipe as a DELIMITER. The row silently gained a column, and the
+    oracle could not see it because it was the inverse of the same
+    `replace` (#656 review). Both halves are fixed: `_cell` escapes the
+    backslash first, and the oracle scans by parity.
+    """
+    header_pipes = _unescaped_pipe_count(render_markdown([_red()]).splitlines()[0])
+    out = render_markdown([_red(gate=r"grep 'a\|b' out.txt")])
+    assert _unescaped_pipe_count(out.splitlines()[_DATA_ROW_INDEX]) == header_pipes
+    assert _cells_by_column(out)["Gate"] == r"grep 'a\\\|b' out.txt"
+
+
+def test_a_value_carrying_a_backslash_is_left_unfenced():
+    """A code span cannot express an escape.
+
+    Inside backticks `\\|` is a literal backslash-pipe, so fencing an escaped
+    value would put the escape ON SCREEN. The backtick carve-out already made
+    this trade; a backslash needs it for the same reason.
+    """
+    out = render_markdown([_red(gate=r"grep 'a\|b' out.txt")])
+    gate_cell = _cells_by_column(out)["Gate"]
+    assert not gate_cell.startswith("`")
+    assert _cells_by_column(render_markdown([_red(gate="cargo test")]))["Gate"] == "`cargo test`"
