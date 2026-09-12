@@ -11,10 +11,10 @@ from mutation_harness.types import (
 _DATA_ROW_INDEX = 2
 
 
-def _spec(lang=Lang.RUST, note="", old="a", new="b"):
+def _spec(lang=Lang.RUST, note="", old="a", new="b", gate="true"):
     probe = RustProbe(package="p") if lang is Lang.RUST else PythonProbe("m", "X", "b", ".")
     return MutationSpec(
-        id="M1", lang=lang, path="a.rs", old=old, new=new, gate="true",
+        id="M1", lang=lang, path="a.rs", old=old, new=new, gate=gate,
         expect=Expect.RED, probe=probe, note=note,
     )
 
@@ -43,6 +43,21 @@ def _unescaped_pipe_count(line: str) -> int:
     return len(re.findall(r"(?<!\\)\|", line))
 
 
+def _cells_by_column(out: str, row: int = _DATA_ROW_INDEX) -> dict:
+    """Map header name -> cell text for one rendered data row.
+
+    Assertions used to index the row positionally (`cells[3]` for Live).
+    That silently follows a column INSERTION onto whatever now sits at
+    that index, so the very change this file gained a Gate column for
+    would have repointed them without a single failure. Reading the
+    header line makes a moved column a KeyError instead.
+    """
+    names = [c.strip() for c in out.splitlines()[0].split("|")]
+    values = [c.strip() for c in out.splitlines()[row].split("|")]
+    assert len(names) == len(values), f"row {row} has {len(values)} cells, header has {len(names)}"
+    return dict(zip(names, values))
+
+
 def test_markdown_names_the_liveness_mechanism_from_the_language():
     """The Rust and Python proofs differ in strength; the table must say
     which — derived from `spec.lang`, not stored beside it."""
@@ -65,12 +80,10 @@ def test_markdown_marks_a_row_that_measured_nothing():
     a presence.
     """
     dead_out = render_markdown([_dead(lang=Lang.PYTHON)])
-    dead_cells = [c.strip() for c in dead_out.splitlines()[_DATA_ROW_INDEX].split("|")]
-    assert dead_cells[3] == "NO"
+    assert _cells_by_column(dead_out)["Live"] == "NO"
 
     live_out = render_markdown([_red()])
-    live_cells = [c.strip() for c in live_out.splitlines()[_DATA_ROW_INDEX].split("|")]
-    assert live_cells[3] != "NO"
+    assert _cells_by_column(live_out)["Live"] != "NO"
 
 
 def test_a_pipe_in_old_does_not_increase_the_rendered_row_column_count():
@@ -108,6 +121,7 @@ def test_json_round_trips_every_field():
         "id": "M1",
         "lang": "rust",
         "path": "a.rs",
+        "gate": "true",
         "expect": "red",
         "note": "why",
         "outcome": "UNEXPECTED_RED",
@@ -165,3 +179,52 @@ def test_diagnostics_name_a_baseline_timeout_as_the_baseline_stage():
     )
     out = render_diagnostics([baseline_hung])
     assert "baseline gate timed out" in out
+
+
+def test_every_row_names_the_gate_it_was_measured_against():
+    """A result is a property of ONE gate, and the table must say which.
+
+    #651 is the whole reason this column exists. The 2026-09-10 handoff
+    pasted a row reading `M8 | ... | GREEN, by design` and wrote the
+    paragraph beneath it as "nothing catches it and nothing should". The
+    green was real under `differential_replay`'s per-token tolerance and
+    false under `conformance.py`, whose Section RTV reds the same mutation
+    — but the pasted table named no gate, so nothing in the evidence
+    contradicted the generalisation. A row that carries its gate cannot be
+    read as a claim about every gate.
+    """
+    out = render_markdown([_red(gate="cargo test --release -p secretary-core")])
+    assert _cells_by_column(out)["Gate"] == "`cargo test --release -p secretary-core`"
+
+
+def test_rows_measured_under_different_gates_each_name_their_own():
+    """The column is per ROW, not a caption over the table.
+
+    A spec that mixes gates is exactly the case #651 arose from — one
+    mutation scored against two different instruments — so a single
+    table-level gate would reintroduce the ambiguity for the only specs
+    that need it resolved.
+    """
+    out = render_markdown([_red(gate="gate-one"), _red(gate="gate-two")])
+    assert _cells_by_column(out, _DATA_ROW_INDEX)["Gate"] == "`gate-one`"
+    assert _cells_by_column(out, _DATA_ROW_INDEX + 1)["Gate"] == "`gate-two`"
+
+
+def test_a_pipe_in_the_gate_does_not_increase_the_rendered_column_count():
+    """A shell pipeline is a realistic gate, and `|` is a column separator.
+
+    `cargo test | grep` left unescaped would add a column to that row
+    alone, so the table's own shape would depend on the gate text.
+    """
+    header_pipes = _unescaped_pipe_count(render_markdown([_red()]).splitlines()[0])
+    out = render_markdown([_red(gate="cargo test 2>&1 | grep FAILED")])
+    row = out.splitlines()[_DATA_ROW_INDEX]
+    assert _unescaped_pipe_count(row) == header_pipes
+
+
+def test_json_carries_the_gate_beside_the_outcome_it_produced():
+    """`--json` is the machine-readable twin of the table and was missing
+    the same field, so a consumer reading `outcome` got it with no record
+    of what produced it."""
+    payload = json.loads(render_json([_red(gate="uv run x.py")]))
+    assert payload[0]["gate"] == "uv run x.py"

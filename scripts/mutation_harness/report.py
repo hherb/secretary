@@ -5,12 +5,22 @@ table in every handoff before #644 was hand-transcribed from scrollback — an
 unverified step between the measurement and the published claim, invisible to
 review because the scrollback is gone by the time anyone reads the table.
 
-The table stays FIVE columns so the pasted evidence keeps its shape; the
-diagnostics a reader needs to ACT on a non-success row go to stderr through
+The table carries only what a reader needs to INTERPRET a row; the
+diagnostics needed to ACT on a non-success one go to stderr through
 `render_diagnostics` (PR #652 review). Until then every `NOT_LIVE` row rendered
 as `NO | NOT_LIVE` with none of the four reasons `compare_python_probe`
 composes, and gate output was rendered by nothing at all — the handoff's own
 `UNEXPECTED_RED` (#651) had to be re-diagnosed by re-running the gate by hand.
+
+The GATE is one of those interpretation columns (#651). It was left out on the
+five-column reasoning above, and that is what #651 is: a row measured under
+`differential_replay`'s per-token tolerance was pasted into a handoff and
+written up as "nothing catches it", a claim about every gate. Section RTV reds
+the same mutation. A gate is not a diagnostic — it is half of what a row MEANS,
+because an outcome without its instrument is under-specified the moment more
+than one gate exists, which is now normal in this repo. Note the asymmetry that
+justifies the column over a table-level caption: a spec may mix gates per row,
+and those are precisely the specs where the ambiguity bites.
 """
 
 from __future__ import annotations
@@ -19,7 +29,7 @@ import json
 
 from mutation_harness.types import Lang, MutationResult
 
-_HEADER = "| # | Mutation | Live | Outcome | Reds |\n|---|---|---|---|---|"
+_HEADER = "| # | Mutation | Gate | Live | Outcome | Reds |\n|---|---|---|---|---|---|"
 
 # Which proof a `LivenessResult` came from is a function of the spec's
 # language, rendered here rather than stored on the result beside `lang`.
@@ -89,8 +99,8 @@ def _describe(result: MutationResult) -> str:
 
 def render_markdown(results: list[MutationResult]) -> str:
     rows = [
-        f"| {_cell(r.spec.id)} | {_describe(r)} | {_live_cell(r)} "
-        f"| {r.outcome.value} | {_reds_cell(r)} |"
+        f"| {_cell(r.spec.id)} | {_describe(r)} | {_code_span(_cell(r.spec.gate))} "
+        f"| {_live_cell(r)} | {r.outcome.value} | {_reds_cell(r)} |"
         for r in results
     ]
     return "\n".join([_HEADER, *rows])
@@ -127,6 +137,11 @@ def render_json(results: list[MutationResult]) -> str:
             "id": r.spec.id,
             "lang": r.spec.lang.value,
             "path": r.spec.path,
+            # The gate the row was measured against. Absent until #651, so a
+            # `--json` consumer could read an outcome with no record of the
+            # instrument that produced it — the same under-specification the
+            # markdown table carried.
+            "gate": r.spec.gate,
             "expect": r.spec.expect.value,
             "note": r.spec.note,
             "outcome": r.outcome.value,

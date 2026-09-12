@@ -143,16 +143,39 @@ read any of it as a regression, and do not quote 90 as the branch figure.
 | M5 | `as_str` returns another token's string | RED — 2 tests |
 | M6 | `is_phase_dependent` true for rule 4 | RED — 3 tests |
 | M7 | `ArraySortOrder` → `Rule2IndefiniteLength` | RED — 2 tests |
-| M8 | phase-dependent → **another** phase-dependent | **GREEN, by design** |
+| M8 | phase-dependent → **another** phase-dependent | **GREEN under the tolerance; RED under `conformance.py` — see the correction below** |
 | M9 | ordered → different ordered | RED — 4 differential disagreements |
 | M10 | remove a firing class's token | RED — 4 harness failures |
 | M11 | `diff_replay` omits `rule` | RED — 25 harness failures |
 | M12a/b | drop / flip a vocabulary row | RED — Section RTV |
 
-**M8's green is a real property, not a gap.** §4.2 declares that order free, so
-nothing catches it and nothing should. **M1** (strict tolerance) is *attributed*,
-not re-run: two independent agents ran it during the witness task and its review,
-each with sha256-verified restores, both seeing exactly one disagreement.
+**M8's green is a real property of ONE gate, and this paragraph over-generalised
+it — corrected 2026-09-12, tracked as [#651](https://github.com/hherb/secretary/issues/651).**
+As written it read "§4.2 declares that order free, so nothing catches it and
+nothing should", and the second half is false. Every row in this table was
+measured against `cargo test --features differential-replay`, whose
+`tokens_agree` tolerance genuinely does not flag M8 and should not. But
+`uv run core/tests/python/conformance.py` reds the same mutation: Section RTV,
+check 4 — the corpus-token SET EQUALITY, reported on the `PASS 3` line —
+because flipping the raise site removes `array_sort_order` from the set the
+committed corpus produces. Measured twice, by the mutation harness, as
+`UNEXPECTED_RED`, exit 1.
+
+Two details worth keeping, because the obvious reading of each is wrong.
+RTV's **check 1 does not fire**: it iterates the seven `ManifestRejection`
+subclasses, and `ArraySortOrderViolation` is a plain `ValueError` subclass that
+is not among them. And **neither implementation is wrong** — §4.2 frees the
+ORDER in which two readers may report rules, and says nothing about a raise
+site changing WHICH rule it names, so RTV is right to red it.
+
+The general lesson, and the reason this correction was cheap to make but
+expensive to find: **a mutation result is a property of one gate, and this
+table named none.** `scripts/mutate.py` now renders a Gate column per row so
+the same generalisation cannot be written from pasted evidence again.
+
+**M1** (strict tolerance) is *attributed*, not re-run: two independent agents
+ran it during the witness task and its review, each with sha256-verified
+restores, both seeing exactly one disagreement.
 
 **Caveat on M5/M6/M7**: measured with `--lib manifest::token`, which reports
 `605 filtered out`. The claim is only *which token tests* red, and the filter
