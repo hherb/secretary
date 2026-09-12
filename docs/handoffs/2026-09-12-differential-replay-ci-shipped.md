@@ -33,14 +33,15 @@ ruling.
 
 ## (1) What shipped
 
-Three commits plus this baton.
+Five commits, the last two being the baton and its own corrections.
 
 | SHA | What |
 |---|---|
 | `22b84a75` | #651 — every mutation row names its gate |
 | `512ea18c` | #647 — the replay runs in CI |
 | `6e0b9872` | #651 — four documents corrected |
-| *(this)* | the baton — a commit cannot cite its own SHA |
+| `e4526cb7` | the baton, and one figure reconciled across four documents |
+| *(this)* | the baton's own corrections — a commit cannot cite its own SHA |
 
 ### (1a) #647 — the defect
 
@@ -148,7 +149,7 @@ case to notice:
 
 | Gate | Result |
 |---|---|
-| `cargo test --release --locked --workspace` | 0 — **2157 passed** over 100 binaries, 0 failed |
+| `cargo test --release --locked --workspace` | 0 — **2157 passed, 0 failed** over 91 test binaries plus 9 doc-test suites |
 | the new differential-replay step | 0 — **4 passed**, 15-24 s |
 | `cargo clippy --release --workspace --tests -- -D warnings` | 0 |
 | `cargo fmt --all --check` | 0 |
@@ -181,10 +182,12 @@ at all, so the split is established rather than inferred.
   comparison RUNS, not what it covers.
 - **The tolerance is unchanged and still broader than §4.2 licenses** — 58 of
   136 unequal pairs, four groups with no licence, tracked by #646.
-- **The first CI run is the only real timing measurement.** 15-24 s is a warm
-  local figure on Apple silicon, the spread being machine load. A cold `uv` PEP 723 environment build on the
-  runner is on top of it, and `clean-room conformance` observes ~2 min for that
-  alone.
+- ~~**The first CI run is the only real timing measurement.**~~ It has now run:
+  **36 s** on `ubuntu-latest` (`00:41:18Z` → `00:41:54Z`, step `success`),
+  against 15-24 s warm locally. The difference is the cold `uv` PEP 723
+  environment, and it is far below the ~2 min `clean-room conformance` observes
+  for the same build, because `--diff-replay` imports lazily and touches no
+  Argon2id.
 - **`MIN_CORPUS_INPUTS` keeps a shrunken corpus failing rather than passing
   vacuously**, but nothing pins that the CI step itself stays wired — deleting
   the workflow step is invisible to every gate in the tree.
@@ -222,7 +225,7 @@ groups first, so it is a spec slice as much as a code one.
 **(f) #633, #642** unchanged from the last baton.
 
 **(g) #623 / #624 / #625 / #626 / #628 / #629 / #630 / #635 / #640 / #643 /
-#647-adjacent #648 / #653 / #654 stay open and untouched.**
+#648 / #653 / #654 stay open and untouched.**
 
 ### Issues this slice closes — verify against the code, not this document
 
