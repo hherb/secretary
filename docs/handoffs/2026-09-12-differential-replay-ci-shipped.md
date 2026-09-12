@@ -233,12 +233,23 @@ groups first, so it is a spec slice as much as a code one.
 until a human closes them. Checkable in five commands:
 
 ```bash
-grep -c "differential-replay" .github/workflows/test.yml          # >= 1 (the step)
-grep -c "Gate" scripts/mutation_harness/report.py                 # >= 1 (the column)
+grep -c "differential-replay" .github/workflows/test.yml          # 5 (the step + its comment)
+grep -c "Gate" scripts/mutation_harness/report.py                 # 1 (the column)
 grep -c '"gate": r.spec.gate' scripts/mutation_harness/report.py  # 1
-grep -c "nothing catches it and nothing should" CLAUDE.md         # 0
-grep -c "nothing catches it and nothing should" ROADMAP.md        # 0
+grep -c "GREEN UNDER THE TOLERANCE" CLAUDE.md                     # 1 (the correction)
+grep -c "GREEN \*\*under this gate\*\*" ROADMAP.md                  # 1 (the correction)
 ```
+
+**The last two check for the CORRECTION, not for the absence of the old
+phrase, and the reason is worth keeping.** The obvious check —
+`grep -c "nothing catches it and nothing should"` expecting 0 — does not
+work in either file and fails DIFFERENTLY in each, which is how it would
+have been believed. ROADMAP returns **2**, because both corrections quote
+the sentence they are correcting. CLAUDE.md returns **0**, but only because
+its correction capitalises the first word, so a case-sensitive grep misses
+it by luck rather than by fact. A check that returns the expected answer for
+the wrong reason is worse than no check; this was caught by running the
+block rather than by reading it.
 
 ---
 
