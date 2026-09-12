@@ -66,6 +66,24 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Clippy (lib + tests, deny warnings)
         run: cargo clippy --release --locked --workspace --tests -- -D warnings
+      # The line above does NOT lint `core/tests/differential_replay.rs`, and
+      # never has. That target is `required-features = ["differential-replay"]`
+      # (and was `#![cfg(...)]`-gated before), so without the feature cargo
+      # skips it and clippy sees an empty compilation unit — so a lint
+      # violation in the ~540 lines of the cross-language decoder-agreement
+      # replay reached `main` unremarked, and would keep doing so now that
+      # #647 has put that file on a blocking test path. Found in the #656
+      # review while checking whether that PR's own edits to the file were
+      # lint-gated; they were not.
+      #
+      # Scoped to `-p secretary-core` because that is the only member
+      # declaring the feature, and Linux-only for the same reason the test
+      # step is: the lint result is platform-independent here.
+      - name: 'Clippy (differential-replay target, deny warnings)'
+        if: runner.os == 'Linux'
+        run: >-
+          cargo clippy --release --locked -p secretary-core
+          --features differential-replay --tests -- -D warnings
 
   doc:
     name: cargo doc (deny warnings)
