@@ -1015,7 +1015,7 @@ survived it. Six things:
   and so the corpus comparison, the tolerance, its negative control, the
   witness and `diff_replay.py`'s `rule` field were all local-only. `test.yml`'s
   `rust-test` job now runs the replay as a Linux-only step, inside the already
-  required `cargo test (ubuntu-latest)` context. Measured at 24 seconds, and
+  required `cargo test (ubuntu-latest)` context. Measured at 15-24 s over two local runs, and
   NEGATIVE-CONTROLLED rather than assumed — re-pointing one ordered token reds
   `differential_replay_full_corpus`, because a gate that runs and catches
   nothing is #546 restated.

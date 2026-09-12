@@ -95,7 +95,9 @@ jobs:
       # the gate binds on day one with no ruleset edit; this job already
       # installs `uv` and already caches the cargo build, and the replay needs
       # both; and a separate job's cache entry would cost a full cold
-      # dependency build for a test measured at 15 seconds.
+      # dependency build for a test measured at 15-24 s (two local runs, the
+      # spread being machine load rather than input count — both replayed the
+      # same 50 committed inputs).
       #
       # Linux only, mirroring `clean-room conformance`. The decoders are
       # platform-independent, and the macOS leg would pay a cold `pqcrypto`
