@@ -77,8 +77,22 @@ cargo test --release --workspace
 cargo test --release --workspace --test fuzz_regressions
 cargo test --release --workspace --test conflict
 
-# Cross-language differential replay (requires `uv`; opt-in via Cargo feature)
-cargo test --release --workspace --features differential-replay
+# Cross-language differential replay (requires `uv`; opt-in via Cargo feature).
+# CI runs the narrow form below as a step in `rust-test` (#647).
+cargo test --release --locked -p secretary-core \
+  --features differential-replay --test differential_replay
+
+# TRAP, and it presents as a HANG rather than as slowness. The replay feeds
+# `core/fuzz/corpus/<target>/` as well as the committed seeds, and that
+# directory is gitignored runtime fuzz output that GROWS WITHOUT BOUND. On a
+# machine that has fuzzed it held 74,924 files; at the measured ~0.16 s per
+# `conformance.py` subprocess that is over three hours, with `cargo test`
+# printing nothing but "has been running for over 60 seconds". CI never sees
+# this — a fresh checkout has no `corpus/`, so it replays 50 inputs in ~24 s,
+# and so does a fresh `git worktree`. To reproduce the CI shape on a fuzzed
+# checkout, move `core/fuzz/corpus` aside rather than waiting.
+# The `--workspace` spelling additionally rebuilds the CLI and bridge crates
+# for a feature that gates exactly one test file and no `src/` code.
 
 # Lint — must stay clean with -D warnings (covers both lib + test targets)
 cargo clippy --release --workspace --tests -- -D warnings
@@ -442,7 +456,7 @@ issue and no diagnostic; `_HASH_SEEDS = ("0",)` passed while printing "across 1
 PYTHONHASHSEED values"; and a row-shape mismatch raised out of `main()` as a
 traceback with no `FAIL:` line.
 
-**It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and never enabled in `test.yml`. The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. **The job now BLOCKS**, which this paragraph denied until the #599 review measured it: `clean-room conformance` is one of the 24 required contexts in `main`'s `protect_main` ruleset (`gh api repos/hherb/secretary/rules/branches/main`). The sentence "the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking" outlived its fact — and a stale claim in this direction is not harmless, because it gets a real gate discounted when someone weighs whether a Python-side-only pin is enough. One standing consequence remains: five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
+**It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and, at the time, never enabled in `test.yml` (a step enables it there since #647, which does not change this paragraph's history: that step postdates #546 by a year of slices, and it invokes `conformance.py` per corpus input rather than running its section suite, so it would not have caught the `pqcrypto` break either). The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. **The job now BLOCKS**, which this paragraph denied until the #599 review measured it: `clean-room conformance` is one of the 24 required contexts in `main`'s `protect_main` ruleset (`gh api repos/hherb/secretary/rules/branches/main`). The sentence "the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking" outlived its fact — and a stale claim in this direction is not harmless, because it gets a real gate discounted when someone weighs whether a Python-side-only pin is enough. One standing consequence remains: five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
 
 ### Crypto layering
 
@@ -993,14 +1007,28 @@ survived it. Six things:
   by that one always-present committed file: an emptied `fuzz/seeds/` left the
   only token-compared target replaying one input, itself a tolerated pair, and
   the test passed having compared nothing.
-- **Almost none of this runs in CI, and that belongs here rather than only in
-  the handoff (#647).** `differential_replay.rs` is
-  `#![cfg(feature = "differential-replay")]` and no workflow enables the
-  feature, so the file is not even COMPILED in CI: the corpus comparison, the
-  tolerance, its negative control, the witness and `diff_replay.py`'s `rule`
-  field are all local-only. What CI enforces is `manifest/token/tests/` (the
-  blocking `cargo test --workspace`) and Section RTV (the blocking `clean-room
-  conformance` job). Weigh any claim about this slice against that split.
+- **This DOES run in CI since #647, and the sentence it replaces is worth
+  keeping because the gap lasted three slices.** This bullet used to read
+  "Almost none of this runs in CI … the file is not even COMPILED in CI", and
+  that was true: `differential_replay.rs` is
+  `#![cfg(feature = "differential-replay")]`, no workflow enabled the feature,
+  and so the corpus comparison, the tolerance, its negative control, the
+  witness and `diff_replay.py`'s `rule` field were all local-only. `test.yml`'s
+  `rust-test` job now runs the replay as a Linux-only step, inside the already
+  required `cargo test (ubuntu-latest)` context. Measured at 24 seconds, and
+  NEGATIVE-CONTROLLED rather than assumed — re-pointing one ordered token reds
+  `differential_replay_full_corpus`, because a gate that runs and catches
+  nothing is #546 restated.
+  **State the residual scope exactly, because the wider claim is the one
+  someone will want to make.** CI replays the COMMITTED corpus only —
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, 50 inputs today.
+  `core/fuzz/corpus/` is **gitignored**, so agreement on fuzz-DISCOVERED
+  inputs is still proven only by whoever runs the fuzzer, and "the differential
+  replay is in CI" must not be read as "the fuzz corpus is differentially
+  replayed in CI". `MIN_CORPUS_INPUTS` enforces a per-target floor so a corpus
+  that shrinks fails rather than passing vacuously. The other CI cover is
+  unchanged: `manifest/token/tests/` (the blocking `cargo test --workspace`)
+  and Section RTV (the blocking `clean-room conformance` job).
 - **Token coverage is asymmetric between the two sides, and the Python half
   needed the identity check it did not have.** Rust pins all 35 variant→token
   mappings (`tests/mapping.rs`, a second independent declaration) plus 6
@@ -1009,10 +1037,27 @@ survived it. Six things:
   valid token passed every CI gate; it now asserts the exact token per class
   AND that the set the corpus produces is the expected six. Both directions
   mutation-proven with sha256-verified restores.
-- **One mutation is GREEN by design and that is not a gap.** Swapping one
-  phase-dependent token for another is tolerated by construction, since §4.2
-  declares that order free. Nothing catches it and nothing should. Note the
-  narrower true statement: the predicate tolerates a phase-dependent token
+- **One mutation is GREEN UNDER THE TOLERANCE by design — and RED under
+  `conformance.py`. The unscoped version of this sentence was wrong, and it
+  is the reason #651 exists.** Swapping one phase-dependent token for another
+  is tolerated by `tokens_agree`, since §4.2 declares that order free, so
+  `differential_replay` does not flag it and should not. This bullet then said
+  "Nothing catches it and nothing should", which generalised one gate's answer
+  to every gate. Section **RTV** reds the same mutation, and rightly: §4.2
+  frees the ORDER two implementations may report rules in, and says nothing
+  about a raise site changing which rule it names. Measured, twice, on
+  `ArraySortOrderViolation.token` → `rule2_indefinite_length`:
+  `UNEXPECTED_RED`, exit 1.
+  **Name the CHECK, not just the section, because the obvious guess is
+  wrong.** RTV's check 1 does NOT fire: it iterates `_TOKENED_CLASSES`, the
+  seven `ManifestRejection` subclasses, and `ArraySortOrderViolation` is a
+  plain `ValueError` subclass that is not among them. The sole catch is check
+  4, the corpus-token SET EQUALITY (reported on the `PASS 3` line) — flipping
+  the raise site removes `array_sort_order` from the set the corpus produces.
+  **Generalise it:** a mutation result is a property of ONE gate. Every row in
+  `scripts/mutate.py`'s table now names its gate (#651) so this cannot be
+  written from pasted evidence again. Note also the narrower true statement
+  about the tolerance itself: the predicate tolerates a phase-dependent token
   against ANY token, not only against another phase-dependent one, which is
   what the four groups above are. Every other
   mutation reds: an ordered token swapped for another ordered one (4 differential

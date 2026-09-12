@@ -458,7 +458,7 @@ independent pieces of evidence close that.
    REG goes 28 → 29.
 4. **Mutation.** Every new assertion is mutated and watched to red — with one
    deliberate exception, M8: swapping a phase-dependent token for another is
-   tolerated by construction, so nothing catches it and nothing should. With the
+   tolerated by construction, so nothing catches it and nothing should. [CORRECTION, 2026-09-12, #651: true of THIS gate only. `conformance.py`'s Section RTV reds the same mutation on its corpus-token set equality.] With the
    harness clearing `__pycache__` and setting `PYTHONDONTWRITEBYTECODE` — the
    trap the previous slice hit, where a size-preserving Python mutation reported
    a false green because CPython invalidates bytecode on `(mtime, size)` with
