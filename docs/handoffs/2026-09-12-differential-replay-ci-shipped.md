@@ -33,15 +33,17 @@ ruling.
 
 ## (1) What shipped
 
-Five commits, the last two being the baton and its own corrections.
+Three substantive commits, then the baton and its corrections. The count is
+deliberately not written out — it went stale twice while this table was being
+edited, which is the same lesson as every RE-MEASURE note in `CLAUDE.md`. Run
+`git log --oneline main..HEAD` for the current set.
 
 | SHA | What |
 |---|---|
 | `22b84a75` | #651 — every mutation row names its gate |
 | `512ea18c` | #647 — the replay runs in CI |
 | `6e0b9872` | #651 — four documents corrected |
-| `e4526cb7` | the baton, and one figure reconciled across four documents |
-| *(this)* | the baton's own corrections — a commit cannot cite its own SHA |
+| `e4526cb7` … | the baton, then its own corrections — a figure reconciled across four documents, two counts corrected against their logs, and a §(3) verification block that did not verify |
 
 ### (1a) #647 — the defect
 
