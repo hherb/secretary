@@ -78,10 +78,44 @@ jobs:
       - name: cargo build --release --workspace
         run: cargo build --release --locked --workspace
       # Mirrors the documented local command in CLAUDE.md. The
-      # differential-replay tests (which also shell out to `uv`) are behind an
-      # opt-in Cargo feature and stay off here.
+      # differential-replay tests are behind an opt-in Cargo feature and stay
+      # off here; they get their own step below.
       - name: cargo test --release --workspace
         run: cargo test --release --locked --workspace
+      # The cross-language decoder-agreement replay (#647). Until this step
+      # existed no workflow enabled the feature, so `differential_replay.rs`
+      # was not merely unrun — it was not COMPILED in CI, and with it the
+      # corpus comparison, the #634 rule-token tolerance, that tolerance's
+      # negative control and its committed witness were all local-only. The
+      # one gate that exists to prove the Rust and Python decoders agree was
+      # the one gate nothing ran.
+      #
+      # A STEP here rather than a job of its own, for three reasons: `cargo
+      # test (ubuntu-latest)` is already one of `main`'s required contexts, so
+      # the gate binds on day one with no ruleset edit; this job already
+      # installs `uv` and already caches the cargo build, and the replay needs
+      # both; and a separate job's cache entry would cost a full cold
+      # dependency build for a test measured at 15 seconds.
+      #
+      # Linux only, mirroring `clean-room conformance`. The decoders are
+      # platform-independent, and the macOS leg would pay a cold `pqcrypto`
+      # wheel build for no signal this leg does not already give.
+      #
+      # `-p secretary-core`, not `--workspace`: the feature gates exactly one
+      # test file and no `src/` code, so widening the scope only rebuilds the
+      # CLI and bridge crates for a flag neither reads.
+      #
+      # WHAT THIS COVERS is the COMMITTED corpus — `core/fuzz/seeds/` plus
+      # `core/tests/data/diff_regressions/`, 50 inputs today. `core/fuzz/corpus/`
+      # is gitignored and absent here, so agreement on fuzz-DISCOVERED inputs
+      # is still proven only by whoever runs the fuzzer. `MIN_CORPUS_INPUTS`
+      # in the test enforces a per-target floor, so a corpus that shrinks to
+      # nothing fails rather than passing vacuously.
+      - name: cargo test --features differential-replay (cross-language decoder agreement)
+        if: runner.os == 'Linux'
+        run: >-
+          cargo test --release --locked -p secretary-core
+          --features differential-replay --test differential_replay
 
   desktop-test:
     name: desktop vitest
