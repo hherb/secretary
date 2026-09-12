@@ -62,8 +62,9 @@ from conformance_lib.rejection import _REJECTION_EXCEPTIONS
 # seventeen, so `MissingRequiredField.token = "wrong_type"` -- a plausible
 # copy-paste, since `NonTextMapKey` and `WrongFieldType` legitimately DO
 # share `"wrong_type"` -- passed check 1, passed check 3, passed every Rust
-# test, and was caught only by `differential_replay.rs`, which runs in no CI
-# workflow (#647).  Identity is what makes this section a pin.
+# test, and was caught only by `differential_replay.rs`, which at the time ran
+# in no CI workflow.  A `test.yml` step runs it as of #647, but only over the
+# one token-compared target; identity is what makes this section a pin.
 #
 # FOUR tokened classes reachable from `py_decode_manifest` are deliberately
 # absent, because they are tokened at their own raise sites in other modules:
