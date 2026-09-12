@@ -176,9 +176,20 @@ through both the Rust decoder and the Python clean-room decoder in
 # default cargo test stays Rust-only:
 cargo test --release --workspace
 
-# opt in to differential replay (requires uv):
-cargo test --release --workspace --features differential-replay
+# opt in to differential replay (requires uv). This is the spelling CI runs
+# as a step in test.yml's rust-test job (#647):
+cargo test --release --locked -p secretary-core \
+  --features differential-replay --test differential_replay
 ```
+
+**Move `corpus/` aside first if this checkout has fuzzed.** The walk feeds
+`core/fuzz/corpus/<target>/` as well as the committed seeds, that directory
+grows without bound (74,924 files on one machine), and the run then takes
+hours while printing nothing but "has been running for over 60 seconds" —
+it presents as a hang, not as slowness (#655). No scope flag avoids it: the
+walk is in the test, so `--workspace` and the narrow form behave alike.
+`MIN_CORPUS_INPUTS` floors the COMMITTED inputs per target, so deleting a
+seed reds even on a machine whose runtime corpus is large.
 
 A disagreement is one of: Rust bug -> fix Rust; Python bug -> fix Python;
 spec ambiguity -> docs PR alongside the fix. Sticky disagreements get

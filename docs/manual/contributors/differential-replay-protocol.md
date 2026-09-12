@@ -217,10 +217,21 @@ directories on every run.
 5. Add seeds in `core/fuzz/seeds/<target>/`, plus the corresponding
    `core/tests/data/fuzz_regressions/<target>/.gitkeep` and
    `core/tests/data/diff_regressions/<target>/.gitkeep`.
-6. Run `cargo test --release --workspace --features differential-replay`
-   end-to-end at least once before pushing — the Rust side iterates
-   over `TARGETS`, so a typo in the new target name there will
-   silently skip your work.
+6. Run the replay end-to-end at least once before pushing — the Rust side
+   iterates over `TARGETS`, so a typo in the new target name there will
+   silently skip your work:
+
+   ```bash
+   cargo test --release --locked -p secretary-core \
+     --features differential-replay --test differential_replay
+   ```
+
+   This is the spelling CI runs (#647). **Move `core/fuzz/corpus` aside first
+   if this checkout has fuzzed** — the walk feeds that gitignored directory
+   too, it grows without bound, and the run then takes hours while presenting
+   as a hang (#655). The scope flag makes no difference to that; the
+   `--workspace` spelling this step used to recommend additionally rebuilds
+   the desktop and FFI wrapper crates for a feature none of them reads.
 
 ## Adding a new accept-shape (don't, unless you must)
 

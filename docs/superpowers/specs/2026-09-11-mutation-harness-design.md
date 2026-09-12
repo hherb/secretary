@@ -340,11 +340,16 @@ A markdown table on stdout in the column shape the handoffs already use, so a
 slice pastes **generated** evidence rather than re-typing scrollback:
 
 ```markdown
-| # | Mutation | Live | Outcome | Reds |
-|---|---|---|---|---|
-| M1 | tokens_agree returns `r == p` | yes (artifact) | RED_AS_EXPECTED | tolerance_admits_only_phase_dependent_pairs |
-| M8 | ArraySortOrderViolation.token swapped | yes (interpreter) | UNEXPECTED_RED | — |
+| # | Mutation | Gate | Live | Outcome | Reds |
+|---|---|---|---|---|---|
+| M1 | tokens_agree returns `r == p` | `cargo test --features differential-replay` | yes (artifact) | RED_AS_EXPECTED | tolerance_admits_only_phase_dependent_pairs |
+| M8 | ArraySortOrderViolation.token swapped | `uv run core/tests/python/conformance.py` | yes (interpreter) | UNEXPECTED_RED | — |
 ```
+
+(The **Gate** column arrived with #651 and this example is the reason it had
+to: the two rows above are measured against DIFFERENT instruments, and
+without the column the M8 row reads as a claim about every gate. It is
+per-row rather than a caption over the table for exactly that case.)
 
 (The `M8` row is the harness's real first result, #651: the handoff that
 recorded it as "GREEN, by design" was measured against a different gate. An
@@ -354,8 +359,10 @@ slice's own headline.)
 The **Live** column names the mechanism, because the Rust and Python proofs are
 not of equal strength and a reader weighing the evidence deserves the split.
 For every non-success row a DIAGNOSTIC block goes to stderr — the liveness
-detail, or the tail of the gate output — so the table stays five columns and
-is still actionable (PR #652 review).
+detail, or the tail of the gate output — so the table carries only what a
+reader needs to INTERPRET a row and is still actionable (PR #652 review).
+Stated as that rule rather than as a column count: this sentence read "stays
+five columns" and outlived the count by a whole slice (#656 review).
 
 Exit status: `0` when every outcome matches its declaration; `1` a rendered
 table with at least one row that did not; `2` refused to start (an undrained

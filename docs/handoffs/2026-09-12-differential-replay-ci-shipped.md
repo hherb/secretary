@@ -7,7 +7,10 @@ This slice is **(a)** from the previous baton's §(3) queue, taken together with
 **#647** by the user options-plus-recommendation, on the reasoning that widening
 a gate matters less than making it run at all.
 
-**One issue filed:** [#655](https://github.com/hherb/secretary/issues/655).
+**Three issues filed:** [#655](https://github.com/hherb/secretary/issues/655)
+(the fuzz-corpus replay trap), plus
+[#657](https://github.com/hherb/secretary/issues/657) and
+[#658](https://github.com/hherb/secretary/issues/658) from the #656 review.
 The slice closes **#647** and **#651**.
 
 **The headline: the gate that exists to prove the two decoders agree was the
@@ -65,18 +68,18 @@ A **step, not a job**, for three measured reasons: `cargo test
 (ubuntu-latest)` is already one of `main`'s 24 required contexts, so the gate
 binds on day one with no ruleset edit; that job already installs `uv` and
 caches the cargo build, both of which the replay needs; and a separate job's
-`rust-cache` entry would pay a cold dependency build for a test measured at 15-24 s.
+`rust-cache` entry would pay a cold dependency build for a test whose BODY runs in
+seconds (the split is in §(2); do not read the 36 s step figure as a test time).
 Linux-only mirrors `clean-room conformance` — the decoders are
 platform-independent and the macOS leg would pay a cold `pqcrypto` wheel build
 for no new signal. `-p secretary-core` rather than `--workspace` because the
 feature gates exactly one test file and no `src/` code.
 
 **Negative-controlled, because a gate that runs and catches nothing is #546
-restated.** Re-pointing one ORDERED token, a pair §4.2 grants no licence:
-
-| # | Mutation | Live | Outcome | Reds |
-|---|---|---|---|---|
-| CI647 | Rust names `missing_field` where Python names `repeated_array_value` | yes (artifact) | RED_AS_EXPECTED | `differential_replay_full_corpus` |
+restated.** Re-pointing one ORDERED token, a pair §4.2 grants no licence. The
+row is in the table under §(1c) — pasted from `mutate.py` rather than shaped by
+hand, which the first version of this document did not manage on the very slice
+that added the Gate column (#656 review).
 
 ### (1b) The measurement that shaped the design, and a live trap
 
@@ -86,15 +89,22 @@ bound.
 
 | Case | Inputs | Result |
 |---|---|---|
-| CI shape (no runtime corpus) | 50 | 4 passed, **15-24 s** (two runs) |
+| CI shape (no runtime corpus), local | 50 | 4 passed, **11-24 s** (three runs) |
+| CI shape, on the `ubuntu-latest` runner | 50 | 4 passed, **5.98 s** |
 | One `conformance.py --diff-replay`, warm | 1 | **0.16 s** |
 | This machine, corpus present | **74,924** | killed at 10 min; ~3.3 h implied |
 
-So the `--workspace` command `CLAUDE.md` documented is unusable on any checkout
-that has fuzzed, and **it presents as a hang** — `cargo test` prints nothing but
-"has been running for over 60 seconds". Documented in the Commands block and
-filed as **#655**. A fresh `git worktree` has no `corpus/`, which is why this
-branch's worktree reproduced the CI shape for free.
+So **every** `--features differential-replay` spelling is unusable on a
+checkout that has fuzzed, and **it presents as a hang** — `cargo test` prints
+nothing but "has been running for over 60 seconds". Say the trap belongs to the
+TEST, not to the scope flag: `corpus_dirs` pushes `core/fuzz/corpus/<target>`
+unconditionally, and `differential_replay_full_corpus` lives in the same binary
+`--test differential_replay` selects, so the narrow command this slice added
+hangs identically. An earlier draft of this section blamed `--workspace` and
+recommended the narrow form as the escape, which would have sent the next
+session into the same three hours (#656 review). Documented in the Commands
+block and filed as **#655**. A fresh `git worktree` has no `corpus/`, which is
+why this branch's worktree reproduced the CI shape for free.
 
 ### (1c) #651 — a mutation result is a property of ONE gate
 
@@ -113,22 +123,31 @@ and says nothing about a raise site changing WHICH rule it names.
 
 **Four carriers, found by sweep rather than by the one the issue named** —
 `CLAUDE.md`, `ROADMAP.md`, the 2026-09-10 handoff, and that slice's design
-spec. ROADMAP **contradicted itself two bullets apart**: its #634 entry made
-the unscoped claim while its #644 entry directly below recorded the gate
-mismatch correctly.
+spec. ROADMAP **contradicted itself in adjacent bullets**: its #634 entry made
+the unscoped claim while its #644 entry, the next one down, recorded the gate
+mismatch correctly. (Adjacent at the merge-base; this slice inserts a bullet
+between them, which is why an earlier draft here said "two bullets apart" and
+"directly below" in one breath — #656 review.)
 
 The structural half: `render_markdown` gains a per-row **Gate** column and
 `render_json` a `gate` key, so the generalisation cannot be written from a
 pasted table again. Per row, not a caption — a spec may mix gates, and those
-are exactly the specs where the ambiguity bites. Mutation-proven with the
-harness itself, gate = the unit suite:
+are exactly the specs where the ambiguity bites.
 
-| # | Mutation | Live | Outcome |
-|---|---|---|---|
-| GC1 | header loses the Gate column | yes (interpreter) | RED_AS_EXPECTED |
-| GC2 | gate cell rendered as a CONSTANT, not from the row | yes (interpreter) | RED_AS_EXPECTED |
-| GC3 | gate not routed through `_cell`, so a shell pipe adds a column | yes (interpreter) | RED_AS_EXPECTED |
-| GC4 | `--json` drops the gate key | yes (interpreter) | RED_AS_EXPECTED |
+**Every mutation row below is `mutate.py` output, pasted.** The first version
+of this document shaped both its tables by hand, omitted the very column this
+slice added, and gave one of them its gate as a prose CAPTION — the form the
+paragraph above argues against, in a document that genuinely mixes gates
+(#656 review). This single run demonstrates the point instead of asserting it:
+two instruments, five rows, each naming its own.
+
+| # | Mutation | Gate | Live | Outcome | Reds |
+|---|---|---|---|---|---|
+| CI647 | Rust names missing_field where Python names repeated_array_value | `cargo test --release --locked -p secretary-core --features differential-replay --test differential_replay` | yes (artifact) | RED_AS_EXPECTED | differential_replay_full_corpus |
+| R1 | _cell stops escaping backslashes, so a backslash before a pipe bares the pipe | `uv run --with pytest python3 -m pytest scripts/mutation_harness/tests/test_report.py scripts/mutation_harness/tests/test_types.py -q` | yes (interpreter) | RED_AS_EXPECTED | test_a_backslash_before_a_pipe_in_the_gate_does_not_add_a_column |
+| R2 | _code_span fences an escaped value, putting the escape on screen | `uv run --with pytest python3 -m pytest scripts/mutation_harness/tests/test_report.py scripts/mutation_harness/tests/test_types.py -q` | yes (interpreter) | RED_AS_EXPECTED | test_a_value_carrying_a_backslash_is_left_unfenced |
+| R3 | delimiter row loses a group, so GFM renders a paragraph not a table | `uv run --with pytest python3 -m pytest scripts/mutation_harness/tests/test_report.py scripts/mutation_harness/tests/test_types.py -q` | yes (interpreter) | RED_AS_EXPECTED | test_markdown_marks_a_row_that_measured_nothing |
+| R4 | header columns reordered against the rows | `uv run --with pytest python3 -m pytest scripts/mutation_harness/tests/test_report.py scripts/mutation_harness/tests/test_types.py -q` | yes (interpreter) | RED_AS_EXPECTED | test_the_column_set_and_its_order_are_pinned |
 
 A side finding worth carrying: the report tests indexed cells **positionally**
 (`cells[3]` for Live). A column INSERTION silently repoints such an assertion
@@ -144,31 +163,122 @@ case to notice:
   what #647 leaves true, with the residual as a scope rather than a caveat.
 - The #546 paragraph's "never enabled in `test.yml`" now reads as the history
   it is. **Verified before writing** that the #647 step would not have caught
-  the `pqcrypto` break either: `--diff-replay` never verifies a signature,
-  `ml_dsa_65_verify` being reachable only from `sections/`.
+  the `pqcrypto` break either — but state the property that was actually
+  checked, which is an IMPORT CLOSURE and not a directory: `diff_replay.py`
+  imports only `codec/*` plus `rejection`, and no `codec/` module reaches
+  `derivations.hybrid_verify`, so nothing on the `--diff-replay` path calls
+  `ml_dsa_65_verify`. The first wording said that function is "reachable only
+  from `sections/`", which is false — it lives in `derivations.py` and
+  `wire/card.py` and `wire/golden_vault_verify.py` both import it. Same
+  conclusion, sound reason (#656 review).
+
+### (1e) The #656 review round — what a four-agent review found
+
+Every finding below was measured, not argued, and each one is a defect in this
+branch rather than in what it replaced. They are recorded here because three of
+them are the same failure this slice is ABOUT, committed while writing it.
+
+**Two gates that could pass having proven nothing.**
+
+- `--test differential_replay` was tied to `--features differential-replay` by
+  nothing but the text of one `run:` line, and with the feature off the target
+  compiles to an EMPTY harness. Measured both ways on the same command: exit 0
+  with `running 0 tests` before, **exit 101** after a `[[test]]` entry with
+  `required-features` in `core/Cargo.toml`. So dropping the flag in a later
+  edit would have restored the #647 state under a step name that still claimed
+  to run the replay, inside a required context. The `--workspace` step's own CI
+  log shows that 0-test binary, which is how it was found.
+- `MIN_CORPUS_INPUTS` counted the gitignored runtime corpus toward the floor,
+  so on a fuzzed machine — the only machine the floor protects, CI having no
+  `corpus/` — a deleted committed seed still cleared it by tens of thousands.
+  The floor is now over committed inputs only, proven by staging exactly that
+  state: **38 committed against 41 total, floor 39, reds.**
+
+**Three measured claims that were wrong, each carried in three documents.** The
+36 s CI figure is a STEP duration, ~30 s of it cargo; the replay is 5.98 s and
+CI is FASTER than local, so the "cold `uv` environment" attribution was
+backwards. `-p secretary-core` does not avoid the CLI and bridge crates, which
+are pulled in through `core`'s own `[dev-dependencies]` and appear in the
+step's log. And the hang trap belongs to `corpus_dirs`, not to `--workspace`,
+so §(5)'s resume block was recommending as an escape the very command that
+hangs.
+
+**The five-column sweep this slice should have done itself.** #651 added a
+sixth column and left the count asserted in five places — `CLAUDE.md`,
+`scripts/mutate.py` twice, a test docstring, and the NORMATIVE §7 of the
+2026-09-11 design spec that `report.py` cites by name, whose example table
+still showed the M8 row with no gate. All now state the RULE (the table carries
+what a reader needs to INTERPRET a row) rather than a number, which is the only
+version that survives the next column.
+
+**Three test gaps, all measured by mutation before being closed.** The
+delimiter row was read by no test, and a five-group separator under a
+six-column header reddened nothing while making GFM render the block as a
+paragraph rather than a table. Column ORDER and column NAMES were unpinned.
+And `_cell` escaped `|` but not `\`, so an ordinary `grep 'a\|b'` gate came
+out as `\\|` — an escaped backslash followed by a BARE pipe, silently adding a
+column — while the oracle could not see it, being the inverse of the same
+`replace`. Both halves fixed: `_cell` escapes the backslash first, and the
+oracle scans by parity.
+
+**One value type that still admitted a false green.** `gate = ""` parsed
+(`_require_str` checks the type), `bash -c ""` exits 0, and an
+`expect = "green"` row then reported `GREEN_AS_EXPECTED` having run no gate.
+Refused in `MutationSpec.__post_init__` now, where PR #652 put the same class
+of guard. `gate = "true"` stays legal — the claim is that a gate was NAMED.
+
+**Two structural items filed rather than fixed:** #657 (nothing pins that the
+CI step stays wired) and #658 (the floor counts inputs, not strict token
+comparisons — ~7 of 39 on `manifest_body` reach one).
+
+**The generalisation.** Three of these are this slice's own thesis applied to
+itself: it corrected four carriers of one over-general claim while creating a
+new one in the correction, shipped a per-row Gate column and then pasted two
+hand-made gateless tables, and documented a trap with the wrong cause. A sweep
+for the phrase you are fixing is not a sweep for the property you changed.
 
 ### The measured gate set
 
 | Gate | Result |
 |---|---|
-| `cargo test --release --locked --workspace` | 0 — **2157 passed, 0 failed** over 91 test binaries plus 9 doc-test suites |
-| the new differential-replay step | 0 — **4 passed**, 15-24 s |
-| `cargo clippy --release --workspace --tests -- -D warnings` | 0 |
+| `cargo test --release --locked --workspace` | 0 — **2157 passed, 0 failed** over **90** test binaries plus 9 doc-test suites. It was 91: the `required-features` entry stops the default run building the 0-test `differential_replay` binary at all, and that binary no longer appears in the log |
+| the new differential-replay step | 0 — **4 passed**, 11-24 s local / 5.98 s on CI |
+| `cargo clippy --release --locked --workspace --tests -- -D warnings` | 0 |
+| `cargo clippy … -p secretary-core --features differential-replay --tests -- -D warnings` | 0 — a NEW `rust-lint.yml` step. The line above never linted `differential_replay.rs`, because cargo skips a target whose features are unmet, so ~540 lines on a blocking test path were outside the `-D warnings` gate |
 | `cargo fmt --all --check` | 0 |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` | 0 |
 | `uv run scripts/mutate.py --self-test` | 0 — **20/20** |
-| `uv run --with pytest python3 -m pytest scripts/mutation_harness -q` | 0 — **242 passed** (was 238) |
+| `uv run --with pytest python3 -m pytest scripts/mutation_harness -q` | 0 — **249 passed** (238 at the merge-base; +4 for #651, +7 for the #656 review round) |
 | `uv run core/tests/python/conformance.py` | 0 — 0 FAIL, REG **29/29** |
 | six hygiene guards, `--self-test` first, 12 invocations | all 0 |
-| `actionlint .github/workflows/test.yml` | 0, **and the parsed step names read back** |
+| `actionlint` on `test.yml` AND `rust-lint.yml` | 0, **and both new step names parsed back in full** (the unquoted-`#` truncation trap this file warns about four times) |
 
-**Branch scope, verified:** `.github/workflows/test.yml`, `CLAUDE.md`,
-`ROADMAP.md`, two `docs/` files, and two files under
-`scripts/mutation_harness/`. **No Rust, no FFI, no `core/`, no crypto, no
-on-disk format** — `git diff origin/main...HEAD --name-only | grep -E
-"^(core|ffi|desktop|ios|android|cli|browser)/"` is empty. README checked and
-deliberately NOT edited: it documents specs and protocols and names no CI job
-at all, so the split is established rather than inferred.
+**Branch scope — re-derive it, do not quote this.** Run
+`git diff origin/main...HEAD --name-only`. The first version of this block
+listed "two `docs/` files" where there were three plus the `NEXT_SESSION.md`
+symlink, and claimed **"No Rust, no FFI, no `core/`"** — a claim the #656
+review then falsified twice over. That scope choice was itself the defect: two
+comments under `core/` asserted in the present tense that the replay "runs in
+no CI workflow (#647)", citing the issue this branch closes, and they were left
+behind precisely because `core/` was declared out of scope.
+
+The branch now touches `core/` deliberately, in four places, none of them
+crypto or on-disk format:
+
+- `core/Cargo.toml` — the `[[test]]` entry whose `required-features` binds the
+  target to its feature.
+- `core/tests/differential_replay.rs` and
+  `core/tests/differential_replay_helpers/corpus.rs` — the committed-only
+  input floor.
+- `core/src/vault/manifest/token/tests/mapping.rs` — a doc comment, stale in
+  both of its clauses.
+- `core/tests/python/conformance_lib/sections/rule_token_vocabulary.py` — the
+  same stale sentence.
+
+Still untouched: every crypto primitive, every on-disk byte, the FFI crates,
+and all four platform trees. README checked and deliberately NOT edited: it
+documents specs and protocols and names no CI job at all, so that split is
+established rather than inferred.
 
 ---
 
@@ -184,21 +294,45 @@ at all, so the split is established rather than inferred.
   comparison RUNS, not what it covers.
 - **The tolerance is unchanged and still broader than §4.2 licenses** — 58 of
   136 unequal pairs, four groups with no licence, tracked by #646.
-- ~~**The first CI run is the only real timing measurement.**~~ It has now run:
-  **36 s** on `ubuntu-latest` (`00:41:18Z` → `00:41:54Z`, step `success`),
-  against 15-24 s warm locally. The difference is the cold `uv` PEP 723
-  environment, and it is far below the ~2 min `clean-room conformance` observes
-  for the same build, because `--diff-replay` imports lazily and touches no
-  Argon2id.
+- **The CI timing, split — and the split is the point (#656 review).** The step
+  is **36 s** on `ubuntu-latest`, of which **29.91 s** is cargo ("Finished
+  `release` profile ... in 29.91s", ~60 crates recompiled because the
+  `-p … --features` feature set differs from the preceding `--workspace` build
+  and re-fingerprints that graph in the shared target dir) and **5.98 s** is
+  the replay itself over all 50 inputs. Local test bodies measure 11-24 s, so
+  **CI is faster on the part that does the work** and the 50 `uv` spawns are
+  bounded above by ~6 s. An earlier version of this bullet read the 36 s as a
+  test time and attributed the difference to a cold `uv` PEP 723 environment;
+  the step's own log refutes both halves, and the mistake matters because it
+  points the next reader at the wrong lever — the real one is the feature-set
+  thrash, not `uv`. Do not compare a step duration against a test duration.
+- **`-p secretary-core` does NOT avoid the CLI and bridge crates**, which this
+  document and the workflow comment both claimed. `core`'s
+  `[dev-dependencies]` pull in `secretary-ffi-bridge`, which depends on
+  `secretary-cli`, so both appear in the step's own log. What the narrowing
+  drops is the Tauri desktop crate, the two FFI wrapper crates and the browser
+  host, plus re-running a suite the flag does not change.
 - **`MIN_CORPUS_INPUTS` keeps a shrunken corpus failing rather than passing
-  vacuously**, but nothing pins that the CI step itself stays wired — deleting
-  the workflow step is invisible to every gate in the tree.
+  vacuously** — over COMMITTED inputs only since the #656 review, because
+  counting the gitignored runtime corpus made the floor fail open on the one
+  machine it protects (measured: a deleted seed with `fuzz/corpus/` populated
+  gave 38 committed against 41 total, and now reds). It still does not floor
+  how many inputs reach a STRICT token comparison, which is ~7 of 39 on
+  `manifest_body` — **#658**.
+- **Nothing pins that the CI step itself stays wired.** Deleting it is
+  invisible to every gate in the tree. Now filed as **#657** rather than
+  recorded here only: a residual that lives in a handoff the symlink will
+  repoint away from is how the #647 gap itself survived three slices. The
+  feature/target half IS pinned — `required-features` in `core/Cargo.toml`
+  turns `--test differential_replay` without `--features` from exit 0 and
+  `running 0 tests` into exit 101 (measured both ways).
 
 ---
 
 ## (3) What is next — with acceptance criteria
 
-**(a) #649 — `differential_replay.rs` (measured 541 lines).** Its `_helpers/`
+**(a) #649 — `differential_replay.rs` (measured 541 lines).** Its
+`differential_replay_helpers/`
 already exists, so the destination is not in question, and it is now worth more
 than before: the file is on a blocking CI path. **Acceptance:** under 500,
 split along the seams #641 and #646 will each edit so those two do not collide
@@ -212,7 +346,11 @@ scope it to those two and keep `TOKEN_COMPARED_TARGETS` partitioning `TARGETS`.
 
 **(c) #612 — `manifest_uniqueness_kat.rs` (measured 848 lines).** Reopened
 once already. `80c3c488` is the worked example. **Acceptance:** under 500,
-sharing `Case`/`Verdict`/surgery helpers through a `_helpers/`.
+sharing `Case`/`Verdict`/surgery helpers through a
+`manifest_uniqueness_kat_helpers/`. The convention is
+`<test-name>_helpers/` — there is no directory called `_helpers/` in this
+tree, and naming the convention rather than a non-existent path is what an
+acceptance criterion has to do (#656 review).
 
 **(d) #655 — the fuzz-corpus replay trap, filed this slice.** The documented
 local command is unusable on a fuzzed checkout and fails as a hang.
@@ -268,11 +406,20 @@ gate; the same question applied to a filtered `cargo test` gave #587's
 
 ### The residual this slice deliberately leaves open
 
-**Nothing pins that the CI step stays wired.** Deleting those five lines from
+**Nothing pins that the CI step stays wired.** Deleting those lines from
 `test.yml` reds no test, no guard, and no self-test — the same shape as a
 dropped registry entry before #644's `execution_census`, one layer up in the
-build. No issue filed, because the honest fix is a workflow-parsing guard and
-that is a slice, not a footnote. Weigh it when the next CI gap appears.
+build. The honest fix is a workflow-parsing guard, which is a slice rather than
+a footnote, so it is **filed as #657** and not merely recorded here: this
+document's own §(0) says the symlink gives no signal when it is stale, and a
+residual that lives only in a handoff is how the #647 gap survived three
+slices. The #656 review made that call; the first version of this section said
+"no issue filed", which is against the repo's standing fix-or-file rule.
+
+**What IS pinned, since the same review:** the step cannot run the wrong thing.
+`required-features` binds `--test differential_replay` to its feature, so the
+flag and the target can no longer drift apart silently — measured at exit 0
+with `running 0 tests` before, exit 101 after.
 
 ### A measurement trap this session hit
 
@@ -309,12 +456,15 @@ pwd && git branch --show-current && git worktree list
 
 # --- the gate this slice added, i.e. the exact CI step ---
 cargo test --release --locked -p secretary-core \
-  --features differential-replay --test differential_replay   # 4 passed, 15-24s
+  --features differential-replay --test differential_replay   # 4 passed, 11-24s
 
-# DO NOT run the `--workspace --features differential-replay` form on a
-# checkout that has fuzzed: it also replays core/fuzz/corpus/ (74,924 files
-# here), takes hours, and presents as a HANG. That is #655. A fresh
-# `git worktree` has no corpus/ and reproduces the CI shape for free.
+# DO NOT run ANY --features differential-replay form on a checkout that has
+# fuzzed — the line above included. `corpus_dirs` pushes core/fuzz/corpus/
+# unconditionally, so the trap belongs to the TEST, not to the scope flag:
+# the narrow command replays those 74,924 files exactly as `--workspace`
+# does, takes hours, and presents as a HANG. That is #655. Move the
+# directory aside first. A fresh `git worktree` has no corpus/ and
+# reproduces the CI shape for free.
 
 # --- prove the CI gate is not vacuous, end to end ---
 SCRATCH=$(mktemp -d)
@@ -333,6 +483,13 @@ probe = { package = "secretary-core" }
 EOF
 uv run scripts/mutate.py "$SCRATCH/ci647.toml"   # RED_AS_EXPECTED, exit 0
 git status --short                                # MUST be empty
+
+# --- prove the step cannot run the wrong thing (#656 review) ---
+# Without its feature the target is refused, not run empty. Before the
+# `required-features` entry in core/Cargo.toml this was exit 0 + "running 0
+# tests", so dropping --features from test.yml would have been invisible.
+cargo test --release --locked -p secretary-core --test differential_replay
+echo "expect 101, and 'requires the features: differential-replay'"
 
 # NOTE: read the exit code from the UNPIPED command. `... | tail -40` then
 # `echo $?` reports tail's status, which cost a cycle this session.
@@ -357,7 +514,7 @@ cargo test --release --locked --workspace
 cargo clippy --release --locked --workspace --tests -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
 uv run scripts/mutate.py --self-test                                 # 20/20
-uv run --with pytest python3 -m pytest scripts/mutation_harness -q   # 242 passed
+uv run --with pytest python3 -m pytest scripts/mutation_harness -q   # 249 passed
 uv run core/tests/python/conformance.py                              # 29/29, 0 FAIL
 actionlint .github/workflows/test.yml
 

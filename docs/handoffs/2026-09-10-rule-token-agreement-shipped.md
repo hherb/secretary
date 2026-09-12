@@ -152,9 +152,15 @@ read any of it as a regression, and do not quote 90 as the branch figure.
 **M8's green is a real property of ONE gate, and this paragraph over-generalised
 it — corrected 2026-09-12, tracked as [#651](https://github.com/hherb/secretary/issues/651).**
 As written it read "§4.2 declares that order free, so nothing catches it and
-nothing should", and the second half is false. Every row in this table was
-measured against `cargo test --features differential-replay`, whose
-`tokens_agree` tolerance genuinely does not flag M8 and should not. But
+nothing should", and the second half is false. M8 was measured against
+`cargo test --features differential-replay`, whose `tokens_agree` tolerance
+genuinely does not flag it and should not. **The table mixes gates, which is
+why no blanket sentence belongs here** — the first version of this correction
+said "every row in this table" was measured against that command, and the
+table itself refutes it two rows up: M12a/b say `RED — Section RTV`, a
+`conformance.py` section, and the M5/M6/M7 caveat below names
+`--lib manifest::token`. Three instruments, eleven rows, and the correction
+for an unscoped gate claim made a fresh one (#656 review). But
 `uv run core/tests/python/conformance.py` reds the same mutation: Section RTV,
 check 4 — the corpus-token SET EQUALITY, reported on the `PASS 3` line —
 because flipping the raise site removes `array_sort_order` from the set the
