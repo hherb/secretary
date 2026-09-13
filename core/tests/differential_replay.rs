@@ -19,16 +19,25 @@
 //! rather than beside their helpers because a `#[test]` fn's name is its
 //! module path, and those names are cited by handoffs, mutation specs and
 //! the CI step's own negative control.
+//!
+//! The Python side is ONE long-lived `--diff-replay-serve` worker for the
+//! whole run (#655), not a process per input; see
+//! [`helpers::python_worker`] for what that keeps per input and what it
+//! gives up.
 
 #![cfg(feature = "differential-replay")]
 
 use std::fs;
+use std::time::Instant;
 
 mod differential_replay_helpers;
 
 use differential_replay_helpers as helpers;
-use helpers::corpus::corpus_dirs;
-use helpers::python_bridge::{python_decode, PyOutcome};
+use helpers::agreement::{judge, Judgement};
+use helpers::corpus::{corpus_dirs, corpus_inputs};
+use helpers::progress;
+use helpers::python_bridge::serve_command;
+use helpers::python_worker::{PyReplayer, PER_INPUT_TIMEOUT};
 use helpers::rust_decoder::rust_decode;
 use helpers::targets::{
     min_inputs, MIN_CORPUS_INPUTS, NOT_TOKEN_COMPARED_TARGETS, TARGETS, TOKEN_COMPARED_TARGETS,
@@ -39,6 +48,10 @@ use helpers::tolerance::tokens_agree;
 fn differential_replay_full_corpus() {
     let mut disagreements: Vec<String> = vec![];
     let mut harness_failures: Vec<String> = vec![];
+    // One worker for every target and every input (#655). The per-input spawn
+    // it replaces cost ~0.16 s against a 0.2-0.4 ms decode, which on a
+    // fuzzed checkout's 74,924-input corpus was ~3.3 h of apparent hang.
+    let mut python = PyReplayer::new(serve_command, PER_INPUT_TIMEOUT);
     for target in TARGETS {
         // Per-target input floor (#595). `corpus_dirs` skips any directory
         // that does not exist, with no `else` — so a renamed or moved
@@ -48,141 +61,60 @@ fn differential_replay_full_corpus() {
         // target's own module doc records it happening here. Populating the
         // directory fixed the symptom; this fixes the mechanism.
         //
-        // TWO counters, because the floor and the replay do not range over
-        // the same set. `seen` is everything replayed; `committed_seen` is
-        // the git-tracked subset, and only that may clear the floor. Counting
-        // both together left the floor fail-open on the one machine it
-        // protects: with a populated `fuzz/corpus/` a deleted committed seed
-        // still cleared it by tens of thousands, so "deleting an input reds"
-        // was true only where `corpus/` was absent (#656 review).
-        let mut seen = 0usize;
-        let mut committed_seen = 0usize;
-        let dirs = corpus_dirs(target);
-        for dir in &dirs {
-            for entry in fs::read_dir(&dir.path).expect("read corpus dir") {
-                let path = entry.expect("dir entry").path();
-                if !path.is_file() {
-                    continue;
-                }
-                if path.file_name().and_then(|s| s.to_str()) == Some(".gitkeep") {
-                    continue;
-                }
-                seen += 1;
-                if dir.committed {
-                    committed_seen += 1;
-                }
-                let bytes = fs::read(&path).expect("read input");
-
-                let rust = rust_decode(target, &bytes);
-                let python = python_decode(target, &path);
-
-                // A harness failure is not a verdict, so it never reaches
-                // the agreement match below: that match reads a Rust `Err`
-                // beside a `PyOutcome::Reject` as "both implementations
-                // rejected", and a Python crash or timeout establishes
-                // nothing at all about the input.
-                if let PyOutcome::Harness(msg) = &python {
-                    harness_failures.push(format!("[{}] {}: {}", target, path.display(), msg));
-                    continue;
-                }
-
-                // A missing token on a token-compared target is a harness
-                // failure, never an ordinary disagreement: it means the
-                // harness cannot tell whether the two agree, not that they
-                // differ. This must run BEFORE the `ok` match below, which
-                // treats a missing token as a plain "false" — i.e. as a
-                // (potentially misleading) disagreement rather than as "we
-                // don't know."
-                if TOKEN_COMPARED_TARGETS.contains(target) {
-                    if let (Err(r), PyOutcome::Reject { rule, .. }) = (&rust, &python) {
-                        if r.token.is_none() || rule.is_none() {
-                            harness_failures.push(format!(
-                                "[{}] {}: token-compared target rejected with a missing rule \
-                                 token (rust={:?}, python={:?}). Give the raising site a token \
-                                 rather than allowlisting this input.",
-                                target,
-                                path.display(),
-                                r.token,
-                                rule
-                            ));
-                            continue;
-                        }
-                    }
-                }
-
-                let ok = match (&rust, &python) {
-                    // Both reject. For a token-compared target, agreement now
-                    // requires the two to have named the SAME rule -- or for
-                    // vault-format §4.2 to have left their order free. This
-                    // arm was an unconditional `true` until #634, which is
-                    // why #618's two live divergences and #621's third one
-                    // were all invisible to the harness that exists to catch
-                    // exactly them.
-                    (Err(r), PyOutcome::Reject { rule, .. }) => {
-                        if !TOKEN_COMPARED_TARGETS.contains(target) {
-                            true
-                        } else {
-                            match (r.token, rule.as_deref()) {
-                                (Some(rt), Some(pt)) => tokens_agree(rt, pt),
-                                // Default-deny: a missing token on a
-                                // token-compared target is recorded as a
-                                // harness failure below, never as agreement.
-                                _ => false,
-                            }
-                        }
-                    }
-                    // Both accept: for crash-only target (vault_toml) compare nothing;
-                    // for the rest, compare re-encoded bytes.
-                    (Ok(r_bytes), PyOutcome::Accept(p_bytes)) => {
-                        if *target == "vault_toml" {
-                            true
-                        } else {
-                            // `.expose()` reads through the wrapper for the
-                            // comparison; it does not materialise a second
-                            // copy the way `.to_vec()` would.
-                            r_bytes.expose() == p_bytes.as_slice()
-                        }
-                    }
-                    // Mismatch: one accepted, one rejected.
-                    _ => false,
-                };
-
-                if !ok {
-                    disagreements.push(format!(
-                        "[{}] {}: rust={} python={}",
-                        target,
-                        path.display(),
-                        match &rust {
-                            Ok(v) => format!("Ok({} bytes)", v.len()),
-                            Err(e) => format!("Err({:?}) {}", e.token, e.detail),
-                        },
-                        match &python {
-                            PyOutcome::Accept(v) => format!("Ok({} bytes)", v.len()),
-                            PyOutcome::Reject { rule, detail } =>
-                                format!("Rejected({:?}) {}", rule, detail),
-                            PyOutcome::Harness(_) => unreachable!("filtered above"),
-                        },
-                    ));
-                }
+        // The floor counts only the git-tracked inputs. Counting the runtime
+        // corpus too left it fail-open on the one machine it protects: with a
+        // populated `fuzz/corpus/` a deleted committed seed still cleared it
+        // by tens of thousands, so "deleting an input reds" was true only
+        // where `corpus/` was absent (#656 review).
+        let inputs = corpus_inputs(target).expect("list corpus inputs");
+        let committed = inputs.iter().filter(|i| i.committed).count();
+        let started = Instant::now();
+        let mut last_report = started;
+        progress::emit(&progress::start_line(target, inputs.len(), committed));
+        for (done, input) in inputs.iter().enumerate() {
+            let bytes = fs::read(&input.path).expect("read input");
+            let rust = rust_decode(target, &bytes);
+            let verdict = python.decode(target, &input.path);
+            let prefix = format!("[{}] {}", target, input.path.display());
+            match judge(target, &rust, &verdict) {
+                Judgement::Agree => {}
+                Judgement::Disagree(msg) => disagreements.push(format!("{prefix}: {msg}")),
+                Judgement::Harness(msg) => harness_failures.push(format!("{prefix}: {msg}")),
+            }
+            let now = Instant::now();
+            if progress::is_due(last_report, now) {
+                progress::emit(&progress::progress_line(
+                    target,
+                    done + 1,
+                    inputs.len(),
+                    now - started,
+                ));
+                last_report = now;
             }
         }
         let floor = min_inputs(target);
-        let searched: Vec<_> = dirs.iter().map(|d| d.path.display().to_string()).collect();
+        let searched: Vec<_> = corpus_dirs(target)
+            .iter()
+            .map(|d| d.path.display().to_string())
+            .collect();
         assert!(
-            committed_seen >= floor,
-            "target {target}: replayed {committed_seen} COMMITTED corpus \
-             input(s) ({seen} in total), floor is {floor} — searched \
+            committed >= floor,
+            "target {target}: replayed {committed} COMMITTED corpus \
+             input(s) ({} in total), floor is {floor} — searched \
              {searched:?}. A target that replays nothing, or almost nothing, \
              passes vacuously; either restore the committed inputs under \
              core/fuzz/seeds/{target}/ or update MIN_CORPUS_INPUTS \
              deliberately in the same edit. Only git-tracked inputs count: a \
              populated core/fuzz/corpus/ must not be able to mask a deleted \
-             seed."
+             seed.",
+            inputs.len()
         );
-        // `--nocapture` to see these: libtest swallows them on a passing
-        // test, which is why a CI log proves only "4 passed" and the input
-        // count has to be re-derived from the tree (#656 review).
-        eprintln!("[{target}] replayed {seen} input(s), {committed_seen} committed");
+        progress::emit(&progress::finish_line(
+            target,
+            inputs.len(),
+            committed,
+            started.elapsed(),
+        ));
     }
     // Harness failures first: a broken Python side makes every verdict
     // below meaningless, so report it as the primary cause rather than
@@ -192,7 +124,8 @@ fn differential_replay_full_corpus() {
         "differential harness failures ({}) — the harness could not obtain a \
          COMPARABLE verdict. Two distinct causes land here and the message \
          above each line says which: the Python side did not produce a verdict \
-         at all (a crash, a timeout, a non-zero exit, unparseable stdout), or \
+         at all (a worker that crashed, timed out, could not start, wrote a line
+         that is not JSON, or answered for a different input), or \
          it produced one carrying no rule token on a token-compared target. \
          The second is a real, deliberate rejection — it simply did not name a \
          rule — so do not read every line below as \"Python is broken\":\n{}",

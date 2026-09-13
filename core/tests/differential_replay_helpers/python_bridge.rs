@@ -1,30 +1,28 @@
-//! Shells out to `conformance.py --diff-replay` for one corpus input and
-//! parses its verdict.
+//! The Python half of the replay's CONTRACT: the command that starts
+//! `conformance.py --diff-replay-serve`, and how one of its verdicts is read.
+//!
+//! The process that runs that command lives in [`super::python_worker`]. This
+//! module holds only what is pure, so the verdict rules — the #595
+//! default-deny posture above all — are unit-tested without a Python process.
 
-use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
 
-// Per-input wall-clock budget for the Python clean-room decoder. Generous
-// enough to absorb `uv`'s cold-cache wheel compilation on the first call
-// (cryptography in particular can take ~10–15s); tight enough that an
-// adversarial infinite-loop input is caught instead of hanging the whole
-// `cargo test --features differential-replay` run.
-const PER_INPUT_TIMEOUT: Duration = Duration::from_secs(60);
+use serde_json::Value;
 
 /// What the Python child reported.
 ///
-/// The third arm is the point (#595). Before it existed, `python_decode`
-/// returned `Result<Vec<u8>, String>`, so a TIMEOUT, a non-zero exit, an
-/// unparseable stdout or a `uv` that could not resolve its dependencies all
-/// collapsed into `Err` — and `Err` on both sides is scored as AGREEMENT by
-/// the match in `differential_replay_full_corpus`. A completely
-/// non-functional Python side therefore "agreed" on every input the Rust
-/// decoder rejects, which is 24 of the 38 committed `manifest_body` seeds
-/// (20 canonicality rejects + 4 uniqueness rejects; the count moves every
-/// time either corpus grows, so re-measure rather than quoting it).
-/// A harness failure is not a verdict and must never reach that match.
+/// The third arm is the point (#595). Before it existed, the bridge returned
+/// `Result<Vec<u8>, String>`, so a TIMEOUT, a non-zero exit, an unparseable
+/// stdout or a `uv` that could not resolve its dependencies all collapsed
+/// into `Err` — and `Err` on both sides is scored as AGREEMENT by the match in
+/// `differential_replay_full_corpus`. A completely non-functional Python side
+/// therefore "agreed" on every input the Rust decoder rejects, which is 24 of
+/// the 38 committed `manifest_body` seeds (20 canonicality rejects + 4
+/// uniqueness rejects; the count moves every time either corpus grows, so
+/// re-measure rather than quoting it). A harness failure is not a verdict and
+/// must never reach that match.
+#[derive(Debug, PartialEq)]
 pub enum PyOutcome {
     /// The Python decoder accepted, and re-encoded to these bytes.
     Accept(Vec<u8>),
@@ -40,104 +38,37 @@ pub enum PyOutcome {
     Harness(String),
 }
 
-pub fn python_decode(target: &str, input_path: &std::path::Path) -> PyOutcome {
+/// The command that starts one serve-mode worker (#655).
+///
+/// `uv run` with the PEP 723 dependencies spelled out, exactly as the
+/// per-input spawn it replaces used, plus `--diff-replay-serve` in place of
+/// `--diff-replay <target> <path>`: one process answers the whole corpus.
+pub fn serve_command() -> Command {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let conformance = manifest.join("tests/python/conformance.py");
-
-    let mut child = Command::new("uv")
-        .arg("run")
-        .arg("--with")
-        .arg("cryptography")
-        .arg("--with")
-        .arg("pynacl")
-        .arg("--with")
-        .arg("pqcrypto")
-        .arg("--with")
-        .arg("argon2-cffi")
-        .arg("--with")
-        .arg("blake3")
-        .arg("--with")
-        .arg("cbor2")
-        .arg(&conformance)
-        .arg("--diff-replay")
-        .arg(target)
-        .arg(input_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn uv run conformance.py");
-
-    // Drain BOTH pipes on their own threads, started before the wait loop
-    // below. The pipes must not be read after `wait` returns: the child is
-    // `uv run`, whose cold-cache wheel builds can emit far more than a
-    // pipe buffer holds (64 KiB on macOS), and a child blocked writing
-    // stderr never exits — the wait loop would spin to `PER_INPUT_TIMEOUT`
-    // and the timeout would then be scored as a Python verdict. An earlier
-    // comment here reasoned only about stdout ("a single short JSON line,
-    // so the pipe buffers cannot fill"), which is true of stdout and says
-    // nothing about the stderr this same function also pipes (#595).
-    let mut stdout_pipe = child.stdout.take().expect("piped stdout");
-    let mut stderr_pipe = child.stderr.take().expect("piped stderr");
-    let stdout_thread = std::thread::spawn(move || {
-        let mut buf = String::new();
-        let _ = stdout_pipe.read_to_string(&mut buf);
-        buf
-    });
-    let stderr_thread = std::thread::spawn(move || {
-        let mut buf = String::new();
-        let _ = stderr_pipe.read_to_string(&mut buf);
-        buf
-    });
-
-    // Bounded wait. Poll try_wait on a 50ms cadence; if the deadline
-    // elapses, kill the child and report a timeout — this prevents one
-    // pathological corpus input from hanging the whole test run.
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) if start.elapsed() > PER_INPUT_TIMEOUT => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return PyOutcome::Harness(format!(
-                    "python timeout after {}s on {}",
-                    PER_INPUT_TIMEOUT.as_secs(),
-                    input_path.display()
-                ));
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(e) => return PyOutcome::Harness(format!("wait: {}", e)),
-        }
-    };
-
-    // Both readers hit EOF when the child exits, so these join promptly.
-    let stdout_buf = stdout_thread.join().unwrap_or_default();
-    let stderr_buf = stderr_thread.join().unwrap_or_default();
-
-    // Exit 3 is the script's own "I failed" code; any other non-zero exit
-    // (a signal, a `uv` resolution failure, an unhandled crash) is equally
-    // a harness failure. `stderr` is carried through in both cases —
-    // previously it was formatted into an `Err` that the agreement arm
-    // discarded, so a broken Python side left no trace at all.
-    if !status.success() {
-        return PyOutcome::Harness(format!(
-            "python exit={:?} stderr={}",
-            status.code(),
-            stderr_buf.trim()
-        ));
+    let mut command = Command::new("uv");
+    command.arg("run");
+    for dependency in [
+        "cryptography",
+        "pynacl",
+        "pqcrypto",
+        "argon2-cffi",
+        "blake3",
+        "cbor2",
+    ] {
+        command.arg("--with").arg(dependency);
     }
-    let json: serde_json::Value = match serde_json::from_str(stdout_buf.trim()) {
-        Ok(v) => v,
-        Err(e) => {
-            return PyOutcome::Harness(format!(
-                "python output not JSON: {:?} ({:?}) stderr={}",
-                stdout_buf,
-                e,
-                stderr_buf.trim()
-            ))
-        }
-    };
-    match json["status"].as_str() {
+    command.arg(&conformance).arg("--diff-replay-serve");
+    command
+}
+
+/// Read one verdict object into a [`PyOutcome`]. Pure.
+///
+/// `context` is appended to every harness-failure message — the worker's
+/// recent stderr, or a traceback the response carried — because a broken
+/// Python side that leaves no trace is how #595 went unnoticed.
+pub fn parse_verdict(verdict: &Value, context: &str) -> PyOutcome {
+    match verdict["status"].as_str() {
         Some("accept") => {
             // A missing or non-string `reencoded_b64` is a HARNESS failure,
             // not an empty acceptance. `unwrap_or("")` decoded to `vec![]`
@@ -146,11 +77,10 @@ pub fn python_decode(target: &str, input_path: &std::path::Path) -> PyOutcome {
             // degrade-to-a-wrong-answer shape the `rule` field two arms
             // below is carefully protected against. `vault_toml` compares
             // no bytes, so there it was swallowed outright.
-            let Some(b64) = json["reencoded_b64"].as_str() else {
+            let Some(b64) = verdict["reencoded_b64"].as_str() else {
                 return PyOutcome::Harness(format!(
                     "python accepted but its `reencoded_b64` is missing or not a \
-                     string: {}",
-                    stdout_buf.trim()
+                     string: {verdict}"
                 ));
             };
             use base64::Engine as _;
@@ -160,24 +90,101 @@ pub fn python_decode(target: &str, input_path: &std::path::Path) -> PyOutcome {
             }
         }
         Some("reject") => PyOutcome::Reject {
-            rule: json["rule"].as_str().map(str::to_owned),
+            rule: verdict["rule"].as_str().map(str::to_owned),
             detail: format!(
                 "{}: {}",
-                json["error_class"].as_str().unwrap_or("unknown"),
-                json["detail"].as_str().unwrap_or("")
+                verdict["error_class"].as_str().unwrap_or("unknown"),
+                verdict["detail"].as_str().unwrap_or("")
             ),
         },
         Some("error") => PyOutcome::Harness(format!(
-            "python reported an internal error: {} {} stderr={}",
-            json["error_class"].as_str().unwrap_or("unknown"),
-            json["detail"].as_str().unwrap_or(""),
-            stderr_buf.trim()
+            "python reported an internal error: {} {} {}",
+            verdict["error_class"].as_str().unwrap_or("unknown"),
+            verdict["detail"].as_str().unwrap_or(""),
+            context
         )),
         // Default-deny: an unrecognised status is a harness failure, not a
         // verdict — the same posture the repo's hygiene guards take.
         other => PyOutcome::Harness(format!(
-            "python output has unrecognised status {:?}: {}",
-            other, stdout_buf
+            "python output has unrecognised status {:?}: {verdict}",
+            other
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn an_accept_decodes_its_reencoded_bytes() {
+        let v = json!({"status": "accept", "reencoded_b64": "AAEC"});
+        assert_eq!(parse_verdict(&v, ""), PyOutcome::Accept(vec![0, 1, 2]));
+    }
+
+    #[test]
+    fn an_accept_without_reencoded_bytes_is_a_harness_failure_not_an_empty_accept() {
+        for v in [
+            json!({"status": "accept"}),
+            json!({"status": "accept", "reencoded_b64": 7}),
+        ] {
+            assert!(
+                matches!(parse_verdict(&v, ""), PyOutcome::Harness(_)),
+                "{v}"
+            );
+        }
+    }
+
+    #[test]
+    fn undecodable_base64_is_a_harness_failure() {
+        let v = json!({"status": "accept", "reencoded_b64": "!!!"});
+        assert!(matches!(parse_verdict(&v, ""), PyOutcome::Harness(_)));
+    }
+
+    #[test]
+    fn a_reject_carries_its_rule_token_and_class_prefixed_detail() {
+        let v =
+            json!({"status": "reject", "error_class": "E", "detail": "d", "rule": "missing_field"});
+        assert_eq!(
+            parse_verdict(&v, ""),
+            PyOutcome::Reject {
+                rule: Some("missing_field".into()),
+                detail: "E: d".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_reject_with_a_null_rule_has_no_token() {
+        let v = json!({"status": "reject", "error_class": "E", "detail": "d", "rule": null});
+        assert!(matches!(
+            parse_verdict(&v, ""),
+            PyOutcome::Reject { rule: None, .. }
+        ));
+    }
+
+    #[test]
+    fn an_error_status_is_a_harness_failure_carrying_its_context() {
+        let v = json!({"status": "error", "error_class": "NameError", "detail": "x"});
+        match parse_verdict(&v, "TRACEBACK-TEXT") {
+            PyOutcome::Harness(msg) => {
+                assert!(
+                    msg.contains("NameError") && msg.contains("TRACEBACK-TEXT"),
+                    "{msg}"
+                )
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_or_missing_status_is_a_harness_failure() {
+        for v in [json!({"status": "maybe"}), json!({}), json!([1, 2])] {
+            assert!(
+                matches!(parse_verdict(&v, ""), PyOutcome::Harness(_)),
+                "{v}"
+            );
+        }
     }
 }

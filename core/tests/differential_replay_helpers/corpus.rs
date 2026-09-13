@@ -53,3 +53,94 @@ pub fn corpus_dirs(target: &str) -> Vec<CorpusDir> {
     }
     dirs
 }
+
+/// One input the replay feeds both decoders.
+#[derive(Debug, PartialEq)]
+pub struct CorpusInput {
+    pub path: PathBuf,
+    pub committed: bool,
+}
+
+/// Every input under `dirs`, in a STABLE order: the directories in the order
+/// given, each one's files sorted by name. `.gitkeep` and anything that is not
+/// a regular file are skipped.
+///
+/// Listing up front (#655) is what lets a progress line say `done/total`, and
+/// sorting makes a failure list the same from run to run — `read_dir` order is
+/// whatever the filesystem returns.
+pub fn inputs_in(dirs: &[CorpusDir]) -> std::io::Result<Vec<CorpusInput>> {
+    let mut inputs = Vec::new();
+    for dir in dirs {
+        let mut paths = Vec::new();
+        for entry in std::fs::read_dir(&dir.path)? {
+            let path = entry?.path();
+            if path.is_file() && path.file_name().and_then(|s| s.to_str()) != Some(".gitkeep") {
+                paths.push(path);
+            }
+        }
+        paths.sort();
+        inputs.extend(paths.into_iter().map(|path| CorpusInput {
+            path,
+            committed: dir.committed,
+        }));
+    }
+    Ok(inputs)
+}
+
+/// Every corpus input for `target`; see [`corpus_dirs`] and [`inputs_in`].
+pub fn corpus_inputs(target: &str) -> std::io::Result<Vec<CorpusInput>> {
+    inputs_in(&corpus_dirs(target))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn inputs_are_listed_per_directory_in_order_sorted_by_name_and_tagged() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let runtime = root.path().join("runtime");
+        let seeds = root.path().join("seeds");
+        fs::create_dir_all(runtime.join("nested")).unwrap();
+        fs::create_dir_all(&seeds).unwrap();
+        for (dir, name) in [
+            (&runtime, "b"),
+            (&runtime, "a"),
+            (&seeds, "z"),
+            (&seeds, ".gitkeep"),
+        ] {
+            fs::write(dir.join(name), b"x").unwrap();
+        }
+        let dirs = [
+            CorpusDir {
+                path: runtime.clone(),
+                committed: false,
+            },
+            CorpusDir {
+                path: seeds.clone(),
+                committed: true,
+            },
+        ];
+
+        let inputs = inputs_in(&dirs).expect("listing");
+
+        assert_eq!(
+            inputs,
+            vec![
+                CorpusInput {
+                    path: runtime.join("a"),
+                    committed: false
+                },
+                CorpusInput {
+                    path: runtime.join("b"),
+                    committed: false
+                },
+                CorpusInput {
+                    path: seeds.join("z"),
+                    committed: true
+                },
+            ]
+        );
+    }
+}
