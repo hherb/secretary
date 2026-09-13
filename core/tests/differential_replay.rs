@@ -293,8 +293,8 @@ fn tolerance_admits_only_phase_dependent_pairs() {
 
 /// An unknown token is never a tolerated mismatch. A typo on either side is
 /// reported as an ordinary DISAGREEMENT — `tokens_agree` returns `false` and
-/// the corpus loop records the pair — not as a harness failure, which is the
-/// separate `is_none()` branch above for a MISSING token. Both red the test;
+/// the corpus loop records the pair — not as a harness failure, which is
+/// `agreement::judge`'s separate missing-token guard for a `None` token. Both red the test;
 /// only the message differs. What must never happen is the third outcome:
 /// degrading to "something differs, probably fine".
 #[test]

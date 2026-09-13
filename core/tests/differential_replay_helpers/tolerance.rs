@@ -36,8 +36,8 @@
 /// residual written down.
 ///
 /// An unrecognised token on either side is never agreement. Note the
-/// MECHANISM, which is not the one the `is_none()` guard in
-/// `differential_replay_full_corpus` uses: an unknown non-null token falls
+/// MECHANISM, which is not the one the missing-token guard in
+/// [`super::agreement::judge`] uses: an unknown non-null token falls
 /// through to `false` here and is reported as an ordinary DISAGREEMENT, while
 /// a *missing* token is caught before this function is reached and reported
 /// as a harness failure. Both red the test, so nothing is lost — but

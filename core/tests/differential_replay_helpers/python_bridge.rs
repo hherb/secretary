@@ -15,13 +15,13 @@ use serde_json::Value;
 /// The third arm is the point (#595). Before it existed, the bridge returned
 /// `Result<Vec<u8>, String>`, so a TIMEOUT, a non-zero exit, an unparseable
 /// stdout or a `uv` that could not resolve its dependencies all collapsed
-/// into `Err` — and `Err` on both sides is scored as AGREEMENT by the match in
-/// `differential_replay_full_corpus`. A completely non-functional Python side
+/// into `Err` — and `Err` on both sides was scored as AGREEMENT by the match
+/// that is now [`super::agreement::judge`]. A completely non-functional Python side
 /// therefore "agreed" on every input the Rust decoder rejects, which is 24 of
 /// the 38 committed `manifest_body` seeds (20 canonicality rejects + 4
 /// uniqueness rejects; the count moves every time either corpus grows, so
-/// re-measure rather than quoting it). A harness failure is not a verdict and
-/// must never reach that match.
+/// re-measure rather than quoting it). A harness failure is not a verdict, and
+/// `judge` returns before its agreement match ever sees one.
 #[derive(Debug, PartialEq)]
 pub enum PyOutcome {
     /// The Python decoder accepted, and re-encoded to these bytes.

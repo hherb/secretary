@@ -71,11 +71,12 @@ pub const NOT_TOKEN_COMPARED_TARGETS: &[&str] = &[
 /// exactly, so a new target cannot arrive without one.
 ///
 /// What it does NOT floor is how many inputs reach a strict token
-/// comparison. `seen` is incremented before any decode, and `tokens_agree`
-/// short-circuits on either side being phase-dependent, so a change on the
-/// Rust raise side could route more of the corpus onto tolerated pairs and
-/// shrink the real comparison toward zero with this floor, the tolerance
-/// breadth assertion and the negative control all green. Tracked as #658.
+/// comparison. The committed count is taken from the listing before any
+/// decode, and `tokens_agree` short-circuits on either side being
+/// phase-dependent, so a change on the Rust raise side could route more of
+/// the corpus onto tolerated pairs and shrink the real comparison toward zero
+/// with this floor, the tolerance breadth assertion and the negative control
+/// all green. Tracked as #658.
 pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("vault_toml", 3),
     ("record", 3),
