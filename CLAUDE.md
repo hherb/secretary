@@ -260,6 +260,17 @@ uv run scripts/mutate.py "$SCRATCH/mutations.toml"
 # The unscoped probe builds the library only, so every `core/tests/**` row read
 # NOT_LIVE whatever its gate did, until #649's slice added the two keys.
 #
+# A PYTHON probe imports its module in the HARNESS's interpreter, which has
+# none of `conformance.py`'s PEP 723 deps — so a probe on any module reaching
+# `cbor2` (e.g. `conformance_lib.diff_replay`) reads NOT_LIVE with an import
+# traceback. Launch the harness with those deps instead:
+#   uv run --with cryptography --with pynacl --with "pqcrypto<1" \
+#     --with argon2-cffi --with blake3 --with cbor2 scripts/mutate.py SPEC
+# The probe `expr` must evaluate to a STRING (it is compared against
+# `repr(equals)`), and an `expect_red` name is matched as a whole token whose
+# edges may not be `-`, `.`, `/` or a word character — a section title that
+# starts with `--` can never be matched on its `FAIL:` line.
+#
 # Exit codes: 0 every row as declared; 1 a rendered table with a finding;
 # 2 refused to start (dirty/corrupt journal, bad spec — including a `path`
 # that is not an existing file); 3 aborted, a restore could not be trusted,

@@ -216,6 +216,7 @@ DENYLIST: frozenset[str] = frozenset(
         "py_merge_record",
         "py_merge_unknown_map",
         "run_diff_replay",
+        "replay_bytes",
         # Local Rust variable names cited verbatim in audit memos (not fn names)
         "ed_sk_bytes",
         "x_sk_bytes",

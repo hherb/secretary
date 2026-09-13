@@ -216,7 +216,7 @@ probe = { package = "secretary-core", test = "differential_replay", features = [
 
 The same mutation then reads `yes (artifact)` / `RED_AS_EXPECTED`. That cargo
 names the test executable under `--test` is MEASURED on this repo, not pinned
-by a self-test control.
+by a self-test control (#661).
 
 Never a source hash and never an mtime — both are what the issue rules out, and
 mtime is the mechanism behind false green 1.

@@ -116,7 +116,7 @@ def main() -> int:
         # branch must come BEFORE the full-run fallthrough: `parse_known_args`
         # ignores an unrecognised flag, so a spelling this parser did not know
         # would run every section -- including Section DRS, which spawns this
-        # very mode, recursively.
+        # very mode, recursively (DRS guards that; the fall-through is #660).
         from conformance_lib.diff_replay import run_diff_replay_serve
 
         return run_diff_replay_serve()

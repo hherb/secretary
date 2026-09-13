@@ -65,7 +65,8 @@ _SUBPROCESS_TIMEOUT_SECONDS = 120
 # the child would silently run the FULL verifier -- this section included,
 # which would spawn again, without bound, each level waiting on the next. A
 # process that finds this variable set refuses to spawn, so that failure is
-# one level deep and reads as a FAIL rather than as a hang.
+# one level deep and reads as a FAIL rather than as a hang. The fall-through
+# itself, for every other caller, is #660.
 NESTED_ENV = "CONFORMANCE_DRS_SPAWNED"
 
 
