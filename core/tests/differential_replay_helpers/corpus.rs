@@ -1,7 +1,7 @@
 //! Locates the fuzz-corpus input files `differential_replay_full_corpus`
 //! replays for one target.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// One corpus directory, and whether git tracks what is in it.
 ///
@@ -13,16 +13,28 @@ use std::path::PathBuf;
 /// cleared the floor by a wide margin, so the guarantee "deleting an input
 /// reds" held only where `corpus/` was absent, i.e. CI and a fresh worktree
 /// (#656 review).
+#[derive(Debug, PartialEq)]
 pub struct CorpusDir {
     pub path: PathBuf,
     pub committed: bool,
 }
 
+/// The corpus directories for `target` in the secretary-core package.
 pub fn corpus_dirs(target: &str) -> Vec<CorpusDir> {
     // CARGO_MANIFEST_DIR resolves to `core/` at compile time, so all paths
-    // below are anchored on the secretary-core package root regardless of
-    // the working directory the test was invoked from.
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // are anchored on the secretary-core package root regardless of the
+    // working directory the test was invoked from.
+    corpus_dirs_under(Path::new(env!("CARGO_MANIFEST_DIR")), target)
+}
+
+/// The corpus directories for `target` under the package root `manifest`,
+/// in replay order, skipping any that do not exist.
+///
+/// Separate from [`corpus_dirs`] so the `committed` tagging is testable on a
+/// temporary tree. Nothing tested it before (#662 review): flipping the
+/// runtime corpus to `committed: true` re-opens the #656 floor fail-open, and
+/// every gate stayed green, because CI has no `fuzz/corpus/` at all.
+pub fn corpus_dirs_under(manifest: &Path, target: &str) -> Vec<CorpusDir> {
     let mut dirs = vec![];
     // Runtime corpus (gitignored, may not exist locally). NOT committed, so
     // it is replayed but never counted toward the floor. It grows without
@@ -96,6 +108,49 @@ pub fn corpus_inputs(target: &str) -> std::io::Result<Vec<CorpusInput>> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn only_the_seed_and_regression_directories_count_as_committed() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let core = root.path();
+        let [runtime, seeds, diffs] = [
+            "fuzz/corpus/record",
+            "fuzz/seeds/record",
+            "tests/data/diff_regressions/record",
+        ]
+        .map(|rel| core.join(rel));
+        for dir in [&runtime, &seeds, &diffs] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        assert_eq!(
+            corpus_dirs_under(core, "record"),
+            vec![
+                CorpusDir {
+                    path: runtime,
+                    committed: false
+                },
+                CorpusDir {
+                    path: seeds,
+                    committed: true
+                },
+                CorpusDir {
+                    path: diffs,
+                    committed: true
+                },
+            ]
+        );
+        // A directory that does not exist is skipped, and the rest keep their
+        // tags: CI has seeds but no runtime corpus.
+        let ci_seeds = core.join("fuzz/seeds/block_file");
+        fs::create_dir_all(&ci_seeds).unwrap();
+        assert_eq!(
+            corpus_dirs_under(core, "block_file"),
+            vec![CorpusDir {
+                path: ci_seeds,
+                committed: true
+            }]
+        );
+    }
 
     #[test]
     fn inputs_are_listed_per_directory_in_order_sorted_by_name_and_tagged() {
