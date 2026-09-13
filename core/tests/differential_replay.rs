@@ -145,8 +145,9 @@ fn differential_replay_full_corpus() {
         "differential harness failures ({}) — the harness could not obtain a \
          COMPARABLE verdict. Two distinct causes land here and the message \
          above each line says which: the Python side did not produce a verdict \
-         at all (a worker that crashed, timed out, could not start, wrote a line
-         that is not JSON, or answered for a different input), or \
+         at all (a worker that crashed, timed out, could not start, wrote a line \
+         that is not JSON, or answered for a different input, and any inputs \
+         skipped once no further worker was started), or \
          it produced one carrying no rule token on a token-compared target. \
          The second is a real, deliberate rejection — it simply did not name a \
          rule — so do not read every line below as \"Python is broken\":\n{}",
