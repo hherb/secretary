@@ -114,8 +114,16 @@ None does today, and Section DRS replays every committed input through both
 modes and requires identical verdicts — see its LIMIT for the fuzz corpus it
 does not replay. The Rust side also retires a worker after any transport
 failure (timeout, death, non-JSON line, mismatched echo), but NOT after an
-`error` verdict, and stops starting workers after three in a row die before
-answering a single request.
+`error` verdict. Once **three inputs in a row get no answer from a worker** —
+it could not start, or a transport failure — it starts no further worker, and
+the rest of the run is reported as one "not replayed" harness failure. Any
+answer resets that count, an `error` one included, since the worker that sent
+it is up; the input is still a harness failure of its own.
+
+(This paragraph used to say the cap counted workers that "die before answering
+a single request". That was an earlier rule, replaced before #655 merged: the
+mutation harness showed it could not be told apart from the simpler one, since
+a respawned worker has always answered nothing yet.)
 
 ## Output protocol
 
