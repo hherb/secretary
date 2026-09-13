@@ -26,10 +26,10 @@ core/src/vault/manifest/                   — DIRECTORY module (#564), not mani
                                              every term:
                                              `find core/src/vault/manifest -name '*.rs' | wc -l`
 core/tests/          — integration tests; tests/data/ holds KATs and fuzz regressions
-core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (136 lines; the PEP
+core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (156 lines; the PEP
                                              723 header is the sole dependency declaration).
                                              `conformance.py:NNN` citations predating #593 are
-                                             stale — the verifier is now a 65-file package.
+                                             stale — the verifier is now a 66-file package.
                                              RE-MEASURE: `find core/tests/python/conformance_lib
                                              -name '*.py' | wc -l` — this line said 62 while the
                                              paragraph below said 65 for a whole slice.
@@ -355,11 +355,13 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 136, over a **65**-file package whose largest module is
+was 6849 lines; it is now 156, over a **66**-file package whose largest module is
 `sections/manifest_canonicality_cause.py` at **486** lines, ahead of
 `codec/scanner.py` at 484, `codec/manifest_decode.py` at 418,
 `sections/required_key_determinism.py` at 390 and `merge/records.py` at 383.
-Re-measured at #634, which grew `scanner.py` 468 -> 484 and
+Re-measured at #655, which grew the entrypoint 136 -> 156 (the
+`--diff-replay-serve` branch) and added `sections/diff_replay_serve.py`
+without moving the top five. Before that, re-measured at #634, which grew `scanner.py` 468 -> 484 and
 `manifest_decode.py` 405 -> 418 (both gained rule tokens) and added
 `sections/rule_token_vocabulary.py` plus `codec/manifest_rules.py`.
 The top slot changed hands twice inside
@@ -841,7 +843,7 @@ out — it has been wrong twice:
   onto two ideas of which rows the fixture holds. It defines no
   `section*` driver, so Section REG discovers it and reports the full count
   (26/26 at #613; 27/27 after #587's Section MSN; 28/28 after #618's Section
-  MPR; **29/29** since #634 added Section RTV).
+  MPR; 29/29 after #634's Section RTV; **30/30** since #655 added Section DRS).
 
 **WHICH rule a rejecting reader names is now normative, and getting there
 found a live divergence (#618).** A body can break several rules at once;
