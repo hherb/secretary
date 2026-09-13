@@ -30,8 +30,8 @@ Two checks:
      `traceback` keys are set aside -- and each must be a DECODE (accept or
      reject), with the single-shot process exiting 0, because two identical
      `error` verdicts are what a broken `replay_bytes` produces in both modes.
-     Every target must contribute at least one input, so an empty discovery
-     cannot pass.
+     Every target, and each of the two committed roots, must contribute at
+     least one input, so an empty discovery -- or a lost root -- cannot pass.
 
 LIMIT. Check 2 replays the COMMITTED inputs only -- the ones CI has. A verdict
 that depends on interpreter state could in principle surface only on some
@@ -73,18 +73,19 @@ _SUBPROCESS_TIMEOUT_SECONDS = 120
 NESTED_ENV = "CONFORMANCE_DRS_SPAWNED"
 
 
-def committed_inputs() -> list[tuple[str, Path]]:
-    """Every committed corpus input, as `(target, path)`, in a stable order.
-
-    The same two directories `differential_replay_helpers/corpus.rs` marks as
-    committed: `core/fuzz/seeds/<target>/` and
-    `core/tests/data/diff_regressions/<target>/`, skipping `.gitkeep`.
-    """
+def committed_roots() -> tuple[Path, ...]:
+    """The two directories `differential_replay_helpers/corpus.rs` marks as
+    committed: `core/fuzz/seeds/` and `core/tests/data/diff_regressions/`."""
     core = test_data_dir().parents[1]
-    roots = (core / "fuzz" / "seeds", test_data_dir() / "diff_regressions")
+    return (core / "fuzz" / "seeds", test_data_dir() / "diff_regressions")
+
+
+def committed_inputs() -> list[tuple[str, Path]]:
+    """Every committed corpus input, as `(target, path)`, in a stable order:
+    `<root>/<target>/` for each of `committed_roots()`, skipping `.gitkeep`."""
     found: list[tuple[str, Path]] = []
     for target in DIFF_REPLAY_TARGETS:
-        for root in roots:
+        for root in committed_roots():
             directory = root / target
             if not directory.is_dir():
                 continue
@@ -170,6 +171,14 @@ def _equivalence_issues(inputs: list[tuple[str, Path]]) -> tuple[list[str], int]
     missing = sorted(set(DIFF_REPLAY_TARGETS) - {target for target, _ in inputs})
     if missing:
         issues.append(f"no committed input discovered for target(s) {missing}")
+    # A floor per ROOT as well as per target. `diff_regressions/` holds one
+    # input today -- the two-rule witness `arraysort_plus_indefinite.bin` --
+    # and its target also has 38 seeds, so losing that root left every target
+    # represented and this section passing on 49 inputs, the one input that
+    # breaks two rules at once silently gone.
+    for root in committed_roots():
+        if not any(path.is_relative_to(root) for _, path in inputs):
+            issues.append(f"no committed input discovered under {root}")
 
     try:
         served = _run(["--diff-replay-serve"], "".join(_request(t, str(p)) for t, p in inputs))
