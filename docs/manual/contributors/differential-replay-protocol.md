@@ -2,7 +2,9 @@
 
 This document is for **Python contributors** maintaining
 [`core/tests/python/conformance.py`](../../../core/tests/python/conformance.py),
-specifically its `--diff-replay` mode. It describes the wire protocol the
+specifically its two replay modes — `--diff-replay-serve`, which the Rust side
+uses, and single-shot `--diff-replay`, kept for replaying one input in isolation
+(see Invocation). It describes the wire protocol the
 Rust integration test
 [`core/tests/differential_replay.rs`](../../../core/tests/differential_replay.rs)
 expects from each target's `py_decode` / `py_encode` pair, and the
