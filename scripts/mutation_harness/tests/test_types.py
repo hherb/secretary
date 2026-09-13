@@ -58,6 +58,28 @@ def test_timeout_must_be_a_positive_integer(timeout):
         _spec(timeout=timeout)
 
 
+@pytest.mark.parametrize("gate", ["", "   ", "\t\n"], ids=["empty", "spaces", "ws"])
+def test_a_row_cannot_declare_an_absent_gate(gate):
+    """An empty gate is a PASSING row that ran no gate.
+
+    `bash -c ""` exits 0, so before this an `expect = "green"` row with
+    `gate = ""` reported `GREEN_AS_EXPECTED` and the harness exited 0 having
+    measured nothing — the false-green class #644 exists to kill, arriving
+    through the one field #651 had just declared to be half of what a row
+    means. `spec.py`'s `_require_str` accepts `""` (it checks the type), and
+    the `expect = "red"` direction is loud, so only this direction was silent.
+    """
+    with pytest.raises(ValueError, match="gate"):
+        _spec(gate=gate)
+
+
+def test_a_deliberate_no_op_gate_is_still_legal():
+    """`gate = "true"` is six control rows' real gate. The refusal above is
+    about a gate being NAMED, not about it doing work — collapsing the two
+    would red the control table."""
+    assert _spec(gate="true").gate == "true"
+
+
 # --- GateResult -------------------------------------------------------------
 
 

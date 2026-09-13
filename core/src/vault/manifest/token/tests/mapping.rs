@@ -114,10 +114,15 @@ fn a_real_rejection_carries_the_expected_token() {
 /// twenty are live on the ONE token-compared target: `MissingField`,
 /// `NotAMap`, `NonTextKey`, `WrongType`, `InvalidByteLength`,
 /// `IntegerOutOfRange` and the `Canonical(_)` family. A wrong-but-valid token
-/// on any of them compiled clean, passed the whole tree, and — because
-/// `differential_replay.rs` runs in no CI workflow (#647) and Section RTV
-/// checks token MEMBERSHIP rather than identity — would have reached a peer as
-/// a silently wrong rule name.
+/// on any of them compiled clean, passed the whole tree, and would have
+/// reached a peer as a silently wrong rule name — because at the time
+/// `differential_replay.rs` ran in NO CI workflow and Section RTV asked only
+/// whether a token was somewhere in the vocabulary. **Both halves of that
+/// have since changed, and the table is what remains load-bearing.** RTV
+/// asserts the exact token per class as of #645, and a `test.yml` step runs
+/// the replay as of #647 — but the replay covers only the one token-compared
+/// target, so for a variant that is not live on `manifest_body` this table is
+/// still the sole pin.
 ///
 /// This is deliberately a SECOND, independent declaration of the mapping, in
 /// the same spirit as the phase-dependent set being declared on both sides of

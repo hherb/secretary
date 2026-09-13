@@ -458,7 +458,7 @@ independent pieces of evidence close that.
    REG goes 28 → 29.
 4. **Mutation.** Every new assertion is mutated and watched to red — with one
    deliberate exception, M8: swapping a phase-dependent token for another is
-   tolerated by construction, so nothing catches it and nothing should. With the
+   tolerated by construction, so nothing catches it and nothing should. [CORRECTION, 2026-09-12, #651: true of ONE gate only, `cargo test --features differential-replay`, which is the gate every mutation row in this section was measured against. `uv run core/tests/python/conformance.py` reds the same mutation, on Section RTV's corpus-token set equality. Naming the gate is the whole point, so "THIS gate" — the first wording of this correction, in a sentence that itself names none — would not do (#656 review).] With the
    harness clearing `__pycache__` and setting `PYTHONDONTWRITEBYTECODE` — the
    trap the previous slice hit, where a size-preserving Python mutation reported
    a false green because CPython invalidates bytecode on `(mtime, size)` with

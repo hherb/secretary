@@ -78,10 +78,23 @@ const NOT_TOKEN_COMPARED_TARGETS: &[&str] = &[
 /// magnitude was not.
 ///
 /// The figures are the counts committed today, so deleting an input reds
-/// rather than quietly shrinking the corpus. A developer with a populated
-/// `core/fuzz/corpus/` sees more, which is why this is a floor and not an
-/// equality. `every_target_is_classified` requires this table to cover
-/// `TARGETS` exactly, so a new target cannot arrive without one.
+/// rather than quietly shrinking the corpus. **Only COMMITTED inputs are
+/// counted toward it** — `CorpusDir::committed` makes the split — because a
+/// floor that also counted the gitignored runtime corpus was fail-open on
+/// precisely the machine it protects: with `fuzz/corpus/` holding tens of
+/// thousands of files, a deleted seed still cleared the floor and the
+/// guarantee above held only where `corpus/` was absent (#656 review). It
+/// stays a FLOOR rather than an equality so that adding a seed does not red
+/// until someone updates the table deliberately.
+/// `every_target_is_classified` requires this table to cover `TARGETS`
+/// exactly, so a new target cannot arrive without one.
+///
+/// What it does NOT floor is how many inputs reach a strict token
+/// comparison. `seen` is incremented before any decode, and `tokens_agree`
+/// short-circuits on either side being phase-dependent, so a change on the
+/// Rust raise side could route more of the corpus onto tolerated pairs and
+/// shrink the real comparison toward zero with this floor, the tolerance
+/// breadth assertion and the negative control all green. Tracked as #658.
 const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("vault_toml", 3),
     ("record", 3),
@@ -258,10 +271,19 @@ fn differential_replay_full_corpus() {
         // `Path.rglob` produced in the payload guard (#496), and this
         // target's own module doc records it happening here. Populating the
         // directory fixed the symptom; this fixes the mechanism.
+        //
+        // TWO counters, because the floor and the replay do not range over
+        // the same set. `seen` is everything replayed; `committed_seen` is
+        // the git-tracked subset, and only that may clear the floor. Counting
+        // both together left the floor fail-open on the one machine it
+        // protects: with a populated `fuzz/corpus/` a deleted committed seed
+        // still cleared it by tens of thousands, so "deleting an input reds"
+        // was true only where `corpus/` was absent (#656 review).
         let mut seen = 0usize;
+        let mut committed_seen = 0usize;
         let dirs = corpus_dirs(target);
         for dir in &dirs {
-            for entry in fs::read_dir(dir).expect("read corpus dir") {
+            for entry in fs::read_dir(&dir.path).expect("read corpus dir") {
                 let path = entry.expect("dir entry").path();
                 if !path.is_file() {
                     continue;
@@ -270,6 +292,9 @@ fn differential_replay_full_corpus() {
                     continue;
                 }
                 seen += 1;
+                if dir.committed {
+                    committed_seen += 1;
+                }
                 let bytes = fs::read(&path).expect("read input");
 
                 let rust = rust_decode(target, &bytes);
@@ -366,15 +391,22 @@ fn differential_replay_full_corpus() {
             }
         }
         let floor = min_inputs(target);
+        let searched: Vec<_> = dirs.iter().map(|d| d.path.display().to_string()).collect();
         assert!(
-            seen >= floor,
-            "target {target}: replayed {seen} corpus input(s), floor is {floor} \
-             — searched {dirs:?}. A target that replays nothing, or almost \
-             nothing, passes vacuously; either restore the committed inputs \
-             under core/fuzz/seeds/{target}/ or update MIN_CORPUS_INPUTS \
-             deliberately in the same edit."
+            committed_seen >= floor,
+            "target {target}: replayed {committed_seen} COMMITTED corpus \
+             input(s) ({seen} in total), floor is {floor} — searched \
+             {searched:?}. A target that replays nothing, or almost nothing, \
+             passes vacuously; either restore the committed inputs under \
+             core/fuzz/seeds/{target}/ or update MIN_CORPUS_INPUTS \
+             deliberately in the same edit. Only git-tracked inputs count: a \
+             populated core/fuzz/corpus/ must not be able to mask a deleted \
+             seed."
         );
-        eprintln!("[{target}] replayed {seen} input(s)");
+        // `--nocapture` to see these: libtest swallows them on a passing
+        // test, which is why a CI log proves only "4 passed" and the input
+        // count has to be re-derived from the tree (#656 review).
+        eprintln!("[{target}] replayed {seen} input(s), {committed_seen} committed");
     }
     // Harness failures first: a broken Python side makes every verdict
     // below meaningless, so report it as the primary cause rather than

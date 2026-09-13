@@ -78,10 +78,70 @@ jobs:
       - name: cargo build --release --workspace
         run: cargo build --release --locked --workspace
       # Mirrors the documented local command in CLAUDE.md. The
-      # differential-replay tests (which also shell out to `uv`) are behind an
-      # opt-in Cargo feature and stay off here.
+      # differential-replay tests are behind an opt-in Cargo feature and stay
+      # off here; they get their own step below.
       - name: cargo test --release --workspace
         run: cargo test --release --locked --workspace
+      # The cross-language decoder-agreement replay (#647). Until this step
+      # existed no workflow enabled the feature, so `differential_replay.rs`
+      # was not merely unrun — it was not COMPILED in CI, and with it the
+      # corpus comparison, the #634 rule-token tolerance, that tolerance's
+      # negative control and its committed witness were all local-only. The
+      # one gate that exists to prove the Rust and Python decoders agree was
+      # the one gate nothing ran.
+      #
+      # A STEP here rather than a job of its own, for three reasons: `cargo
+      # test (ubuntu-latest)` is already one of `main`'s required contexts, so
+      # the gate binds on day one with no ruleset edit; this job already
+      # installs `uv` and already caches the cargo build, and the replay needs
+      # both; and a separate job's cache entry would cost a full cold
+      # dependency build for a test whose BODY runs in seconds.
+      #
+      # The measured split, because a single number invites the wrong
+      # conclusion: on this runner the step takes ~36 s, of which ~30 s is
+      # cargo recompiling (the `-p … --features` feature set differs from the
+      # preceding `--workspace` build, so it re-fingerprints that graph in the
+      # shared target dir) and 5.98 s is the replay itself over all 50
+      # committed inputs. Local test bodies measure 11-24 s, so CI is FASTER
+      # on the part that does the work and the 50 `uv` spawns are bounded
+      # above by ~6 s. If this step ever needs speeding up, the lever is the
+      # feature-set thrash against the shared target dir, NOT `uv`.
+      #
+      # Linux only, mirroring `clean-room conformance`. The decoders are
+      # platform-independent, and the macOS leg would pay a cold `pqcrypto`
+      # wheel build for no signal this leg does not already give. Note the
+      # cost of the step-not-job trade: no check NAME means "the replay ran".
+      # `cargo test (macos-26)` is green with this step `skipped`, and the
+      # ubuntu context is green for thousands of other reasons.
+      #
+      # `-p secretary-core`, not `--workspace`: the feature gates exactly one
+      # test file and no `src/` code. This does NOT avoid the CLI and bridge
+      # crates — `core`'s [dev-dependencies] pull in `secretary-ffi-bridge`,
+      # which depends on `secretary-cli`, so both compile here anyway (they
+      # are in this step's own log). What it drops is the Tauri desktop crate,
+      # the two FFI wrapper crates and the browser host, plus re-running a
+      # suite this flag does not change.
+      #
+      # WHAT THIS COVERS is the COMMITTED corpus — `core/fuzz/seeds/` plus
+      # `core/tests/data/diff_regressions/`. `core/fuzz/corpus/` is gitignored
+      # and absent here, so agreement on fuzz-DISCOVERED inputs is still
+      # proven only by whoever runs the fuzzer. `MIN_CORPUS_INPUTS`
+      # (`core/tests/differential_replay.rs`) enforces a per-target floor, so
+      # a corpus that shrinks to nothing fails rather than passing vacuously —
+      # read the totals there rather than duplicating a count in this comment,
+      # which nothing re-measures.
+      #
+      # `--test differential_replay` is bound to the feature by
+      # `required-features` in `core/Cargo.toml`, so dropping `--features`
+      # from this line is a hard cargo error. Before that it was exit 0 and
+      # `running 0 tests` under a step name that still said it ran (#656
+      # review). What is still unpinned: deleting this step outright reds
+      # nothing — #657.
+      - name: 'cargo test --features differential-replay (cross-language decoder agreement)'
+        if: runner.os == 'Linux'
+        run: >-
+          cargo test --release --locked -p secretary-core
+          --features differential-replay --test differential_replay
 
   desktop-test:
     name: desktop vitest
@@ -330,6 +390,10 @@ jobs:
     # It was described there as "enforced every CI run" and was in fact run by
     # NO workflow: its only in-tree invocation is core/tests/differential_replay.rs,
     # which is `#![cfg(feature = "differential-replay")]` and off by default.
+    # (A step in `rust-test` above turns that feature on since #647, so read
+    # this paragraph as history. It does not change the argument: that step
+    # invokes `conformance.py --diff-replay` per corpus input and never its
+    # section suite, so it would not have caught the break below either.)
     #
     # That gap is why #544 shipped. `pqcrypto` was pinned `>=0.3` unbounded,
     # 1.0.0 changed `ml_dsa_65.verify` from returning a bool to RAISING, and

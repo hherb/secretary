@@ -196,6 +196,19 @@ class MutationSpec:
         self-test checks and the tests all build a spec directly."""
         if not isinstance(self.expect, Expect):
             raise ValueError(f"expect must be an Expect member, got {self.expect!r}")
+        # An EMPTY gate is a passing row that ran no gate. `bash -c ""` exits
+        # 0, so `gate = ""` with `expect = "green"` gave baseline 0, liveness
+        # live, gate 0, `GREEN_AS_EXPECTED`, harness exit 0 — a false green of
+        # the class #644 exists to kill, reachable through the one field #651
+        # had just declared to be half of what a row MEANS. `spec.py`'s
+        # `_require_str` rejects a non-string and accepts `""`, and the
+        # `expect = "red"` direction is loud (`UNEXPECTED_GREEN`), so only the
+        # silent direction needed closing (#656 review). `gate = "true"` — a
+        # deliberate no-op that `controls.py` and `selftest.py` both use —
+        # stays legal: the claim here is that a gate was NAMED, not that it
+        # does any work. Collapsing the two would red the control table.
+        if not self.gate.strip():
+            raise ValueError("gate must be a non-empty command")
         wanted = PythonProbe if self.lang is Lang.PYTHON else RustProbe
         if not isinstance(self.probe, wanted):
             raise ValueError(

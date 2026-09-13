@@ -77,8 +77,35 @@ cargo test --release --workspace
 cargo test --release --workspace --test fuzz_regressions
 cargo test --release --workspace --test conflict
 
-# Cross-language differential replay (requires `uv`; opt-in via Cargo feature)
-cargo test --release --workspace --features differential-replay
+# Cross-language differential replay (requires `uv`; opt-in via Cargo feature).
+# CI runs the narrow form below as a step in `rust-test` (#647).
+cargo test --release --locked -p secretary-core \
+  --features differential-replay --test differential_replay
+
+# TRAP (#655), and it presents as a HANG rather than as slowness. The replay
+# feeds `core/fuzz/corpus/<target>/` as well as the committed seeds, and that
+# directory is gitignored runtime fuzz output that GROWS WITHOUT BOUND. On a
+# machine that has fuzzed it held 74,924 files; at the measured ~0.16 s per
+# `conformance.py` subprocess that is over three hours, with `cargo test`
+# printing nothing but "has been running for over 60 seconds".
+#
+# THE NARROW SPELLING ABOVE DOES NOT ESCAPE IT. `corpus_dirs` pushes that
+# directory unconditionally and the walk lives in the binary `--test
+# differential_replay` selects, so the trap is a property of the TEST, not of
+# the package scope. To reproduce the CI shape on a checkout that HAS fuzzed,
+# move `core/fuzz/corpus` aside rather than waiting.
+#
+# CI never sees this, and neither does a fresh `git worktree`: with no
+# `corpus/` the replay is the 50 committed inputs. Measured test bodies —
+# 11-24 s locally over three runs, 5.98 s on the `ubuntu-latest` runner, i.e.
+# CI is FASTER. The 36 s figure quoted for CI is the whole STEP, of which
+# 29.9 s is cargo recompiling; do not compare it against a test body.
+#
+# `-p secretary-core` is not a way to avoid rebuilding the CLI and bridge
+# crates — `core`'s [dev-dependencies] pull in the bridge, which depends on
+# the CLI, so both are built either way (measured: both appear in the CI
+# step's own log). What `--workspace` adds is the Tauri desktop crate, the two
+# FFI wrapper crates and the browser host, plus re-running the whole suite.
 
 # Lint — must stay clean with -D warnings (covers both lib + test targets)
 cargo clippy --release --workspace --tests -- -D warnings
@@ -231,13 +258,17 @@ uv run scripts/mutate.py "$SCRATCH/mutations.toml"
 # THE TREE MAY BE DIRTY; 4 aborted by a harness error, tree restored,
 # traceback on stderr. Every non-success row also prints a DIAGNOSTIC block
 # to stderr (why liveness failed, or the tail of the gate output), so the
-# five-column table the handoff pastes stays five columns.
+# table the handoff pastes carries only what a reader needs to INTERPRET a
+# row. Stated as that RULE and not as a column count: #651 added a sixth
+# column (Gate) and five documents were still asserting "five", this line
+# among them (#656 review).
 #
 # An interrupted run leaves a JOURNAL rather than a mutated tree, and the
 # next invocation REFUSES to start until it is drained:
 uv run scripts/mutate.py --drain
 
-# The harness's own unit tests (238 tests; RE-MEASURE). Use the MODULE form — a bare
+# The harness's own unit tests (249 tests; RE-MEASURE — it said 238 for a slice
+# after the count moved, and #656 added seven). Use the MODULE form — a bare
 # `pytest` invocation intermittently hangs at 0% CPU on some machines. The two
 # cargo-backed controls (C10, N4) take minutes and queue on the package-cache
 # lock behind any parallel cargo; `-k "not C10 and not N4"` is the fast loop:
@@ -442,7 +473,7 @@ issue and no diagnostic; `_HASH_SEEDS = ("0",)` passed while printing "across 1
 PYTHONHASHSEED values"; and a row-shape mismatch raised out of `main()` as a
 traceback with no `FAIL:` line.
 
-**It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and never enabled in `test.yml`. The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. **The job now BLOCKS**, which this paragraph denied until the #599 review measured it: `clean-room conformance` is one of the 24 required contexts in `main`'s `protect_main` ruleset (`gh api repos/hherb/secretary/rules/branches/main`). The sentence "the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking" outlived its fact — and a stale claim in this direction is not harmless, because it gets a real gate discounted when someone weighs whether a Python-side-only pin is enough. One standing consequence remains: five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
+**It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and, at the time, never enabled in `test.yml` (a step enables it there since #647, which does not change this paragraph's history: that step postdates #546, and it invokes `conformance.py` per corpus input rather than running its section suite, so it would not have caught the `pqcrypto` break either — nothing on the `--diff-replay` path calls `ml_dsa_65_verify` — state it as the IMPORT CLOSURE it is, `diff_replay.py` importing only `codec/*` plus `rejection` and no `codec/` module reaching `derivations.hybrid_verify`, rather than as "reachable only from `sections/`", which is false: the function lives in `derivations.py` and both `wire/card.py` and `wire/golden_vault_verify.py` import it, neither under `sections/` (#656 review)). The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. **The job now BLOCKS**, which this paragraph denied until the #599 review measured it: `clean-room conformance` is one of the 24 required contexts in `main`'s `protect_main` ruleset (`gh api repos/hherb/secretary/rules/branches/main`). The sentence "the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking" outlived its fact — and a stale claim in this direction is not harmless, because it gets a real gate discounted when someone weighs whether a Python-side-only pin is enough. One standing consequence remains: five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
 
 ### Crypto layering
 
@@ -993,14 +1024,52 @@ survived it. Six things:
   by that one always-present committed file: an emptied `fuzz/seeds/` left the
   only token-compared target replaying one input, itself a tolerated pair, and
   the test passed having compared nothing.
-- **Almost none of this runs in CI, and that belongs here rather than only in
-  the handoff (#647).** `differential_replay.rs` is
-  `#![cfg(feature = "differential-replay")]` and no workflow enables the
-  feature, so the file is not even COMPILED in CI: the corpus comparison, the
-  tolerance, its negative control, the witness and `diff_replay.py`'s `rule`
-  field are all local-only. What CI enforces is `manifest/token/tests/` (the
-  blocking `cargo test --workspace`) and Section RTV (the blocking `clean-room
-  conformance` job). Weigh any claim about this slice against that split.
+- **This DOES run in CI since #647, and the sentence it replaces is worth
+  keeping because the gap lasted three slices.** This bullet used to read
+  "Almost none of this runs in CI … the file is not even COMPILED in CI", and
+  that was true: `differential_replay.rs` is
+  `#![cfg(feature = "differential-replay")]`, no workflow enabled the feature,
+  and so the corpus comparison, the tolerance, its negative control, the
+  witness and `diff_replay.py`'s `rule` field were all local-only. `test.yml`'s
+  `rust-test` job now runs the replay as a Linux-only step, inside the already
+  required `cargo test (ubuntu-latest)` context, and
+  NEGATIVE-CONTROLLED rather than assumed — re-pointing one ordered token reds
+  `differential_replay_full_corpus`, because a gate that runs and catches
+  nothing is #546 restated.
+  **Two things the step needed before it was worth its comment, both found in
+  the #656 review.** The flag was tied to the target by nothing but the text of
+  one `run:` line, and with the feature off that target compiles to an EMPTY
+  harness: `cargo test -p secretary-core --test differential_replay` was exit 0
+  and `running 0 tests` (measured, both directions), so dropping `--features`
+  would have restored the #647 state under a step name that still claimed to
+  run the replay. `required-features` on a `[[test]]` entry in
+  `core/Cargo.toml` makes it exit 101 instead. And the 36 s figure this bullet
+  quoted for CI is a STEP duration, ~30 s of which is cargo re-fingerprinting
+  for the differing feature set; the replay itself is **5.98 s** there against
+  11-24 s locally, so CI is faster and the "cold `uv` environment" the bullet
+  blamed is contradicted by the step's own log. Do not compare a step time
+  against a test time.
+  **What is still unpinned: deleting the step reds nothing.** No test, no
+  guard and no `--self-test` reads `test.yml`; `actionlint` checks syntax, not
+  step presence. Tracked as #657, and named here rather than only in a handoff
+  because that is how the #647 gap itself survived three slices.
+  **State the residual scope exactly, because the wider claim is the one
+  someone will want to make.** CI replays the COMMITTED corpus only —
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, 50 inputs today.
+  `core/fuzz/corpus/` is **gitignored**, so agreement on fuzz-DISCOVERED
+  inputs is still proven only by whoever runs the fuzzer, and "the differential
+  replay is in CI" must not be read as "the fuzz corpus is differentially
+  replayed in CI". `MIN_CORPUS_INPUTS` enforces a per-target floor so a corpus
+  that shrinks fails rather than passing vacuously — over COMMITTED inputs
+  only, since counting the gitignored runtime corpus toward it was fail-open on
+  the one machine the floor protects: with `fuzz/corpus/` populated, a deleted
+  seed still cleared the floor by tens of thousands (#656 review; measured —
+  38 committed against 41 total now reds). What it still does NOT floor is how
+  many inputs reach a STRICT token comparison, which is roughly 7 of 39 on
+  `manifest_body` because every `NonCanonicalEncoding` cause is
+  phase-dependent; #658. The other CI cover is
+  unchanged: `manifest/token/tests/` (the blocking `cargo test --workspace`)
+  and Section RTV (the blocking `clean-room conformance` job).
 - **Token coverage is asymmetric between the two sides, and the Python half
   needed the identity check it did not have.** Rust pins all 35 variant→token
   mappings (`tests/mapping.rs`, a second independent declaration) plus 6
@@ -1009,10 +1078,27 @@ survived it. Six things:
   valid token passed every CI gate; it now asserts the exact token per class
   AND that the set the corpus produces is the expected six. Both directions
   mutation-proven with sha256-verified restores.
-- **One mutation is GREEN by design and that is not a gap.** Swapping one
-  phase-dependent token for another is tolerated by construction, since §4.2
-  declares that order free. Nothing catches it and nothing should. Note the
-  narrower true statement: the predicate tolerates a phase-dependent token
+- **One mutation is GREEN UNDER THE TOLERANCE by design — and RED under
+  `conformance.py`. The unscoped version of this sentence was wrong, and it
+  is the reason #651 exists.** Swapping one phase-dependent token for another
+  is tolerated by `tokens_agree`, since §4.2 declares that order free, so
+  `differential_replay` does not flag it and should not. This bullet then said
+  "Nothing catches it and nothing should", which generalised one gate's answer
+  to every gate. Section **RTV** reds the same mutation, and rightly: §4.2
+  frees the ORDER two implementations may report rules in, and says nothing
+  about a raise site changing which rule it names. Measured, twice, on
+  `ArraySortOrderViolation.token` → `rule2_indefinite_length`:
+  `UNEXPECTED_RED`, exit 1.
+  **Name the CHECK, not just the section, because the obvious guess is
+  wrong.** RTV's check 1 does NOT fire: it iterates `_TOKENED_CLASSES`, the
+  seven `ManifestRejection` subclasses, and `ArraySortOrderViolation` is a
+  plain `ValueError` subclass that is not among them. The sole catch is check
+  4, the corpus-token SET EQUALITY (reported on the `PASS 3` line) — flipping
+  the raise site removes `array_sort_order` from the set the corpus produces.
+  **Generalise it:** a mutation result is a property of ONE gate. Every row in
+  `scripts/mutate.py`'s table now names its gate (#651) so this cannot be
+  written from pasted evidence again. Note also the narrower true statement
+  about the tolerance itself: the predicate tolerates a phase-dependent token
   against ANY token, not only against another phase-dependent one, which is
   what the four groups above are. Every other
   mutation reds: an ordered token swapped for another ordered one (4 differential

@@ -94,6 +94,36 @@ tracing = "0.1"
 [features]
 differential-replay = []
 
+# The one feature-gated test target, declared so that asking for it WITHOUT
+# its feature is a hard cargo error rather than a silent pass.
+#
+# `differential_replay.rs` is `#![cfg(feature = "differential-replay")]`, so
+# with the feature off it compiles to an EMPTY harness that exits 0 — visible
+# in any `cargo test --workspace` log as `running 0 tests` against a
+# `differential_replay-*` binary. Nothing but the literal text of the CI
+# `run:` string tied `--features differential-replay` to `--test
+# differential_replay`; drop the flag in a later edit and the step stays green
+# under a name that still says it ran the replay, inside a required context,
+# with the tree back in the #647 state the step exists to end (#656 review).
+#
+# `required-features` closes that: an explicitly named --test target whose
+# features are unmet is refused with "requires the features:
+# differential-replay" and exit 101. It also stops a plain
+# `cargo test --workspace` building the 0-test binary at all.
+#
+# DO NOT read the inner `#![cfg(...)]` as a second line of defence here — it
+# is the thing that made the old failure SILENT, and calling it defence in
+# depth (as the first draft of this comment did) has the causality backwards.
+# Delete THIS entry while the attribute stays and the 0-test binary is back;
+# delete both and a default `cargo test` at least fails loudly on the missing
+# `uv`. The attribute is kept because with this entry present it is
+# behaviourally inert, and because a dozen documents describe the file by it.
+# The protection is this entry. Guard it accordingly.
+[[test]]
+name = "differential_replay"
+path = "tests/differential_replay.rs"
+required-features = ["differential-replay"]
+
 [dev-dependencies]
 proptest = "1"
 rand_chacha = "0.3"
