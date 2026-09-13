@@ -230,3 +230,13 @@ def test_timeout_is_parsed_when_valid(repo):
 def test_expect_red_must_be_a_list_of_strings(repo, value):
     with pytest.raises(SpecError, match="expect_red must be a list of strings"):
         parse_spec(MINIMAL_PY + f"expect_red = {value}\n", repo)
+
+
+def test_an_empty_gate_is_a_spec_error_not_a_traceback(repo):
+    """`MutationSpec.__post_init__` refuses an empty gate (#656 review), but
+    that `ValueError` used to leave `parse_spec` bare: `mutate.main` catches
+    `SpecError`, so the run printed a traceback and exited 1 — the code for "a
+    rendered table with a finding" — instead of exit 2 (#662 review)."""
+    bad = MINIMAL_PY.replace('gate = "true"', 'gate = ""')
+    with pytest.raises(SpecError, match=r"\[\[mutation\]\] #1: gate must be a non-empty command"):
+        parse_spec(bad, repo)

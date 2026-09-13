@@ -150,7 +150,7 @@ def _validate_one(raw: dict, repo_root: Path, index: int) -> MutationSpec:
     if not isinstance(note, str):
         raise SpecError(f"{where}: note must be a string, got {type(note).__name__}")
 
-    return MutationSpec(
+    fields = dict(
         id=_require_str(raw, "id", where),
         lang=lang,
         path=path,
@@ -163,6 +163,16 @@ def _validate_one(raw: dict, repo_root: Path, index: int) -> MutationSpec:
         note=note,
         timeout=timeout,
     )
+    try:
+        return MutationSpec(**fields)
+    except ValueError as exc:
+        # `MutationSpec.__post_init__` refuses combinations no single field
+        # check above sees: an empty gate (#656 review), a green row whose
+        # gate does not name its probe's scope (#662 review). Uncaught, those
+        # left `parse_spec` as a bare `ValueError`, which `mutate.main` (it
+        # catches `SpecError`) printed as a traceback with exit 1 -- the code
+        # for "a rendered table with a finding" -- instead of exit 2.
+        raise SpecError(f"{where}: {exc}") from None
 
 
 def _require_str(raw: dict, key: str, where: str) -> str:

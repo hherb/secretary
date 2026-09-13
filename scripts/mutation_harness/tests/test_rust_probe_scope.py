@@ -20,7 +20,7 @@ import pytest
 from mutation_harness import liveness, runner
 from mutation_harness.spec import SpecError, parse_spec
 from mutation_harness.subproc import BoundedRun
-from mutation_harness.types import Expect, Lang, MutationSpec, RustProbe
+from mutation_harness.types import Expect, Lang, MutationSpec, RustProbe, unnamed_probe_scope
 
 _SPEC_TEMPLATE = """
 [[mutation]]
@@ -149,3 +149,84 @@ def test_the_runner_hands_the_whole_probe_to_the_rust_reading(tmp_path, monkeypa
     runner._observe(spec, tmp_path)
 
     assert seen == [probe]
+
+
+# --- a green row's gate must build what its scoped probe measured (#662) ----
+
+_SCOPED = '{ package = "secretary-core", test = "differential_replay", features = ["differential-replay"] }'
+_REPLAY_GATE = (
+    "cargo test --release --locked -p secretary-core "
+    "--features differential-replay --test differential_replay"
+)
+
+
+def _parse_row(tmp_path, *, gate: str, expect: str, probe: str = _SCOPED):
+    (tmp_path / "a.rs").write_text("fn f() {}\n")
+    text = (
+        _SPEC_TEMPLATE.format(probe=probe)
+        .replace('gate = "true"', f'gate = "{gate}"')
+        .replace('expect = "red"', f'expect = "{expect}"')
+    )
+    (spec,) = parse_spec(text, tmp_path)
+    return spec
+
+
+def test_a_green_row_whose_gate_builds_another_target_is_refused(tmp_path):
+    """The silent direction. The probe builds `--test differential_replay` and
+    sees the mutation, so the row is LIVE; a `--lib` gate never compiles that
+    file and stays green; the row would report `GREEN_AS_EXPECTED` for a
+    mutation no gate ran."""
+    with pytest.raises(SpecError, match="does not name --test differential_replay"):
+        _parse_row(tmp_path, gate="cargo test --release -p secretary-core --lib", expect="green")
+
+
+def test_a_green_row_whose_gate_misses_a_probed_feature_is_refused(tmp_path):
+    with pytest.raises(SpecError, match="feature differential-replay"):
+        _parse_row(
+            tmp_path,
+            gate="cargo test --release -p secretary-core --test differential_replay",
+            expect="green",
+        )
+
+
+@pytest.mark.parametrize(
+    "gate",
+    [
+        _REPLAY_GATE,
+        "cargo test --release -p secretary-core --all-features --test=differential_replay",
+    ],
+    ids=["spelled-out", "all-features-and-equals"],
+)
+def test_a_green_row_whose_gate_names_the_probe_scope_is_accepted(tmp_path, gate):
+    assert _parse_row(tmp_path, gate=gate, expect="green").expect is Expect.GREEN
+
+
+def test_a_red_row_is_not_held_to_the_rule(tmp_path):
+    """The loud direction: a gate that misses the mutation on a RED row comes
+    back `UNEXPECTED_GREEN`, so nothing needs refusing at parse time."""
+    spec = _parse_row(tmp_path, gate="cargo test --release -p secretary-core --lib", expect="red")
+    assert spec.expect is Expect.RED
+
+
+def test_an_unscoped_probe_is_not_held_to_the_rule(tmp_path):
+    spec = _parse_row(
+        tmp_path, gate="cargo test --release", expect="green", probe='{ package = "secretary-core" }'
+    )
+    assert spec.probe == RustProbe("secretary-core")
+
+
+def test_a_gate_naming_a_longer_target_does_not_name_the_probed_one():
+    probe = RustProbe("p", test="differential_replay")
+    assert unnamed_probe_scope(probe, "cargo test --test differential_replay_x") == (
+        "--test differential_replay",
+    )
+    assert unnamed_probe_scope(probe, "cargo test --test differential_replay") == ()
+
+
+def test_the_rule_holds_for_a_spec_built_directly():
+    with pytest.raises(ValueError, match="does not name"):
+        MutationSpec(
+            id="R", lang=Lang.RUST, path="a.rs", old="a", new="b",
+            gate="cargo test --lib", expect=Expect.GREEN,
+            probe=RustProbe("p", test="t"),
+        )

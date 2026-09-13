@@ -271,6 +271,13 @@ uv run scripts/mutate.py "$SCRATCH/mutations.toml"
 # `probe = { package = "secretary-core", test = "<target>", features = [..] }`.
 # The unscoped probe builds the library only, so every `core/tests/**` row read
 # NOT_LIVE whatever its gate did, until #649's slice added the two keys.
+# A GREEN row with a scoped probe must name that scope in its GATE —
+# `--test <target>` (or `--test=<target>`) and each feature, or
+# `--all-features` — or the spec is refused (exit 2): otherwise the probe can
+# see a mutation that the gate never compiles, and the row reports
+# GREEN_AS_EXPECTED for a mutation nothing ran (#662 review). It is a spelling
+# check; a gate that builds the target another way (`--workspace`) must still
+# write the scope out.
 #
 # A PYTHON probe imports its module in the HARNESS's interpreter, which has
 # none of `conformance.py`'s PEP 723 deps — so a probe on any module reaching
@@ -302,8 +309,9 @@ uv run scripts/mutate.py "$SCRATCH/mutations.toml"
 # next invocation REFUSES to start until it is drained:
 uv run scripts/mutate.py --drain
 
-# The harness's own unit tests (262 tests; RE-MEASURE — it said 238 for a slice
-# after the count moved, #656 added seven, and the scoped Rust probe thirteen). Use the MODULE form — a bare
+# The harness's own unit tests (278 tests; RE-MEASURE — it said 238 for a slice
+# after the count moved, #656 added seven, the scoped Rust probe thirteen, and
+# the #662 review sixteen). Use the MODULE form — a bare
 # `pytest` invocation intermittently hangs at 0% CPU on some machines. The two
 # cargo-backed controls (C10, N4) take minutes and queue on the package-cache
 # lock behind any parallel cargo; `-k "not C10 and not N4"` is the fast loop:
