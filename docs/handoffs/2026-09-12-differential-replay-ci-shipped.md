@@ -7,10 +7,12 @@ This slice is **(a)** from the previous baton's §(3) queue, taken together with
 **#647** by the user options-plus-recommendation, on the reasoning that widening
 a gate matters less than making it run at all.
 
-**Three issues filed:** [#655](https://github.com/hherb/secretary/issues/655)
+**Four issues filed:** [#655](https://github.com/hherb/secretary/issues/655)
 (the fuzz-corpus replay trap), plus
 [#657](https://github.com/hherb/secretary/issues/657) and
-[#658](https://github.com/hherb/secretary/issues/658) from the #656 review.
+[#658](https://github.com/hherb/secretary/issues/658) from the #656 review, and
+[#659](https://github.com/hherb/secretary/issues/659) — filed from this PR's CI
+and then fixed in it, see §(1f).
 The slice closes **#647** and **#651**.
 
 **The headline: the gate that exists to prove the two decoders agree was the
@@ -237,6 +239,47 @@ new one in the correction, shipped a per-row Gate column and then pasted two
 hand-made gateless tables, and documented a trap with the wrong cause. A sweep
 for the phrase you are fixing is not a sweep for the property you changed.
 
+### (1f) `cargo audit`: a yanked `der`, fixed by a lockfile-only bump (#659)
+
+`cargo audit --deny warnings` red this PR on `der 0.8.0`, **yanked** — a
+supply-chain signal, not a vulnerability. It is pre-existing: `main`'s
+scheduled audit on 2026-09-07 failed identically. It surfaced HERE only because
+`audit.yml` is path-gated on `**/Cargo.toml`, and the #656 review's
+`required-features` entry touched `core/Cargo.toml`. `cargo audit` is not a
+required context, which is also why the failure sat on `main` unremarked.
+
+The chain, read from `Cargo.lock`: `secretary-core` → `ml-dsa 0.1.0-rc.8` →
+`pkcs8 0.11.0-rc.11` (and `spki 0.8.0`) → `der 0.8.0`. **It looks like a bump of
+the ML-DSA-65 primitive and is not one**, and the distinction was measured:
+
+- `ml-dsa`'s `pkcs8` dependency is OPTIONAL, enabled only by its `pkcs8` and
+  `default` features. `secretary-core` takes it with `default-features = false,
+  features = ["alloc", "zeroize"]`, and `alloc = ["pkcs8?/alloc"]` — the `?`
+  applies `alloc` to `pkcs8` only if something else already enabled it. So the
+  whole `pkcs8`/`spki`/`der` subtree is NEVER COMPILED. It is in `Cargo.lock`
+  only because Cargo resolves the lockfile across all optional dependencies,
+  and `cargo audit` reads the lockfile rather than the build graph.
+- `cargo tree -i der@0.8.0 --target all -e all` and the same for
+  `pkcs8@0.11.0-rc.11` both print nothing — before AND after the bump.
+- `pkcs8` asks for `der ^0.8.0-rc.12` and `spki` for `der ^0.8`, and `0.8.1` /
+  `0.8.2` exist unyanked, so no manifest needed to change and `ml-dsa` stays
+  exactly where it was.
+
+`cargo update -p der@0.8.0 --precise 0.8.2`. The lockfile diff is one version,
+one checksum and its two dependents' references; `cargo update` reported every
+other package unchanged. A warm `cargo build --release --locked --workspace`
+recompiled **zero** crates after it, which is Cargo's own statement that no
+compiled artifact's dependency graph moved. CLAUDE.md's rule for a primitive
+crate — "re-run KATs explicitly; a passing suite is necessary but not
+sufficient" — was followed anyway, since the chain runs through one:
+`ml_dsa_65_nist_keygen_kat`, `ml_dsa_65_nist_sigver_kat`,
+`hybrid_sig_wire_kat`, both golden-vault binaries and `conformance.py` all pass.
+
+**Do not "tidy" this into a manifest pin.** Nothing compiles `der` 0.8, so an
+exact pin in `core/Cargo.toml` would be a security-path-looking annotation on
+code that is not on the path — the misleading kind. If `ml-dsa`'s `pkcs8`
+feature is ever enabled, THAT edit is where this subtree needs review.
+
 ### The measured gate set
 
 | Gate | Result |
@@ -251,6 +294,7 @@ for the phrase you are fixing is not a sweep for the property you changed.
 | `uv run --with pytest python3 -m pytest scripts/mutation_harness -q` | 0 — **249 passed** (238 at the merge-base; +4 for #651, +7 for the #656 review round) |
 | `uv run core/tests/python/conformance.py` | 0 — 0 FAIL, REG **29/29** |
 | six hygiene guards, `--self-test` first, 12 invocations | all 0 |
+| `cargo audit --deny warnings` | exit 1 on `der 0.8.0` (yanked) before the bump, **0** after; see §(1f) |
 | `actionlint` on `test.yml` AND `rust-lint.yml` | 0, **and both new step names parsed back in full** (the unquoted-`#` truncation trap this file warns about four times) |
 
 **Branch scope — re-derive it, do not quote this.** Run
@@ -263,7 +307,8 @@ no CI workflow (#647)", citing the issue this branch closes, and they were left
 behind precisely because `core/` was declared out of scope.
 
 The branch now touches `core/` deliberately, in four places, none of them
-crypto or on-disk format:
+crypto or on-disk format — plus the root `Cargo.lock`, for the §(1f)
+`der` bump, which changes no compiled artifact:
 
 - `core/Cargo.toml` — the `[[test]]` entry whose `required-features` binds the
   target to its feature.
