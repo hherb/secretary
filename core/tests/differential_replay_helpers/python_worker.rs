@@ -279,11 +279,14 @@ impl Worker {
     /// Its stdin is closed first, which is a healthy worker's cue to exit at
     /// EOF. A worker that is exiting gets `EXIT_GRACE` to finish, so its own
     /// exit code is reported; one still running after that (a timeout, a hang)
-    /// has its whole process group killed.
+    /// has its whole process group killed. So does one whose leader exited on
+    /// its own but unsuccessfully, which may have left a forked interpreter
+    /// behind.
     fn retire(mut self) -> String {
         drop(self.stdin.take());
         let deadline = std::time::Instant::now() + EXIT_GRACE;
         let mut notes: Vec<String> = vec![];
+        let mut killed = false;
         let status = loop {
             match self.child.try_wait() {
                 Ok(Some(status)) => break Some(status),
@@ -291,14 +294,25 @@ impl Worker {
                     std::thread::sleep(Duration::from_millis(10))
                 }
                 _ => {
+                    // Signalled BEFORE the leader is reaped: until `wait`
+                    // returns, its pid (the group id) cannot be reused.
                     notes.extend(kill_worker_group(&mut self.child));
+                    killed = true;
                     break self.child.wait().ok();
                 }
             }
         };
-        // Reap anything left in the group even when the leader exited on its
-        // own: a forked interpreter can outlive `uv`.
-        notes.extend(kill_worker_group(&mut self.child));
+        // A leader that exited on its OWN and unsuccessfully may have left its
+        // forked interpreter running: a `uv` that died instead of waiting for
+        // it. That group can only be signalled after the reap, the one window
+        // in which a freed id could name an unrelated group, so it is signalled
+        // only here. A clean exit needs nothing (`uv run` exits 0 only once its
+        // child has), and a group killed above needs nothing more. This kill
+        // used to run after every retire, the healthy end of each target
+        // included (#662 review).
+        if !killed && !status.is_some_and(|s| s.success()) {
+            notes.extend(kill_worker_group(&mut self.child));
+        }
         let _ = self.stderr_done.recv_timeout(STDERR_DRAIN_GRACE);
         let tail = self
             .stderr_tail

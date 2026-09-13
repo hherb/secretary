@@ -133,6 +133,31 @@ fn a_silent_worker_times_out_and_its_whole_process_group_is_killed() {
     );
 }
 
+/// The other half of the group kill: no timeout at all. The leader exits
+/// UNSUCCESSFULLY on its own, the way a `uv` that died would, and leaves its
+/// forked child running with every stream redirected away, so nothing but the
+/// group kill after the reap can end it.
+#[test]
+fn a_leader_that_dies_leaving_a_forked_child_has_its_group_killed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pid_file = dir.path().join("orphan.pid");
+    let script = format!(
+        "read -r line; sleep 30 </dev/null >/dev/null 2>&1 & echo $! > '{}'; exit 1",
+        pid_file.display()
+    );
+    let mut replayer = PyReplayer::new(sh(script), QUICK);
+    assert!(matches!(
+        replayer.decode("record", Path::new("/p")),
+        PyOutcome::Harness(_)
+    ));
+    let pid = std::fs::read_to_string(&pid_file).expect("the worker recorded its child");
+    assert!(
+        !still_alive_after_grace(pid.trim()),
+        "the dead leader's forked child {} was left running",
+        pid.trim()
+    );
+}
+
 #[test]
 fn a_worker_that_cannot_stay_up_is_abandoned_after_the_failure_cap() {
     let mut replayer = PyReplayer::new(sh("exit 1"), QUICK);
