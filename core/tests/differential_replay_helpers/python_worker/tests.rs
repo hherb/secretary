@@ -107,7 +107,11 @@ fn a_non_json_answer_is_a_harness_failure() {
 fn an_error_verdict_is_a_harness_failure_but_keeps_the_worker() {
     let script = r#"while read -r line; do printf '%s\n' '{"status":"error","error_class":"E","detail":"d","path":"/p","traceback":"TB"}'; done"#;
     let mut replayer = PyReplayer::new(sh(script), REPLY);
-    for _ in 0..2 {
+    // PAST the cap, which an `error` answer must never count toward: the
+    // worker that sent it is up. Looping twice, below the cap of three, could
+    // not tell the two rules apart (#662 review). Were errors counted, the
+    // fourth input would come back "not replayed", without the traceback.
+    for _ in 0..MAX_CONSECUTIVE_WORKER_FAILURES + 1 {
         match replayer.decode("record", Path::new("/p")) {
             PyOutcome::Harness(msg) => assert!(msg.contains("TB"), "{msg}"),
             other => panic!("{other:?}"),

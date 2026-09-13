@@ -17,15 +17,19 @@
 //!   would otherwise score every later input against the wrong verdict.
 //! - **A fresh process after trouble.** Any transport failure (timeout, a
 //!   dead worker, a non-JSON line, a mismatched echo) discards the worker; the
-//!   next input starts another. An `error` VERDICT does not — the worker is
+//!   next input starts another. An `error` ANSWER does not — the worker is
 //!   healthy, and respawning on every error would bring the per-input cost
-//!   straight back on a corpus where Python errors on everything.
+//!   straight back on a corpus where Python errors on everything. (Such an
+//!   input is still a harness failure: `status: error` is never a verdict.)
 //! - **No silent spin on a worker that cannot come up.** After
-//!   `MAX_CONSECUTIVE_WORKER_FAILURES` inputs in a row get no verdict, the
+//!   `MAX_CONSECUTIVE_WORKER_FAILURES` inputs in a row get no ANSWER — a
+//!   worker that could not start, or any transport failure above — the
 //!   replayer stops starting workers and fails the rest immediately. By then
 //!   the run is already failing, and each further input would pay a start-up —
 //!   or a full timeout, for a `uv` stuck resolving — across tens of thousands
-//!   of inputs. Any verdict resets the count.
+//!   of inputs. Any answer resets the count, an `error` one included: the
+//!   worker that sent it is up. (This read "no verdict" / "any verdict", which
+//!   an `error` is not, until the #662 review.)
 //!
 //!   An earlier draft counted only workers that failed before their FIRST
 //!   reply, claiming that kept a healthy worker's run of slow inputs from
@@ -56,8 +60,8 @@ use super::python_bridge::{parse_verdict, PyOutcome};
 /// adversarial infinite-loop input is caught instead of hanging the run.
 pub const PER_INPUT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Inputs in a row that may get no verdict, after which no further worker is
-/// started.
+/// Inputs in a row that may get no answer from a worker (it could not start,
+/// or a transport failure), after which no further worker is started.
 pub const MAX_CONSECUTIVE_WORKER_FAILURES: usize = 3;
 
 /// How long a worker whose output has closed is given to finish exiting, so
@@ -76,7 +80,7 @@ const STDERR_TAIL_BYTES: usize = 64 * 1024;
 /// Asks corpus inputs of a serve-mode worker, starting one as needed.
 ///
 /// A struct because it holds genuine state: the live process, and how many
-/// inputs in a row have got no verdict.
+/// inputs in a row have got no answer.
 pub struct PyReplayer<F: FnMut() -> Command> {
     make_command: F,
     timeout: Duration,
@@ -111,7 +115,7 @@ impl<F: FnMut() -> Command> PyReplayer<F> {
     pub fn decode(&mut self, target: &str, path: &Path) -> PyOutcome {
         if self.consecutive_failures >= MAX_CONSECUTIVE_WORKER_FAILURES {
             return PyOutcome::Harness(format!(
-                "not replayed: {}: the last {} inputs got no verdict from a Python \
+                "not replayed: {}: the last {} inputs got no answer from a Python \
                  worker, so no further worker is started — the first failures \
                  above say why",
                 path.display(),
