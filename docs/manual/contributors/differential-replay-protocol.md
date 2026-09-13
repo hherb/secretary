@@ -104,9 +104,14 @@ The response is exactly the single-shot verdict object below **plus**:
 
 A request the worker cannot interpret is answered, not fatal:
 `{"status": "error", "error_class": "BadRequest", "detail": "...", "path": null}`,
-and the loop goes on. `sys.stdout` is pointed at stderr while serving, so a
-decoder that PRINTS cannot put a non-JSON line on the response stream. The
-worker exits 0 at EOF.
+and the loop goes on — though on the Rust side that answer's `path: null` fails
+the echo check, so the worker is retired and the input is a harness failure.
+`sys.stdout` is pointed at stderr while serving, so a decoder that prints
+through Python's `sys.stdout` (a `print` left in) cannot put a line on the
+response stream. That redirect is Python-level only: native code or a
+subprocess writing to file descriptor 1 still reaches the stream, where the
+Rust side reads a non-JSON line or a mismatched echo — a harness failure,
+never a verdict. The worker exits 0 at EOF.
 
 What a reused interpreter gives up is per-input process isolation: a decoder
 that mutated module state on one input could change the verdict on the next.
@@ -121,7 +126,7 @@ answer resets that count, an `error` one included, since the worker that sent
 it is up; the input is still a harness failure of its own.
 
 (This paragraph used to say the cap counted workers that "die before answering
-a single request". That was an earlier rule, replaced before #655 merged: the
+a single request". That was an earlier rule, replaced during #655: the
 mutation harness showed it could not be told apart from the simpler one, since
 a respawned worker has always answered nothing yet.)
 

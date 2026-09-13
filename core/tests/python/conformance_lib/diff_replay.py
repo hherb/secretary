@@ -216,10 +216,15 @@ def serve_diff_replay(
     """Answer every request line with one response line, flushed, until EOF.
 
     `sys.stdout` is pointed at stderr for the duration. The response stream is
-    the protocol, and a decoder that PRINTS -- a debugging line left in, a
-    library warning -- would otherwise put a non-JSON line on it and desync
-    every answer after it. `responses` is bound before the redirect, so it is
-    still the real stream.
+    the protocol, and a decoder that PRINTS -- a debugging line left in --
+    would otherwise put a non-JSON line on it and desync every answer after
+    it. `responses` is bound before the redirect, so it is still the real
+    stream. The redirect is Python-level only: native code or a subprocess
+    writing to file descriptor 1 bypasses it, and the Rust side then reads a
+    non-JSON line or a mismatched echo, which it scores as a harness failure
+    rather than a verdict. (This docstring said a printing decoder "cannot"
+    corrupt the stream, and gave a library warning as an example; `warnings`
+    already writes to stderr, and fd 1 is not covered -- #662 review.)
 
     Always returns 0: an input this module cannot decode is a verdict or an
     `error` response, never a reason to stop serving the rest.

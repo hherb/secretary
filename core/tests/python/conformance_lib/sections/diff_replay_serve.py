@@ -21,7 +21,8 @@ Two checks:
   1. PROTOCOL, in-process. One response per request, in request order, each
      echoing its request's `path`; a malformed request is answered with
      `status: error` / `error_class: BadRequest` and the loop goes on; a
-     decoder that PRINTS cannot corrupt the response stream; an internal error
+     decoder that `print`s cannot corrupt the response stream (Python-level
+     output only -- `serve_diff_replay` says what is not covered); an internal error
      carries its traceback in the response rather than only on stderr, where
      a reader of the stream could attribute it to the wrong input.
   2. EQUIVALENCE, across processes. Every committed input for every target is
