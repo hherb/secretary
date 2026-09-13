@@ -17,15 +17,21 @@ fn sh(script: impl Into<String>) -> impl FnMut() -> Command {
 
 /// Is `pid` still a live process? Polls briefly: a SIGKILL is delivered
 /// asynchronously, and an orphan is reaped by init a moment later.
+///
+/// Asks the kernel directly (`kill(pid, 0)`). This used to run the `kill -0`
+/// utility and read "could not run it" as "not alive", so on a machine with
+/// no `kill` on PATH the group-kill test passed having checked nothing. Any
+/// answer other than "alive" or "no such process" now panics.
 fn still_alive_after_grace(pid: &str) -> bool {
+    let raw: i32 = pid.parse().expect("the recorded pid is a number");
+    let pid = rustix::process::Pid::from_raw(raw).expect("the recorded pid is not 0");
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        let alive = Command::new("kill")
-            .args(["-0", pid])
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let alive = match rustix::process::test_kill_process(pid) {
+            Ok(()) => true,
+            Err(rustix::io::Errno::SRCH) => false,
+            Err(e) => panic!("could not ask whether {raw} is alive: {e}"),
+        };
         if !alive || Instant::now() > deadline {
             return alive;
         }
@@ -161,6 +167,20 @@ fn a_verdict_resets_the_failure_count() {
         replayer.spawned(),
         rounds,
         "the cap tripped across verdicts"
+    );
+}
+
+/// A group id of 0 is the caller's own group and 1 is `kill(-1)`, every
+/// process the user owns — the blast radius the `kill` utility's
+/// misparse actually reached on Linux CI. Neither may ever be signalled.
+#[test]
+fn a_group_id_that_would_widen_the_kill_is_refused() {
+    assert_eq!(worker_group(0), None);
+    assert_eq!(worker_group(1), None);
+    assert_eq!(worker_group(u32::MAX), None, "not representable as a pid");
+    assert_eq!(
+        worker_group(4242).map(rustix::process::Pid::as_raw_nonzero),
+        std::num::NonZeroI32::new(4242)
     );
 }
 

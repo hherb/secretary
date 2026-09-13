@@ -213,7 +213,7 @@ impl Worker {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         // Its own process group, so a timeout can kill `uv` AND the
-        // interpreter it forked. See `kill_process_group`.
+        // interpreter it forked. See `kill_worker_group`.
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -283,6 +283,7 @@ impl Worker {
     fn retire(mut self) -> String {
         drop(self.stdin.take());
         let deadline = std::time::Instant::now() + EXIT_GRACE;
+        let mut notes: Vec<String> = vec![];
         let status = loop {
             match self.child.try_wait() {
                 Ok(Some(status)) => break Some(status),
@@ -290,44 +291,80 @@ impl Worker {
                     std::thread::sleep(Duration::from_millis(10))
                 }
                 _ => {
-                    kill_process_group(&mut self.child);
+                    notes.extend(kill_worker_group(&mut self.child));
                     break self.child.wait().ok();
                 }
             }
         };
         // Reap anything left in the group even when the leader exited on its
         // own: a forked interpreter can outlive `uv`.
-        kill_process_group(&mut self.child);
+        notes.extend(kill_worker_group(&mut self.child));
         let _ = self.stderr_done.recv_timeout(STDERR_DRAIN_GRACE);
         let tail = self
             .stderr_tail
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let notes = if notes.is_empty() {
+            String::new()
+        } else {
+            format!("; {}", notes.join("; "))
+        };
         format!(
-            "ended with {}; stderr: {}",
+            "ended with {}{notes}; stderr: {}",
             status.map_or_else(|| "an unknown status".to_owned(), |s| s.to_string()),
             String::from_utf8_lossy(&tail).trim()
         )
     }
 }
 
-/// Kill `child`'s whole process group — `uv run` forks the interpreter, and
-/// SIGKILL to `uv` alone would leave it running.
+/// The process group a worker whose pid is `raw` leads, or `None` if `raw`
+/// cannot name one safely. Pure.
 ///
-/// Through the `kill` utility rather than `libc::killpg`, because the
-/// workspace forbids `unsafe`. The group was created by
-/// `CommandExt::process_group(0)` at spawn, so its id is the child's pid.
-/// Errors are ignored: a group that has already gone is the goal.
-fn kill_process_group(child: &mut Child) {
+/// `kill(-pgid)` with a group id of 0 signals the CALLER's own group, and with
+/// 1 it is `kill(-1)` — every process the user owns. Neither can be a spawned
+/// child's pid, so refusing them costs nothing and keeps a wrong id from
+/// widening a SIGKILL past the worker.
+#[cfg(unix)]
+fn worker_group(raw: u32) -> Option<rustix::process::Pid> {
+    i32::try_from(raw)
+        .ok()
+        .filter(|&pid| pid > 1)
+        .and_then(rustix::process::Pid::from_raw)
+}
+
+/// Kill `child`'s whole process group — `uv run` forks the interpreter, and
+/// SIGKILL to `uv` alone would leave it running. Returns why the group could
+/// not be signalled, if it could not; a group that has already gone is the
+/// goal, not a problem.
+///
+/// The group was created by `CommandExt::process_group(0)` at spawn, so its id
+/// is the child's pid. The signal goes through `rustix`'s safe
+/// `kill_process_group`, because the workspace forbids `unsafe` — and NOT
+/// through the `kill` utility, which this function first used. procps-ng
+/// 4.0.4's `kill -KILL -<pgid>` (Ubuntu 24.04, the CI image) reads `-<pgid>`
+/// as an unknown option and signals `'0' - optopt`, which is pid -1: SIGKILL
+/// to every process the user owns. Measured in an `ubuntu:24.04` container,
+/// where a bystander outside the group died; macOS's BSD `kill` parses the
+/// same argv correctly, which is why it passed locally and took down PR
+/// #662's CI runner.
+fn kill_worker_group(child: &mut Child) -> Option<String> {
     #[cfg(unix)]
-    {
-        let _ = Command::new("kill")
-            .args(["-KILL", &format!("-{}", child.id())])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
+    let problem = match worker_group(child.id()) {
+        None => Some(format!(
+            "refused to signal process group {}: not a spawned child's pid",
+            child.id()
+        )),
+        Some(group) => {
+            match rustix::process::kill_process_group(group, rustix::process::Signal::KILL) {
+                Ok(()) | Err(rustix::io::Errno::SRCH) => None,
+                Err(e) => Some(format!("could not kill process group {}: {e}", child.id())),
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let problem = None;
     let _ = child.kill();
+    problem
 }
 
 #[cfg(test)]

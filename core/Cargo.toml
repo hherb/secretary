@@ -152,5 +152,18 @@ secretary-ffi-bridge = { path = "../ffi/secretary-ffi-bridge" }
 # Dev-only workspace crate; never on the runtime dependency tree.
 secretary-test-utils = { path = "../test-utils" }
 
+# The differential replay's worker kill (`differential_replay_helpers/
+# python_worker.rs`) signals a whole process group, which needs `kill(-pgid)`.
+# The workspace forbids `unsafe`, so not `libc::killpg` — and NOT the `kill`
+# utility either, which is what it first used: procps-ng 4.0.4's
+# `kill -KILL -<pgid>` (Ubuntu 24.04, the CI image) parses `-<pgid>` as an
+# unknown option and signals pid -1, i.e. every process the user owns. That is
+# how PR #662's CI run lost its runner. `rustix` is already in the lockfile
+# (through `tempfile` and `fs4`), so this adds no crate — only the `process`
+# feature, in test builds. Exact pin, matching the locked version, so a bump
+# is a deliberate edit to the code that decides which processes get SIGKILL.
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { version = "=1.1.4", features = ["process"] }
+
 [lints]
 workspace = true
