@@ -4,7 +4,15 @@
 use super::*;
 use std::time::Instant;
 
+/// The budget for the ONE test that needs a timeout to fire. Short, because
+/// that test waits it out.
 const QUICK: Duration = Duration::from_millis(400);
+
+/// The budget for every test that ends on a reply or a closed pipe. Those
+/// return as soon as the fake worker answers, so a generous budget costs
+/// nothing; a short one only turns a slow `sh` start into a spurious
+/// timeout, and the replay step runs these beside a real `uv` worker.
+const REPLY: Duration = Duration::from_secs(10);
 
 fn sh(script: impl Into<String>) -> impl FnMut() -> Command {
     let script = script.into();
@@ -44,7 +52,7 @@ const ECHO_P: &str = r#"while read -r line; do printf '%s\n' '{"status":"reject"
 
 #[test]
 fn one_worker_answers_many_inputs() {
-    let mut replayer = PyReplayer::new(sh(ECHO_P), QUICK);
+    let mut replayer = PyReplayer::new(sh(ECHO_P), REPLY);
     for _ in 0..3 {
         assert!(matches!(
             replayer.decode("record", Path::new("/p")),
@@ -56,7 +64,7 @@ fn one_worker_answers_many_inputs() {
 
 #[test]
 fn an_answer_for_a_different_path_is_a_harness_failure_and_retires_the_worker() {
-    let mut replayer = PyReplayer::new(sh(ECHO_P), QUICK);
+    let mut replayer = PyReplayer::new(sh(ECHO_P), REPLY);
     match replayer.decode("record", Path::new("/q")) {
         PyOutcome::Harness(msg) => assert!(msg.contains("/p") && msg.contains("/q"), "{msg}"),
         other => panic!("{other:?}"),
@@ -74,7 +82,7 @@ fn an_answer_for_a_different_path_is_a_harness_failure_and_retires_the_worker() 
 
 #[test]
 fn a_worker_that_dies_is_a_harness_failure_naming_its_exit_and_stderr() {
-    let mut replayer = PyReplayer::new(sh("read -r line; echo gone-away >&2; exit 7"), QUICK);
+    let mut replayer = PyReplayer::new(sh("read -r line; echo gone-away >&2; exit 7"), REPLY);
     match replayer.decode("record", Path::new("/p")) {
         PyOutcome::Harness(msg) => {
             assert!(msg.contains('7') && msg.contains("gone-away"), "{msg}")
@@ -85,7 +93,7 @@ fn a_worker_that_dies_is_a_harness_failure_naming_its_exit_and_stderr() {
 
 #[test]
 fn a_non_json_answer_is_a_harness_failure() {
-    let mut replayer = PyReplayer::new(sh("while read -r l; do echo not-json; done"), QUICK);
+    let mut replayer = PyReplayer::new(sh("while read -r l; do echo not-json; done"), REPLY);
     assert!(matches!(
         replayer.decode("record", Path::new("/p")),
         PyOutcome::Harness(_)
@@ -95,7 +103,7 @@ fn a_non_json_answer_is_a_harness_failure() {
 #[test]
 fn an_error_verdict_is_a_harness_failure_but_keeps_the_worker() {
     let script = r#"while read -r line; do printf '%s\n' '{"status":"error","error_class":"E","detail":"d","path":"/p","traceback":"TB"}'; done"#;
-    let mut replayer = PyReplayer::new(sh(script), QUICK);
+    let mut replayer = PyReplayer::new(sh(script), REPLY);
     for _ in 0..2 {
         match replayer.decode("record", Path::new("/p")) {
             PyOutcome::Harness(msg) => assert!(msg.contains("TB"), "{msg}"),
@@ -145,7 +153,7 @@ fn a_leader_that_dies_leaving_a_forked_child_has_its_group_killed() {
         "read -r line; sleep 30 </dev/null >/dev/null 2>&1 & echo $! > '{}'; exit 1",
         pid_file.display()
     );
-    let mut replayer = PyReplayer::new(sh(script), QUICK);
+    let mut replayer = PyReplayer::new(sh(script), REPLY);
     assert!(matches!(
         replayer.decode("record", Path::new("/p")),
         PyOutcome::Harness(_)
@@ -160,7 +168,7 @@ fn a_leader_that_dies_leaving_a_forked_child_has_its_group_killed() {
 
 #[test]
 fn a_worker_that_cannot_stay_up_is_abandoned_after_the_failure_cap() {
-    let mut replayer = PyReplayer::new(sh("exit 1"), QUICK);
+    let mut replayer = PyReplayer::new(sh("exit 1"), REPLY);
     let inputs = MAX_CONSECUTIVE_WORKER_FAILURES + 5;
     for _ in 0..inputs {
         assert!(matches!(
@@ -176,7 +184,7 @@ fn a_verdict_resets_the_failure_count() {
     // Answers one request, then dies on the next: failures never come
     // MAX_CONSECUTIVE_WORKER_FAILURES in a row, so the cap never trips.
     let script = r#"read -r line; printf '%s\n' '{"status":"reject","error_class":"X","detail":"d","rule":null,"path":"/p"}'; read -r line; exit 1"#;
-    let mut replayer = PyReplayer::new(sh(script), QUICK);
+    let mut replayer = PyReplayer::new(sh(script), REPLY);
     let rounds = MAX_CONSECUTIVE_WORKER_FAILURES + 2;
     for _ in 0..rounds {
         assert!(matches!(
@@ -230,7 +238,7 @@ fn a_response_must_be_json_and_echo_the_path_it_answers() {
 fn a_command_that_cannot_be_spawned_is_a_harness_failure() {
     let mut replayer = PyReplayer::new(
         || Command::new("/nonexistent/secretary-diff-replay-worker"),
-        QUICK,
+        REPLY,
     );
     assert!(matches!(
         replayer.decode("record", Path::new("/p")),
