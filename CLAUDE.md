@@ -268,8 +268,12 @@ uv run scripts/mutate.py "$SCRATCH/mutations.toml"
 #     --with argon2-cffi --with blake3 --with cbor2 scripts/mutate.py SPEC
 # The probe `expr` must evaluate to a STRING (it is compared against
 # `repr(equals)`), and an `expect_red` name is matched as a whole token whose
-# edges may not be `-`, `.`, `/` or a word character — a section title that
-# starts with `--` can never be matched on its `FAIL:` line.
+# edges may not be `-`, `.`, `/` or a word character. So a name must be
+# written WITH any leading `--` its title has: `--diff-replay-serve ...`
+# matches `FAIL: --diff-replay-serve ...` (the character before it is a
+# space), while `diff-replay-serve ...` does not, because a `-` precedes it.
+# This line said a title starting with `--` "can never be matched", which
+# executing `gate.names_a_red` disproves (#662 review).
 #
 # Exit codes: 0 every row as declared; 1 a rendered table with a finding;
 # 2 refused to start (dirty/corrupt journal, bad spec — including a `path`
