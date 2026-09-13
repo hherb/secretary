@@ -89,14 +89,26 @@ pub fn parse_verdict(verdict: &Value, context: &str) -> PyOutcome {
                 Err(e) => PyOutcome::Harness(format!("base64: {}", e)),
             }
         }
-        Some("reject") => PyOutcome::Reject {
-            rule: verdict["rule"].as_str().map(str::to_owned),
-            detail: format!(
-                "{}: {}",
-                verdict["error_class"].as_str().unwrap_or("unknown"),
-                verdict["detail"].as_str().unwrap_or("")
-            ),
-        },
+        Some("reject") => {
+            // As strict as the accept arm above. For six of the seven targets
+            // ANY Python reject agrees with any Rust rejection, so this is the
+            // arm where a malformed verdict costs most, yet
+            // `{"status":"reject"}` alone used to parse, its class and detail
+            // defaulted to "unknown" and "" (#662 review). Python always emits
+            // both; a verdict without them is a broken harness, not a reason.
+            let (Some(class), Some(detail)) =
+                (verdict["error_class"].as_str(), verdict["detail"].as_str())
+            else {
+                return PyOutcome::Harness(format!(
+                    "python rejected but its `error_class` or `detail` is missing or \
+                     not a string: {verdict}"
+                ));
+            };
+            PyOutcome::Reject {
+                rule: verdict["rule"].as_str().map(str::to_owned),
+                detail: format!("{class}: {detail}"),
+            }
+        }
         Some("error") => PyOutcome::Harness(format!(
             "python reported an internal error: {} {} {}",
             verdict["error_class"].as_str().unwrap_or("unknown"),
@@ -162,6 +174,21 @@ mod tests {
             parse_verdict(&v, ""),
             PyOutcome::Reject { rule: None, .. }
         ));
+    }
+
+    #[test]
+    fn a_reject_without_a_string_class_and_detail_is_a_harness_failure() {
+        for v in [
+            json!({"status": "reject"}),
+            json!({"status": "reject", "detail": "d", "rule": null}),
+            json!({"status": "reject", "error_class": "E", "rule": null}),
+            json!({"status": "reject", "error_class": 7, "detail": "d", "rule": null}),
+        ] {
+            assert!(
+                matches!(parse_verdict(&v, ""), PyOutcome::Harness(_)),
+                "{v}"
+            );
+        }
     }
 
     #[test]
