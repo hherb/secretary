@@ -19,7 +19,8 @@ Layout
   fixtures       where the committed test data lives
   rejection      which exception types are rejection VERDICTS
   tamper         the shared byte-flip mutation helper
-  diff_replay    `--diff-replay` mode (a CONTRACT -- see the module docstring)
+  diff_replay    `--diff-replay` and `--diff-replay-serve` modes (a CONTRACT --
+                 see the module docstring)
   required_key_probe  the inputs Section DET re-decodes under several hash seeds
                       (spawned as a subprocess -- see its own docstring for why;
                       it also DECLARES the JSON contract Section DET parses)

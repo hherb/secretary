@@ -83,6 +83,11 @@ Exit codes:
      written to stderr.
   3  `--diff-replay` only: the replay harness itself failed (as distinct
      from the input being rejected, which is a verdict and exits 0).
+
+`--diff-replay-serve` (#655) answers the same verdicts for a whole corpus from
+one process -- one JSON request per stdin line, one JSON response per stdout
+line -- and exits 0 at EOF; a failed input is an `error` RESPONSE, not an exit
+code. Section DRS checks it agrees with `--diff-replay` input by input.
 """
 
 from __future__ import annotations
@@ -99,7 +104,22 @@ def main() -> int:
         metavar=("TARGET", "INPUT_PATH"),
         help="differential replay mode: decode one input file for one target, emit JSON",
     )
+    parser.add_argument(
+        "--diff-replay-serve",
+        action="store_true",
+        help="differential replay mode for a whole corpus: answer one JSON request "
+             "per stdin line with one JSON verdict per stdout line, until EOF",
+    )
     args, _ = parser.parse_known_args()
+    if args.diff_replay_serve:
+        # Same lazy import, for the same reason as `--diff-replay` below. This
+        # branch must come BEFORE the full-run fallthrough: `parse_known_args`
+        # ignores an unrecognised flag, so a spelling this parser did not know
+        # would run every section -- including Section DRS, which spawns this
+        # very mode, recursively.
+        from conformance_lib.diff_replay import run_diff_replay_serve
+
+        return run_diff_replay_serve()
     if args.diff_replay:
         # Imported HERE, not at module scope: `--diff-replay` is invoked once
         # per fuzz input under a timeout, and must not pay to import the
