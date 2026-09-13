@@ -55,30 +55,33 @@ pub fn is_due(last: Instant, now: Instant) -> bool {
 mod tests {
     use super::*;
 
+    // Whole-line equality, with counts that share no digit. The first version
+    // asserted `contains('3')` on a line already containing "60931", and gave
+    // total and committed the same value (39, 39), so dropping or swapping a
+    // count passed the very tests named for proving both (#662 review).
+
     #[test]
     fn a_start_line_names_the_target_and_both_counts() {
-        let line = start_line("vault_toml", 60931, 3);
-        assert!(line.contains("vault_toml"), "{line}");
-        assert!(line.contains("60931") && line.contains('3'), "{line}");
+        assert_eq!(
+            start_line("vault_toml", 60931, 8),
+            "[differential_replay] vault_toml: replaying 60931 input(s), 8 committed"
+        );
     }
 
     #[test]
     fn a_progress_line_carries_done_of_total() {
-        let line = progress_line("record", 1200, 7454, Duration::from_secs(12));
-        assert!(
-            line.contains("record") && line.contains("1200/7454"),
-            "{line}"
+        assert_eq!(
+            progress_line("record", 1200, 7454, Duration::from_secs(12)),
+            "[differential_replay] record: 1200/7454 after 12.0s"
         );
     }
 
     #[test]
     fn a_finish_line_names_both_counts_so_a_ci_log_proves_what_was_replayed() {
-        let line = finish_line("manifest_body", 39, 39, Duration::from_millis(1500));
-        assert!(
-            line.contains("manifest_body") && line.contains("39"),
-            "{line}"
+        assert_eq!(
+            finish_line("manifest_body", 41, 39, Duration::from_millis(1500)),
+            "[differential_replay] manifest_body: replayed 41 input(s), 39 committed, in 1.5s"
         );
-        assert!(line.contains("committed"), "{line}");
     }
 
     #[test]

@@ -84,9 +84,12 @@ fn an_answer_for_a_different_path_is_a_harness_failure_and_retires_the_worker() 
 fn a_worker_that_dies_is_a_harness_failure_naming_its_exit_and_stderr() {
     let mut replayer = PyReplayer::new(sh("read -r line; echo gone-away >&2; exit 7"), REPLY);
     match replayer.decode("record", Path::new("/p")) {
-        PyOutcome::Harness(msg) => {
-            assert!(msg.contains('7') && msg.contains("gone-away"), "{msg}")
-        }
+        // "exit status: 7", not a bare '7': the message also carries a path
+        // and a stderr tail, and a single character could match either.
+        PyOutcome::Harness(msg) => assert!(
+            msg.contains("exit status: 7") && msg.contains("gone-away"),
+            "{msg}"
+        ),
         other => panic!("{other:?}"),
     }
 }
