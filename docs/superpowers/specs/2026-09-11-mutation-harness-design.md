@@ -197,6 +197,27 @@ Verified during design: for `-p secretary-core` the message names
 `libsecretary_core.rlib` at a stable path, so the artifact set needs no globbing
 against the 13,000 files in `target/release/deps/`.
 
+**That build reads the LIBRARY only, which made every mutation under
+`core/tests/` unprovable (#649, 2026-09-13).** A file only an integration test
+compiles contributes nothing to `libsecretary_core.rlib`, so such a row read
+`NOT_LIVE` whatever its gate did — measured: `tokens_agree` made strict in
+`core/tests/differential_replay_helpers/tolerance.rs` reddened both tests the
+row named and still reported "artifact contents unchanged across 2 file(s)".
+The probe therefore takes two OPTIONAL keys, `test` (an integration-test target)
+and `features` (a TOML array), and the reading becomes `cargo build --release
+-p <package> --features <a,b> --test <target>`, which names that test binary as
+well as the library. Absent, the command is byte for byte what it was.
+`required-features` targets need both keys, since without the feature cargo
+refuses to build the target at all:
+
+```toml
+probe = { package = "secretary-core", test = "differential_replay", features = ["differential-replay"] }
+```
+
+The same mutation then reads `yes (artifact)` / `RED_AS_EXPECTED`. That cargo
+names the test executable under `--test` is MEASURED on this repo, not pinned
+by a self-test control.
+
 Never a source hash and never an mtime — both are what the issue rules out, and
 mtime is the mechanism behind false green 1.
 

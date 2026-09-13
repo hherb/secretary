@@ -252,6 +252,11 @@ bash scripts/check-secret-slot-hygiene.sh
 uv run scripts/mutate.py --self-test
 uv run scripts/mutate.py "$SCRATCH/mutations.toml"
 #
+# A Rust row whose mutation lives in an INTEGRATION TEST needs a scoped probe:
+# `probe = { package = "secretary-core", test = "<target>", features = [..] }`.
+# The unscoped probe builds the library only, so every `core/tests/**` row read
+# NOT_LIVE whatever its gate did, until #649's slice added the two keys.
+#
 # Exit codes: 0 every row as declared; 1 a rendered table with a finding;
 # 2 refused to start (dirty/corrupt journal, bad spec — including a `path`
 # that is not an existing file); 3 aborted, a restore could not be trusted,
@@ -267,8 +272,8 @@ uv run scripts/mutate.py "$SCRATCH/mutations.toml"
 # next invocation REFUSES to start until it is drained:
 uv run scripts/mutate.py --drain
 
-# The harness's own unit tests (249 tests; RE-MEASURE — it said 238 for a slice
-# after the count moved, and #656 added seven). Use the MODULE form — a bare
+# The harness's own unit tests (262 tests; RE-MEASURE — it said 238 for a slice
+# after the count moved, #656 added seven, and the scoped Rust probe thirteen). Use the MODULE form — a bare
 # `pytest` invocation intermittently hangs at 0% CPU on some machines. The two
 # cargo-backed controls (C10, N4) take minutes and queue on the package-cache
 # lock behind any parallel cargo; `-k "not C10 and not N4"` is the fast loop:

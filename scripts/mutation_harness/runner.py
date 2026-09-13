@@ -120,7 +120,7 @@ def _observe(spec: MutationSpec, repo_root: Path) -> Observation:
         # `C1` docstring for the measured claim that control actually pins.
         clear_pycache(repo_root / Path(spec.path).parent)
         return observe_python(spec.probe, repo_root)
-    return rust_artifact_hashes(spec.probe.package, repo_root)
+    return rust_artifact_hashes(spec.probe, repo_root)
 
 
 def _compare(

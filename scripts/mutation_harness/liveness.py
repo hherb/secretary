@@ -74,7 +74,7 @@ from urllib.parse import unquote, urlsplit
 
 from mutation_harness.subproc import run_bounded
 from mutation_harness.types import (
-    LivenessResult, PythonObservation, PythonProbe, RustObservation, RustReadingKind,
+    LivenessResult, PythonObservation, PythonProbe, RustObservation, RustProbe, RustReadingKind,
 )
 
 # Every subprocess this module spawns is bounded, for the same reason
@@ -281,10 +281,29 @@ def package_id_names(package_id: str, package: str) -> bool:
     return package_id.split(" ", 1)[0] == package
 
 
+def rust_build_argv(probe: RustProbe) -> list[str]:
+    """The `cargo build` command one Rust reading runs. Pure.
+
+    With no scope this is `cargo build --release -p <package>`, byte for byte
+    what every reading ran before `test`/`features` existed. A `test` adds
+    `--test <target>`, which makes cargo build (and name in its JSON) that
+    integration-test binary as well as the library it links; `features` are
+    joined into one `--features` argument, which is the spelling a
+    `required-features` target needs to be buildable at all.
+    """
+    argv = ["cargo", "build", "--release", "-p", probe.package]
+    if probe.features:
+        argv += ["--features", ",".join(probe.features)]
+    if probe.test is not None:
+        argv += ["--test", probe.test]
+    return argv + ["--message-format=json"]
+
+
 def rust_artifact_hashes(
-    package: str, repo_root: Path, timeout: int = BUILD_TIMEOUT_SECONDS
+    probe: RustProbe, repo_root: Path, timeout: int = BUILD_TIMEOUT_SECONDS
 ) -> RustObservation:
-    """Build `package` and hash the CONTENTS of every artifact cargo names.
+    """Build `probe`'s package (and test target, if it names one) and hash the
+    CONTENTS of every artifact cargo names for that package.
 
     Cargo's JSON gives absolute paths, so no globbing against the ~13,000
     files in `target/release/deps/` is needed. Verified during design: for
@@ -302,7 +321,7 @@ def rust_artifact_hashes(
     comparison then reported as "changed").
     """
     run = run_bounded(
-        ["cargo", "build", "--release", "-p", package, "--message-format=json"],
+        rust_build_argv(probe),
         cwd=repo_root,
         env=None,
         timeout=timeout,
@@ -325,7 +344,7 @@ def rust_artifact_hashes(
             continue
         if msg.get("reason") != "compiler-artifact":
             continue
-        if not package_id_names(msg.get("package_id", ""), package):
+        if not package_id_names(msg.get("package_id", ""), probe.package):
             continue
         for filename in msg.get("filenames", []):
             try:

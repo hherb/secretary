@@ -56,6 +56,10 @@ DOCUMENT_KEYS = frozenset({"mutation"})
 REQUIRED_KEYS = frozenset({"id", "lang", "path", "old", "new", "gate", "expect", "probe"})
 PYTHON_PROBE_KEYS = frozenset({"module", "expr", "equals", "syspath"})
 RUST_PROBE_KEYS = frozenset({"package"})
+# Optional: they SCOPE the build to an integration-test target and its
+# features. Absent, the reading is the package's library alone — exactly what
+# it was before these keys existed.
+RUST_PROBE_OPTIONAL_KEYS = frozenset({"test", "features"})
 
 
 class SpecError(ValueError):
@@ -213,11 +217,12 @@ def _validate_probe(
 ) -> PythonProbe | RustProbe:
     if not isinstance(raw, dict):
         raise SpecError(f"{where}: probe must be a table")
-    allowed = PYTHON_PROBE_KEYS if lang is Lang.PYTHON else RUST_PROBE_KEYS
-    unknown = sorted(set(raw) - allowed)
+    required = PYTHON_PROBE_KEYS if lang is Lang.PYTHON else RUST_PROBE_KEYS
+    optional = frozenset() if lang is Lang.PYTHON else RUST_PROBE_OPTIONAL_KEYS
+    unknown = sorted(set(raw) - required - optional)
     if unknown:
         raise SpecError(f"{where}: unknown probe key(s) {unknown} for lang={lang.value}")
-    missing = sorted(allowed - set(raw))
+    missing = sorted(required - set(raw))
     if missing:
         raise SpecError(f"{where}: probe missing key(s) {missing} for lang={lang.value}")
     if lang is Lang.PYTHON:
@@ -229,4 +234,32 @@ def _validate_probe(
             equals=_require_str(raw, "equals", f"{where}: probe"),
             syspath=syspath,
         )
-    return RustProbe(package=_require_str(raw, "package", f"{where}: probe"))
+    return RustProbe(
+        package=_require_str(raw, "package", f"{where}: probe"),
+        test=_optional_non_empty_str(raw, "test", f"{where}: probe"),
+        features=_optional_feature_list(raw, f"{where}: probe"),
+    )
+
+
+def _optional_non_empty_str(raw: dict, key: str, where: str) -> str | None:
+    """Absent is `None`; present must be a non-empty string. An empty `test`
+    would silently build the unscoped default, and the row would then read
+    `NOT_LIVE` for a reason it does not name."""
+    if key not in raw:
+        return None
+    value = raw[key]
+    if not isinstance(value, str) or not value:
+        raise SpecError(f"{where}: {key} must be a non-empty string")
+    return value
+
+
+def _optional_feature_list(raw: dict, where: str) -> tuple[str, ...]:
+    """Absent is `()`. Present must be a TOML array of non-empty strings; a
+    bare string is refused rather than split, since `"a,b"` and `["a", "b"]`
+    would otherwise both parse and only one of them is what the author meant."""
+    if "features" not in raw:
+        return ()
+    value = raw["features"]
+    if not isinstance(value, list) or not all(isinstance(f, str) and f for f in value):
+        raise SpecError(f"{where}: features must be a list of non-empty strings")
+    return tuple(value)

@@ -123,9 +123,18 @@ class PythonObservation:
 
 @dataclasses.dataclass(frozen=True)
 class RustProbe:
-    """Compare the CONTENT hash of the artifacts cargo names. Spec §5.1."""
+    """Compare the CONTENT hash of the artifacts cargo names. Spec §5.1.
+
+    `test` and `features` scope the build. With neither, the reading is the
+    package's LIBRARY alone, which no file under `core/tests/` contributes to —
+    so a mutation there could only ever read `NOT_LIVE`. Naming the
+    integration-test target (and the features it `required-features`) makes
+    cargo build, and name, that test binary too.
+    """
 
     package: str
+    test: str | None = None
+    features: tuple[str, ...] = ()
 
 
 class RustReadingKind(enum.Enum):
