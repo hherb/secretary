@@ -177,7 +177,8 @@ fn a_leader_that_dies_leaving_a_forked_child_has_its_group_killed() {
 fn a_worker_that_cannot_stay_up_is_abandoned_after_the_failure_cap() {
     let mut replayer = PyReplayer::new(sh("exit 1"), REPLY);
     let inputs = MAX_CONSECUTIVE_WORKER_FAILURES + 5;
-    for _ in 0..inputs {
+    for i in 0..inputs {
+        assert_eq!(replayer.abandoned(), i >= MAX_CONSECUTIVE_WORKER_FAILURES);
         assert!(matches!(
             replayer.decode("record", Path::new("/p")),
             PyOutcome::Harness(_)

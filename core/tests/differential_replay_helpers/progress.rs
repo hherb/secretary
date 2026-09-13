@@ -31,10 +31,21 @@ pub fn progress_line(target: &str, done: usize, total: usize, elapsed: Duration)
     )
 }
 
-pub fn finish_line(target: &str, total: usize, committed: usize, elapsed: Duration) -> String {
+/// `compared` is how many of `total` got a comparable verdict from both sides
+/// (agreeing or not); on a healthy run it equals `total`. This line said
+/// "replayed {total}", so a run that stopped starting Python workers part-way
+/// still printed a count of inputs replayed that had never reached Python
+/// (#662 review).
+pub fn finish_line(
+    target: &str,
+    compared: usize,
+    total: usize,
+    committed: usize,
+    elapsed: Duration,
+) -> String {
     format!(
-        "[differential_replay] {target}: replayed {total} input(s), {committed} committed, \
-         in {:.1}s",
+        "[differential_replay] {target}: {compared} of {total} input(s) compared, \
+         {committed} committed, in {:.1}s",
         elapsed.as_secs_f64()
     )
 }
@@ -79,8 +90,8 @@ mod tests {
     #[test]
     fn a_finish_line_names_both_counts_so_a_ci_log_proves_what_was_replayed() {
         assert_eq!(
-            finish_line("manifest_body", 41, 39, Duration::from_millis(1500)),
-            "[differential_replay] manifest_body: replayed 41 input(s), 39 committed, in 1.5s"
+            finish_line("manifest_body", 26, 41, 39, Duration::from_millis(1500)),
+            "[differential_replay] manifest_body: 26 of 41 input(s) compared, 39 committed, in 1.5s"
         );
     }
 

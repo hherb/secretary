@@ -37,7 +37,7 @@ use helpers::agreement::{judge, Judgement};
 use helpers::corpus::{corpus_dirs, corpus_inputs};
 use helpers::progress;
 use helpers::python_bridge::serve_command;
-use helpers::python_worker::{PyReplayer, PER_INPUT_TIMEOUT};
+use helpers::python_worker::{PyReplayer, MAX_CONSECUTIVE_WORKER_FAILURES, PER_INPUT_TIMEOUT};
 use helpers::rust_decoder::rust_decode;
 use helpers::targets::{
     min_inputs, MIN_CORPUS_INPUTS, NOT_TOKEN_COMPARED_TARGETS, TARGETS, TOKEN_COMPARED_TARGETS,
@@ -52,6 +52,11 @@ fn differential_replay_full_corpus() {
     // it replaces cost ~0.16 s against a 0.2-0.4 ms decode, which on a
     // fuzzed checkout's 74,924-input corpus was ~3.3 h of apparent hang.
     let mut python = PyReplayer::new(serve_command, PER_INPUT_TIMEOUT);
+    // Inputs skipped because the worker-failure cap had tripped. Reported as
+    // ONE harness failure after the loop rather than one per input: past the
+    // cap there is no verdict left to get, and on a fuzzed checkout a line per
+    // input is tens of thousands of lines burying the failures that say why.
+    let mut not_replayed = 0usize;
     for target in TARGETS {
         // Per-target input floor (#595). `corpus_dirs` skips any directory
         // that does not exist, with no `else` — so a renamed or moved
@@ -70,15 +75,23 @@ fn differential_replay_full_corpus() {
         let committed = inputs.iter().filter(|i| i.committed).count();
         let started = Instant::now();
         let mut last_report = started;
+        let mut compared = 0usize;
         progress::emit(&progress::start_line(target, inputs.len(), committed));
         for (done, input) in inputs.iter().enumerate() {
+            if python.abandoned() {
+                not_replayed += 1;
+                continue;
+            }
             let bytes = fs::read(&input.path).expect("read input");
             let rust = rust_decode(target, &bytes);
             let verdict = python.decode(target, &input.path);
             let prefix = format!("[{}] {}", target, input.path.display());
             match judge(target, &rust, &verdict) {
-                Judgement::Agree => {}
-                Judgement::Disagree(msg) => disagreements.push(format!("{prefix}: {msg}")),
+                Judgement::Agree => compared += 1,
+                Judgement::Disagree(msg) => {
+                    compared += 1;
+                    disagreements.push(format!("{prefix}: {msg}"));
+                }
                 Judgement::Harness(msg) => harness_failures.push(format!("{prefix}: {msg}")),
             }
             let now = Instant::now();
@@ -111,9 +124,17 @@ fn differential_replay_full_corpus() {
         );
         progress::emit(&progress::finish_line(
             target,
+            compared,
             inputs.len(),
             committed,
             started.elapsed(),
+        ));
+    }
+    if not_replayed > 0 {
+        harness_failures.push(format!(
+            "{not_replayed} input(s) not replayed: {MAX_CONSECUTIVE_WORKER_FAILURES} inputs \
+             in a row got no answer from a Python worker, so no further worker was \
+             started — the failures above say why"
         ));
     }
     // Harness failures first: a broken Python side makes every verdict

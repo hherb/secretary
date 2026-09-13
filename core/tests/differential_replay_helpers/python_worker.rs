@@ -107,13 +107,19 @@ impl<F: FnMut() -> Command> PyReplayer<F> {
         self.spawned
     }
 
+    /// Whether the failure cap has tripped, so that every further
+    /// [`Self::decode`] fails without asking a worker.
+    pub fn abandoned(&self) -> bool {
+        self.consecutive_failures >= MAX_CONSECUTIVE_WORKER_FAILURES
+    }
+
     /// The Python verdict for one input.
     ///
     /// Every failure to obtain a verdict is a [`PyOutcome::Harness`] naming
     /// the input; none is ever a `Reject`, which the caller would score as
     /// agreement with a Rust rejection (#595).
     pub fn decode(&mut self, target: &str, path: &Path) -> PyOutcome {
-        if self.consecutive_failures >= MAX_CONSECUTIVE_WORKER_FAILURES {
+        if self.abandoned() {
             return PyOutcome::Harness(format!(
                 "not replayed: {}: the last {} inputs got no answer from a Python \
                  worker, so no further worker is started — the first failures \
