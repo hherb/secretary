@@ -25,9 +25,9 @@ pub fn corpus_dirs(target: &str) -> Vec<CorpusDir> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut dirs = vec![];
     // Runtime corpus (gitignored, may not exist locally). NOT committed, so
-    // it is replayed but never counted toward the floor. This is also the
-    // directory behind #655: it grows without bound, and a checkout that has
-    // fuzzed replays all of it, which presents as a hang.
+    // it is replayed but never counted toward the floor. It grows without
+    // bound — 74,924 files on one machine, which through a per-input spawn was
+    // ~3.3 h of apparent hang (#655); through the one worker, 27.5 s.
     let runtime = manifest.join("fuzz/corpus").join(target);
     if runtime.is_dir() {
         dirs.push(CorpusDir {

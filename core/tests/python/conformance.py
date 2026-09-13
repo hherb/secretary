@@ -121,10 +121,10 @@ def main() -> int:
 
         return run_diff_replay_serve()
     if args.diff_replay:
-        # Imported HERE, not at module scope: `--diff-replay` is invoked once
-        # per fuzz input under a timeout, and must not pay to import the
-        # section modules (and through them the whole verifier) to decode one
-        # file. The section registry is only reachable on the full-run path.
+        # Imported HERE, not at module scope: single-shot `--diff-replay`
+        # decodes one file in a fresh process, and must not pay to import the
+        # section modules (and through them the whole verifier) to do it. The
+        # section registry is only reachable on the full-run path.
         from conformance_lib.diff_replay import run_diff_replay
 
         target, input_path = args.diff_replay

@@ -47,7 +47,8 @@ module". These names predate the split (#593), when the whole verifier was one
 large semantic diff, so they were left alone deliberately.
 
 Third-party imports are LAZY, inside the functions that need them; the
-package's top-level import graph is stdlib-only. `--diff-replay` is invoked
-once per fuzz input under a timeout, so it must not pay to import crypto
-libraries it never calls.
+package's top-level import graph is stdlib-only. Single-shot `--diff-replay`
+decodes one input per process, and `--diff-replay-serve` starts once per run
+under a per-input timeout; neither should pay to import crypto libraries it
+never calls.
 """

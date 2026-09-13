@@ -101,11 +101,13 @@ jobs:
       # conclusion: on this runner the step takes ~36 s, of which ~30 s is
       # cargo recompiling (the `-p … --features` feature set differs from the
       # preceding `--workspace` build, so it re-fingerprints that graph in the
-      # shared target dir) and 5.98 s is the replay itself over all 50
-      # committed inputs. Local test bodies measure 11-24 s, so CI is FASTER
-      # on the part that does the work and the 50 `uv` spawns are bounded
-      # above by ~6 s. If this step ever needs speeding up, the lever is the
-      # feature-set thrash against the shared target dir, NOT `uv`.
+      # shared target dir) and 5.98 s was the replay itself over all 50
+      # committed inputs, then spawning `uv run` once per input. Since #655 the
+      # replay asks one `--diff-replay-serve` worker instead (1.42 s locally,
+      # down from 12.79 s), so the cargo share only grew: if this step ever
+      # needs speeding up, the lever is the feature-set thrash against the
+      # shared target dir, NOT `uv`. The test prints per-target input counts to
+      # stderr, uncaptured, so this step's log shows what was replayed.
       #
       # Linux only, mirroring `clean-room conformance`. The decoders are
       # platform-independent, and the macOS leg would pay a cold `pqcrypto`
@@ -126,7 +128,7 @@ jobs:
       # `core/tests/data/diff_regressions/`. `core/fuzz/corpus/` is gitignored
       # and absent here, so agreement on fuzz-DISCOVERED inputs is still
       # proven only by whoever runs the fuzzer. `MIN_CORPUS_INPUTS`
-      # (`core/tests/differential_replay.rs`) enforces a per-target floor, so
+      # (`core/tests/differential_replay_helpers/targets.rs`) enforces a per-target floor, so
       # a corpus that shrinks to nothing fails rather than passing vacuously —
       # read the totals there rather than duplicating a count in this comment,
       # which nothing re-measures.
@@ -392,8 +394,9 @@ jobs:
     # which is `#![cfg(feature = "differential-replay")]` and off by default.
     # (A step in `rust-test` above turns that feature on since #647, so read
     # this paragraph as history. It does not change the argument: that step
-    # invokes `conformance.py --diff-replay` per corpus input and never its
-    # section suite, so it would not have caught the break below either.)
+    # invokes `conformance.py`'s replay mode -- one `--diff-replay-serve`
+    # worker since #655 -- and never its section suite, so it would not have
+    # caught the break below either.)
     #
     # That gap is why #544 shipped. `pqcrypto` was pinned `>=0.3` unbounded,
     # 1.0.0 changed `ml_dsa_65.verify` from returning a bool to RAISING, and
