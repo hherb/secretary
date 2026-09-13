@@ -4,8 +4,9 @@ WHY THIS EXISTS (#655). `core/tests/differential_replay.rs` used to spawn
 `uv run conformance.py --diff-replay <target> <path>` once PER corpus input.
 Decoding costs 0.2-0.4 ms; the spawn costs ~0.16 s. On a checkout that has
 fuzzed, `core/fuzz/corpus/` held 74,924 inputs, so the replay took ~3.3 hours
-and, printing nothing, presented as a hang. Measured in one interpreter, the
-same 74,924 inputs decode in about 30 seconds.
+and, printing nothing, presented as a hang. Measured in one interpreter before
+the design was chosen, the same 74,924 inputs decode in about 30 seconds; the
+finished replay, Rust side and worker together, took 27.5 s over 74,973.
 
 `--diff-replay-serve` is that one interpreter: it reads one JSON request per
 line and writes one verdict per line. What it gives up is the per-input

@@ -4,8 +4,9 @@
 //! The replay used to spawn `uv run conformance.py --diff-replay` PER input.
 //! Decoding costs 0.2-0.4 ms; the spawn ~0.16 s. On a checkout that has
 //! fuzzed, `core/fuzz/corpus/` held 74,924 inputs, so the replay took ~3.3 h
-//! while printing nothing. One worker answers the same corpus in about a
-//! minute. Everything the per-input spawn guaranteed is kept per input:
+//! while printing nothing. One worker answered 74,973 inputs (that corpus plus
+//! the committed ones) in 27.5 s, measured end to end. Everything the
+//! per-input spawn guaranteed is kept per input:
 //!
 //! - **A bounded wait.** Each answer must arrive within the timeout, or the
 //!   worker's whole process group is killed and the input is a harness
