@@ -129,7 +129,8 @@ def run_diff_replay(target: str, input_path: str) -> int:
             return 0
         else:
             # An unknown target is a wiring bug between this script and
-            # `differential_replay.rs`'s TARGETS list -- not a verdict. As a
+            # the Rust replay's TARGETS list (`differential_replay_helpers/targets.rs`)
+            # -- not a verdict. As a
             # "reject" it read as agreement on every Rust-reject input.
             print(json.dumps({
                 "status": "error",

@@ -18,8 +18,8 @@ machine-checked are easy to break silently.
 ## What "differential replay" is
 
 The fuzz harness drives seven Rust decoders (`core/fuzz/fuzz_targets/`) and
-differential replay drives seven of its own (`differential_replay.rs`'s
-`TARGETS`). **The two sets are not the same set** and neither is "the seven
+differential replay drives seven of its own (`TARGETS` in
+`differential_replay_helpers/targets.rs`). **The two sets are not the same set** and neither is "the seven
 targets": they overlap in six, `manifest_body` is replay-only and has no
 fuzz target, and `device_file` is fuzz-only and is not replayed. The point
 of differential replay is to run the corpus through a **completely
@@ -32,7 +32,8 @@ on:
    Disagreement here means one side has a re-encoding bug that the other
    side's tests didn't catch.
 3. **Which rule each names when both reject** — for targets listed in
-   `differential_replay.rs::TOKEN_COMPARED_TARGETS`. See §3 below.
+   `TOKEN_COMPARED_TARGETS` (`differential_replay_helpers/targets.rs`). See §3
+   below.
 
 The Python decoders live in `core/tests/python/conformance_lib/codec/`
 (#593; `conformance.py` is now a thin entrypoint over that package) and
@@ -113,7 +114,7 @@ There are exactly three valid output shapes:
 - `error_class` is `type(e).__name__` and `detail` is `str(e)`. Both are
   informational and neither is compared.
 - **`rule` is compared** (#634), for the targets in
-  `differential_replay.rs::TOKEN_COMPARED_TARGETS` — today `manifest_body`
+  `differential_replay_helpers/targets.rs::TOKEN_COMPARED_TARGETS` — today `manifest_body`
   and nothing else. It is one of the tokens in
   `core/tests/data/rule_token_vocabulary.json`, which the Rust enum
   `secretary_core::vault::manifest::RuleToken` and Section RTV both check
@@ -208,8 +209,9 @@ directories on every run.
    (with or without re-encoded bytes, per §1/§2 above), importing the new
    pair at the top of that module.
 3. Mirror the change on the Rust side in
-   `core/tests/differential_replay.rs::rust_decode` and
-   `core/tests/differential_replay.rs::TARGETS`.
+   `core/tests/differential_replay_helpers/rust_decoder.rs::rust_decode` and
+   `core/tests/differential_replay_helpers/targets.rs::TARGETS` (moved out of
+   the entry file in #649), plus a `MIN_CORPUS_INPUTS` row in that same file.
 4. Add a fuzz target under `core/fuzz/fuzz_targets/<target>.rs` if one
    doesn't exist yet. The differential replay only meaningfully runs
    against inputs the fuzzer has actually mutated — without a

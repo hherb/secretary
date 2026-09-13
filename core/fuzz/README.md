@@ -23,8 +23,8 @@ for goals and exit criteria.
 `fuzz_targets/manifest_body.rs` and no `[[bin]]` for it**, so
 `cargo fuzz run manifest_body` fails and `corpus/manifest_body/` is never
 created. Those seeds exist for a different consumer: `manifest_body` is a
-**differential-replay** target (`core/tests/differential_replay.rs`'s
-`TARGETS`), which reads `seeds/<target>/` directly.
+**differential-replay** target (`TARGETS` in
+`core/tests/differential_replay_helpers/targets.rs`), which reads `seeds/<target>/` directly.
 
 The practical consequence is that, unlike the seven targets above, its
 replay corpus only ever grows when someone hand-authors a row — no mutation
