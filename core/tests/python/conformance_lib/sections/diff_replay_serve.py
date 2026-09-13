@@ -42,6 +42,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -58,6 +59,14 @@ from conformance_lib.fixtures import test_data_dir
 _ENTRYPOINT = Path(__file__).resolve().parents[2] / "conformance.py"
 # Generous per spawn: the single-shot side starts a fresh interpreter per input.
 _SUBPROCESS_TIMEOUT_SECONDS = 120
+
+# Set in every process this section spawns. `conformance.py` parses with
+# `parse_known_args`, so if `--diff-replay-serve` ever stopped being recognised
+# the child would silently run the FULL verifier -- this section included,
+# which would spawn again, without bound, each level waiting on the next. A
+# process that finds this variable set refuses to spawn, so that failure is
+# one level deep and reads as a FAIL rather than as a hang.
+NESTED_ENV = "CONFORMANCE_DRS_SPAWNED"
 
 
 def committed_inputs() -> list[tuple[str, Path]]:
@@ -147,6 +156,7 @@ def _run(args: list[str], stdin: str = "") -> subprocess.CompletedProcess:
         input=stdin,
         capture_output=True,
         text=True,
+        env={**os.environ, NESTED_ENV: "1"},
         timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
 
@@ -186,6 +196,11 @@ def _equivalence_issues(inputs: list[tuple[str, Path]]) -> tuple[list[str], int]
 
 
 def section_diff_replay_serve() -> tuple[bool, list[str]]:
+    if os.environ.get(NESTED_ENV):
+        return False, [
+            f"FAIL refusing to spawn: {NESTED_ENV} is set, so this verifier was itself "
+            "started by Section DRS -- the mode it asked for was not recognised"
+        ]
     lines: list[str] = []
     protocol = _protocol_issues()
     lines.append(
