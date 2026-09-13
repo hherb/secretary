@@ -35,7 +35,8 @@ pub const TOKEN_COMPARED_TARGETS: &[&str] = &["manifest_body"];
 /// `every_target_is_classified` requires this list and the one above to
 /// partition `TARGETS` exactly, so a new target cannot default silently into
 /// the loose behaviour — the fail-open shape #595 found in
-/// `differential_replay.rs`'s own corpus discovery.
+/// `differential_replay.rs`'s own corpus discovery. `agreement::judge` reads
+/// it too, and reports a target in neither list as a harness failure.
 pub const NOT_TOKEN_COMPARED_TARGETS: &[&str] = &[
     "vault_toml",
     "record",

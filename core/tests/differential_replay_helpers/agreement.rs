@@ -10,7 +10,7 @@ use secretary_core::crypto::secret::SecretBytes;
 
 use super::python_bridge::PyOutcome;
 use super::rust_decoder::RustRejection;
-use super::targets::TOKEN_COMPARED_TARGETS;
+use super::targets::{NOT_TOKEN_COMPARED_TARGETS, TOKEN_COMPARED_TARGETS};
 use super::tolerance::tokens_agree;
 
 /// The target whose accept compares no bytes: it is decoded, never
@@ -43,6 +43,20 @@ pub fn judge(
     }
 
     let token_compared = TOKEN_COMPARED_TARGETS.contains(&target);
+
+    // Default-deny on the classification itself. `token_compared` alone read
+    // "not in the compared list" as "loose", so a target in NEITHER list was
+    // scored on the fact of rejection alone — the fail-open default
+    // `NOT_TOKEN_COMPARED_TARGETS` exists to forbid, enforced until now only by
+    // `every_target_is_classified` and never by the code that decides (#662
+    // review). A target #641 adds to `TARGETS` without classifying it now
+    // fails here as well as there.
+    if !token_compared && !NOT_TOKEN_COMPARED_TARGETS.contains(&target) {
+        return Judgement::Harness(format!(
+            "target {target:?} is in neither TOKEN_COMPARED_TARGETS nor \
+             NOT_TOKEN_COMPARED_TARGETS, so how to compare its verdicts is undecided"
+        ));
+    }
 
     // A missing token on a token-compared target is a harness failure, never
     // an ordinary disagreement: it means the harness cannot tell whether the
@@ -136,6 +150,19 @@ mod tests {
     fn the_two_fixture_targets_sit_on_either_side_of_the_classification() {
         assert!(TOKEN_COMPARED_TARGETS.contains(&COMPARED));
         assert!(!TOKEN_COMPARED_TARGETS.contains(&UNCOMPARED));
+    }
+
+    #[test]
+    fn an_unclassified_target_is_a_harness_failure_not_the_loose_comparison() {
+        // Both reject, different tokens: the loose comparison would say Agree.
+        assert!(matches!(
+            judge(
+                "a_target_nobody_classified",
+                &rust_err(Some("missing_field")),
+                &py_reject(Some("duplicate_map_key"))
+            ),
+            Judgement::Harness(_)
+        ));
     }
 
     #[test]
