@@ -96,7 +96,19 @@ cargo test --release --locked -p secretary-core \
 # `differential_replay_helpers/python_worker.rs`: a 60 s wait, then the
 # worker's whole PROCESS GROUP killed (`uv run` forks Python, so killing `uv`
 # alone orphans it); a response must echo the path it answers; any transport
-# failure retires the worker. What a reused interpreter gives up is process
+# failure retires the worker.
+#
+# TRAP: that kill is kill(2) through `rustix`, and it must NEVER go back to
+# `Command::new("kill")`. procps-ng 4.0.4's `kill -KILL -<pgid>` (Ubuntu 24.04,
+# CI's image) parses `-<pgid>` as an unknown option and signals `'0' - optopt`,
+# i.e. pid -1: SIGKILL to every process the user owns. The first version of the
+# worker did exactly that on PR #662's CI run. The symptom was NOT a failed
+# test: the runner died, the job was cancelled five minutes after its 30-minute
+# cap, and GitHub kept no log at all. On a Linux workstation it kills the whole
+# session. macOS's BSD `kill` parses the same argv correctly, so no local run
+# shows it. Measured in `ubuntu:24.04`; procps-ng 4.0.2 (Debian bookworm) kills
+# the group leader alone instead. A CI job that is CANCELLED with no log is a
+# runner that was killed, not a slow test. What a reused interpreter gives up is process
 # isolation, which conformance Section DRS checks rather than assumes, over
 # the committed corpus only.
 #
