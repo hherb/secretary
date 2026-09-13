@@ -136,6 +136,25 @@ class RustProbe:
     test: str | None = None
     features: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        """`spec.py` refuses all of this first, as a `SpecError`; this guards
+        every OTHER constructor — the controls, the self-test and the tests all
+        build a probe directly (#662 review). Each refused value fails safe
+        today (cargo rejects it and the row reads `NOT_LIVE`), but for a
+        reason the row does not name — and a `list` of features also made this
+        frozen dataclass unhashable."""
+        if not isinstance(self.package, str) or not self.package:
+            raise ValueError(f"package must be a non-empty string, got {self.package!r}")
+        if self.test is not None and (not isinstance(self.test, str) or not self.test):
+            raise ValueError(f"test must be None or a non-empty string, got {self.test!r}")
+        if not isinstance(self.features, tuple) or not all(
+            isinstance(f, str) and f and "," not in f for f in self.features
+        ):
+            raise ValueError(
+                "features must be a tuple of non-empty names without commas, "
+                f"got {self.features!r}"
+            )
+
 
 class RustReadingKind(enum.Enum):
     """What ONE `cargo build` reading is. Only `ARTIFACTS` is a measurement.

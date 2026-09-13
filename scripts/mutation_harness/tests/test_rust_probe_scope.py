@@ -68,18 +68,40 @@ def test_a_probe_naming_only_its_package_scopes_nothing(tmp_path):
         ('{ package = "demo", features = "differential-replay" }', _FEATURES_MSG),
         ('{ package = "demo", features = [""] }', _FEATURES_MSG),
         ('{ package = "demo", features = [1] }', _FEATURES_MSG),
+        ('{ package = "demo", features = ["a,b"] }', _FEATURES_MSG),
         ('{ test = "t" }', "missing"),
         ('{ package = "demo", tests = "t" }', "unknown probe key"),
     ],
     ids=["empty-test", "non-string-test", "bare-string-features", "empty-feature",
-         "non-string-feature", "no-package", "typo-key"],
+         "non-string-feature", "comma-in-a-feature", "no-package", "typo-key"],
 )
 def test_a_malformed_scope_is_refused_rather_than_silently_widened(tmp_path, probe_text, match):
-    """An empty or mistyped scope would build the package-only default and
-    report `NOT_LIVE` for a reason the row does not name — or, for a typo'd
-    key, build less than the author asked for."""
+    """An empty or mistyped scope would reach cargo as written (`--test ""`),
+    fail the baseline build and report `NOT_LIVE` for a reason the row does
+    not name — or, for a typo'd key, build less than the author asked for."""
     with pytest.raises(SpecError, match=match):
         _parse_probe(tmp_path, probe_text)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"package": ""},
+        {"package": "demo", "test": ""},
+        {"package": "demo", "test": 3},
+        {"package": "demo", "features": ["differential-replay"]},
+        {"package": "demo", "features": ("",)},
+        {"package": "demo", "features": ("a,b",)},
+    ],
+    ids=["empty-package", "empty-test", "non-string-test", "list-features",
+         "empty-feature", "comma-in-a-feature"],
+)
+def test_a_probe_built_directly_refuses_what_the_spec_parser_refuses(kwargs):
+    """`spec.py` is not the only constructor: the controls, the self-test and
+    these tests build `RustProbe` directly, and until the #662 review nothing
+    stopped them building a scope the parser would refuse."""
+    with pytest.raises(ValueError):
+        RustProbe(**kwargs)
 
 
 def test_the_default_build_is_unchanged():

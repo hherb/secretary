@@ -243,8 +243,11 @@ def _validate_probe(
 
 def _optional_non_empty_str(raw: dict, key: str, where: str) -> str | None:
     """Absent is `None`; present must be a non-empty string. An empty `test`
-    would silently build the unscoped default, and the row would then read
-    `NOT_LIVE` for a reason it does not name."""
+    would reach cargo as `--test ""`, fail the baseline build, and the row
+    would read `NOT_LIVE` for a reason it does not name. (This said an empty
+    `test` would "silently build the unscoped default", which
+    `liveness.rust_build_argv` does not do: it tests `is not None` — #662
+    review.)"""
     if key not in raw:
         return None
     value = raw[key]
@@ -256,10 +259,16 @@ def _optional_non_empty_str(raw: dict, key: str, where: str) -> str | None:
 def _optional_feature_list(raw: dict, where: str) -> tuple[str, ...]:
     """Absent is `()`. Present must be a TOML array of non-empty strings; a
     bare string is refused rather than split, since `"a,b"` and `["a", "b"]`
-    would otherwise both parse and only one of them is what the author meant."""
+    would otherwise both parse and only one of them is what the author meant.
+    For the same reason a comma INSIDE one element is refused: `["a,b"]` is
+    joined into `--features a,b`, which cargo splits into two."""
     if "features" not in raw:
         return ()
     value = raw["features"]
-    if not isinstance(value, list) or not all(isinstance(f, str) and f for f in value):
-        raise SpecError(f"{where}: features must be a list of non-empty strings")
+    if not isinstance(value, list) or not all(
+        isinstance(f, str) and f and "," not in f for f in value
+    ):
+        raise SpecError(
+            f"{where}: features must be a list of non-empty strings without commas"
+        )
     return tuple(value)
