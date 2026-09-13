@@ -199,6 +199,40 @@ mod tests {
         }
     }
 
+    /// The tolerance at its CALL SITE. `tokens_agree`'s own tests pin the
+    /// predicate, but nothing here did: `tokens_agree(rt, pt)` rewritten as
+    /// `rt == pt` left every test in this module green, and only the full
+    /// corpus replay, through its one witness input, noticed (#662 review).
+    /// This is the line #646 edits, and the reason `judge` was lifted out of
+    /// the corpus loop was to test it without Python.
+    #[test]
+    fn a_phase_dependent_pair_on_a_compared_target_agrees() {
+        // #621's witness pair: vault-format §4.2 leaves its order free.
+        assert_eq!(
+            judge(
+                COMPARED,
+                &rust_err(Some("array_sort_order")),
+                &py_reject(Some("rule2_indefinite_length"))
+            ),
+            Judgement::Agree
+        );
+    }
+
+    /// An unrecognised token is a DISAGREEMENT, not a harness failure: the
+    /// missing-token guard catches only `None`, and a typo'd token must still
+    /// red the run rather than read as tolerated.
+    #[test]
+    fn an_unknown_token_on_a_compared_target_is_a_disagreement() {
+        assert!(matches!(
+            judge(
+                COMPARED,
+                &rust_err(Some("array_sort_order")),
+                &py_reject(Some("not_a_real_token"))
+            ),
+            Judgement::Disagree(_)
+        ));
+    }
+
     #[test]
     fn both_accepting_agrees_only_on_identical_bytes() {
         assert_eq!(
