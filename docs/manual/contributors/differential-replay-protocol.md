@@ -82,7 +82,11 @@ uv run [--with <pkg>...] conformance.py --diff-replay <TARGET> <INPUT_PATH>
   allocation, etc.), the Rust side kills the worker's whole PROCESS GROUP —
   `uv run` forks the interpreter rather than exec'ing it, so killing `uv` alone
   would orphan a spinning Python — reports a timeout for that input, and starts
-  a fresh worker for the next. **Don't write Python decoders that scale
+  a fresh worker for the next. The kill is `kill(2)` on the negative group id,
+  through `rustix`, and **never the `kill` utility**: procps-ng 4.0.4's
+  `kill -KILL -<pgid>` (Ubuntu 24.04) reads the group id as an option and
+  signals pid -1, every process the user owns. The first version of this
+  worker did that on PR #662's CI run and took the runner down with it. **Don't write Python decoders that scale
   super-linearly in input length** — there is no protective `signal.alarm`
   inside the Python process; the timeout is enforced from Rust.
 
@@ -118,7 +122,10 @@ never a verdict. The worker exits 0 at EOF.
 What a reused interpreter gives up is per-input process isolation: a decoder
 that mutated module state on one input could change the verdict on the next.
 None does today, and Section DRS replays every committed input through both
-modes and requires identical verdicts — see its LIMIT for the fuzz corpus it
+modes and requires identical verdicts — each a DECODE (accept or reject), with
+the single-shot process exiting 0, since two identical `error` verdicts are
+what a broken `replay_bytes` produces in both modes — and requires both
+committed roots to contribute an input. See its LIMIT for the fuzz corpus it
 does not replay. The Rust side also retires a worker after any transport
 failure (timeout, death, non-JSON line, mismatched echo), but NOT after an
 `error` verdict. Once **three inputs in a row get no answer from a worker** —
@@ -180,7 +187,9 @@ There are exactly three valid output shapes:
 ```
 
 - `error_class` is `type(e).__name__` and `detail` is `str(e)`. Both are
-  informational and neither is compared.
+  informational and neither is compared — but both are REQUIRED, as strings: a
+  reject missing either is a harness failure, as an accept missing
+  `reencoded_b64` already was (#662 review).
 - **`rule` is compared** (#634), for the targets in
   `differential_replay_helpers/targets.rs::TOKEN_COMPARED_TARGETS` — today `manifest_body`
   and nothing else. It is one of the tokens in
@@ -212,6 +221,9 @@ There are exactly three valid output shapes:
   DISAGREEMENT, not as a harness failure. Both red the test, so nothing is
   lost; "unrecognised or missing is a harness failure" is simply wrong about
   the first half.
+- A target must be classified: one in neither `TOKEN_COMPARED_TARGETS` nor
+  `NOT_TOKEN_COMPARED_TARGETS` is a harness failure in `agreement::judge`,
+  never the loose comparison by default (#662 review).
 - **`manifest_file` is deliberately NOT token-compared** (#640): Rust's
   header raises `UnsupportedFormatVersion` where Python raises the same
   `ParseError` it raises for every envelope fault, and no mapping reconciles
