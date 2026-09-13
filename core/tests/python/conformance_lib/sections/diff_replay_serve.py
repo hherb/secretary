@@ -27,8 +27,11 @@ Two checks:
      decoded once by a fresh single-shot `--diff-replay` process and once by a
      single `--diff-replay-serve` process fed all of them in sequence. The two
      verdict objects must be identical once the serve-only `path` and
-     `traceback` keys are set aside. Every target must contribute at least one
-     input, so an empty discovery cannot pass.
+     `traceback` keys are set aside -- and each must be a DECODE (accept or
+     reject), with the single-shot process exiting 0, because two identical
+     `error` verdicts are what a broken `replay_bytes` produces in both modes.
+     Every target must contribute at least one input, so an empty discovery
+     cannot pass.
 
 LIMIT. Check 2 replays the COMMITTED inputs only -- the ones CI has. A verdict
 that depends on interpreter state could in principle surface only on some
@@ -180,20 +183,48 @@ def _equivalence_issues(inputs: list[tuple[str, Path]]) -> tuple[list[str], int]
 
     compared = 0
     for (target, path), line in zip(inputs, responses):
+        where = f"[{target}] {path.name}"
         try:
             single = _run(["--diff-replay", target, str(path)])
             want = json.loads(single.stdout)
             got = json.loads(line)
+        except subprocess.TimeoutExpired as e:
+            # Every later input would wait out the same timeout: were
+            # `--diff-replay` ever to fall through to the full verifier, that
+            # is 50 x 120 s before this section reported anything.
+            issues.append(f"{where}: could not compare, stopping here: {e}")
+            break
         except (OSError, subprocess.SubprocessError, ValueError) as e:
-            issues.append(f"[{target}] {path.name}: could not compare: {e}")
+            issues.append(f"{where}: could not compare: {e}")
             continue
         if got.get("path") != str(path):
-            issues.append(f"[{target}] {path.name}: response echoes path {got.get('path')!r}")
+            issues.append(f"{where}: response echoes path {got.get('path')!r}")
         verdict = {k: v for k, v in got.items() if k not in SERVE_ONLY_KEYS}
         if verdict != want:
-            issues.append(f"[{target}] {path.name}: serve {verdict} != single-shot {want}")
+            issues.append(f"{where}: serve {verdict} != single-shot {want}")
+        issues.extend(f"{where}: {issue}" for issue in _decoded_issues(single, want, verdict))
         compared += 1
     return issues, compared
+
+
+def _decoded_issues(single: subprocess.CompletedProcess, want: dict, got: dict) -> list[str]:
+    """Why a pair of IDENTICAL verdicts still compares nothing. Pure.
+
+    Identity alone is not equivalence: if `replay_bytes` were broken -- a
+    typo, an import or API break -- BOTH modes return the same `status:
+    error` object, and this section printed `PASS 50 committed inputs ...
+    serve verdict identical to single-shot` having decoded none of them
+    (measured, #662 review). Every committed input is one the Rust replay
+    requires a verdict for, so an `error` on either side, or a single-shot
+    process that does not exit 0, is a failure here too.
+    """
+    issues = []
+    if single.returncode != 0:
+        issues.append(f"single-shot --diff-replay exited {single.returncode}")
+    for mode, verdict in (("single-shot", want), ("serve", got)):
+        if verdict.get("status") not in ("accept", "reject"):
+            issues.append(f"{mode} decoded nothing: {verdict}")
+    return issues
 
 
 def section_diff_replay_serve() -> tuple[bool, list[str]]:
@@ -215,7 +246,7 @@ def section_diff_replay_serve() -> tuple[bool, list[str]]:
     equivalence, compared = _equivalence_issues(inputs)
     lines.append(
         f"PASS {compared} committed inputs over {len(DIFF_REPLAY_TARGETS)} targets: "
-        "serve verdict identical to single-shot"
+        "each decoded, serve verdict identical to single-shot"
         if not equivalence else f"FAIL equivalence ({len(equivalence)} issue(s))"
     )
     lines.extend(f"  {issue}" for issue in equivalence)
