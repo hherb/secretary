@@ -12,257 +12,51 @@
 //! See docs/superpowers/specs/2026-04-30-fuzz-harness-design.md §
 //! "Out-of-loop differential replay".
 //!
-//! The subprocess/corpus plumbing lives in
-//! [`differential_replay_helpers`] so this entry file -- which holds the
-//! classification tables, the tolerance predicate, `rust_decode`, and the
-//! `#[test]` fns -- stays below the project's 500-LOC guideline. See that
-//! module's own doc for the split rationale.
+//! This entry file holds the `#[test]` fns and nothing else; everything they
+//! call lives in [`differential_replay_helpers`], split by role so that the
+//! two open issues that will edit this harness do not collide in one file
+//! (#649) — see that module's own doc for the layout. The tests stay HERE
+//! rather than beside their helpers because a `#[test]` fn's name is its
+//! module path, and those names are cited by handoffs, mutation specs and
+//! the CI step's own negative control.
+//!
+//! The Python side is ONE long-lived `--diff-replay-serve` worker for the
+//! whole run (#655), not a process per input; see
+//! [`helpers::python_worker`] for what that keeps per input and what it
+//! gives up.
 
 #![cfg(feature = "differential-replay")]
 
 use std::fs;
+use std::time::Instant;
 
 mod differential_replay_helpers;
 
 use differential_replay_helpers as helpers;
-use helpers::corpus::corpus_dirs;
-use helpers::python_bridge::{python_decode, PyOutcome};
-
-const TARGETS: &[&str] = &[
-    "vault_toml",
-    "record",
-    "contact_card",
-    "bundle_file",
-    "manifest_file",
-    "manifest_body",
-    "block_file",
-];
-
-/// Targets whose reject-vs-reject pairs are compared on WHICH rule each side
-/// named, not merely on the fact that both rejected (#634).
-///
-/// `manifest_body` and nothing else. The five ordinary targets each need
-/// their own Rust taxonomy and typed Python exceptions (#641);
-/// `manifest_file` is blocked for a different, measured reason (#640) —
-/// Rust's header raises `UnsupportedFormatVersion` where Python raises the
-/// same `ParseError` it raises for every envelope fault, and because that
-/// variant is shared with the BODY sentinel check no per-variant token can
-/// reconcile the two.
-const TOKEN_COMPARED_TARGETS: &[&str] = &["manifest_body"];
-
-/// The rest, listed explicitly rather than by omission.
-///
-/// `every_target_is_classified` requires this list and the one above to
-/// partition `TARGETS` exactly, so a new target cannot default silently into
-/// the loose behaviour — the fail-open shape #595 found in this file's own
-/// corpus discovery.
-const NOT_TOKEN_COMPARED_TARGETS: &[&str] = &[
-    "vault_toml",
-    "record",
-    "contact_card",
-    "bundle_file",
-    "manifest_file",
-    "block_file",
-];
-
-/// The committed input floor for each target.
-///
-/// `seen > 0` was not enough, and the gap was specific rather than
-/// theoretical: `corpus_dirs` skips a missing directory silently, and for
-/// `manifest_body` — the ONLY token-compared target —
-/// `tests/data/diff_regressions/manifest_body/` holds one always-present
-/// committed file. So a renamed or emptied `core/fuzz/seeds/manifest_body/`
-/// left the target replaying exactly that one input, which is itself a
-/// TOLERATED pair, and the test passed having compared nothing. That is the
-/// #595 fail-open shape one level up: the mechanism was guarded, the
-/// magnitude was not.
-///
-/// The figures are the counts committed today, so deleting an input reds
-/// rather than quietly shrinking the corpus. **Only COMMITTED inputs are
-/// counted toward it** — `CorpusDir::committed` makes the split — because a
-/// floor that also counted the gitignored runtime corpus was fail-open on
-/// precisely the machine it protects: with `fuzz/corpus/` holding tens of
-/// thousands of files, a deleted seed still cleared the floor and the
-/// guarantee above held only where `corpus/` was absent (#656 review). It
-/// stays a FLOOR rather than an equality so that adding a seed does not red
-/// until someone updates the table deliberately.
-/// `every_target_is_classified` requires this table to cover `TARGETS`
-/// exactly, so a new target cannot arrive without one.
-///
-/// What it does NOT floor is how many inputs reach a strict token
-/// comparison. `seen` is incremented before any decode, and `tokens_agree`
-/// short-circuits on either side being phase-dependent, so a change on the
-/// Rust raise side could route more of the corpus onto tolerated pairs and
-/// shrink the real comparison toward zero with this floor, the tolerance
-/// breadth assertion and the negative control all green. Tracked as #658.
-const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
-    ("vault_toml", 3),
-    ("record", 3),
-    ("contact_card", 2),
-    ("bundle_file", 1),
-    ("manifest_file", 1),
-    ("manifest_body", 39),
-    ("block_file", 1),
-];
-
-fn min_inputs(target: &str) -> usize {
-    MIN_CORPUS_INPUTS
-        .iter()
-        .find(|(t, _)| *t == target)
-        .map(|(_, n)| *n)
-        .unwrap_or_else(|| panic!("target {target} has no MIN_CORPUS_INPUTS entry"))
-}
-
-/// Do two rule tokens count as agreement?
-///
-/// Equal tokens always do. Unequal tokens do **only** when at least one is
-/// phase-dependent, which is DERIVED from `docs/vault-format.md` §4.2's
-/// "deliberately unspecified" paragraphs: those rules are detected at
-/// different points by the two reader designs §4.2 admits, so ordering them
-/// would outlaw one design.
-///
-/// **Derived from, and strictly BROADER than, those paragraphs — it is not
-/// them.** A per-token predicate tolerates every pair its token appears in,
-/// so with 4 of the 17 tokens phase-dependent this tolerates **58 of the 136
-/// unequal pairs**, of which §4.2 frees a strict subset. FOUR groups are
-/// tolerated with no §4.2 licence at all, and on the committed corpus the
-/// cost is that **17 of the 24 rejecting `manifest_body` seeds never compare
-/// the Python token**, because every `NonCanonicalEncoding` cause maps to a
-/// phase-dependent token. All four groups and that measurement are stated in
-/// full on [`RuleToken::is_phase_dependent`]'s own LIMITS block, beside the
-/// predicate rather than beside this caller; #646 tracks closing them.
-/// Narrowing the predicate by hand would manufacture false disagreements on
-/// the pairs §4.2 genuinely leaves free, so the residual is recorded rather
-/// than half-fixed.
-///
-/// Still deliberately NOT a list of tolerated pairs: a pair list would have
-/// to be re-derived every time a token is added and would drift from §4.2
-/// silently, where a predicate that is knowably wider can at least have its
-/// residual written down.
-///
-/// An unrecognised token on either side is never agreement. Note the
-/// MECHANISM, which is not the one the neighbouring `is_none()` guard uses:
-/// an unknown non-null token falls through to `false` here and is reported as
-/// an ordinary DISAGREEMENT, while a *missing* token is caught before this
-/// function is reached and reported as a harness failure. Both red the test,
-/// so nothing is lost — but "unrecognised or missing is a harness failure" is
-/// wrong about half of it.
-///
-/// [`RuleToken::is_phase_dependent`]: secretary_core::vault::manifest::RuleToken::is_phase_dependent
-fn tokens_agree(rust: &str, python: &str) -> bool {
-    use secretary_core::vault::manifest::RuleToken;
-    let lookup = |s: &str| RuleToken::ALL.iter().find(|t| t.as_str() == s).copied();
-    let (Some(r), Some(p)) = (lookup(rust), lookup(python)) else {
-        return false;
-    };
-    r == p || r.is_phase_dependent() || p.is_phase_dependent()
-}
-
-/// A Rust-side rejection: the token `differential_replay` compares, plus the
-/// `Debug` rendering for the failure message.
-///
-/// `token` is `None` only for targets whose error type has no `rule_token()`
-/// yet (#641). For a token-compared target a `None` here is a harness
-/// failure, never agreement.
-struct RustRejection {
-    token: Option<&'static str>,
-    detail: String,
-}
-
-/// Re-encode one fuzz-corpus input through the Rust decoder for that target.
-///
-/// Returns [`SecretBytes`](secretary_core::crypto::secret::SecretBytes), not
-/// `Vec<u8>`. The `"record"` arm's output is a canonical re-encoding of a
-/// decrypted record — every field value it holds — and `record::encode`
-/// returns `SecretBytes` by construction as of #558/#565 precisely so that
-/// no caller can hold it unwrapped. Unwrapping here with
-/// `.expose().to_vec()` to satisfy the old `Vec<u8>` signature would
-/// reintroduce exactly the buffer that change eliminates, in a harness whose
-/// whole job is replaying a corpus of decoded records — so the wrapper is
-/// threaded through the signature instead.
-///
-/// Five of the other six arms wrap too — `manifest_body`, added later, is
-/// the second arm that does not, for the reason its own comment below
-/// gives. Their outputs are not decrypted plaintext
-/// (a `ContactCard` is the artifact handed to other users; the three `*_file`
-/// encoders emit on-disk forms whose bodies are already AEAD ciphertext), so
-/// wrapping them buys nothing directly — but a uniform return type keeps the
-/// one arm that *does* matter from being the odd one out, which is how it
-/// came to be unwrapped in the first place.
-fn rust_decode(
-    target: &str,
-    bytes: &[u8],
-) -> Result<secretary_core::crypto::secret::SecretBytes, RustRejection> {
-    use secretary_core::crypto::secret::SecretBytes;
-    use secretary_core::*;
-    match target {
-        "vault_toml" => {
-            let s = std::str::from_utf8(bytes).map_err(|e| RustRejection {
-                token: None,
-                detail: format!("utf8: {}", e),
-            })?;
-            unlock::vault_toml::decode(s)
-                .map(|_| SecretBytes::new(Vec::new())) // crash-only target; no roundtrip compare
-                .map_err(|e| RustRejection {
-                    token: None,
-                    detail: format!("{:?}", e),
-                })
-        }
-        "record" => vault::record::decode(bytes)
-            .and_then(|r| vault::record::encode(&r))
-            .map_err(|e| RustRejection {
-                token: None,
-                detail: format!("{:?}", e),
-            }),
-        "contact_card" => identity::card::ContactCard::from_canonical_cbor(bytes)
-            .and_then(|c| c.to_canonical_cbor())
-            .map(SecretBytes::new)
-            .map_err(|e| RustRejection {
-                token: None,
-                detail: format!("{:?}", e),
-            }),
-        "bundle_file" => unlock::bundle_file::decode(bytes)
-            .map(|f| SecretBytes::new(unlock::bundle_file::encode(&f)))
-            .map_err(|e| RustRejection {
-                token: None,
-                detail: format!("{:?}", e),
-            }),
-        // NOTE: this arm fills `token`, but `manifest_file` is in
-        // `NOT_TOKEN_COMPARED_TARGETS`, so the value is only ever printed in a
-        // failure message — it is a diagnostic, not coverage. #640 explains why
-        // the target cannot be compared and #641 tracks the other five.
-        "manifest_file" => vault::manifest::decode_manifest_file(bytes)
-            .and_then(|f| vault::manifest::encode_manifest_file(&f))
-            .map(SecretBytes::new)
-            .map_err(|e| RustRejection {
-                token: Some(e.rule_token().as_str()),
-                detail: format!("{:?}", e),
-            }),
-        // Unlike `manifest_file` above, `encode_manifest` already returns
-        // `SecretBytes` (the manifest *body*, §4.2/§4.3, is decrypted
-        // plaintext) — so this arm needs no `SecretBytes::new` wrap, the
-        // same reason the "record" arm above has none.
-        "manifest_body" => vault::manifest::decode_manifest(bytes)
-            .and_then(|m| vault::manifest::encode_manifest(&m))
-            .map_err(|e| RustRejection {
-                token: Some(e.rule_token().as_str()),
-                detail: format!("{:?}", e),
-            }),
-        "block_file" => vault::block::decode_block_file(bytes)
-            .and_then(|f| vault::block::encode_block_file(&f))
-            .map(SecretBytes::new)
-            .map_err(|e| RustRejection {
-                token: None,
-                detail: format!("{:?}", e),
-            }),
-        _ => panic!("unknown target {}", target),
-    }
-}
+use helpers::agreement::{judge, Judgement};
+use helpers::corpus::{corpus_dirs, corpus_inputs};
+use helpers::progress;
+use helpers::python_bridge::serve_command;
+use helpers::python_worker::{PyReplayer, MAX_CONSECUTIVE_WORKER_FAILURES, PER_INPUT_TIMEOUT};
+use helpers::rust_decoder::rust_decode;
+use helpers::targets::{
+    min_inputs, MIN_CORPUS_INPUTS, NOT_TOKEN_COMPARED_TARGETS, TARGETS, TOKEN_COMPARED_TARGETS,
+};
+use helpers::tolerance::tokens_agree;
 
 #[test]
 fn differential_replay_full_corpus() {
     let mut disagreements: Vec<String> = vec![];
     let mut harness_failures: Vec<String> = vec![];
+    // One worker for every target and every input (#655). The per-input spawn
+    // it replaces cost ~0.16 s against a 0.2-0.4 ms decode, which on a
+    // fuzzed checkout's 74,924-input corpus was ~3.3 h of apparent hang.
+    let mut python = PyReplayer::new(serve_command, PER_INPUT_TIMEOUT);
+    // Inputs skipped because the worker-failure cap had tripped. Reported as
+    // ONE harness failure after the loop rather than one per input: past the
+    // cap there is no verdict left to get, and on a fuzzed checkout a line per
+    // input is tens of thousands of lines burying the failures that say why.
+    let mut not_replayed = 0usize;
     for target in TARGETS {
         // Per-target input floor (#595). `corpus_dirs` skips any directory
         // that does not exist, with no `else` — so a renamed or moved
@@ -272,141 +66,76 @@ fn differential_replay_full_corpus() {
         // target's own module doc records it happening here. Populating the
         // directory fixed the symptom; this fixes the mechanism.
         //
-        // TWO counters, because the floor and the replay do not range over
-        // the same set. `seen` is everything replayed; `committed_seen` is
-        // the git-tracked subset, and only that may clear the floor. Counting
-        // both together left the floor fail-open on the one machine it
-        // protects: with a populated `fuzz/corpus/` a deleted committed seed
-        // still cleared it by tens of thousands, so "deleting an input reds"
-        // was true only where `corpus/` was absent (#656 review).
-        let mut seen = 0usize;
-        let mut committed_seen = 0usize;
-        let dirs = corpus_dirs(target);
-        for dir in &dirs {
-            for entry in fs::read_dir(&dir.path).expect("read corpus dir") {
-                let path = entry.expect("dir entry").path();
-                if !path.is_file() {
-                    continue;
+        // The floor counts only the git-tracked inputs. Counting the runtime
+        // corpus too left it fail-open on the one machine it protects: with a
+        // populated `fuzz/corpus/` a deleted committed seed still cleared it
+        // by tens of thousands, so "deleting an input reds" was true only
+        // where `corpus/` was absent (#656 review).
+        let inputs = corpus_inputs(target).expect("list corpus inputs");
+        let committed = inputs.iter().filter(|i| i.committed).count();
+        let started = Instant::now();
+        let mut last_report = started;
+        let mut compared = 0usize;
+        progress::emit(&progress::start_line(target, inputs.len(), committed));
+        for (done, input) in inputs.iter().enumerate() {
+            if python.abandoned() {
+                not_replayed += 1;
+                continue;
+            }
+            let bytes = fs::read(&input.path).expect("read input");
+            let rust = rust_decode(target, &bytes);
+            let verdict = python.decode(target, &input.path);
+            let prefix = format!("[{}] {}", target, input.path.display());
+            match judge(target, &rust, &verdict) {
+                Judgement::Agree => compared += 1,
+                Judgement::Disagree(msg) => {
+                    compared += 1;
+                    disagreements.push(format!("{prefix}: {msg}"));
                 }
-                if path.file_name().and_then(|s| s.to_str()) == Some(".gitkeep") {
-                    continue;
-                }
-                seen += 1;
-                if dir.committed {
-                    committed_seen += 1;
-                }
-                let bytes = fs::read(&path).expect("read input");
-
-                let rust = rust_decode(target, &bytes);
-                let python = python_decode(target, &path);
-
-                // A harness failure is not a verdict, so it never reaches
-                // the agreement match below: that match reads a Rust `Err`
-                // beside a `PyOutcome::Reject` as "both implementations
-                // rejected", and a Python crash or timeout establishes
-                // nothing at all about the input.
-                if let PyOutcome::Harness(msg) = &python {
-                    harness_failures.push(format!("[{}] {}: {}", target, path.display(), msg));
-                    continue;
-                }
-
-                // A missing token on a token-compared target is a harness
-                // failure, never an ordinary disagreement: it means the
-                // harness cannot tell whether the two agree, not that they
-                // differ. This must run BEFORE the `ok` match below, which
-                // treats a missing token as a plain "false" — i.e. as a
-                // (potentially misleading) disagreement rather than as "we
-                // don't know."
-                if TOKEN_COMPARED_TARGETS.contains(target) {
-                    if let (Err(r), PyOutcome::Reject { rule, .. }) = (&rust, &python) {
-                        if r.token.is_none() || rule.is_none() {
-                            harness_failures.push(format!(
-                                "[{}] {}: token-compared target rejected with a missing rule \
-                                 token (rust={:?}, python={:?}). Give the raising site a token \
-                                 rather than allowlisting this input.",
-                                target,
-                                path.display(),
-                                r.token,
-                                rule
-                            ));
-                            continue;
-                        }
-                    }
-                }
-
-                let ok = match (&rust, &python) {
-                    // Both reject. For a token-compared target, agreement now
-                    // requires the two to have named the SAME rule -- or for
-                    // vault-format §4.2 to have left their order free. This
-                    // arm was an unconditional `true` until #634, which is
-                    // why #618's two live divergences and #621's third one
-                    // were all invisible to the harness that exists to catch
-                    // exactly them.
-                    (Err(r), PyOutcome::Reject { rule, .. }) => {
-                        if !TOKEN_COMPARED_TARGETS.contains(target) {
-                            true
-                        } else {
-                            match (r.token, rule.as_deref()) {
-                                (Some(rt), Some(pt)) => tokens_agree(rt, pt),
-                                // Default-deny: a missing token on a
-                                // token-compared target is recorded as a
-                                // harness failure below, never as agreement.
-                                _ => false,
-                            }
-                        }
-                    }
-                    // Both accept: for crash-only target (vault_toml) compare nothing;
-                    // for the rest, compare re-encoded bytes.
-                    (Ok(r_bytes), PyOutcome::Accept(p_bytes)) => {
-                        if *target == "vault_toml" {
-                            true
-                        } else {
-                            // `.expose()` reads through the wrapper for the
-                            // comparison; it does not materialise a second
-                            // copy the way `.to_vec()` would.
-                            r_bytes.expose() == p_bytes.as_slice()
-                        }
-                    }
-                    // Mismatch: one accepted, one rejected.
-                    _ => false,
-                };
-
-                if !ok {
-                    disagreements.push(format!(
-                        "[{}] {}: rust={} python={}",
-                        target,
-                        path.display(),
-                        match &rust {
-                            Ok(v) => format!("Ok({} bytes)", v.len()),
-                            Err(e) => format!("Err({:?}) {}", e.token, e.detail),
-                        },
-                        match &python {
-                            PyOutcome::Accept(v) => format!("Ok({} bytes)", v.len()),
-                            PyOutcome::Reject { rule, detail } =>
-                                format!("Rejected({:?}) {}", rule, detail),
-                            PyOutcome::Harness(_) => unreachable!("filtered above"),
-                        },
-                    ));
-                }
+                Judgement::Harness(msg) => harness_failures.push(format!("{prefix}: {msg}")),
+            }
+            let now = Instant::now();
+            if progress::is_due(last_report, now) {
+                progress::emit(&progress::progress_line(
+                    target,
+                    done + 1,
+                    inputs.len(),
+                    now - started,
+                ));
+                last_report = now;
             }
         }
         let floor = min_inputs(target);
-        let searched: Vec<_> = dirs.iter().map(|d| d.path.display().to_string()).collect();
+        let searched: Vec<_> = corpus_dirs(target)
+            .iter()
+            .map(|d| d.path.display().to_string())
+            .collect();
         assert!(
-            committed_seen >= floor,
-            "target {target}: replayed {committed_seen} COMMITTED corpus \
-             input(s) ({seen} in total), floor is {floor} — searched \
+            committed >= floor,
+            "target {target}: replayed {committed} COMMITTED corpus \
+             input(s) ({} in total), floor is {floor} — searched \
              {searched:?}. A target that replays nothing, or almost nothing, \
              passes vacuously; either restore the committed inputs under \
              core/fuzz/seeds/{target}/ or update MIN_CORPUS_INPUTS \
              deliberately in the same edit. Only git-tracked inputs count: a \
              populated core/fuzz/corpus/ must not be able to mask a deleted \
-             seed."
+             seed.",
+            inputs.len()
         );
-        // `--nocapture` to see these: libtest swallows them on a passing
-        // test, which is why a CI log proves only "4 passed" and the input
-        // count has to be re-derived from the tree (#656 review).
-        eprintln!("[{target}] replayed {seen} input(s), {committed_seen} committed");
+        progress::emit(&progress::finish_line(
+            target,
+            compared,
+            inputs.len(),
+            committed,
+            started.elapsed(),
+        ));
+    }
+    if not_replayed > 0 {
+        harness_failures.push(format!(
+            "{not_replayed} input(s) not replayed: {MAX_CONSECUTIVE_WORKER_FAILURES} inputs \
+             in a row got no answer from a Python worker, so no further worker was \
+             started — the failures above say why"
+        ));
     }
     // Harness failures first: a broken Python side makes every verdict
     // below meaningless, so report it as the primary cause rather than
@@ -416,7 +145,9 @@ fn differential_replay_full_corpus() {
         "differential harness failures ({}) — the harness could not obtain a \
          COMPARABLE verdict. Two distinct causes land here and the message \
          above each line says which: the Python side did not produce a verdict \
-         at all (a crash, a timeout, a non-zero exit, unparseable stdout), or \
+         at all (a worker that crashed, timed out, could not start, wrote a line \
+         that is not JSON, or answered for a different input, and any inputs \
+         skipped once no further worker was started), or \
          it produced one carrying no rule token on a token-compared target. \
          The second is a real, deliberate rejection — it simply did not name a \
          rule — so do not read every line below as \"Python is broken\":\n{}",
@@ -483,9 +214,10 @@ fn every_target_is_classified() {
 ///
 /// **It does NOT check that the tolerance is exactly §4.2's free set**, and an
 /// earlier version of this docstring claimed it did — while `tokens_agree`'s
-/// own doc, 300 lines up, says in bold that the predicate is strictly BROADER
-/// than §4.2. Two doc comments in one file asserting opposite strengths for
-/// one predicate is how a reader concludes the residual cannot exist. What is
+/// own doc (now in `differential_replay_helpers/tolerance.rs`, #649) says in
+/// bold that the predicate is strictly BROADER than §4.2. Two doc comments
+/// asserting opposite strengths for one predicate is how a reader concludes
+/// the residual cannot exist. What is
 /// checked here is reflexivity, one tolerated pair, one denied pair, that two
 /// ORDERED tokens agree only when equal, and — since the residual is a
 /// BREADTH rather than a wrong answer — the exact SIZE of the tolerated set,
@@ -562,8 +294,8 @@ fn tolerance_admits_only_phase_dependent_pairs() {
 
 /// An unknown token is never a tolerated mismatch. A typo on either side is
 /// reported as an ordinary DISAGREEMENT — `tokens_agree` returns `false` and
-/// the corpus loop records the pair — not as a harness failure, which is the
-/// separate `is_none()` branch above for a MISSING token. Both red the test;
+/// the corpus loop records the pair — not as a harness failure, which is
+/// `agreement::judge`'s separate missing-token guard for a `None` token. Both red the test;
 /// only the message differs. What must never happen is the third outcome:
 /// degrading to "something differs, probably fine".
 #[test]

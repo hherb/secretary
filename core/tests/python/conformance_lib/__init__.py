@@ -19,7 +19,8 @@ Layout
   fixtures       where the committed test data lives
   rejection      which exception types are rejection VERDICTS
   tamper         the shared byte-flip mutation helper
-  diff_replay    `--diff-replay` mode (a CONTRACT -- see the module docstring)
+  diff_replay    `--diff-replay` and `--diff-replay-serve` modes (a CONTRACT --
+                 see the module docstring)
   required_key_probe  the inputs Section DET re-decodes under several hash seeds
                       (spawned as a subprocess -- see its own docstring for why;
                       it also DECLARES the JSON contract Section DET parses)
@@ -46,7 +47,8 @@ module". These names predate the split (#593), when the whole verifier was one
 large semantic diff, so they were left alone deliberately.
 
 Third-party imports are LAZY, inside the functions that need them; the
-package's top-level import graph is stdlib-only. `--diff-replay` is invoked
-once per fuzz input under a timeout, so it must not pay to import crypto
-libraries it never calls.
+package's top-level import graph is stdlib-only. Single-shot `--diff-replay`
+decodes one input per process, and `--diff-replay-serve` starts once per run
+under a per-input timeout; neither should pay to import crypto libraries it
+never calls.
 """

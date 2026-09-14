@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import re
 
 # ONE declaration of the gate timeout default, read by `spec.py`, `gate.py`
 # and `runner.py`. It was declared four times, once per module, and the
@@ -123,9 +124,37 @@ class PythonObservation:
 
 @dataclasses.dataclass(frozen=True)
 class RustProbe:
-    """Compare the CONTENT hash of the artifacts cargo names. Spec §5.1."""
+    """Compare the CONTENT hash of the artifacts cargo names. Spec §5.1.
+
+    `test` and `features` scope the build. With neither, the reading is the
+    package's LIBRARY alone, which no file under `core/tests/` contributes to —
+    so a mutation there could only ever read `NOT_LIVE`. Naming the
+    integration-test target (and the features it `required-features`) makes
+    cargo build, and name, that test binary too.
+    """
 
     package: str
+    test: str | None = None
+    features: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """`spec.py` refuses all of this first, as a `SpecError`; this guards
+        every OTHER constructor — the controls, the self-test and the tests all
+        build a probe directly (#662 review). Each refused value fails safe
+        today (cargo rejects it and the row reads `NOT_LIVE`), but for a
+        reason the row does not name — and a `list` of features also made this
+        frozen dataclass unhashable."""
+        if not isinstance(self.package, str) or not self.package:
+            raise ValueError(f"package must be a non-empty string, got {self.package!r}")
+        if self.test is not None and (not isinstance(self.test, str) or not self.test):
+            raise ValueError(f"test must be None or a non-empty string, got {self.test!r}")
+        if not isinstance(self.features, tuple) or not all(
+            isinstance(f, str) and f and "," not in f for f in self.features
+        ):
+            raise ValueError(
+                "features must be a tuple of non-empty names without commas, "
+                f"got {self.features!r}"
+            )
 
 
 class RustReadingKind(enum.Enum):
@@ -173,6 +202,37 @@ class RustObservation:
         return self.kind is RustReadingKind.ARTIFACTS
 
 
+def unnamed_probe_scope(probe: RustProbe, gate: str) -> tuple[str, ...]:
+    """The parts of `probe`'s build scope that `gate` does not name. Pure.
+
+    A scoped probe proves that the build IT runs saw the mutation, not that
+    the gate's build does. For a GREEN row that gap is silent: a probe on
+    `--test differential_replay` reads live, a gate that never compiles that
+    test stays green, and the row reports `GREEN_AS_EXPECTED` for a mutation
+    no gate ran (#662 review). Before `test`/`features` existed a
+    `core/tests/**` row could not be live at all, so this became reachable
+    with them.
+
+    A SPELLING check, and deliberately no more: `--test <name>` (or
+    `--test=<name>`) must appear in the gate, and each feature must appear as
+    a whole name unless the gate passes `--all-features`. It cannot prove the
+    gate builds what it names, and a gate that builds the target by some
+    other spelling (`--tests`, `--workspace`) is refused; write the scope out.
+    """
+    unnamed = []
+    if probe.test is not None and not re.search(
+        rf"--test(?:=|\s+){re.escape(probe.test)}(?![\w-])", gate
+    ):
+        unnamed.append(f"--test {probe.test}")
+    if "--all-features" not in gate:
+        unnamed.extend(
+            f"feature {feature}"
+            for feature in probe.features
+            if not re.search(rf"(?<![\w-]){re.escape(feature)}(?![\w-])", gate)
+        )
+    return tuple(unnamed)
+
+
 @dataclasses.dataclass(frozen=True)
 class MutationSpec:
     id: str
@@ -215,6 +275,16 @@ class MutationSpec:
                 f"a lang={self.lang.value} row needs a {wanted.__name__} probe, "
                 f"got {type(self.probe).__name__}"
             )
+        if self.expect is Expect.GREEN and isinstance(self.probe, RustProbe):
+            # Only the GREEN direction: a red row whose gate misses the
+            # mutation comes back UNEXPECTED_GREEN, which is loud.
+            unnamed = unnamed_probe_scope(self.probe, self.gate)
+            if unnamed:
+                raise ValueError(
+                    f"a green row's gate must build what its probe measured, and "
+                    f"this gate does not name {', '.join(unnamed)}: a mutation the "
+                    f"probe saw could stay green because no gate compiled it"
+                )
         if self.expect_red and self.expect is not Expect.RED:
             raise ValueError("expect_red is meaningless unless expect is RED")
         if (

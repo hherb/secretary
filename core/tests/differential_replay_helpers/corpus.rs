@@ -1,7 +1,7 @@
 //! Locates the fuzz-corpus input files `differential_replay_full_corpus`
 //! replays for one target.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// One corpus directory, and whether git tracks what is in it.
 ///
@@ -13,21 +13,33 @@ use std::path::PathBuf;
 /// cleared the floor by a wide margin, so the guarantee "deleting an input
 /// reds" held only where `corpus/` was absent, i.e. CI and a fresh worktree
 /// (#656 review).
+#[derive(Debug, PartialEq)]
 pub struct CorpusDir {
     pub path: PathBuf,
     pub committed: bool,
 }
 
+/// The corpus directories for `target` in the secretary-core package.
 pub fn corpus_dirs(target: &str) -> Vec<CorpusDir> {
     // CARGO_MANIFEST_DIR resolves to `core/` at compile time, so all paths
-    // below are anchored on the secretary-core package root regardless of
-    // the working directory the test was invoked from.
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // are anchored on the secretary-core package root regardless of the
+    // working directory the test was invoked from.
+    corpus_dirs_under(Path::new(env!("CARGO_MANIFEST_DIR")), target)
+}
+
+/// The corpus directories for `target` under the package root `manifest`,
+/// in replay order, skipping any that do not exist.
+///
+/// Separate from [`corpus_dirs`] so the `committed` tagging is testable on a
+/// temporary tree. Nothing tested it before (#662 review): flipping the
+/// runtime corpus to `committed: true` re-opens the #656 floor fail-open, and
+/// every gate stayed green, because CI has no `fuzz/corpus/` at all.
+pub fn corpus_dirs_under(manifest: &Path, target: &str) -> Vec<CorpusDir> {
     let mut dirs = vec![];
     // Runtime corpus (gitignored, may not exist locally). NOT committed, so
-    // it is replayed but never counted toward the floor. This is also the
-    // directory behind #655: it grows without bound, and a checkout that has
-    // fuzzed replays all of it, which presents as a hang.
+    // it is replayed but never counted toward the floor. It grows without
+    // bound — 74,924 files on one machine, which through a per-input spawn was
+    // ~3.3 h of apparent hang (#655); through the one worker, 27.5 s.
     let runtime = manifest.join("fuzz/corpus").join(target);
     if runtime.is_dir() {
         dirs.push(CorpusDir {
@@ -52,4 +64,138 @@ pub fn corpus_dirs(target: &str) -> Vec<CorpusDir> {
         });
     }
     dirs
+}
+
+/// One input the replay feeds both decoders.
+#[derive(Debug, PartialEq)]
+pub struct CorpusInput {
+    pub path: PathBuf,
+    pub committed: bool,
+}
+
+/// Every input under `dirs`, in a STABLE order: the directories in the order
+/// given, each one's files sorted by name. `.gitkeep` and anything that is not
+/// a regular file are skipped.
+///
+/// Listing up front (#655) is what lets a progress line say `done/total`, and
+/// sorting makes a failure list the same from run to run — `read_dir` order is
+/// whatever the filesystem returns.
+pub fn inputs_in(dirs: &[CorpusDir]) -> std::io::Result<Vec<CorpusInput>> {
+    let mut inputs = Vec::new();
+    for dir in dirs {
+        let mut paths = Vec::new();
+        for entry in std::fs::read_dir(&dir.path)? {
+            let path = entry?.path();
+            if path.is_file() && path.file_name().and_then(|s| s.to_str()) != Some(".gitkeep") {
+                paths.push(path);
+            }
+        }
+        paths.sort();
+        inputs.extend(paths.into_iter().map(|path| CorpusInput {
+            path,
+            committed: dir.committed,
+        }));
+    }
+    Ok(inputs)
+}
+
+/// Every corpus input for `target`; see [`corpus_dirs`] and [`inputs_in`].
+pub fn corpus_inputs(target: &str) -> std::io::Result<Vec<CorpusInput>> {
+    inputs_in(&corpus_dirs(target))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn only_the_seed_and_regression_directories_count_as_committed() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let core = root.path();
+        let [runtime, seeds, diffs] = [
+            "fuzz/corpus/record",
+            "fuzz/seeds/record",
+            "tests/data/diff_regressions/record",
+        ]
+        .map(|rel| core.join(rel));
+        for dir in [&runtime, &seeds, &diffs] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        assert_eq!(
+            corpus_dirs_under(core, "record"),
+            vec![
+                CorpusDir {
+                    path: runtime,
+                    committed: false
+                },
+                CorpusDir {
+                    path: seeds,
+                    committed: true
+                },
+                CorpusDir {
+                    path: diffs,
+                    committed: true
+                },
+            ]
+        );
+        // A directory that does not exist is skipped, and the rest keep their
+        // tags: CI has seeds but no runtime corpus.
+        let ci_seeds = core.join("fuzz/seeds/block_file");
+        fs::create_dir_all(&ci_seeds).unwrap();
+        assert_eq!(
+            corpus_dirs_under(core, "block_file"),
+            vec![CorpusDir {
+                path: ci_seeds,
+                committed: true
+            }]
+        );
+    }
+
+    #[test]
+    fn inputs_are_listed_per_directory_in_order_sorted_by_name_and_tagged() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let runtime = root.path().join("runtime");
+        let seeds = root.path().join("seeds");
+        fs::create_dir_all(runtime.join("nested")).unwrap();
+        fs::create_dir_all(&seeds).unwrap();
+        for (dir, name) in [
+            (&runtime, "b"),
+            (&runtime, "a"),
+            (&seeds, "z"),
+            (&seeds, ".gitkeep"),
+        ] {
+            fs::write(dir.join(name), b"x").unwrap();
+        }
+        let dirs = [
+            CorpusDir {
+                path: runtime.clone(),
+                committed: false,
+            },
+            CorpusDir {
+                path: seeds.clone(),
+                committed: true,
+            },
+        ];
+
+        let inputs = inputs_in(&dirs).expect("listing");
+
+        assert_eq!(
+            inputs,
+            vec![
+                CorpusInput {
+                    path: runtime.join("a"),
+                    committed: false
+                },
+                CorpusInput {
+                    path: runtime.join("b"),
+                    committed: false
+                },
+                CorpusInput {
+                    path: seeds.join("z"),
+                    committed: true
+                },
+            ]
+        );
+    }
 }

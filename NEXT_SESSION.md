@@ -1,1 +1,1 @@
-docs/handoffs/2026-09-12-differential-replay-ci-shipped.md
+docs/handoffs/2026-09-14-corpus-replay-worker-shipped.md

@@ -28,6 +28,7 @@ from conformance_lib.sections.conflict import (
 )
 from conformance_lib.sections.completeness import section_registry_completeness
 from conformance_lib.sections.convergence import section_convergence_kat
+from conformance_lib.sections.diff_replay_serve import section_diff_replay_serve
 from conformance_lib.sections.golden_vault import section2_golden_vault_001
 from conformance_lib.sections.manifest_body_canonicality_guards import (
     section_manifest_body_array_sort_guard,
@@ -161,6 +162,8 @@ SECTIONS: tuple[Section, ...] = (
             " (#592)", section_record_unknown_subtree_canonicality),
     Section("DET", "required-key rejection determinism across hash seeds",
             " (#597)", section_required_key_determinism),
+    Section("DRS", "diff-replay serve mode matches single-shot, input by input",
+            " (#655)", section_diff_replay_serve),
     # Last on purpose: it reports on the table above, so it reads as a summary
     # of the run rather than as a precondition for it.
     Section("REG", "section registry completeness", " (#593)",

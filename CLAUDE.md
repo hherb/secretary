@@ -26,10 +26,10 @@ core/src/vault/manifest/                   — DIRECTORY module (#564), not mani
                                              every term:
                                              `find core/src/vault/manifest -name '*.rs' | wc -l`
 core/tests/          — integration tests; tests/data/ holds KATs and fuzz regressions
-core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (136 lines; the PEP
+core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (156 lines; the PEP
                                              723 header is the sole dependency declaration).
                                              `conformance.py:NNN` citations predating #593 are
-                                             stale — the verifier is now a 65-file package.
+                                             stale — the verifier is now a 66-file package.
                                              RE-MEASURE: `find core/tests/python/conformance_lib
                                              -name '*.py' | wc -l` — this line said 62 while the
                                              paragraph below said 65 for a whole slice.
@@ -82,24 +82,39 @@ cargo test --release --workspace --test conflict
 cargo test --release --locked -p secretary-core \
   --features differential-replay --test differential_replay
 
-# TRAP (#655), and it presents as a HANG rather than as slowness. The replay
-# feeds `core/fuzz/corpus/<target>/` as well as the committed seeds, and that
-# directory is gitignored runtime fuzz output that GROWS WITHOUT BOUND. On a
-# machine that has fuzzed it held 74,924 files; at the measured ~0.16 s per
-# `conformance.py` subprocess that is over three hours, with `cargo test`
-# printing nothing but "has been running for over 60 seconds".
+# It also replays the gitignored runtime corpus `core/fuzz/corpus/<target>/`
+# on a checkout that has fuzzed, and since #655 that is SECONDS: one
+# `conformance.py --diff-replay-serve` worker answers every input, where the
+# harness used to spawn `uv run` per input. Measured 2026-09-13: 74,973 inputs
+# in 27.48 s, all agreeing (it was ~3.3 h of apparent hang at ~0.16 s a
+# spawn); the 50 committed inputs alone in 1.42 s, down from 12.79 s. Each
+# target prints start / every-10 s / finish lines to the process's stderr,
+# which libtest does not capture, so they show WITHOUT `--nocapture`. The old
+# advice to move `core/fuzz/corpus` aside is retired.
 #
-# THE NARROW SPELLING ABOVE DOES NOT ESCAPE IT. `corpus_dirs` pushes that
-# directory unconditionally and the walk lives in the binary `--test
-# differential_replay` selects, so the trap is a property of the TEST, not of
-# the package scope. To reproduce the CI shape on a checkout that HAS fuzzed,
-# move `core/fuzz/corpus` aside rather than waiting.
+# The per-input guarantees the spawn gave are kept per input, in
+# `differential_replay_helpers/python_worker.rs`: a 60 s wait, then the
+# worker's whole PROCESS GROUP killed (`uv run` forks Python, so killing `uv`
+# alone orphans it); a response must echo the path it answers; any transport
+# failure retires the worker.
 #
-# CI never sees this, and neither does a fresh `git worktree`: with no
-# `corpus/` the replay is the 50 committed inputs. Measured test bodies —
-# 11-24 s locally over three runs, 5.98 s on the `ubuntu-latest` runner, i.e.
-# CI is FASTER. The 36 s figure quoted for CI is the whole STEP, of which
-# 29.9 s is cargo recompiling; do not compare it against a test body.
+# TRAP: that kill is kill(2) through `rustix`, and it must NEVER go back to
+# `Command::new("kill")`. procps-ng 4.0.4's `kill -KILL -<pgid>` (Ubuntu 24.04,
+# CI's image) parses `-<pgid>` as an unknown option and signals `'0' - optopt`,
+# i.e. pid -1: SIGKILL to every process the user owns. The first version of the
+# worker did exactly that on PR #662's CI run. The symptom was NOT a failed
+# test: the runner died, the job was cancelled five minutes after its 30-minute
+# cap, and GitHub kept no log at all. On a Linux workstation it kills the whole
+# session. macOS's BSD `kill` parses the same argv correctly, so no local run
+# shows it. Measured in `ubuntu:24.04`; procps-ng 4.0.2 (Debian bookworm) kills
+# the group leader alone instead. A CI job that is CANCELLED with no log is a
+# runner that was killed, not a slow test. What a reused interpreter gives up is process
+# isolation, which conformance Section DRS checks rather than assumes, over
+# the committed corpus only.
+#
+# CI replays the 50 committed inputs (no `corpus/` there). The 5.98 s test body
+# and 36 s step quoted in #656 measured the per-input spawn; re-measure before
+# quoting a CI figure. Do not compare a STEP duration against a test body.
 #
 # `-p secretary-core` is not a way to avoid rebuilding the CLI and bridge
 # crates — `core`'s [dev-dependencies] pull in the bridge, which depends on
@@ -252,6 +267,33 @@ bash scripts/check-secret-slot-hygiene.sh
 uv run scripts/mutate.py --self-test
 uv run scripts/mutate.py "$SCRATCH/mutations.toml"
 #
+# A Rust row whose mutation lives in an INTEGRATION TEST needs a scoped probe:
+# `probe = { package = "secretary-core", test = "<target>", features = [..] }`.
+# The unscoped probe builds the library only, so every `core/tests/**` row read
+# NOT_LIVE whatever its gate did, until #649's slice added the two keys.
+# A GREEN row with a scoped probe must name that scope in its GATE —
+# `--test <target>` (or `--test=<target>`) and each feature, or
+# `--all-features` — or the spec is refused (exit 2): otherwise the probe can
+# see a mutation that the gate never compiles, and the row reports
+# GREEN_AS_EXPECTED for a mutation nothing ran (#662 review). It is a spelling
+# check; a gate that builds the target another way (`--workspace`) must still
+# write the scope out.
+#
+# A PYTHON probe imports its module in the HARNESS's interpreter, which has
+# none of `conformance.py`'s PEP 723 deps — so a probe on any module reaching
+# `cbor2` (e.g. `conformance_lib.diff_replay`) reads NOT_LIVE with an import
+# traceback. Launch the harness with those deps instead:
+#   uv run --with cryptography --with pynacl --with "pqcrypto<1" \
+#     --with argon2-cffi --with blake3 --with cbor2 scripts/mutate.py SPEC
+# The probe `expr` must evaluate to a STRING (it is compared against
+# `repr(equals)`), and an `expect_red` name is matched as a whole token whose
+# edges may not be `-`, `.`, `/` or a word character. So a name must be
+# written WITH any leading `--` its title has: `--diff-replay-serve ...`
+# matches `FAIL: --diff-replay-serve ...` (the character before it is a
+# space), while `diff-replay-serve ...` does not, because a `-` precedes it.
+# This line said a title starting with `--` "can never be matched", which
+# executing `gate.names_a_red` disproves (#662 review).
+#
 # Exit codes: 0 every row as declared; 1 a rendered table with a finding;
 # 2 refused to start (dirty/corrupt journal, bad spec — including a `path`
 # that is not an existing file); 3 aborted, a restore could not be trusted,
@@ -267,8 +309,9 @@ uv run scripts/mutate.py "$SCRATCH/mutations.toml"
 # next invocation REFUSES to start until it is drained:
 uv run scripts/mutate.py --drain
 
-# The harness's own unit tests (249 tests; RE-MEASURE — it said 238 for a slice
-# after the count moved, and #656 added seven). Use the MODULE form — a bare
+# The harness's own unit tests (278 tests; RE-MEASURE — it said 238 for a slice
+# after the count moved, #656 added seven, the scoped Rust probe thirteen, and
+# the #662 review sixteen). Use the MODULE form — a bare
 # `pytest` invocation intermittently hangs at 0% CPU on some machines. The two
 # cargo-backed controls (C10, N4) take minutes and queue on the package-cache
 # lock behind any parallel cargo; `-k "not C10 and not N4"` is the fast loop:
@@ -332,11 +375,13 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 136, over a **65**-file package whose largest module is
+was 6849 lines; it is now 156, over a **66**-file package whose largest module is
 `sections/manifest_canonicality_cause.py` at **486** lines, ahead of
 `codec/scanner.py` at 484, `codec/manifest_decode.py` at 418,
 `sections/required_key_determinism.py` at 390 and `merge/records.py` at 383.
-Re-measured at #634, which grew `scanner.py` 468 -> 484 and
+Re-measured at #655, which grew the entrypoint 136 -> 156 (the
+`--diff-replay-serve` branch) and added `sections/diff_replay_serve.py`
+without moving the top five. Before that, re-measured at #634, which grew `scanner.py` 468 -> 484 and
 `manifest_decode.py` 405 -> 418 (both gained rule tokens) and added
 `sections/rule_token_vocabulary.py` plus `codec/manifest_rules.py`.
 The top slot changed hands twice inside
@@ -385,7 +430,8 @@ load-bearing and a change that breaks either defeats the point of the split:
 - **`uv run core/tests/python/conformance.py` must keep working verbatim from any
   working directory.** Three callers depend on the exact invocation — this file, the
   `clean-room conformance` job in `test.yml`, and `core/tests/differential_replay.rs`,
-  which shells out to it per fuzz input. The `conformance_lib` import resolves because
+  which starts it once per run as a `--diff-replay-serve` worker (#655; it used to
+  spawn it per fuzz input). The `conformance_lib` import resolves because
   Python puts the ENTRYPOINT's directory on `sys.path[0]`; it is not a CWD property.
   Every fixture path hangs off one anchor (`fixtures.test_data_dir`) rather than being
   re-derived per helper, which is what made the one-level-deeper `__file__` a
@@ -473,7 +519,7 @@ issue and no diagnostic; `_HASH_SEEDS = ("0",)` passed while printing "across 1
 PYTHONHASHSEED values"; and a row-shape mismatch raised out of `main()` as a
 traceback with no `FAIL:` line.
 
-**It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and, at the time, never enabled in `test.yml` (a step enables it there since #647, which does not change this paragraph's history: that step postdates #546, and it invokes `conformance.py` per corpus input rather than running its section suite, so it would not have caught the `pqcrypto` break either — nothing on the `--diff-replay` path calls `ml_dsa_65_verify` — state it as the IMPORT CLOSURE it is, `diff_replay.py` importing only `codec/*` plus `rejection` and no `codec/` module reaching `derivations.hybrid_verify`, rather than as "reachable only from `sections/`", which is false: the function lives in `derivations.py` and both `wire/card.py` and `wire/golden_vault_verify.py` import it, neither under `sections/` (#656 review)). The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. **The job now BLOCKS**, which this paragraph denied until the #599 review measured it: `clean-room conformance` is one of the 24 required contexts in `main`'s `protect_main` ruleset (`gh api repos/hherb/secretary/rules/branches/main`). The sentence "the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking" outlived its fact — and a stale claim in this direction is not harmless, because it gets a real gate discounted when someone weighs whether a Python-side-only pin is enough. One standing consequence remains: five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
+**It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and, at the time, never enabled in `test.yml` (a step enables it there since #647, which does not change this paragraph's history: that step postdates #546, and it invokes `conformance.py`'s replay mode (one `--diff-replay-serve` worker since #655, one process per corpus input before) rather than running its section suite, so it would not have caught the `pqcrypto` break either — nothing on the `--diff-replay` path calls `ml_dsa_65_verify` — state it as the IMPORT CLOSURE it is, `diff_replay.py` importing only `codec/*` plus `rejection` and no `codec/` module reaching `derivations.hybrid_verify`, rather than as "reachable only from `sections/`", which is false: the function lives in `derivations.py` and both `wire/card.py` and `wire/golden_vault_verify.py` import it, neither under `sections/` (#656 review)). The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. **The job now BLOCKS**, which this paragraph denied until the #599 review measured it: `clean-room conformance` is one of the 24 required contexts in `main`'s `protect_main` ruleset (`gh api repos/hherb/secretary/rules/branches/main`). The sentence "the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking" outlived its fact — and a stale claim in this direction is not harmless, because it gets a real gate discounted when someone weighs whether a Python-side-only pin is enough. One standing consequence remains: five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
 
 ### Crypto layering
 
@@ -817,7 +863,7 @@ out — it has been wrong twice:
   onto two ideas of which rows the fixture holds. It defines no
   `section*` driver, so Section REG discovers it and reports the full count
   (26/26 at #613; 27/27 after #587's Section MSN; 28/28 after #618's Section
-  MPR; **29/29** since #634 added Section RTV).
+  MPR; 29/29 after #634's Section RTV; **30/30** since #655 added Section DRS).
 
 **WHICH rule a rejecting reader names is now normative, and getting there
 found a live divergence (#618).** A body can break several rules at once;
@@ -1045,10 +1091,11 @@ survived it. Six things:
   run the replay. `required-features` on a `[[test]]` entry in
   `core/Cargo.toml` makes it exit 101 instead. And the 36 s figure this bullet
   quoted for CI is a STEP duration, ~30 s of which is cargo re-fingerprinting
-  for the differing feature set; the replay itself is **5.98 s** there against
-  11-24 s locally, so CI is faster and the "cold `uv` environment" the bullet
+  for the differing feature set; the replay itself was **5.98 s** there against
+  11-24 s locally, so CI was faster and the "cold `uv` environment" the bullet
   blamed is contradicted by the step's own log. Do not compare a step time
-  against a test time.
+  against a test time. (Both figures measured the per-input spawn #655 replaced
+  with one worker — 1.42 s locally after it — so re-measure, do not quote.)
   **What is still unpinned: deleting the step reds nothing.** No test, no
   guard and no `--self-test` reads `test.yml`; `actionlint` checks syntax, not
   step presence. Tracked as #657, and named here rather than only in a handoff

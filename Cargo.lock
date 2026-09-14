@@ -3963,6 +3963,7 @@ dependencies = [
  "rand",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
+ "rustix",
  "secretary-ffi-bridge",
  "secretary-test-utils",
  "serde",

@@ -19,7 +19,7 @@ import pytest
 from mutation_harness import liveness
 from mutation_harness.subproc import BoundedRun
 from mutation_harness.types import (
-    PythonObservation, PythonProbe, RustObservation, RustReadingKind,
+    PythonObservation, PythonProbe, RustObservation, RustProbe, RustReadingKind,
 )
 
 PROBE = PythonProbe(module="m", expr="TOKEN", equals="mutated", syspath=".")
@@ -307,7 +307,7 @@ def test_rust_artifact_hashes_hashes_only_the_named_packages_artifacts(tmp_path,
     ])
     monkeypatch.setattr(liveness, "run_bounded", lambda argv, **kw: BoundedRun(0, stdout, ""))
 
-    reading = liveness.rust_artifact_hashes("mine", tmp_path)
+    reading = liveness.rust_artifact_hashes(RustProbe("mine"), tmp_path)
 
     assert reading.kind is RustReadingKind.ARTIFACTS
     assert set(reading.hashes) == {str(mine)}
@@ -324,7 +324,7 @@ def test_a_failed_build_is_build_failed_even_when_cargo_named_an_artifact(tmp_pa
         liveness, "run_bounded", lambda argv, **kw: BoundedRun(101, stdout, "error[E0308]")
     )
 
-    reading = liveness.rust_artifact_hashes("mine", tmp_path)
+    reading = liveness.rust_artifact_hashes(RustProbe("mine"), tmp_path)
 
     assert reading.kind is RustReadingKind.BUILD_FAILED
     assert "101" in reading.detail
@@ -334,7 +334,7 @@ def test_a_named_artifact_that_cannot_be_read_is_artifact_missing(tmp_path, monk
     stdout = _artifact_line("path+file:///w/mine#mine@0.1.0", str(tmp_path / "gone.rlib"))
     monkeypatch.setattr(liveness, "run_bounded", lambda argv, **kw: BoundedRun(0, stdout, ""))
 
-    reading = liveness.rust_artifact_hashes("mine", tmp_path)
+    reading = liveness.rust_artifact_hashes(RustProbe("mine"), tmp_path)
 
     assert reading.kind is RustReadingKind.ARTIFACT_MISSING
     assert "gone.rlib" in reading.detail
@@ -343,7 +343,7 @@ def test_a_named_artifact_that_cannot_be_read_is_artifact_missing(tmp_path, monk
 def test_a_build_that_outlives_its_timeout_is_build_timed_out(tmp_path, monkeypatch):
     monkeypatch.setattr(liveness, "run_bounded", lambda argv, **kw: BoundedRun(None, "", ""))
 
-    reading = liveness.rust_artifact_hashes("mine", tmp_path, timeout=7)
+    reading = liveness.rust_artifact_hashes(RustProbe("mine"), tmp_path, timeout=7)
 
     assert reading.kind is RustReadingKind.BUILD_TIMED_OUT
     assert "7s" in reading.detail
@@ -381,7 +381,7 @@ def test_rust_artifact_hashes_passes_its_timeout_argument_to_run_bounded(tmp_pat
 
     monkeypatch.setattr(liveness, "run_bounded", fake)
 
-    liveness.rust_artifact_hashes("secretary-core", tmp_path, timeout=456)
+    liveness.rust_artifact_hashes(RustProbe("secretary-core"), tmp_path, timeout=456)
 
     assert captured.get("timeout") == 456
 

@@ -2,7 +2,9 @@
 
 This document is for **Python contributors** maintaining
 [`core/tests/python/conformance.py`](../../../core/tests/python/conformance.py),
-specifically its `--diff-replay` mode. It describes the wire protocol the
+specifically its two replay modes — `--diff-replay-serve`, which the Rust side
+uses, and single-shot `--diff-replay`, kept for replaying one input in isolation
+(see Invocation). It describes the wire protocol the
 Rust integration test
 [`core/tests/differential_replay.rs`](../../../core/tests/differential_replay.rs)
 expects from each target's `py_decode` / `py_encode` pair, and the
@@ -18,8 +20,8 @@ machine-checked are easy to break silently.
 ## What "differential replay" is
 
 The fuzz harness drives seven Rust decoders (`core/fuzz/fuzz_targets/`) and
-differential replay drives seven of its own (`differential_replay.rs`'s
-`TARGETS`). **The two sets are not the same set** and neither is "the seven
+differential replay drives seven of its own (`TARGETS` in
+`differential_replay_helpers/targets.rs`). **The two sets are not the same set** and neither is "the seven
 targets": they overlap in six, `manifest_body` is replay-only and has no
 fuzz target, and `device_file` is fuzz-only and is not replayed. The point
 of differential replay is to run the corpus through a **completely
@@ -32,7 +34,8 @@ on:
    Disagreement here means one side has a re-encoding bug that the other
    side's tests didn't catch.
 3. **Which rule each names when both reject** — for targets listed in
-   `differential_replay.rs::TOKEN_COMPARED_TARGETS`. See §3 below.
+   `TOKEN_COMPARED_TARGETS` (`differential_replay_helpers/targets.rs`). See §3
+   below.
 
 The Python decoders live in `core/tests/python/conformance_lib/codec/`
 (#593; `conformance.py` is now a thin entrypoint over that package) and
@@ -43,8 +46,25 @@ implementation tested against itself.
 
 ## Invocation
 
-`differential_replay.rs` invokes `conformance.py` once per corpus input,
-in a fresh subprocess:
+There are two modes, and they share one verdict function
+(`conformance_lib/diff_replay.py`'s `replay_bytes`), so they cannot answer
+differently by construction of the decode — and Section DRS checks that they do
+not by execution.
+
+**`differential_replay.rs` uses serve mode (#655): one worker process for the
+whole run.**
+
+```
+uv run [--with <pkg>...] conformance.py --diff-replay-serve
+```
+
+Until #655 it spawned the single-shot mode below once PER corpus input.
+Decoding costs 0.2-0.4 ms and the spawn ~0.16 s, so a checkout whose runtime
+fuzz corpus held 74,924 inputs took ~3.3 hours and, printing nothing, looked
+hung. Through one worker the same corpus — 74,973 inputs with the committed
+ones — replays in **27.5 s** (measured 2026-09-13, every input agreeing).
+
+The single-shot mode is kept, unchanged, for replaying one input in isolation:
 
 ```
 uv run [--with <pkg>...] conformance.py --diff-replay <TARGET> <INPUT_PATH>
@@ -56,19 +76,76 @@ uv run [--with <pkg>...] conformance.py --diff-replay <TARGET> <INPUT_PATH>
   `manifest_body` is here and not there, `device_file` is there and not
   here.
 - `INPUT_PATH` is a single corpus or seed file path.
-- The subprocess has a per-input wall-clock budget of 60 seconds. If
-  Python takes longer (infinite loop on a malformed input, runaway
-  allocation, etc.), the Rust side will SIGKILL it and report a timeout.
-  **Don't write Python decoders that scale super-linearly in input
-  length** — there is no protective `signal.alarm` inside the Python
-  process; the timeout is enforced from Rust.
+- **Each input has a wall-clock budget of 60 seconds** (`PER_INPUT_TIMEOUT` in
+  `differential_replay_helpers/python_worker.rs`), in serve mode as it was per
+  process. If Python takes longer (infinite loop on a malformed input, runaway
+  allocation, etc.), the Rust side kills the worker's whole PROCESS GROUP —
+  `uv run` forks the interpreter rather than exec'ing it, so killing `uv` alone
+  would orphan a spinning Python — reports a timeout for that input, and starts
+  a fresh worker for the next. The kill is `kill(2)` on the negative group id,
+  through `rustix`, and **never the `kill` utility**: procps-ng 4.0.4's
+  `kill -KILL -<pgid>` (Ubuntu 24.04) reads the group id as an option and
+  signals pid -1, every process the user owns. The first version of this
+  worker did that on PR #662's CI run and took the runner down with it. **Don't write Python decoders that scale
+  super-linearly in input length** — there is no protective `signal.alarm`
+  inside the Python process; the timeout is enforced from Rust.
+
+### Serve-mode requests and responses
+
+One request per stdin line, one response per stdout line, flushed, until EOF:
+
+```json
+{"target": "<TARGET>", "path": "<INPUT_PATH>"}
+```
+
+The response is exactly the single-shot verdict object below **plus**:
+
+- `path` — the request's `path`, echoed. The Rust side rejects a response whose
+  echo does not match as a harness failure: trusting line ORDER alone, one
+  desynchronised line would score every later input against its neighbour's
+  verdict.
+- `traceback` — present only on an `error` verdict, carrying what single-shot
+  mode writes to stderr. On a shared stderr a traceback cannot be tied to its
+  input.
+
+A request the worker cannot interpret is answered, not fatal:
+`{"status": "error", "error_class": "BadRequest", "detail": "...", "path": null}`,
+and the loop goes on — though on the Rust side that answer's `path: null` fails
+the echo check, so the worker is retired and the input is a harness failure.
+`sys.stdout` is pointed at stderr while serving, so a decoder that prints
+through Python's `sys.stdout` (a `print` left in) cannot put a line on the
+response stream. That redirect is Python-level only: native code or a
+subprocess writing to file descriptor 1 still reaches the stream, where the
+Rust side reads a non-JSON line or a mismatched echo — a harness failure,
+never a verdict. The worker exits 0 at EOF.
+
+What a reused interpreter gives up is per-input process isolation: a decoder
+that mutated module state on one input could change the verdict on the next.
+None does today, and Section DRS replays every committed input through both
+modes and requires identical verdicts — each a DECODE (accept or reject), with
+the single-shot process exiting 0, since two identical `error` verdicts are
+what a broken `replay_bytes` produces in both modes — and requires both
+committed roots to contribute an input. See its LIMIT for the fuzz corpus it
+does not replay. The Rust side also retires a worker after any transport
+failure (timeout, death, non-JSON line, mismatched echo), but NOT after an
+`error` verdict. Once **three inputs in a row get no answer from a worker** —
+it could not start, or a transport failure — it starts no further worker, and
+the rest of the run is reported as one "not replayed" harness failure. Any
+answer resets that count, an `error` one included, since the worker that sent
+it is up; the input is still a harness failure of its own.
+
+(This paragraph used to say the cap counted workers that "die before answering
+a single request". That was an earlier rule, replaced during #655: the
+mutation harness showed it could not be told apart from the simpler one, since
+a respawned worker has always answered nothing yet.)
 
 ## Output protocol
 
-`run_diff_replay()` MUST print **exactly one** JSON object to stdout and
-**nothing else** (no trailing newline beyond the standard one from
-`print`, no log lines, no warnings). The Rust side parses stdout with
-`serde_json::from_str(stdout.trim())` and panics if the JSON is malformed.
+In single-shot mode `run_diff_replay()` MUST print **exactly one** JSON object
+to stdout and **nothing else** (no trailing newline beyond the standard one
+from `print`, no log lines, no warnings). In serve mode that object is one
+response line. Either way a line that is not valid JSON is a HARNESS failure on
+the Rust side, never a verdict (#595).
 
 There are exactly three valid output shapes:
 
@@ -93,9 +170,8 @@ There are exactly three valid output shapes:
   a canonical re-encode contract — it builds an in-memory `VaultIndex`
   struct and discards the lexical input. Python emits an empty
   `reencoded_b64` and the Rust side
-  (`differential_replay.rs::differential_replay_full_corpus`'s
-  `if *target == "vault_toml"` arm) short-circuits the byte comparison for
-  this target. A line-anchor citation here was tried before and went stale
+  (`differential_replay_helpers/agreement.rs::judge`, via its
+  `CRASH_ONLY_TARGET`) short-circuits the byte comparison for this target. A line-anchor citation here was tried before and went stale
   across an unrelated edit to the same file (twice, in fact — once before
   #634 and worse afterwards, when splitting the file's helpers into
   `differential_replay_helpers/` shifted the line numbers further); a symbol
@@ -111,9 +187,11 @@ There are exactly three valid output shapes:
 ```
 
 - `error_class` is `type(e).__name__` and `detail` is `str(e)`. Both are
-  informational and neither is compared.
+  informational and neither is compared — but both are REQUIRED, as strings: a
+  reject missing either is a harness failure, as an accept missing
+  `reencoded_b64` already was (#662 review).
 - **`rule` is compared** (#634), for the targets in
-  `differential_replay.rs::TOKEN_COMPARED_TARGETS` — today `manifest_body`
+  `differential_replay_helpers/targets.rs::TOKEN_COMPARED_TARGETS` — today `manifest_body`
   and nothing else. It is one of the tokens in
   `core/tests/data/rule_token_vocabulary.json`, which the Rust enum
   `secretary_core::vault::manifest::RuleToken` and Section RTV both check
@@ -143,6 +221,9 @@ There are exactly three valid output shapes:
   DISAGREEMENT, not as a harness failure. Both red the test, so nothing is
   lost; "unrecognised or missing is a harness failure" is simply wrong about
   the first half.
+- A target must be classified: one in neither `TOKEN_COMPARED_TARGETS` nor
+  `NOT_TOKEN_COMPARED_TARGETS` is a harness failure in `agreement::judge`,
+  never the loose comparison by default (#662 review).
 - **`manifest_file` is deliberately NOT token-compared** (#640): Rust's
   header raises `UnsupportedFormatVersion` where Python raises the same
   `ParseError` it raises for every envelope fault, and no mapping reconciles
@@ -150,14 +231,19 @@ There are exactly three valid output shapes:
 
 ### Exit code
 
-`run_diff_replay()` returns 0 (and the script exits 0) for all three
-output shapes — accept, reject, even unknown-target. **Non-zero exit
-means an unrecoverable script error** (uncaught exception, syntax error,
-import failure) and the Rust side surfaces stderr verbatim.
+Single-shot `run_diff_replay()` exits **0 for accept and reject**, and **3 for
+`status: "error"`** — an unknown target, an unreadable input, or any exception
+the decoders do not raise deliberately (#595). This section used to say
+unknown-target exited 0; it has not since #595 made "error" a harness failure
+rather than a verdict. Any other non-zero exit (a syntax error, an import
+failure) is equally a harness failure. Serve mode answers all of these as
+`error` RESPONSES and exits 0 at EOF; the Rust side scores each one as a
+harness failure for its input.
 
 If you add a new failure mode that should be classified as "the corpus
-input is bad" (not "the script is broken"), emit `{"status":"reject", ...}`
-and `return 0`. Reserve non-zero exit for "Python itself failed".
+input is bad" (not "the script is broken"), raise one of the exception types
+in `conformance_lib/rejection.py`'s `_REJECTION_EXCEPTIONS`, which becomes a
+`{"status": "reject", ...}` verdict. Anything else is "Python itself failed".
 
 ## The accept/reject contract — what it really means
 
@@ -203,13 +289,17 @@ directories on every run.
    `py_encode_<target>(parsed: SomeDataclass) -> bytes` in a module under
    `core/tests/python/conformance_lib/codec/` — one module per target,
    named after it.
-2. Extend the `if target == "<target>":` chain inside `run_diff_replay()`
-   (`conformance_lib/diff_replay.py`) with the appropriate accept arm
-   (with or without re-encoded bytes, per §1/§2 above), importing the new
-   pair at the top of that module.
+2. Add the pair to the `_ROUND_TRIP` table in
+   `conformance_lib/diff_replay.py` (it was an `if target == ...` chain
+   until #655), importing it at the top of that module. A crash-only target
+   with no re-encode is the one special case, `_CRASH_ONLY_TARGET`, and a
+   second one would need `replay_bytes` itself extended. `DIFF_REPLAY_TARGETS`
+   is derived from the table, so Section DRS picks the new target up and
+   requires a committed input for it.
 3. Mirror the change on the Rust side in
-   `core/tests/differential_replay.rs::rust_decode` and
-   `core/tests/differential_replay.rs::TARGETS`.
+   `core/tests/differential_replay_helpers/rust_decoder.rs::rust_decode` and
+   `core/tests/differential_replay_helpers/targets.rs::TARGETS` (moved out of
+   the entry file in #649), plus a `MIN_CORPUS_INPUTS` row in that same file.
 4. Add a fuzz target under `core/fuzz/fuzz_targets/<target>.rs` if one
    doesn't exist yet. The differential replay only meaningfully runs
    against inputs the fuzzer has actually mutated — without a
@@ -226,31 +316,33 @@ directories on every run.
      --features differential-replay --test differential_replay
    ```
 
-   This is the spelling CI runs (#647). **Move `core/fuzz/corpus` aside first
-   if this checkout has fuzzed** — the walk feeds that gitignored directory
-   too, it grows without bound, and the run then takes hours while presenting
-   as a hang (#655). The scope flag makes no difference to that; the
-   `--workspace` spelling this step used to recommend additionally rebuilds
-   the desktop and FFI wrapper crates for a feature none of them reads.
+   This is the spelling CI runs (#647). On a checkout that has fuzzed it also
+   replays the gitignored `core/fuzz/corpus/`, which is the point of running
+   it locally: since #655 that is seconds rather than hours (27.5 s for 74,973
+   inputs, measured), and each target prints a start line, a progress line at
+   most every 10 s, and a finish line with its input counts — to the process's
+   stderr, so they show without `--nocapture`. The `--workspace` spelling this
+   step used to recommend additionally rebuilds the desktop and FFI wrapper
+   crates for a feature none of them reads.
 
 ## Adding a new accept-shape (don't, unless you must)
 
 The three output shapes above are not arbitrary; they're what
-`differential_replay_helpers::python_bridge::python_decode` knows how to
-consume (moved out of `differential_replay.rs` itself in #634, to keep that
-entry file under the project's 500-LOC guideline — see that file's own
-module doc). If you genuinely need a new shape (e.g. "accept with a
+`differential_replay_helpers::python_bridge::parse_verdict` knows how to
+consume (a pure function since #655, unit-tested without Python; the process
+that feeds it is `python_worker.rs`). If you genuinely need a new shape (e.g. "accept with a
 structured error class to compare against Rust"), extend **both sides** of
 the protocol in the same commit:
 
-1. Update `python_decode` in
+1. Update `parse_verdict` in
    `core/tests/differential_replay_helpers/python_bridge.rs` to recognise
-   the new shape.
-2. Update `run_diff_replay` in `conformance_lib/diff_replay.py` to emit it.
+   the new shape, with a unit test beside it.
+2. Update `replay_bytes` in `conformance_lib/diff_replay.py` to emit it —
+   both modes then carry it.
 3. Update this document.
 
-Adding a new shape on only one side will manifest as
-`panic!("python output missing status: ...")` from the Rust side, which
+Adding a new shape on only one side will manifest as a harness failure
+("python output has unrecognised status ...") from the Rust side, which
 is the test failing loudly — not the silent kind of breakage. So the
 guard rails are decent, but please update both ends in lockstep anyway.
 

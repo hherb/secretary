@@ -23,8 +23,8 @@ for goals and exit criteria.
 `fuzz_targets/manifest_body.rs` and no `[[bin]]` for it**, so
 `cargo fuzz run manifest_body` fails and `corpus/manifest_body/` is never
 created. Those seeds exist for a different consumer: `manifest_body` is a
-**differential-replay** target (`core/tests/differential_replay.rs`'s
-`TARGETS`), which reads `seeds/<target>/` directly.
+**differential-replay** target (`TARGETS` in
+`core/tests/differential_replay_helpers/targets.rs`), which reads `seeds/<target>/` directly.
 
 The practical consequence is that, unlike the seven targets above, its
 replay corpus only ever grows when someone hand-authors a row — no mutation
@@ -182,12 +182,13 @@ cargo test --release --locked -p secretary-core \
   --features differential-replay --test differential_replay
 ```
 
-**Move `corpus/` aside first if this checkout has fuzzed.** The walk feeds
-`core/fuzz/corpus/<target>/` as well as the committed seeds, that directory
-grows without bound (74,924 files on one machine), and the run then takes
-hours while printing nothing but "has been running for over 60 seconds" —
-it presents as a hang, not as slowness (#655). No scope flag avoids it: the
-walk is in the test, so `--workspace` and the narrow form behave alike.
+**On a checkout that has fuzzed this replays `corpus/` too, and that is the
+point of running it locally** — agreement on fuzz-DISCOVERED inputs is proven
+nowhere else, since CI has no runtime corpus. Until #655 it spawned `uv run`
+per input and a 74,924-input corpus took ~3.3 h while printing nothing; it now
+asks one `conformance.py --diff-replay-serve` worker, and measured 74,973 inputs
+in 27.5 s. Each target prints start, progress (at most every 10 s) and finish
+lines to stderr, which show without `--nocapture`.
 `MIN_CORPUS_INPUTS` floors the COMMITTED inputs per target, so deleting a
 seed reds even on a machine whose runtime corpus is large.
 
@@ -199,5 +200,6 @@ For the contract between `differential_replay.rs` and the Python
 side (output JSON shapes, accept/reject semantics, how to add a new
 target), see
 [docs/manual/contributors/differential-replay-protocol.md](../../docs/manual/contributors/differential-replay-protocol.md).
-**Read it before changing `conformance_lib/diff_replay.py`'s
-`--diff-replay` mode.**
+**Read it before changing `conformance_lib/diff_replay.py`** — its
+`--diff-replay-serve` mode, which the replay uses (#655), or the single-shot
+`--diff-replay` mode, which shares its verdict function.
