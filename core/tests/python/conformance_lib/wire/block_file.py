@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from conformance_lib.constants import AEAD_NONCE_LEN, AEAD_TAG_LEN, BLOCK_UUID_LEN, DEVICE_UUID_LEN, ED25519_SIG_LEN, FILE_KIND_BLOCK, FINGERPRINT_LEN, FORMAT_VERSION, MAGIC, ML_DSA_65_SIG_LEN, ML_KEM_768_CT_LEN, SUITE_ID, VAULT_UUID_LEN, WRAP_CT_LEN, WRAP_NONCE_LEN, WRAP_TAG_LEN, X25519_PK_LEN
 from conformance_lib.cursor import Cursor, ParseError, take, take_u16, take_u32, take_u64
+from conformance_lib.wire.envelope_rules import UnsupportedEnvelopeVersion, check_ascending_distinct
 
 # ---------------------------------------------------------------------------
 # §6.1 binary layout parser
@@ -76,11 +77,11 @@ def parse_header(cur: Cursor) -> tuple[BlockHeader, Cursor]:
 
     format_version, cur = take_u16(cur, "format_version")
     if format_version != FORMAT_VERSION:
-        raise ParseError(f"unsupported format_version: 0x{format_version:04x}")
+        raise UnsupportedEnvelopeVersion(f"unsupported format_version: 0x{format_version:04x}")
 
     suite_id, cur = take_u16(cur, "suite_id")
     if suite_id != SUITE_ID:
-        raise ParseError(f"unsupported suite_id: 0x{suite_id:04x}")
+        raise UnsupportedEnvelopeVersion(f"unsupported suite_id: 0x{suite_id:04x}")
 
     file_kind, cur = take_u16(cur, "file_kind")
     if file_kind != FILE_KIND_BLOCK:
@@ -101,9 +102,7 @@ def parse_header(cur: Cursor) -> tuple[BlockHeader, Cursor]:
         vector_clock.append(VectorClockEntry(device_uuid=device_uuid, counter=counter))
 
     # §6.1 strict invariant: ascending lexicographic by device_uuid, no dups.
-    for prev, nxt in zip(vector_clock, vector_clock[1:]):
-        if prev.device_uuid >= nxt.device_uuid:
-            raise ParseError("vector_clock entries not strictly ascending by device_uuid")
+    check_ascending_distinct([e.device_uuid for e in vector_clock], "vector_clock entries", "device_uuid")
 
     header = BlockHeader(
         magic=magic,
@@ -147,9 +146,7 @@ def parse_recipient_table(cur: Cursor) -> tuple[list[RecipientEntry], Cursor]:
         recipients.append(entry)
 
     # §6.2: ascending by fingerprint, no dups.
-    for prev, nxt in zip(recipients, recipients[1:]):
-        if prev.fingerprint >= nxt.fingerprint:
-            raise ParseError("recipient_entries not strictly ascending by fingerprint")
+    check_ascending_distinct([r.fingerprint for r in recipients], "recipient_entries", "fingerprint")
 
     return recipients, cur
 

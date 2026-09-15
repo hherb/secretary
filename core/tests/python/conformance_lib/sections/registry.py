@@ -70,6 +70,7 @@ from conformance_lib.sections.required_key_determinism import (
     section_required_key_determinism,
 )
 from conformance_lib.sections.revoke import section_revoke_kat
+from conformance_lib.sections.rule_token_seeds import section_rule_token_seeds
 from conformance_lib.sections.rule_token_vocabulary import (
     section_rule_token_vocabulary,
 )
@@ -164,6 +165,8 @@ SECTIONS: tuple[Section, ...] = (
             " (#597)", section_required_key_determinism),
     Section("DRS", "diff-replay serve mode matches single-shot, input by input",
             " (#655)", section_diff_replay_serve),
+    Section("RTS", "rule-token seeds are rejected with the rule their file names",
+            " (#641)", section_rule_token_seeds),
     # Last on purpose: it reports on the table above, so it reads as a summary
     # of the run rather than as a precondition for it.
     Section("REG", "section registry completeness", " (#593)",
