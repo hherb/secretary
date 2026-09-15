@@ -1,4 +1,5 @@
-//! [`BlockError::rule_token`] (#641). Spec §3.2.
+//! [`BlockError::rule_token`] (#641). The mapping is §3.2 of the design doc
+//! `docs/superpowers/specs/2026-09-15-token-compare-record-block-design.md`.
 
 use crate::vault::block::BlockError;
 use crate::vault::manifest::RuleToken;

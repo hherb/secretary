@@ -1,4 +1,5 @@
-//! [`RecordError::rule_token`] (#641). Spec §3.1.
+//! [`RecordError::rule_token`] (#641). The mapping is §3.1 of the design doc
+//! `docs/superpowers/specs/2026-09-15-token-compare-record-block-design.md`.
 
 use crate::vault::manifest::RuleToken;
 use crate::vault::record::RecordError;
@@ -23,7 +24,7 @@ impl RecordError {
     pub fn rule_token(&self) -> RuleToken {
         match self {
             // Every kind, including `RecursionLimit`: ciborium's depth cap is
-            // Rust-only, and spec §7 files it rather than fixing it here.
+            // Rust-only, a residual #667 tracks rather than one fixed here.
             RecordError::CborDecode(_) => RuleToken::MalformedCbor,
             RecordError::NotAMap
             | RecordError::NonTextKey

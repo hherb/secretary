@@ -20,7 +20,7 @@ fn every_variant_and_its_token() -> Vec<(RecordError, RuleToken)> {
         ),
         // Every kind a decode can report is `malformed_cbor`, including
         // `RecursionLimit`: ciborium's depth cap is Rust-only, the residual
-        // spec §7 files rather than fixes.
+        // #667 tracks rather than fixes.
         (
             RecordError::CborDecode(fault(CborErrorKind::Io)),
             RuleToken::MalformedCbor,
