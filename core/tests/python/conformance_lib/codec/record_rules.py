@@ -58,6 +58,19 @@ class RecordNonCanonical(ValueError):
     token = "non_canonical_unclassified"
 
 
+class UncheckedKnownKey(RuntimeError):
+    """A caller passed a key these checks have no arm for -- a bug in this
+    package, never a verdict on the input.
+
+    Raised by the fall-through of `check_record_value` and `check_field_value`,
+    so a key added to `RECORD_KNOWN_KEYS` or `RECORD_FIELD_KNOWN_KEYS` without
+    an arm here fails loudly instead of passing its value unchecked.  A
+    `RuntimeError` deliberately: it is absent from
+    `conformance_lib.rejection`'s verdict allowlist, so the differential
+    replay scores it as a harness failure rather than as a rejection.
+    """
+
+
 def _is_integer(value: Any) -> bool:
     # `bool` is an `int` subclass in Python; a CBOR boolean is not an integer.
     return isinstance(value, int) and not isinstance(value, bool)
@@ -96,6 +109,8 @@ def check_record_value(key: str, value: Any) -> Any:
     elif key == "tombstone":
         if not isinstance(value, bool):
             raise RecordWrongType("record tombstone must be bool")
+    else:
+        raise UncheckedKnownKey(f"no value check for known record key {key!r}")
     return value
 
 
@@ -110,4 +125,6 @@ def check_field_value(fname: str, key: str, value: Any) -> Any:
     elif key == "device_uuid":
         if not _is_uuid(value):
             raise RecordWrongType(f"field {fname!r} device_uuid must be 16-byte bstr")
+    else:
+        raise UncheckedKnownKey(f"no value check for known record field key {key!r}")
     return value
