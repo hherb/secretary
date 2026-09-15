@@ -334,6 +334,16 @@ fn tolerance_admits_only_phase_dependent_pairs() {
     // Every other target: no tolerated pair at all. The licence above is
     // §4.2's, the manifest body's; a sequential block-file envelope or a
     // record body inherits none of it (#641).
+    //
+    // The loop below skips whatever the list names, so on its own it cannot
+    // see the list widen: adding `record` to it removed `record` from the
+    // loop (PR #673 review). Pin the list's contents first.
+    assert_eq!(
+        PHASE_DEPENDENT_TOLERANCE_TARGETS,
+        ["manifest_body"],
+        "widening the phase-dependent licence is a vault-format §4.2 decision, \
+         not a table edit"
+    );
     for target in TARGETS
         .iter()
         .filter(|t| !PHASE_DEPENDENT_TOLERANCE_TARGETS.contains(t))
