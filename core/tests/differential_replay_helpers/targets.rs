@@ -104,7 +104,7 @@ pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("bundle_file", 1),
     ("manifest_file", 1),
     ("manifest_body", 39),
-    ("block_file", 16),
+    ("block_file", 20),
 ];
 
 pub fn min_inputs(target: &str) -> usize {

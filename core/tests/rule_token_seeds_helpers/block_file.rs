@@ -5,8 +5,15 @@
 //! Section boundaries come from the real decoders (`decode_header`,
 //! `decode_recipient_table`) rather than hand-counted offsets, so a change to
 //! the base cannot silently move a planted fault onto a different field. The
-//! sort and repeat shapes splice in a second table entry. That leaves the AAD
-//! and signature stale, which neither decoder checks on this target.
+//! sort and repeat shapes splice in a two- or three-entry table. That leaves
+//! the AAD and signature stale, which neither decoder checks on this target.
+//!
+//! **Why three-entry tables too.** With two entries a full adjacent scan and a
+//! check of the first pair alone are the same function, so a reader checking
+//! only `ids[0]` against `ids[1]` stayed conformant against every seed. The
+//! `*_second_pair` shapes plant their one fault at the SECOND adjacent pair —
+//! disorder with no repeat, or a repeat in otherwise ascending order — the
+//! lesson #608's review drew for the manifest's arrays.
 
 use std::mem::size_of;
 
@@ -37,6 +44,9 @@ const SIG_SUFFIX_LEN: usize =
 /// the rest of the id holds.
 const LOW_LEAD: u8 = u8::MIN;
 const HIGH_LEAD: u8 = u8::MAX;
+/// Strictly between the two above, so `[LOW, HIGH, MID]` ascends at its first
+/// adjacent pair and descends at its second, with no two ids equal.
+const MID_LEAD: u8 = u8::MAX / 2;
 /// A byte appended past the signature suffix.
 const TRAILING_BYTE: u8 = 0;
 
@@ -97,6 +107,24 @@ fn with_lead_byte(entry: &[u8], lead: u8) -> Vec<u8> {
     let mut e = entry.to_vec();
     e[0] = lead;
     e
+}
+
+/// `[low, high, mid]`: out of order at the second adjacent pair only.
+fn disordered_at_second_pair(entry: &[u8]) -> [Vec<u8>; 3] {
+    [
+        with_lead_byte(entry, LOW_LEAD),
+        with_lead_byte(entry, HIGH_LEAD),
+        with_lead_byte(entry, MID_LEAD),
+    ]
+}
+
+/// `[low, high, high]`: ascending, but repeated at the second adjacent pair.
+fn repeated_at_second_pair(entry: &[u8]) -> [Vec<u8>; 3] {
+    [
+        with_lead_byte(entry, LOW_LEAD),
+        with_lead_byte(entry, HIGH_LEAD),
+        with_lead_byte(entry, HIGH_LEAD),
+    ]
 }
 
 fn vector_clock_entry(base: &[u8], l: &Layout) -> Vec<u8> {
@@ -236,6 +264,40 @@ fn repeated_recipients(base: &[u8]) -> Vec<u8> {
     )
 }
 
+fn vector_clock_with(base: &[u8], table: fn(&[u8]) -> [Vec<u8>; 3]) -> Vec<u8> {
+    let l = layout(base);
+    let entries = table(&vector_clock_entry(base, &l));
+    with_table(base, l.vc_count_at, l.vc_entries_at, l.vc_len, &entries)
+}
+
+fn recipients_with(base: &[u8], table: fn(&[u8]) -> [Vec<u8>; 3]) -> Vec<u8> {
+    let l = layout(base);
+    let entries = table(&recipient_entry(base, &l));
+    with_table(
+        base,
+        l.recipient_count_at,
+        l.recipients_at,
+        l.recipients_len,
+        &entries,
+    )
+}
+
+fn vector_clock_disordered_at_second_pair(base: &[u8]) -> Vec<u8> {
+    vector_clock_with(base, disordered_at_second_pair)
+}
+
+fn vector_clock_repeated_at_second_pair(base: &[u8]) -> Vec<u8> {
+    vector_clock_with(base, repeated_at_second_pair)
+}
+
+fn recipients_disordered_at_second_pair(base: &[u8]) -> Vec<u8> {
+    recipients_with(base, disordered_at_second_pair)
+}
+
+fn recipients_repeated_at_second_pair(base: &[u8]) -> Vec<u8> {
+    recipients_with(base, repeated_at_second_pair)
+}
+
 pub fn cases() -> Vec<SeedCase> {
     let case = |token: RuleToken, shape: &'static str, plant: fn(&[u8]) -> Vec<u8>| SeedCase {
         target: "block_file",
@@ -270,7 +332,27 @@ pub fn cases() -> Vec<SeedCase> {
         case(UnsupportedVersion, "suite_id", unsupported_suite_id),
         case(ArraySortOrder, "vector_clock", unsorted_vector_clock),
         case(ArraySortOrder, "recipients", unsorted_recipients),
+        case(
+            ArraySortOrder,
+            "vector_clock_second_pair",
+            vector_clock_disordered_at_second_pair,
+        ),
+        case(
+            ArraySortOrder,
+            "recipients_second_pair",
+            recipients_disordered_at_second_pair,
+        ),
         case(RepeatedArrayValue, "vector_clock", repeated_vector_clock),
         case(RepeatedArrayValue, "recipients", repeated_recipients),
+        case(
+            RepeatedArrayValue,
+            "vector_clock_second_pair",
+            vector_clock_repeated_at_second_pair,
+        ),
+        case(
+            RepeatedArrayValue,
+            "recipients_second_pair",
+            recipients_repeated_at_second_pair,
+        ),
     ]
 }

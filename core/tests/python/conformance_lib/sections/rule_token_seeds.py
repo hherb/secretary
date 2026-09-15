@@ -21,18 +21,21 @@ WHY FLOORS (check 3) AND AN EXPECTED TOKEN SET (check 4).  An emptied
 directory satisfies check 2 vacuously, and a directory whose seeds were all
 relabelled onto one token satisfies checks 2 and 3.
 
-CHECK 5 IS PARITY, NOT SPEC.  Seven two-fault `record` bodies are built in
-this section and never committed, because vault-format §6.3 fixes no report
-order and a committed cross-language row must not pin one (#618's lesson).
-They pin the phase order `py_decode_record` shares with `record::decode` by
-design -- walk, map, per-key checks in wire order, missing keys, canonical
-form last -- so a drift in Python's order reds here rather than only in a
-local full-corpus replay.  Every committed seed plants ONE fault, so the CI
-replay cannot see an order drift at all; this check is what does.  Six rows
-each name the drift they catch; the seventh is a regression pin that the
-pre-#641 order also passed.  Rust's side of the same parity is pinned by
-`core/src/vault/record_order_tests.rs`, one `#[test]` per row, each asserting
-the exact `RecordError` and its single-fault controls.
+CHECK 5 IS PARITY, NOT SPEC.  Eight two-fault bodies -- seven `record`, one
+`block_file` -- are built in this section and never committed, because
+vault-format §6.1 and §6.3 fix no report order and a committed cross-language
+row must not pin one (#618's lesson; #668).  The `record` rows pin the phase
+order `py_decode_record` shares with `record::decode` by design -- walk, map,
+per-key checks in wire order, missing keys, canonical form last -- and the
+`block_file` row pins that a table is judged at its FIRST adjacent pair that
+is not strictly ascending, as `block.rs` does.  So a drift in Python's order
+reds here rather than only in a local full-corpus replay.  Every committed
+seed plants ONE fault, so the CI replay cannot see an order drift at all; this
+check is what does.  Seven rows each name the drift they catch; the eighth is
+a regression pin that the pre-#641 order also passed.  Rust's side of the
+`record` parity is pinned by `core/src/vault/record_order_tests.rs`, one
+`#[test]` per row, each asserting the exact `RecordError` and its
+single-fault controls.
 """
 
 from __future__ import annotations
@@ -43,8 +46,11 @@ from pathlib import Path
 
 from conformance_lib import fixtures
 from conformance_lib.codec import cbor_faults, record_rules
+from conformance_lib.constants import VECTOR_CLOCK_ENTRY_LEN
+from conformance_lib.cursor import Cursor, ParseError
 from conformance_lib.diff_replay import replay_bytes
 from conformance_lib.wire import envelope_rules
+from conformance_lib.wire.block_file import parse_header
 
 # Mirrors `rule_token_seeds_helpers::LABEL_SEPARATOR`.
 LABEL_SEPARATOR = "__"
@@ -53,7 +59,7 @@ LABEL_SEPARATOR = "__"
 # set of tokens those seeds must name between them.
 _TARGETS: dict[str, tuple[int, frozenset[str]]] = {
     "block_file": (
-        15,
+        19,
         frozenset(
             {"container_malformed", "unsupported_version", "array_sort_order", "repeated_array_value"}
         ),
@@ -162,11 +168,46 @@ _UNDEFINED = bytes([0xF7])
 _TRUNCATED_TEXT = bytes([0x63, 0xFF])
 _TRAILING_BYTE = bytes([0x00])
 _UUID_LEN = record_rules.RECORD_UUID_LEN
-# How many parity-order cases `_ordering_issues` declares; asserted there.
-_ORDERING_CASES = 7
+# The committed accepting base the `block_file` case is spliced into.
+_BLOCK_BASE = "golden.bin"
+# §6.1: the vector-clock entry count is a big-endian u16.
+_U16_LEN = 2
+# Leading id bytes that compare strictly, whatever the rest of the id holds.
+_LOW_LEAD = 0x00
+_HIGH_LEAD = 0xFF
+# How many parity-order cases each builder declares; asserted in `_ordering_issues`.
+_ORDERING_CASES = {"record": 7, "block_file": 1}
+
+_OrderingCase = tuple[str, bytes, str, "str | None"]
 
 
-def _ordering_cases() -> tuple[tuple[str, bytes, str, str | None], ...]:
+def _block_file_ordering_cases() -> tuple[_OrderingCase, ...]:
+    """One two-fault `block_file` body: a vector clock `[high, low, low]`.
+
+    Its first adjacent pair is out of order and its second is a repeat, each
+    of which alone names a different token (the committed
+    `array_sort_order__vector_clock` and `repeated_array_value__vector_clock`
+    seeds are exactly those single faults).  §6.1 fixes no order between the
+    two (#668), so this is parity only: both implementations report the FIRST
+    adjacent pair that is not strictly ascending, as `block.rs`'s `match cmp`
+    over `windows(2)` does, and a reader that scans the whole table for a
+    repeat before judging order names `repeated_array_value` instead
+    (measured).
+    """
+    base = (fixtures.fuzz_seed_dir("block_file") / _BLOCK_BASE).read_bytes()
+    header, after = parse_header(Cursor(buf=base, pos=0))
+    entries_at = after.pos - len(header.vector_clock) * VECTOR_CLOCK_ENTRY_LEN
+    count_at = entries_at - _U16_LEN
+    entry = base[entries_at:entries_at + VECTOR_CLOCK_ENTRY_LEN]
+    table = [bytes([lead]) + entry[1:] for lead in (_HIGH_LEAD, _LOW_LEAD, _LOW_LEAD)]
+    body = base[:count_at] + len(table).to_bytes(_U16_LEN, "big") + b"".join(table) + base[after.pos:]
+    return (
+        ("a vector clock out of order at its first pair and repeated at its second",
+         body, "array_sort_order", "every pair checked for a repeat before any for order"),
+    )
+
+
+def _record_ordering_cases() -> tuple[_OrderingCase, ...]:
     """`(label, body, token the shared order names, the drift it catches)`."""
     import cbor2
 
@@ -204,20 +245,33 @@ def _ordering_cases() -> tuple[tuple[str, bytes, str, str | None], ...]:
     )
 
 
-def _ordering_issues() -> list[str]:
-    cases = _ordering_cases()
-    if len(cases) != _ORDERING_CASES:
-        raise AssertionError(f"_ORDERING_CASES is {_ORDERING_CASES}, the table holds {len(cases)}")
-    issues = []
-    for label, body, want, drift in cases:
-        verdict = replay_bytes("record", body).verdict
-        if verdict.get("status") != "reject" or verdict.get("rule") != want:
-            caught = f" -- the drift this row catches: {drift}" if drift else ""
-            issues.append(
-                f"record order: {label} must report {want!r}, got {verdict.get('status')} "
-                f"{verdict.get('rule')!r} ({verdict.get('error_class')}: {verdict.get('detail')}){caught}"
+def _ordering_issues() -> tuple[list[str], str]:
+    builders = (("record", _record_ordering_cases), ("block_file", _block_file_ordering_cases))
+    issues: list[str] = []
+    tallies = []
+    for target, build in builders:
+        try:
+            cases = build()
+        except (OSError, ParseError) as exc:
+            issues.append(f"{target} order: cannot build the cases: {type(exc).__name__}: {exc}")
+            tallies.append(f"0/{_ORDERING_CASES[target]} {target}")
+            continue
+        if len(cases) != _ORDERING_CASES[target]:
+            raise AssertionError(
+                f"_ORDERING_CASES[{target!r}] is {_ORDERING_CASES[target]}, the table holds {len(cases)}"
             )
-    return issues
+        failed = 0
+        for label, body, want, drift in cases:
+            verdict = replay_bytes(target, body).verdict
+            if verdict.get("status") != "reject" or verdict.get("rule") != want:
+                failed += 1
+                caught = f" -- the drift this row catches: {drift}" if drift else ""
+                issues.append(
+                    f"{target} order: {label} must report {want!r}, got {verdict.get('status')} "
+                    f"{verdict.get('rule')!r} ({verdict.get('error_class')}: {verdict.get('detail')}){caught}"
+                )
+        tallies.append(f"{len(cases) - failed}/{len(cases)} {target}")
+    return issues, " and ".join(tallies)
 
 
 def section_rule_token_seeds() -> tuple[bool, list[str]]:
@@ -227,11 +281,9 @@ def section_rule_token_seeds() -> tuple[bool, list[str]]:
         target_issues, summary = _seed_issues(target, floor, want_tokens)
         issues.extend(target_issues)
         lines.append(f"PASS 2-4: {summary}, each rejected with its file name's token")
-    order_issues = _ordering_issues()
+    order_issues, tally = _ordering_issues()
     issues.extend(order_issues)
-    lines.append(
-        f"PASS 5: {_ORDERING_CASES - len(order_issues)}/{_ORDERING_CASES} record parity-order cases"
-    )
+    lines.append(f"PASS 5: {tally} parity-order cases")
     for issue in issues:
         lines.append(f"  ISSUE: {issue}")
     return (not issues, lines)
