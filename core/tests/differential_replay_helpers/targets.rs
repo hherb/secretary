@@ -90,10 +90,16 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// `block_file` — and the phase-dependent tolerance applies on
 /// [`PHASE_DEPENDENT_TOLERANCE_TARGETS`] (`manifest_body`) only. On `record`
 /// and `block_file` (#641) every committed input both sides reject therefore
-/// reaches a strict comparison, so their floor already is a strict-comparison
-/// floor. On `manifest_body` it is not: the count is taken from the listing
-/// before any decode, and `tokens_agree` there lets a phase-dependent token
-/// on either side stand against a different token, so a change on the Rust
+/// reaches a strict comparison — but the floor is not that count. It also
+/// counts the committed ACCEPTING bases, which are compared on re-encoded
+/// bytes rather than tokens: 3 of `record`'s 25 (`api_key.cbor`,
+/// `login.cbor`, `secure_note.cbor`) and 1 of `block_file`'s 20
+/// (`golden.bin`), leaving 22 and 19 strict comparisons today. And the floor
+/// is taken before any decode, so it holds that figure only while every
+/// labelled seed still rejects, which `rule_token_seeds` and Section RTS
+/// check and this floor does not. On `manifest_body` the gap is wider:
+/// `tokens_agree` there lets a phase-dependent token on either side stand
+/// against a different token, so a change on the Rust
 /// raise side could route more of that corpus onto tolerated pairs and shrink
 /// the real comparison toward zero with this floor, the tolerance breadth
 /// assertion and the negative control all green. Tracked as #658.
