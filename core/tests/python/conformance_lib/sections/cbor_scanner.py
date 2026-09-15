@@ -250,9 +250,12 @@ def section_cbor_scanner_units() -> tuple[bool, list[str]]:
 # (`py_decode_record`, `py_decode_contact_card`) relied on nothing it did --
 # removing the call changes no behaviour in either decoder. The actual
 # duplicate-key protection now comes from two different places depending on
-# the decoder: `py_decode_record`'s span-list `seen`-set checks (this file,
-# above) reject a duplicate KNOWN key at every level that decoder interprets
-# structurally, while `py_decode_contact_card` (which has no `unknown` bag at
+# the decoder: `py_decode_record` (`codec/record.py`) rejects a repeated key,
+# known or unknown, in each of the three maps it interprets -- the record
+# itself and each field through a `seen` set, the `fields` map through its
+# already-decoded names -- checked as each entry is read, in wire order
+# (#641), and never inside an unknown value's subtree, while
+# `py_decode_contact_card` (which has no `unknown` bag at
 # all -- it rejects every unrecognised key outright) is still protected by
 # its own re-encode-and-compare, exactly as the deleted docstring argued --
 # correctly, in that one decoder's case.
