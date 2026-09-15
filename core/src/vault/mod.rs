@@ -31,6 +31,8 @@ pub(crate) mod orchestrators;
 pub mod purge;
 pub mod record;
 #[cfg(test)]
+mod record_order_tests;
+#[cfg(test)]
 mod record_walk_tests;
 mod repair;
 pub mod retention;

@@ -30,7 +30,9 @@ form last -- so a drift in Python's order reds here rather than only in a
 local full-corpus replay.  Every committed seed plants ONE fault, so the CI
 replay cannot see an order drift at all; this check is what does.  Six rows
 each name the drift they catch; the seventh is a regression pin that the
-pre-#641 order also passed.
+pre-#641 order also passed.  Rust's side of the same parity is pinned by
+`core/src/vault/record_order_tests.rs`, one `#[test]` per row, each asserting
+the exact `RecordError` and its single-fault controls.
 """
 
 from __future__ import annotations
