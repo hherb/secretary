@@ -1,1 +1,1 @@
-docs/handoffs/2026-09-14-corpus-replay-worker-shipped.md
+docs/handoffs/2026-09-15-token-compare-record-block-shipped.md
