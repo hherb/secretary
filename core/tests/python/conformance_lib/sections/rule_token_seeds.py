@@ -41,7 +41,7 @@ WHY FLOORS (check 3) AND AN EXPECTED TOKEN SET (check 4).  An emptied
 directory satisfies check 2 vacuously, and a directory whose seeds were all
 relabelled onto one token satisfies checks 2 and 3.
 
-CHECK 5 IS PARITY, NOT SPEC.  Eight two-fault bodies -- seven `record`, one
+CHECK 5 IS PARITY, NOT SPEC.  Ten two-fault bodies -- nine `record`, one
 `block_file` -- are built in this section and never committed, because
 vault-format §6.1 and §6.3 fix no report order and a committed cross-language
 row must not pin one (#618's lesson; #668).  The `record` rows pin the phase
@@ -51,8 +51,10 @@ per-key checks in wire order, missing keys, canonical form last -- and the
 is not strictly ascending, as `block.rs` does.  So a drift in Python's order
 reds here rather than only in a local full-corpus replay.  Every committed
 seed plants ONE fault, so the CI replay cannot see an order drift at all; this
-check is what does.  Seven rows each name the drift they catch; the eighth is
-a regression pin that the pre-#641 order also passed.  Rust's side of the
+check is what does.  Nine rows each name the drift they catch; the tenth is
+a regression pin that the pre-#641 order also passed.  The two field-level
+`record` rows came from the PR #673 review, which found the order pinned at
+the top level only.  Rust's side of the
 `record` parity is pinned by `core/src/vault/record_order_tests.rs`, one
 `#[test]` per row, each asserting the exact `RecordError` and its
 single-fault controls.
@@ -263,7 +265,7 @@ _U16_LEN = 2
 _LOW_LEAD = 0x00
 _HIGH_LEAD = 0xFF
 # How many parity-order cases each builder declares; asserted in `_ordering_issues`.
-_ORDERING_CASES = {"record": 7, "block_file": 1}
+_ORDERING_CASES = {"record": 9, "block_file": 1}
 
 _OrderingCase = tuple[str, bytes, str, "str | None"]
 
@@ -306,6 +308,7 @@ def _record_ordering_cases() -> tuple[_OrderingCase, ...]:
         "last_mod_ms": 0,
     }
     no_last_mod = {k: v for k, v in base.items() if k != "last_mod_ms"}
+    device_uuid = os.urandom(_UUID_LEN)
     return (
         ("a wrong type beside a missing key",
          cbor2.dumps({**no_last_mod, "record_uuid": "text"}, canonical=True), "wrong_type",
@@ -329,6 +332,14 @@ def _record_ordering_cases() -> tuple[_OrderingCase, ...]:
         ("a tag wrapping an otherwise valid record map",
          _TAG_1_HEAD + cbor2.dumps(base, canonical=True), "rule4_tag_or_float",
          "the top-level map head read before the walk"),
+        ("a field missing a key beside a wrong-typed field value",
+         cbor2.dumps({**base, "fields": {"f": {"last_mod": "text", "device_uuid": device_uuid}}},
+                     canonical=True), "wrong_type",
+         "a field's missing keys checked before its values"),
+        ("a fault inside a field before a later top-level wrong type",
+         cbor2.dumps({**base, "record_uuid": "text",
+                      "fields": {"f": {"last_mod": 0, "device_uuid": device_uuid}}}, canonical=True),
+         "missing_field", "the fields map decoded after the top-level entries"),
     )
 
 

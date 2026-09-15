@@ -51,6 +51,11 @@ const MAP_2_SECOND_KEY_AT: usize = 3;
 const KEY_RECORD_UUID: &str = "record_uuid";
 const KEY_RECORD_TYPE: &str = "record_type";
 const KEY_LAST_MOD_MS: &str = "last_mod_ms";
+const KEY_FIELDS: &str = "fields";
+/// The field of `login.cbor` the field-level bodies edit.
+const EDITED_FIELD: &str = "username";
+const KEY_VALUE: &str = "value";
+const KEY_LAST_MOD: &str = "last_mod";
 /// An unknown key; an unknown value is vetted by the walk and nothing else.
 const UNKNOWN_KEY: &str = "unknown_extension";
 const TEXT_WHERE_BYTES_BELONG: &str = "text";
@@ -95,6 +100,34 @@ fn login_with_raw_unknown_value(raw: &[u8]) -> Vec<u8> {
     assert_eq!(body.pop(), Some(NULL), "the placeholder is the last byte");
     body.extend_from_slice(raw);
     body
+}
+
+/// `entries` with `EDITED_FIELD`'s own map rewritten by `edit`.
+fn with_edited_field(
+    entries: Vec<(Value, Value)>,
+    edit: impl Fn(Vec<(Value, Value)>) -> Vec<(Value, Value)>,
+) -> Vec<(Value, Value)> {
+    entries
+        .into_iter()
+        .map(|(k, v)| {
+            if !matches!(&k, Value::Text(t) if t == KEY_FIELDS) {
+                return (k, v);
+            }
+            let Value::Map(fields) = v else {
+                panic!("login.cbor's fields is not a map")
+            };
+            let fields = fields
+                .into_iter()
+                .map(|(name, field)| match (&name, field) {
+                    (Value::Text(n), Value::Map(f)) if n == EDITED_FIELD => {
+                        (name, Value::Map(edit(f)))
+                    }
+                    (_, field) => (name, field),
+                })
+                .collect();
+            (k, Value::Map(fields))
+        })
+        .collect()
 }
 
 fn syntax_at(offset: usize) -> CborFault {
@@ -268,4 +301,80 @@ fn a_tag_wrapping_an_otherwise_valid_record_map_reports_rule_four() {
     ));
     assert!(matches!(decode(&tag_alone), Err(RecordError::TagRejected)));
     assert!(matches!(decode(&both), Err(RecordError::TagRejected)));
+}
+
+/// Inside one field, as at the top level: values are checked as each key is
+/// read, and the field's missing keys only after its loop. Field-level twin of
+/// `a_wrong_type_beside_a_missing_key_reports_the_wrong_type` (PR #673 review:
+/// only top-level bodies pinned the order).
+#[test]
+fn a_field_missing_a_key_beside_a_wrong_typed_field_value_reports_the_wrong_type() {
+    let wrong = Value::Text(TEXT_WHERE_BYTES_BELONG.into());
+    let both = encode(&Value::Map(with_edited_field(login_entries(), |f| {
+        with_value(without(f, KEY_VALUE), KEY_LAST_MOD, wrong.clone())
+    })));
+    let type_alone = encode(&Value::Map(with_edited_field(login_entries(), |f| {
+        with_value(f, KEY_LAST_MOD, wrong.clone())
+    })));
+    let missing_alone = encode(&Value::Map(with_edited_field(login_entries(), |f| {
+        without(f, KEY_VALUE)
+    })));
+
+    assert!(matches!(
+        decode(&type_alone),
+        Err(RecordError::WrongType {
+            field: KEY_LAST_MOD,
+            ..
+        })
+    ));
+    assert!(matches!(
+        decode(&missing_alone),
+        Err(RecordError::MissingField { field: KEY_VALUE })
+    ));
+    assert!(matches!(
+        decode(&both),
+        Err(RecordError::WrongType {
+            field: KEY_LAST_MOD,
+            ..
+        })
+    ));
+}
+
+/// `fields` is decoded where it sits on the wire, in full, before any later
+/// top-level key is read. Canonical order puts `fields` ahead of
+/// `record_uuid`, so a missing key inside a field outranks a wrong-typed
+/// `record_uuid`; a reader that decoded the nested maps after the top-level
+/// loop would name the wrong type instead (PR #673 review).
+#[test]
+fn a_fault_inside_a_field_outranks_a_later_top_level_wrong_type() {
+    let wrong = Value::Text(TEXT_WHERE_BYTES_BELONG.into());
+    let both = encode(&Value::Map(with_value(
+        with_edited_field(login_entries(), |f| without(f, KEY_VALUE)),
+        KEY_RECORD_UUID,
+        wrong.clone(),
+    )));
+    let nested_alone = encode(&Value::Map(with_edited_field(login_entries(), |f| {
+        without(f, KEY_VALUE)
+    })));
+    let top_alone = encode(&Value::Map(with_value(
+        login_entries(),
+        KEY_RECORD_UUID,
+        wrong,
+    )));
+
+    assert!(matches!(
+        decode(&nested_alone),
+        Err(RecordError::MissingField { field: KEY_VALUE })
+    ));
+    assert!(matches!(
+        decode(&top_alone),
+        Err(RecordError::WrongType {
+            field: KEY_RECORD_UUID,
+            ..
+        })
+    ));
+    assert!(matches!(
+        decode(&both),
+        Err(RecordError::MissingField { field: KEY_VALUE })
+    ));
 }
