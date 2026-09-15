@@ -46,6 +46,22 @@ pub const NOT_TOKEN_COMPARED_TARGETS: &[&str] = &[
     "block_file",
 ];
 
+/// The compared targets on which a phase-dependent token may stand against a
+/// different token and still count as agreement.
+///
+/// **The licence is a SPEC SECTION's, not a token's.** `RuleToken::is_phase_dependent`
+/// is derived from `docs/vault-format.md` §4.2, which admits two manifest-body
+/// reader designs that detect §6.2 rules 1-3 and the array sort disciplines at
+/// different points. Nothing gives a §6.1 block-file envelope or a §6.3 record
+/// body that freedom, so on every other compared target only EQUAL tokens
+/// agree (#641). Applied globally, the per-token predicate would have scored
+/// `array_sort_order` against `container_malformed` on `block_file` as
+/// agreement — hiding exactly the Python sort/repeat split #641 adds.
+///
+/// Must be a subset of [`TOKEN_COMPARED_TARGETS`]; `every_target_is_classified`
+/// checks it.
+pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
+
 /// The committed input floor for each target.
 ///
 /// `seen > 0` was not enough, and the gap was specific rather than

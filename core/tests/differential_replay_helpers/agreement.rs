@@ -87,7 +87,7 @@ pub fn judge(
                 true
             } else {
                 match (r.token, rule.as_deref()) {
-                    (Some(rt), Some(pt)) => tokens_agree(rt, pt),
+                    (Some(rt), Some(pt)) => tokens_agree(target, rt, pt),
                     // Default-deny: unreachable after the missing-token guard
                     // above, and never agreement if it were reached.
                     _ => false,
@@ -126,7 +126,7 @@ mod tests {
     use super::*;
 
     const COMPARED: &str = "manifest_body";
-    const UNCOMPARED: &str = "record";
+    const UNCOMPARED: &str = "contact_card";
 
     fn rust_ok(bytes: &[u8]) -> Result<SecretBytes, RustRejection> {
         Ok(SecretBytes::new(bytes.to_vec()))

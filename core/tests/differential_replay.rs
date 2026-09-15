@@ -40,7 +40,8 @@ use helpers::python_bridge::serve_command;
 use helpers::python_worker::{PyReplayer, MAX_CONSECUTIVE_WORKER_FAILURES, PER_INPUT_TIMEOUT};
 use helpers::rust_decoder::rust_decode;
 use helpers::targets::{
-    min_inputs, MIN_CORPUS_INPUTS, NOT_TOKEN_COMPARED_TARGETS, TARGETS, TOKEN_COMPARED_TARGETS,
+    min_inputs, MIN_CORPUS_INPUTS, NOT_TOKEN_COMPARED_TARGETS, PHASE_DEPENDENT_TOLERANCE_TARGETS,
+    TARGETS, TOKEN_COMPARED_TARGETS,
 };
 use helpers::tolerance::tokens_agree;
 
@@ -206,6 +207,15 @@ fn every_target_is_classified() {
         TARGETS.len(),
         "MIN_CORPUS_INPUTS must cover TARGETS exactly"
     );
+
+    // The phase-dependent licence is vault-format §4.2's, i.e. one target's
+    // spec section, and only a compared target can use it (#641).
+    for target in PHASE_DEPENDENT_TOLERANCE_TARGETS {
+        assert!(
+            TOKEN_COMPARED_TARGETS.contains(target),
+            "{target:?} is licensed for the phase-dependent tolerance but is not token-compared"
+        );
+    }
 }
 
 /// The NEGATIVE control the corpus cannot provide: no committed input makes
@@ -226,10 +236,12 @@ fn every_target_is_classified() {
 fn tolerance_admits_only_phase_dependent_pairs() {
     use secretary_core::vault::manifest::RuleToken;
 
+    const LICENSED: &str = "manifest_body";
+
     // Identical tokens always agree, phase-dependent or not.
     for t in RuleToken::ALL {
         assert!(
-            tokens_agree(t.as_str(), t.as_str()),
+            tokens_agree(LICENSED, t.as_str(), t.as_str()),
             "{:?} vs itself",
             t.as_str()
         );
@@ -242,13 +254,29 @@ fn tolerance_admits_only_phase_dependent_pairs() {
     // rules 1, 2 and 3 themselves" paragraph instead, which is a different
     // sentence and does not reach a pair one of whose members is an array
     // sort discipline; `diff_regressions/README.md` had it right throughout.
-    assert!(tokens_agree("array_sort_order", "rule2_indefinite_length"));
-    assert!(tokens_agree("rule2_indefinite_length", "array_sort_order"));
+    assert!(tokens_agree(
+        LICENSED,
+        "array_sort_order",
+        "rule2_indefinite_length"
+    ));
+    assert!(tokens_agree(
+        LICENSED,
+        "rule2_indefinite_length",
+        "array_sort_order"
+    ));
 
     // #618's pair, BOTH ordered -> a real disagreement. If this ever passes,
     // the divergence #618 fixed could return unseen.
-    assert!(!tokens_agree("rule4_tag_or_float", "duplicate_map_key"));
-    assert!(!tokens_agree("duplicate_map_key", "rule4_tag_or_float"));
+    assert!(!tokens_agree(
+        LICENSED,
+        "rule4_tag_or_float",
+        "duplicate_map_key"
+    ));
+    assert!(!tokens_agree(
+        LICENSED,
+        "duplicate_map_key",
+        "rule4_tag_or_float"
+    ));
 
     // Two ordered tokens never agree unless equal.
     let ordered: Vec<&str> = RuleToken::ALL
@@ -258,7 +286,7 @@ fn tolerance_admits_only_phase_dependent_pairs() {
         .collect();
     for a in &ordered {
         for b in &ordered {
-            assert_eq!(tokens_agree(a, b), a == b, "{} vs {}", a, b);
+            assert_eq!(tokens_agree(LICENSED, a, b), a == b, "{} vs {}", a, b);
         }
     }
 
@@ -278,7 +306,7 @@ fn tolerance_admits_only_phase_dependent_pairs() {
                 continue;
             }
             unequal += 1;
-            if tokens_agree(a.as_str(), b.as_str()) {
+            if tokens_agree(LICENSED, a.as_str(), b.as_str()) {
                 tolerated += 1;
             }
         }
@@ -290,6 +318,25 @@ fn tolerance_admits_only_phase_dependent_pairs() {
          §4.2 and update RuleToken::is_phase_dependent's LIMITS block, which \
          states this figure and the four groups it covers"
     );
+
+    // Every other target: no tolerated pair at all. The licence above is
+    // §4.2's, the manifest body's; a sequential block-file envelope or a
+    // record body inherits none of it (#641).
+    for target in TARGETS
+        .iter()
+        .filter(|t| !PHASE_DEPENDENT_TOLERANCE_TARGETS.contains(t))
+    {
+        let tolerated_elsewhere = RuleToken::ALL
+            .iter()
+            .flat_map(|a| RuleToken::ALL.iter().map(move |b| (a, b)))
+            .filter(|(a, b)| a != b && tokens_agree(target, a.as_str(), b.as_str()))
+            .count();
+        assert_eq!(
+            tolerated_elsewhere, 0,
+            "target {target} tolerates {tolerated_elsewhere} unequal token pairs; only \
+             {PHASE_DEPENDENT_TOLERANCE_TARGETS:?} may tolerate any"
+        );
+    }
 }
 
 /// An unknown token is never a tolerated mismatch. A typo on either side is
@@ -300,6 +347,14 @@ fn tolerance_admits_only_phase_dependent_pairs() {
 /// degrading to "something differs, probably fine".
 #[test]
 fn an_unknown_token_is_never_tolerated() {
-    assert!(!tokens_agree("array_sort_order", "not_a_real_token"));
-    assert!(!tokens_agree("not_a_real_token", "not_a_real_token_either"));
+    assert!(!tokens_agree(
+        "manifest_body",
+        "array_sort_order",
+        "not_a_real_token"
+    ));
+    assert!(!tokens_agree(
+        "manifest_body",
+        "not_a_real_token",
+        "not_a_real_token_either"
+    ));
 }

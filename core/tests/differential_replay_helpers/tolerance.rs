@@ -8,6 +8,8 @@
 //! `an_unknown_token_is_never_tolerated` — stay in the entry file so their
 //! test names do not change.
 
+use super::targets::PHASE_DEPENDENT_TOLERANCE_TARGETS;
+
 /// Do two rule tokens count as agreement?
 ///
 /// Equal tokens always do. Unequal tokens do **only** when at least one is
@@ -43,12 +45,21 @@
 /// as a harness failure. Both red the test, so nothing is lost — but
 /// "unrecognised or missing is a harness failure" is wrong about half of it.
 ///
+/// **Per target (#641).** The phase-dependent licence applies only on
+/// [`PHASE_DEPENDENT_TOLERANCE_TARGETS`]; everywhere else unequal tokens
+/// never agree. The 58-of-136 breadth above is `manifest_body`'s; every other
+/// target's is 0, and `tolerance_admits_only_phase_dependent_pairs` pins both.
+///
 /// [`RuleToken::is_phase_dependent`]: secretary_core::vault::manifest::RuleToken::is_phase_dependent
-pub fn tokens_agree(rust: &str, python: &str) -> bool {
+pub fn tokens_agree(target: &str, rust: &str, python: &str) -> bool {
     use secretary_core::vault::manifest::RuleToken;
     let lookup = |s: &str| RuleToken::ALL.iter().find(|t| t.as_str() == s).copied();
     let (Some(r), Some(p)) = (lookup(rust), lookup(python)) else {
         return false;
     };
-    r == p || r.is_phase_dependent() || p.is_phase_dependent()
+    if r == p {
+        return true;
+    }
+    PHASE_DEPENDENT_TOLERANCE_TARGETS.contains(&target)
+        && (r.is_phase_dependent() || p.is_phase_dependent())
 }
