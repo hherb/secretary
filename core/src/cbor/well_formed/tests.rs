@@ -246,7 +246,8 @@ fn nesting_has_no_depth_cap_of_its_own() {
 
 /// `read_head` folds a multi-byte argument big-endian
 /// (`(acc << 8) | byte`); a little-endian fold would read `0x01 0x00` as 1
-/// rather than 256 and misjudge this exactly-sized payload as truncated.
+/// rather than 256 and return `Ok(4)`, ending the item one payload byte in,
+/// where the exactly-sized payload ends it at 259.
 #[test]
 fn a_two_byte_length_argument_is_read_big_endian() {
     let mut body = vec![BYTES_TWO_BYTE_LENGTH, LENGTH_HIGH_BYTE, LENGTH_LOW_BYTE];

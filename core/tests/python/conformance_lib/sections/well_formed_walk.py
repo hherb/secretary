@@ -19,7 +19,8 @@ open, each mirroring an assertion in the Rust twin: the indefinite form on
 major 1 and on major 6 (both a well-formedness fault, never a tag), reserved
 additional-info 29 and 30, float32 and float64 (beside float16), tag 3 (beside
 tags 1 and 2), and a byte-order-sensitive two-byte length argument -- a
-little-endian argument fold would misread `0x01 0x00` (256) as truncated.
+little-endian argument fold would read `0x01 0x00` as length 1 and report the
+item ending one payload byte in, at offset 4, rather than at 259.
 """
 
 from __future__ import annotations
