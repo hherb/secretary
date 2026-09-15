@@ -4,8 +4,18 @@ Subclasses of `cursor.ParseError`, deliberately NOT of a new base: every
 existing `except ParseError` in this package -- `sections/block_kat.py`,
 `sections/revoke.py`, the golden-vault verifier -- keeps catching them, and
 `conformance_lib.rejection` already admits `ParseError` as a verdict.
-`ParseError` itself keeps `container_malformed` for every other envelope
-fault.
+`ParseError` itself keeps `container_malformed` for a TRUNCATION, which is
+what `cursor.take` raises.
+
+The five `container_malformed` classes below draw no distinction the token
+does not already draw -- they all carry that token, so no replay comparison
+changes.  They exist so a check can be pinned to its SEED (PR #673 review):
+with one class for every envelope fault, deleting the `sig_ed_len` check let
+the parse fail a few bytes later as a truncation with the same token, and
+Section RTS stayed green.  RTS now requires each `block_file` seed's class
+by name, and `block.rs` draws every one of these distinctions as a variant.
+Each class declares `token` itself rather than inheriting it, so Section
+RTS can require that of every verdict class these modules define.
 
 Only distinctions `core/src/vault/block.rs` also draws are drawn here -- the
 vocabulary's standing rule that a token may only draw a distinction both
@@ -16,6 +26,42 @@ about why that one cannot be refined the same way.
 from __future__ import annotations
 
 from conformance_lib.cursor import ParseError
+
+
+class EnvelopeBadMagic(ParseError):
+    """The file does not start with the §6.1 magic (`BlockError::BadMagic`)."""
+
+    token = "container_malformed"
+
+
+class EnvelopeWrongFileKind(ParseError):
+    """`file_kind` is not a block's (`BlockError::WrongFileKind`)."""
+
+    token = "container_malformed"
+
+
+class EnvelopeNoRecipients(ParseError):
+    """The recipient table is empty (`BlockError::EmptyRecipientList`)."""
+
+    token = "container_malformed"
+
+
+class EnvelopeEd25519SignatureLength(ParseError):
+    """`sig_ed_len` is not 64 (`BlockError::SigEdWrongLength`)."""
+
+    token = "container_malformed"
+
+
+class EnvelopeMlDsaSignatureLength(ParseError):
+    """`sig_pq_len` is not ML-DSA-65's (`BlockError::SigPqWrongLength`)."""
+
+    token = "container_malformed"
+
+
+class EnvelopeTrailingBytes(ParseError):
+    """Bytes follow the signature suffix (`BlockError::TrailingBytes`)."""
+
+    token = "container_malformed"
 
 
 class UnsupportedEnvelopeVersion(ParseError):

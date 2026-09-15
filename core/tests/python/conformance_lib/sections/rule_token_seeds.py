@@ -15,7 +15,27 @@ of `differential_replay.rs`.
 WHY IDENTITY TOO (check 1).  Label binding reaches only the classes some seed
 exercises.  Section RTV's check 1 records why the expected token is written
 out rather than read off the class: membership in the vocabulary is
-satisfied by any of the seventeen.
+satisfied by any of the seventeen.  Check 1 also DISCOVERS every verdict
+class `cbor_faults`, `record_rules` and `envelope_rules` define, and requires
+each to declare `token` in its own body and to appear in the table: a new
+subclass that forgot `token =` would otherwise inherit its base's coarse token
+silently, and a class the table omits would never be identity-checked (PR
+#673 review).
+
+WHY A CLASS PER `block_file` SEED (check 2).  One token covers several
+envelope checks: nine `container_malformed` seeds span seven `BlockError`
+variants.  With one class for all of them, deleting the `sig_ed_len` check
+let the parse fail a few bytes later as a truncation carrying the same token,
+and this section stayed green (PR #673 review, measured).  Each `block_file`
+seed's Python class is therefore required by name, default-deny, as
+`rule_token_seeds.rs` requires its Rust variant.  The `record` classes map one
+to one onto their tokens, so a class name there would add nothing.
+
+WHY DISTINCT BYTES (check 2).  A label is bound to its bytes only on the Rust
+side, by regeneration.  This side read the file name alone, and three
+`malformed_cbor` seeds overwritten with `truncated`'s bytes still passed every
+check (PR #673 review, measured).  No two labelled seeds of a target may be
+byte-identical.
 
 WHY FLOORS (check 3) AND AN EXPECTED TOKEN SET (check 4).  An emptied
 directory satisfies check 2 vacuously, and a directory whose seeds were all
@@ -44,7 +64,7 @@ import os
 
 from pathlib import Path
 
-from conformance_lib import fixtures
+from conformance_lib import fixtures, rejection
 from conformance_lib.codec import cbor_faults, record_rules
 from conformance_lib.constants import VECTOR_CLOCK_ENTRY_LEN
 from conformance_lib.cursor import Cursor, ParseError
@@ -59,13 +79,13 @@ LABEL_SEPARATOR = "__"
 # set of tokens those seeds must name between them.
 _TARGETS: dict[str, tuple[int, frozenset[str]]] = {
     "block_file": (
-        19,
+        23,
         frozenset(
             {"container_malformed", "unsupported_version", "array_sort_order", "repeated_array_value"}
         ),
     ),
     "record": (
-        22,
+        34,
         frozenset(
             {
                 "malformed_cbor",
@@ -80,8 +100,15 @@ _TARGETS: dict[str, tuple[int, frozenset[str]]] = {
     ),
 }
 
-# Every typed class this slice adds, with the token written out.
+# Every typed class the seeds reach, with the token written out.
 _TOKENED_CLASSES: tuple[tuple[type, str], ...] = (
+    (ParseError, "container_malformed"),
+    (envelope_rules.EnvelopeBadMagic, "container_malformed"),
+    (envelope_rules.EnvelopeWrongFileKind, "container_malformed"),
+    (envelope_rules.EnvelopeNoRecipients, "container_malformed"),
+    (envelope_rules.EnvelopeEd25519SignatureLength, "container_malformed"),
+    (envelope_rules.EnvelopeMlDsaSignatureLength, "container_malformed"),
+    (envelope_rules.EnvelopeTrailingBytes, "container_malformed"),
     (envelope_rules.UnsupportedEnvelopeVersion, "unsupported_version"),
     (envelope_rules.EnvelopeSortOrder, "array_sort_order"),
     (envelope_rules.EnvelopeRepeatedValue, "repeated_array_value"),
@@ -92,6 +119,39 @@ _TOKENED_CLASSES: tuple[tuple[type, str], ...] = (
     (record_rules.RecordMissingField, "missing_field"),
     (record_rules.RecordNonCanonical, "non_canonical_unclassified"),
 )
+
+
+# The modules whose verdict classes check 1 discovers.
+_TOKENED_MODULES = (cbor_faults, record_rules, envelope_rules)
+
+# Check 2: the Python class every `block_file` seed must be rejected with,
+# keyed by file stem.  Default-deny: a seed missing here is an issue.  A
+# truncation is what `cursor.take` raises, the bare `ParseError`.
+_BLOCK_FILE_CLASSES: dict[str, str] = {
+    "container_malformed__bad_magic": "EnvelopeBadMagic",
+    "container_malformed__wrong_file_kind": "EnvelopeWrongFileKind",
+    "container_malformed__truncated_header": "ParseError",
+    "container_malformed__truncated_recipient_table": "ParseError",
+    "container_malformed__zero_recipients": "EnvelopeNoRecipients",
+    "container_malformed__wrong_sig_ed_len": "EnvelopeEd25519SignatureLength",
+    "container_malformed__wrong_sig_pq_len": "EnvelopeMlDsaSignatureLength",
+    "container_malformed__truncated_signature_suffix": "ParseError",
+    "container_malformed__trailing_bytes": "EnvelopeTrailingBytes",
+    "unsupported_version__format_version": "UnsupportedEnvelopeVersion",
+    "unsupported_version__suite_id": "UnsupportedEnvelopeVersion",
+    "array_sort_order__vector_clock": "EnvelopeSortOrder",
+    "array_sort_order__recipients": "EnvelopeSortOrder",
+    "array_sort_order__vector_clock_second_pair": "EnvelopeSortOrder",
+    "array_sort_order__recipients_second_pair": "EnvelopeSortOrder",
+    "array_sort_order__vector_clock_first_pair_of_three": "EnvelopeSortOrder",
+    "array_sort_order__recipients_first_pair_of_three": "EnvelopeSortOrder",
+    "repeated_array_value__vector_clock": "EnvelopeRepeatedValue",
+    "repeated_array_value__recipients": "EnvelopeRepeatedValue",
+    "repeated_array_value__vector_clock_second_pair": "EnvelopeRepeatedValue",
+    "repeated_array_value__recipients_second_pair": "EnvelopeRepeatedValue",
+    "repeated_array_value__vector_clock_first_pair_of_three": "EnvelopeRepeatedValue",
+    "repeated_array_value__recipients_first_pair_of_three": "EnvelopeRepeatedValue",
+}
 
 
 def _labelled_seeds(target: str) -> list[Path]:
@@ -106,9 +166,22 @@ def _label_token(path: Path) -> str:
 def _identity_issues() -> list[str]:
     issues = []
     for cls, want in _TOKENED_CLASSES:
-        got = getattr(cls, "token", None)
+        got = cls.__dict__.get("token")
         if got != want:
-            issues.append(f"{cls.__name__} carries token {got!r}, this section expects {want!r}")
+            issues.append(f"{cls.__name__} declares token {got!r}, this section expects {want!r}")
+    declared = {cls for cls, _ in _TOKENED_CLASSES}
+    for module in _TOKENED_MODULES:
+        for cls in vars(module).values():
+            if not (
+                isinstance(cls, type)
+                and cls.__module__ == module.__name__
+                and issubclass(cls, rejection._REJECTION_EXCEPTIONS)
+            ):
+                continue
+            if "token" not in cls.__dict__:
+                issues.append(f"{module.__name__}.{cls.__name__} inherits its token instead of declaring one")
+            if cls not in declared:
+                issues.append(f"{module.__name__}.{cls.__name__} is a verdict class this section does not list")
     return issues
 
 
@@ -118,6 +191,7 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
     except OSError as exc:
         return [f"{target}: cannot list seeds: {type(exc).__name__}: {exc}"], f"{target}: unlisted"
     issues = []
+    by_bytes: dict[bytes, str] = {}
     for path in seeds:
         want = _label_token(path)
         try:
@@ -125,6 +199,8 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
         except OSError as exc:
             issues.append(f"{target}/{path.name}: cannot read seed: {type(exc).__name__}: {exc}")
             continue
+        if (twin := by_bytes.setdefault(data, path.name)) != path.name:
+            issues.append(f"{target}: seeds {twin} and {path.name} are byte-identical")
         verdict = replay_bytes(target, data).verdict
         if verdict.get("status") != "reject":
             issues.append(f"{target}/{path.name}: expected a rejection naming {want!r}, got {verdict}")
@@ -133,6 +209,15 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
                 f"{target}/{path.name}: Python named {verdict.get('rule')!r}, the file name says "
                 f"{want!r} ({verdict.get('error_class')}: {verdict.get('detail')})"
             )
+        elif target == "block_file":
+            want_class = _BLOCK_FILE_CLASSES.get(path.stem)
+            if want_class is None:
+                issues.append(f"{target}/{path.name}: no expected class; add the seed to _BLOCK_FILE_CLASSES")
+            elif verdict.get("error_class") != want_class:
+                issues.append(
+                    f"{target}/{path.name}: Python raised {verdict.get('error_class')}, the seed "
+                    f"names the check {want_class} ({verdict.get('detail')})"
+                )
     if len(seeds) < floor:
         issues.append(f"{target}: only {len(seeds)} labelled seeds, floor is {floor}")
     named = {_label_token(p) for p in seeds}
@@ -259,7 +344,10 @@ def _ordering_issues() -> tuple[list[str], str]:
             tallies.append(f"0/{_ORDERING_CASES[target]} {target}")
             continue
         if len(cases) != _ORDERING_CASES[target]:
-            raise AssertionError(
+            # An issue, not a raise: `main()` has no per-section catch, so a
+            # raise here would skip every later section, REG included, with no
+            # `FAIL:` line (PR #673 review).
+            issues.append(
                 f"_ORDERING_CASES[{target!r}] is {_ORDERING_CASES[target]}, the table holds {len(cases)}"
             )
         failed = 0

@@ -30,6 +30,8 @@ const NINT_ONE: u8 = 0x20;
 const TAG_EPOCH: u8 = 0xc1;
 const TAG_BIGNUM_POSITIVE: u8 = 0xc2;
 const FLOAT16: u8 = 0xf9;
+/// A CBOR boolean, where an integer or another type belongs.
+const TRUE: u8 = 0xf5;
 const UNDEFINED: u8 = 0xf7;
 const BREAK: u8 = 0xff;
 const INVALID_UTF8: u8 = 0xff;
@@ -212,14 +214,18 @@ fn record_uuid_text(base: &[u8]) -> Vec<u8> {
     map(&with_value(&entries(base), "record_uuid", as_text))
 }
 
+/// A 16-byte uuid value one byte short.
+fn shortened_uuid(value: &[u8]) -> Vec<u8> {
+    let uuid: Value = ciborium::de::from_reader(value).expect("a uuid value parses");
+    let Value::Bytes(uuid) = uuid else {
+        panic!("seed base uuid is not a byte string")
+    };
+    cbor(&Value::Bytes(uuid[..RECORD_UUID_LEN - 1].to_vec()))
+}
+
 fn record_uuid_short(base: &[u8]) -> Vec<u8> {
     let top = entries(base);
-    let uuid: Value = ciborium::de::from_reader(value_of(&top, "record_uuid").as_slice())
-        .expect("record_uuid parses");
-    let Value::Bytes(uuid) = uuid else {
-        panic!("seed base record_uuid is not a byte string")
-    };
-    let short = cbor(&Value::Bytes(uuid[..RECORD_UUID_LEN - 1].to_vec()));
+    let short = shortened_uuid(&value_of(&top, "record_uuid"));
     map(&with_value(&top, "record_uuid", short))
 }
 
@@ -281,11 +287,75 @@ fn trailing_bytes(base: &[u8]) -> Vec<u8> {
     out
 }
 
+// The rejection paths the first cut left unseeded (PR #673 review). The
+// first two are the bool-as-integer acceptance divergence this slice closed
+// in Python: `bool` subclasses `int`, and nothing else in CI would red a
+// revert of that fix.
+
+fn created_at_ms_bool(base: &[u8]) -> Vec<u8> {
+    map(&with_value(&entries(base), "created_at_ms", vec![TRUE]))
+}
+
+fn field_last_mod_bool(base: &[u8]) -> Vec<u8> {
+    with_edited_field(base, |field| map(&with_value(field, "last_mod", vec![TRUE])))
+}
+
+fn tags_not_an_array(base: &[u8]) -> Vec<u8> {
+    map(&inserted(&entries(base), text("tags"), vec![UINT_ZERO]))
+}
+
+fn tag_not_text(base: &[u8]) -> Vec<u8> {
+    map(&inserted(&entries(base), text("tags"), vec![ARRAY_1, UINT_ONE]))
+}
+
+fn tombstone_not_a_bool(base: &[u8]) -> Vec<u8> {
+    map(&inserted(&entries(base), text("tombstone"), vec![UINT_ONE]))
+}
+
+fn negative_tombstoned_at_ms(base: &[u8]) -> Vec<u8> {
+    map(&inserted(&entries(base), text("tombstoned_at_ms"), vec![NINT_ONE]))
+}
+
+fn field_value_wrong_type(base: &[u8]) -> Vec<u8> {
+    with_edited_field(base, |field| map(&with_value(field, "value", vec![UINT_ZERO])))
+}
+
+fn negative_field_last_mod(base: &[u8]) -> Vec<u8> {
+    with_edited_field(base, |field| map(&with_value(field, "last_mod", vec![NINT_ONE])))
+}
+
+fn field_device_uuid_short(base: &[u8]) -> Vec<u8> {
+    with_edited_field(base, |field| {
+        let short = shortened_uuid(&value_of(field, "device_uuid"));
+        map(&with_value(field, "device_uuid", short))
+    })
+}
+
+fn fields_non_text_key(base: &[u8]) -> Vec<u8> {
+    let top = entries(base);
+    let fields = inserted(&entries(&value_of(&top, "fields")), vec![UINT_ONE], vec![UINT_ZERO]);
+    map(&with_value(&top, "fields", map(&fields)))
+}
+
+fn field_non_text_key(base: &[u8]) -> Vec<u8> {
+    with_edited_field(base, |field| map(&inserted(field, vec![UINT_ONE], vec![UINT_ZERO])))
+}
+
+fn field_not_a_map(base: &[u8]) -> Vec<u8> {
+    let top = entries(base);
+    let fields = with_value(&entries(&value_of(&top, "fields")), EDITED_FIELD, vec![UINT_ZERO]);
+    map(&with_value(&top, "fields", map(&fields)))
+}
+
 pub fn cases() -> Vec<SeedCase> {
-    let case = |token: RuleToken, shape: &'static str, plant: fn(&[u8]) -> Vec<u8>| SeedCase {
+    let case = |token: RuleToken,
+                shape: &'static str,
+                variant: &'static str,
+                plant: fn(&[u8]) -> Vec<u8>| SeedCase {
         target: "record",
         token,
         shape,
+        variant,
         plant,
     };
     use RuleToken::{
@@ -293,40 +363,75 @@ pub fn cases() -> Vec<SeedCase> {
         Rule4TagOrFloat, WrongType,
     };
     vec![
-        case(MalformedCbor, "truncated", truncated),
-        case(MalformedCbor, "undefined_value", undefined_value),
+        case(MalformedCbor, "truncated", "CborDecode", truncated),
+        case(MalformedCbor, "undefined_value", "CborDecode", undefined_value),
         case(
             MalformedCbor,
             "nested_indefinite_chunk",
+            "CborDecode",
             nested_indefinite_chunk,
         ),
-        case(MalformedCbor, "invalid_utf8_text", invalid_utf8_text),
-        case(Rule4TagOrFloat, "float_value", float_value),
-        case(Rule4TagOrFloat, "tag_value", tag_value),
-        case(Rule4TagOrFloat, "bignum_tag", bignum_tag),
-        case(WrongType, "top_level_array", top_level_array),
-        case(WrongType, "non_text_key", non_text_key),
-        case(WrongType, "record_uuid_text", record_uuid_text),
-        case(WrongType, "record_uuid_short", record_uuid_short),
-        case(WrongType, "fields_not_a_map", fields_not_a_map),
+        case(MalformedCbor, "invalid_utf8_text", "CborDecode", invalid_utf8_text),
+        case(Rule4TagOrFloat, "float_value", "FloatRejected", float_value),
+        case(Rule4TagOrFloat, "tag_value", "TagRejected", tag_value),
+        case(Rule4TagOrFloat, "bignum_tag", "TagRejected", bignum_tag),
+        case(WrongType, "top_level_array", "NotAMap", top_level_array),
+        case(WrongType, "non_text_key", "NonTextKey", non_text_key),
+        case(WrongType, "record_uuid_text", "WrongType", record_uuid_text),
+        case(WrongType, "record_uuid_short", "InvalidUuid", record_uuid_short),
+        case(WrongType, "fields_not_a_map", "WrongType", fields_not_a_map),
+        case(WrongType, "created_at_ms_bool", "WrongType", created_at_ms_bool),
+        case(WrongType, "field_last_mod_bool", "WrongType", field_last_mod_bool),
+        case(WrongType, "tags_not_an_array", "WrongType", tags_not_an_array),
+        case(WrongType, "tag_not_text", "WrongType", tag_not_text),
+        case(WrongType, "tombstone_not_a_bool", "WrongType", tombstone_not_a_bool),
+        case(WrongType, "field_value_uint", "WrongType", field_value_wrong_type),
+        case(WrongType, "field_device_uuid_short", "InvalidUuid", field_device_uuid_short),
+        case(WrongType, "fields_non_text_key", "NonTextKey", fields_non_text_key),
+        case(WrongType, "field_non_text_key", "NonTextKey", field_non_text_key),
+        case(WrongType, "field_not_a_map", "WrongType", field_not_a_map),
         case(
             IntegerOutOfRange,
             "negative_created_at_ms",
+            "IntegerOverflow",
             negative_created_at_ms,
         ),
-        case(MissingField, "record_uuid", missing_record_uuid),
-        case(MissingField, "field_value", missing_field_value),
-        case(DuplicateMapKey, "record_level", duplicate_record_key),
-        case(DuplicateMapKey, "fields_level", duplicate_field_name),
-        case(DuplicateMapKey, "field_level", duplicate_field_level_key),
-        case(NonCanonicalUnclassified, "key_order", key_order),
-        case(NonCanonicalUnclassified, "indefinite_map", indefinite_map),
+        case(
+            IntegerOutOfRange,
+            "negative_tombstoned_at_ms",
+            "IntegerOverflow",
+            negative_tombstoned_at_ms,
+        ),
+        case(
+            IntegerOutOfRange,
+            "negative_field_last_mod",
+            "IntegerOverflow",
+            negative_field_last_mod,
+        ),
+        case(MissingField, "record_uuid", "MissingField", missing_record_uuid),
+        case(MissingField, "field_value", "MissingField", missing_field_value),
+        case(DuplicateMapKey, "record_level", "DuplicateKey", duplicate_record_key),
+        case(DuplicateMapKey, "fields_level", "DuplicateKey", duplicate_field_name),
+        case(DuplicateMapKey, "field_level", "DuplicateKey", duplicate_field_level_key),
+        case(NonCanonicalUnclassified, "key_order", "NonCanonicalEncoding", key_order),
+        case(
+            NonCanonicalUnclassified,
+            "indefinite_map",
+            "NonCanonicalEncoding",
+            indefinite_map,
+        ),
         case(
             NonCanonicalUnclassified,
             "non_shortest_map_head",
+            "NonCanonicalEncoding",
             non_shortest_map_head,
         ),
-        case(NonCanonicalUnclassified, "trailing_bytes", trailing_bytes),
+        case(
+            NonCanonicalUnclassified,
+            "trailing_bytes",
+            "NonCanonicalEncoding",
+            trailing_bytes,
+        ),
     ]
 }
 

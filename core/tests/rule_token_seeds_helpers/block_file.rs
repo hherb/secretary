@@ -8,12 +8,16 @@
 //! sort and repeat shapes splice in a two- or three-entry table. That leaves
 //! the AAD and signature stale, which neither decoder checks on this target.
 //!
-//! **Why three-entry tables too.** With two entries a full adjacent scan and a
-//! check of the first pair alone are the same function, so a reader checking
-//! only `ids[0]` against `ids[1]` stayed conformant against every seed. The
-//! `*_second_pair` shapes plant their one fault at the SECOND adjacent pair —
-//! disorder with no repeat, or a repeat in otherwise ascending order — the
-//! lesson #608's review drew for the manifest's arrays.
+//! **Why three-entry tables too, faulted at BOTH pairs.** With two entries a
+//! full adjacent scan and a check of the first pair alone are the same
+//! function, so a reader checking only `ids[0]` against `ids[1]` stayed
+//! conformant against every seed. The `*_second_pair` shapes plant their one
+//! fault at the SECOND adjacent pair — disorder with no repeat, or a repeat in
+//! otherwise ascending order — the lesson #608's review drew for the
+//! manifest's arrays. That alone left the mirror open: every table was then
+//! faulted at its LAST pair, so a reader checking only the last pair passed
+//! all eight (PR #673 review). The `*_first_pair_of_three` shapes fault the
+//! first of three.
 
 use std::mem::size_of;
 
@@ -45,7 +49,8 @@ const SIG_SUFFIX_LEN: usize =
 const LOW_LEAD: u8 = u8::MIN;
 const HIGH_LEAD: u8 = u8::MAX;
 /// Strictly between the two above, so `[LOW, HIGH, MID]` ascends at its first
-/// adjacent pair and descends at its second, with no two ids equal.
+/// adjacent pair and descends at its second, and `[MID, LOW, HIGH]` the
+/// reverse, with no two ids equal.
 const MID_LEAD: u8 = u8::MAX / 2;
 /// A byte appended past the signature suffix.
 const TRAILING_BYTE: u8 = 0;
@@ -123,6 +128,24 @@ fn repeated_at_second_pair(entry: &[u8]) -> [Vec<u8>; 3] {
     [
         with_lead_byte(entry, LOW_LEAD),
         with_lead_byte(entry, HIGH_LEAD),
+        with_lead_byte(entry, HIGH_LEAD),
+    ]
+}
+
+/// `[mid, low, high]`: out of order at the first adjacent pair only.
+fn disordered_at_first_pair(entry: &[u8]) -> [Vec<u8>; 3] {
+    [
+        with_lead_byte(entry, MID_LEAD),
+        with_lead_byte(entry, LOW_LEAD),
+        with_lead_byte(entry, HIGH_LEAD),
+    ]
+}
+
+/// `[low, low, high]`: ascending, but repeated at the first adjacent pair.
+fn repeated_at_first_pair(entry: &[u8]) -> [Vec<u8>; 3] {
+    [
+        with_lead_byte(entry, LOW_LEAD),
+        with_lead_byte(entry, LOW_LEAD),
         with_lead_byte(entry, HIGH_LEAD),
     ]
 }
@@ -298,61 +321,117 @@ fn recipients_repeated_at_second_pair(base: &[u8]) -> Vec<u8> {
     recipients_with(base, repeated_at_second_pair)
 }
 
+fn vector_clock_disordered_at_first_pair(base: &[u8]) -> Vec<u8> {
+    vector_clock_with(base, disordered_at_first_pair)
+}
+
+fn vector_clock_repeated_at_first_pair(base: &[u8]) -> Vec<u8> {
+    vector_clock_with(base, repeated_at_first_pair)
+}
+
+fn recipients_disordered_at_first_pair(base: &[u8]) -> Vec<u8> {
+    recipients_with(base, disordered_at_first_pair)
+}
+
+fn recipients_repeated_at_first_pair(base: &[u8]) -> Vec<u8> {
+    recipients_with(base, repeated_at_first_pair)
+}
+
 pub fn cases() -> Vec<SeedCase> {
-    let case = |token: RuleToken, shape: &'static str, plant: fn(&[u8]) -> Vec<u8>| SeedCase {
+    let case = |token: RuleToken,
+                shape: &'static str,
+                variant: &'static str,
+                plant: fn(&[u8]) -> Vec<u8>| SeedCase {
         target: "block_file",
         token,
         shape,
+        variant,
         plant,
     };
     use RuleToken::{ArraySortOrder, ContainerMalformed, RepeatedArrayValue, UnsupportedVersion};
     vec![
-        case(ContainerMalformed, "bad_magic", bad_magic),
-        case(ContainerMalformed, "wrong_file_kind", wrong_file_kind),
-        case(ContainerMalformed, "truncated_header", truncated_header),
+        case(ContainerMalformed, "bad_magic", "BadMagic", bad_magic),
+        case(ContainerMalformed, "wrong_file_kind", "WrongFileKind", wrong_file_kind),
+        case(ContainerMalformed, "truncated_header", "Truncated", truncated_header),
         case(
             ContainerMalformed,
             "truncated_recipient_table",
+            "Truncated",
             truncated_recipient_table,
         ),
-        case(ContainerMalformed, "zero_recipients", zero_recipients),
-        case(ContainerMalformed, "wrong_sig_ed_len", wrong_sig_ed_len),
-        case(ContainerMalformed, "wrong_sig_pq_len", wrong_sig_pq_len),
+        case(ContainerMalformed, "zero_recipients", "EmptyRecipientList", zero_recipients),
+        case(ContainerMalformed, "wrong_sig_ed_len", "SigEdWrongLength", wrong_sig_ed_len),
+        case(ContainerMalformed, "wrong_sig_pq_len", "SigPqWrongLength", wrong_sig_pq_len),
         case(
             ContainerMalformed,
             "truncated_signature_suffix",
+            "Truncated",
             truncated_signature_suffix,
         ),
-        case(ContainerMalformed, "trailing_bytes", trailing_bytes),
+        case(ContainerMalformed, "trailing_bytes", "TrailingBytes", trailing_bytes),
         case(
             UnsupportedVersion,
             "format_version",
+            "UnsupportedFormatVersion",
             unsupported_format_version,
         ),
-        case(UnsupportedVersion, "suite_id", unsupported_suite_id),
-        case(ArraySortOrder, "vector_clock", unsorted_vector_clock),
-        case(ArraySortOrder, "recipients", unsorted_recipients),
+        case(UnsupportedVersion, "suite_id", "UnsupportedSuiteId", unsupported_suite_id),
+        case(ArraySortOrder, "vector_clock", "VectorClockNotSorted", unsorted_vector_clock),
+        case(ArraySortOrder, "recipients", "RecipientsNotSorted", unsorted_recipients),
         case(
             ArraySortOrder,
             "vector_clock_second_pair",
+            "VectorClockNotSorted",
             vector_clock_disordered_at_second_pair,
         ),
         case(
             ArraySortOrder,
             "recipients_second_pair",
+            "RecipientsNotSorted",
             recipients_disordered_at_second_pair,
         ),
-        case(RepeatedArrayValue, "vector_clock", repeated_vector_clock),
-        case(RepeatedArrayValue, "recipients", repeated_recipients),
+        case(
+            ArraySortOrder,
+            "vector_clock_first_pair_of_three",
+            "VectorClockNotSorted",
+            vector_clock_disordered_at_first_pair,
+        ),
+        case(
+            ArraySortOrder,
+            "recipients_first_pair_of_three",
+            "RecipientsNotSorted",
+            recipients_disordered_at_first_pair,
+        ),
+        case(
+            RepeatedArrayValue,
+            "vector_clock",
+            "VectorClockDuplicateDevice",
+            repeated_vector_clock,
+        ),
+        case(RepeatedArrayValue, "recipients", "DuplicateRecipient", repeated_recipients),
         case(
             RepeatedArrayValue,
             "vector_clock_second_pair",
+            "VectorClockDuplicateDevice",
             vector_clock_repeated_at_second_pair,
         ),
         case(
             RepeatedArrayValue,
             "recipients_second_pair",
+            "DuplicateRecipient",
             recipients_repeated_at_second_pair,
+        ),
+        case(
+            RepeatedArrayValue,
+            "vector_clock_first_pair_of_three",
+            "VectorClockDuplicateDevice",
+            vector_clock_repeated_at_first_pair,
+        ),
+        case(
+            RepeatedArrayValue,
+            "recipients_first_pair_of_three",
+            "DuplicateRecipient",
+            recipients_repeated_at_first_pair,
         ),
     ]
 }

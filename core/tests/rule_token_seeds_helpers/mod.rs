@@ -32,8 +32,24 @@ pub struct SeedCase {
     pub token: RuleToken,
     /// What was planted, as a file-name-safe label unique within `token`.
     pub shape: &'static str,
+    /// The Rust error VARIANT the decoder must raise, as its `Debug` name.
+    ///
+    /// The token alone is coarser than the check a shape names. Nine
+    /// `container_malformed` shapes span seven `BlockError` variants, so a
+    /// decoder that lost its `sig_ed_len` check and failed a few bytes later
+    /// as `Truncated` still named the row's token (PR #673 review, measured on
+    /// the Python side). Section RTS pins the Python half by class name.
+    pub variant: &'static str,
     /// Build the seed from the target's committed accepting base.
     pub plant: fn(&[u8]) -> Vec<u8>,
+}
+
+/// How the Rust decoder rejected a seed.
+#[derive(Debug, PartialEq)]
+pub struct RustRejection {
+    pub token: RuleToken,
+    /// The error's `Debug` variant name, e.g. `BadMagic`.
+    pub variant: String,
 }
 
 /// Separates a seed's token from its shape in its file name. No token and no
@@ -80,7 +96,7 @@ pub fn base(target: &str) -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|e| panic!("read seed base {}: {e}", path.display()))
 }
 
-/// The token the Rust decoder names for `bytes`, or `None` if it accepts.
+/// How the Rust decoder rejects `bytes`, or `None` if it accepts.
 ///
 /// A copy of the decode → re-encode pipeline
 /// `differential_replay_helpers::rust_decoder` runs for the target. Nothing
@@ -88,19 +104,34 @@ pub fn base(target: &str) -> Vec<u8> {
 /// test target, which requires the `differential-replay` feature and which
 /// this target does not import, so a change to one arm must be mirrored in
 /// the other by hand.
-pub fn rust_token(target: &str, bytes: &[u8]) -> Option<RuleToken> {
+pub fn rust_rejection(target: &str, bytes: &[u8]) -> Option<RustRejection> {
     use secretary_core::vault::{block, record};
     match target {
         "block_file" => block::decode_block_file(bytes)
             .and_then(|f| block::encode_block_file(&f))
             .err()
-            .map(|e| e.rule_token()),
+            .map(|e| RustRejection {
+                token: e.rule_token(),
+                variant: variant_name(&e),
+            }),
         "record" => record::decode(bytes)
             .and_then(|r| record::encode(&r))
             .err()
-            .map(|e| e.rule_token()),
+            .map(|e| RustRejection {
+                token: e.rule_token(),
+                variant: variant_name(&e),
+            }),
         other => panic!("no Rust decoder for target {other}"),
     }
+}
+
+/// The variant name a derived `Debug` prints first: `BadMagic { .. }` and
+/// `CborDecode(..)` give `BadMagic` and `CborDecode`.
+fn variant_name(error: &impl std::fmt::Debug) -> String {
+    format!("{error:?}")
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect()
 }
 
 /// Every case, in a stable order.

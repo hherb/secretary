@@ -112,10 +112,10 @@ cargo test --release --locked -p secretary-core \
 # isolation, which conformance Section DRS checks rather than assumes, over
 # the committed corpus only.
 #
-# CI replays the 91 committed inputs (no `corpus/` there). The 5.98 s test body
+# CI replays the 107 committed inputs (no `corpus/` there). The 5.98 s test body
 # and 36 s step quoted in #656 measured the per-input spawn; re-measure before
 # quoting a CI figure. Do not compare a STEP duration against a test body.
-# #641 added 41 generated single-fault seeds for block_file and record; regenerate with
+# #641 added 57 generated single-fault seeds for block_file and record; regenerate with
 # `cargo test --release --locked -p secretary-core --test rule_token_seeds -- --ignored generate_rule_token_seeds`.
 #
 # `-p secretary-core` is not a way to avoid rebuilding the CLI and bridge
@@ -1123,8 +1123,8 @@ survived it. Six things:
   because that is how the #647 gap itself survived three slices.
   **State the residual scope exactly, because the wider claim is the one
   someone will want to make.** CI replays the COMMITTED corpus only —
-  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, 91 inputs today (#641
-  added 41 generated single-fault seeds for `block_file` and `record`).
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, 107 inputs today (#641
+  added 57 generated single-fault seeds for `block_file` and `record`).
   `core/fuzz/corpus/` is **gitignored**, so agreement on fuzz-DISCOVERED
   inputs is still proven only by whoever runs the fuzzer, and "the differential
   replay is in CI" must not be read as "the fuzz corpus is differentially

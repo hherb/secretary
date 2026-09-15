@@ -8,9 +8,11 @@
 
 mod rule_token_seeds_helpers;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use rule_token_seeds_helpers::{all_cases, rust_token, seed_dir, SeedCase, LABEL_SEPARATOR};
+use rule_token_seeds_helpers::{
+    all_cases, rust_rejection, seed_dir, RustRejection, SeedCase, LABEL_SEPARATOR,
+};
 
 /// The targets whose seed directories this table owns every labelled file in.
 const SEEDED_TARGETS: &[&str] = &["block_file", "record"];
@@ -20,15 +22,37 @@ const REGENERATE: &str = "cargo test --release --locked -p secretary-core --test
                           rule_token_seeds -- --ignored generate_rule_token_seeds";
 
 fn assert_rust_names_its_token(case: &SeedCase, bytes: &[u8]) {
-    let got = rust_token(case.target, bytes);
+    let got = rust_rejection(case.target, bytes);
+    let want = RustRejection {
+        token: case.token,
+        variant: case.variant.to_owned(),
+    };
     assert_eq!(
-        got,
-        Some(case.token),
-        "seed {} for {}: the Rust decoder named {got:?}, its row says {:?}",
+        got.as_ref(),
+        Some(&want),
+        "seed {} for {}: the Rust decoder rejected with {got:?}, its row says {want:?}",
         case.file_name(),
         case.target,
-        case.token
     );
+}
+
+/// Every row of a target plants DIFFERENT bytes. Nothing else requires it:
+/// the file names, tokens and census are unchanged when three rows are
+/// pointed at one plant, and the PR #673 review measured Section RTS passing
+/// with three `malformed_cbor` seeds overwritten by `truncated`'s bytes —
+/// exactly the leniencies the byte walk exists for. The same floor Section
+/// MPR's body-distinctness check gives the manifest precedence corpus.
+fn assert_each_target_plants_distinct_bytes<'a>(built: impl Iterator<Item = (&'a SeedCase, &'a [u8])>) {
+    let mut planted: BTreeMap<(&str, &[u8]), String> = BTreeMap::new();
+    for (case, bytes) in built {
+        if let Some(other) = planted.insert((case.target, bytes), case.file_name()) {
+            panic!(
+                "target {}: seeds {other} and {} plant identical bytes",
+                case.target,
+                case.file_name()
+            );
+        }
+    }
 }
 
 #[test]
@@ -46,15 +70,18 @@ fn every_seed_label_is_unique() {
 #[test]
 fn rule_token_seeds_are_committed_and_label_bound() {
     let cases = all_cases();
-    for case in &cases {
+    let built: Vec<Vec<u8>> = cases.iter().map(SeedCase::bytes).collect();
+    assert_each_target_plants_distinct_bytes(
+        cases.iter().zip(built.iter().map(Vec::as_slice)),
+    );
+    for (case, want) in cases.iter().zip(&built) {
         assert!(
             SEEDED_TARGETS.contains(&case.target),
             "row {} names target {}, which SEEDED_TARGETS does not own",
             case.file_name(),
             case.target
         );
-        let want = case.bytes();
-        assert_rust_names_its_token(case, &want);
+        assert_rust_names_its_token(case, want);
         let committed = std::fs::read(case.path()).unwrap_or_else(|e| {
             panic!(
                 "seed {} is not committed ({e}); run `{REGENERATE}`",
@@ -62,7 +89,7 @@ fn rule_token_seeds_are_committed_and_label_bound() {
             )
         });
         assert!(
-            committed == want,
+            committed == *want,
             "seed {} differs from what its row plants: regenerate deliberately with \
              `{REGENERATE}`, or fix the row",
             case.path().display()
@@ -100,15 +127,16 @@ fn rule_token_seeds_are_committed_and_label_bound() {
 #[test]
 #[ignore]
 fn generate_rule_token_seeds() {
-    let built: Vec<_> = all_cases()
-        .iter()
-        .map(|case| {
-            let bytes = case.bytes();
-            assert_rust_names_its_token(case, &bytes);
-            (case.path(), bytes)
-        })
-        .collect();
-    for (path, bytes) in built {
+    let cases = all_cases();
+    let built: Vec<Vec<u8>> = cases.iter().map(SeedCase::bytes).collect();
+    assert_each_target_plants_distinct_bytes(
+        cases.iter().zip(built.iter().map(Vec::as_slice)),
+    );
+    for (case, bytes) in cases.iter().zip(&built) {
+        assert_rust_names_its_token(case, bytes);
+    }
+    for (case, bytes) in cases.iter().zip(built) {
+        let path = case.path();
         std::fs::write(&path, bytes).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
     }
 }
