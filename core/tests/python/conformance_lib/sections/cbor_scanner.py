@@ -6,6 +6,7 @@ forward-compat `unknown` subtree path depends on.
 
 from __future__ import annotations
 
+from conformance_lib.codec.cbor_faults import MalformedCbor
 from conformance_lib.codec.scanner import (
     DuplicateMapKey,
     NonCanonicalItem,
@@ -71,11 +72,16 @@ def section_cbor_scanner_units() -> tuple[bool, list[str]]:
     # Dropping the base aborts the whole run at this section with a raw
     # traceback and no `FAIL:` line, taking all 14 later sections with it --
     # MCK, MCC, MUQ, RC, DET and REG among them (#614 review).
-    # Swept over BOTH structured discriminators this module defines, not just
-    # the one that had the test: the argument for asserting one type's base
-    # applies verbatim to its sibling, and the reviewer who checks only the
-    # direction the author tested finds nothing (#589's generalisation).
-    for cls in (NonCanonicalItem, DuplicateMapKey):
+    # Swept over every rejection type reachable from this module's decoders,
+    # not just the one that had the test: the argument for asserting one
+    # type's base applies verbatim to its siblings, and the reviewer who
+    # checks only the direction the author tested finds nothing (#589's
+    # generalisation). `MalformedCbor` is declared in `codec/cbor_faults.py`,
+    # not here -- but every well-formedness raise in `scanner.py` and
+    # `well_formed.py` IS one (#641), and `cbor_faults.py`'s own module
+    # docstring already claimed this section asserted its base before this
+    # loop actually did (#641 fix round 1 review).
+    for cls in (NonCanonicalItem, DuplicateMapKey, MalformedCbor):
         if not issubclass(cls, ValueError):
             issues.append(
                 f"{cls.__name__} must subclass ValueError -- conformance_lib.rejection's "
