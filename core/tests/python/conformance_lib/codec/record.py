@@ -56,6 +56,13 @@ RECORD_REQUIRED_KEYS = frozenset({
 # separate `unknown` bag.
 RECORD_FIELD_KNOWN_KEYS = frozenset({"value", "last_mod", "device_uuid"})
 
+# The crypto-design §6.2 rules `record::decode` meets only at its re-encode
+# comparison, as the fieldless `NonCanonicalEncoding`: definite lengths (2)
+# and shortest-form heads (3).  Only a `NonCanonicalItem` carrying one of
+# these becomes `RecordNonCanonical`.  Rule 4 belongs to step 1's walk, and a
+# rule-4 item reaching step 5 must surface as itself, not be relabelled.
+_RE_ENCODE_RULES = (2, 3)
+
 
 def _decode_record_field_map(data: bytes, pos: int, fname: str) -> dict:
     """Decode one `fields[fname]` sub-map (`RecordField`, §6.3.2) in
@@ -174,6 +181,8 @@ def py_decode_record(data: bytes) -> dict:
         try:
             _check_canonical_item(data, vs)
         except NonCanonicalItem as exc:
+            if exc.rule not in _RE_ENCODE_RULES:
+                raise
             raise RecordNonCanonical(str(exc)) from exc
     if end != len(data):
         raise RecordNonCanonical(f"trailing bytes after record map: {len(data) - end}")
