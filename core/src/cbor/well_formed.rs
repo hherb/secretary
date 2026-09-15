@@ -83,6 +83,18 @@ struct Head {
     len: usize,
 }
 
+/// Which rule-4 fault was seen first.
+///
+/// Its own type rather than a [`WalkFault`], which can also hold `Malformed`:
+/// the walk parks this until the whole item has proven well-formed, and a
+/// well-formedness fault parked here would be reported late, silently
+/// breaking the precedence the module doc states (PR #673 review).
+#[derive(Clone, Copy)]
+enum Rule4 {
+    Tag,
+    Float,
+}
+
 /// An open container.
 enum Frame {
     /// A definite array or map, or a tag's single content item, with `left`
@@ -265,13 +277,14 @@ fn open_container(head: &Head) -> Frame {
 pub(crate) fn walk_first_item(bytes: &[u8]) -> Result<usize, WalkFault> {
     let mut pos = 0usize;
     let mut stack: Vec<Frame> = Vec::new();
-    let mut first_rule4: Option<WalkFault> = None;
+    let mut first_rule4: Option<(Rule4, usize)> = None;
     let mut started = false;
     loop {
         close_finished_containers(bytes, &mut pos, &mut stack).map_err(WalkFault::Malformed)?;
         if started && stack.is_empty() {
             return match first_rule4 {
-                Some(fault) => Err(fault),
+                Some((Rule4::Tag, offset)) => Err(WalkFault::Tag { offset }),
+                Some((Rule4::Float, offset)) => Err(WalkFault::Float { offset }),
                 None => Ok(pos),
             };
         }
@@ -288,7 +301,7 @@ pub(crate) fn walk_first_item(bytes: &[u8]) -> Result<usize, WalkFault> {
                 stack.push(open_container(&head));
             }
             MAJOR_TAG => {
-                first_rule4.get_or_insert(WalkFault::Tag { offset: pos });
+                first_rule4.get_or_insert((Rule4::Tag, pos));
                 pos += head.len;
                 stack.push(Frame::Definite { left: 1 });
             }
@@ -296,7 +309,7 @@ pub(crate) fn walk_first_item(bytes: &[u8]) -> Result<usize, WalkFault> {
                 match head.ai {
                     SIMPLE_FALSE | SIMPLE_TRUE | SIMPLE_NULL => {}
                     AI_FLOAT16 | AI_FLOAT32 | AI_FLOAT64 => {
-                        first_rule4.get_or_insert(WalkFault::Float { offset: pos });
+                        first_rule4.get_or_insert((Rule4::Float, pos));
                     }
                     // `undefined`, every unassigned simple value, the one-byte
                     // simple form, and a break outside an indefinite container.
