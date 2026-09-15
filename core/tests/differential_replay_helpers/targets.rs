@@ -64,14 +64,14 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// The committed input floor for each target.
 ///
 /// `seen > 0` was not enough, and the gap was specific rather than
-/// theoretical: `corpus_dirs` skips a missing directory silently, and for
-/// `manifest_body` — the ONLY token-compared target —
-/// `tests/data/diff_regressions/manifest_body/` holds one always-present
+/// theoretical. `corpus_dirs` skips a missing directory silently, and at
+/// #634, when `manifest_body` was the only token-compared target,
+/// `tests/data/diff_regressions/manifest_body/` held one always-present
 /// committed file. So a renamed or emptied `core/fuzz/seeds/manifest_body/`
-/// left the target replaying exactly that one input, which is itself a
-/// TOLERATED pair, and the test passed having compared nothing. That is the
-/// #595 fail-open shape one level up: the mechanism was guarded, the
-/// magnitude was not.
+/// left the target replaying exactly that one input, itself a TOLERATED
+/// pair, and the test passed having compared nothing. That was the #595
+/// fail-open shape one level up: the mechanism was guarded, the magnitude
+/// was not.
 ///
 /// The figures are the counts committed today, so deleting an input reds
 /// rather than quietly shrinking the corpus. **Only COMMITTED inputs are
@@ -85,13 +85,18 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// `every_target_is_classified` requires this table to cover `TARGETS`
 /// exactly, so a new target cannot arrive without one.
 ///
-/// What it does NOT floor is how many inputs reach a strict token
-/// comparison. The committed count is taken from the listing before any
-/// decode, and `tokens_agree` short-circuits on either side being
-/// phase-dependent, so a change on the Rust raise side could route more of
-/// the corpus onto tolerated pairs and shrink the real comparison toward zero
-/// with this floor, the tolerance breadth assertion and the negative control
-/// all green. Tracked as #658.
+/// Whether it also floors STRICT token comparisons depends on the target.
+/// Three targets are token-compared — `record`, `manifest_body` and
+/// `block_file` — and the phase-dependent tolerance applies on
+/// [`PHASE_DEPENDENT_TOLERANCE_TARGETS`] (`manifest_body`) only. On `record`
+/// and `block_file` (#641) every committed input both sides reject therefore
+/// reaches a strict comparison, so their floor already is a strict-comparison
+/// floor. On `manifest_body` it is not: the count is taken from the listing
+/// before any decode, and `tokens_agree` there lets a phase-dependent token
+/// on either side stand against a different token, so a change on the Rust
+/// raise side could route more of that corpus onto tolerated pairs and shrink
+/// the real comparison toward zero with this floor, the tolerance breadth
+/// assertion and the negative control all green. Tracked as #658.
 pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("vault_toml", 3),
     ("record", 25),
