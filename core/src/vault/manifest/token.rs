@@ -25,7 +25,7 @@ use super::cause::NonCanonicalCause;
 use super::error::ManifestError;
 use crate::vault::canonical::CanonicalError;
 
-/// Which rule a rejecting manifest decoder is reporting.
+/// Which rule a rejecting decoder is reporting: the manifest body (#634), and the record and block-file envelope replay targets (#641).
 ///
 /// Fieldless by construction (#474): every variant is a compile-time
 /// constant, so no decrypted manifest content can ride along. Note the
@@ -58,26 +58,27 @@ pub enum RuleToken {
     /// body to point at, and trailing bytes — see this module's own doc for
     /// why the latter has no token of its own.
     NonCanonicalUnclassified,
-    /// One of `docs/vault-format.md` §4.2's five array sort disciplines.
+    /// One of `docs/vault-format.md` §4.2's five array sort disciplines, or a §6.1 block file's vector clock or recipient table out of ascending order (#641).
     ArraySortOrder,
-    /// §4.2's repeated-array-value prohibition, in one of the four arrays it
+    /// A repeated value in a table that forbids one: §4.2's repeated-array-value prohibition, in one of the four arrays it
     /// binds. `recipients` is the explicit exception and never produces this.
+    /// On a §6.1 block file, the vector clock or the recipient table (#641).
     RepeatedArrayValue,
     /// A map this reader interprets carries the same key twice.
     DuplicateMapKey,
-    /// A §4.2 required key is absent.
+    /// A required key is absent (§4.2 manifest body, §6.3 record).
     MissingField,
     /// A field's CBOR major type, or a byte string's length, is not what §4.2
     /// requires — including a body that is not a map, and a non-text map key.
     WrongType,
-    /// An integer field is outside the width §4.2 gives it.
+    /// An integer field is outside the width §4.2 or §6.3 gives it.
     IntegerOutOfRange,
     /// A v1 sentinel — `manifest_version`, `format_version`, `suite_id` — is
-    /// not the v1 value, at either the body or the file-header layer.
+    /// not the v1 value, at either the body or the file-header layer — including a §6.1 block file's header (#641).
     UnsupportedVersion,
     /// The bytes are not well-formed CBOR at all.
     MalformedCbor,
-    /// The §4.1 file envelope is malformed: magic, file kind, header or
+    /// A §4.1 manifest or §6.1 block file envelope is malformed: magic, file kind, header or
     /// section truncation, a declared length that does not match, trailing
     /// bytes after the file, or a wrong signature length.
     ContainerMalformed,

@@ -32,6 +32,7 @@ pub mod purge;
 pub mod record;
 mod repair;
 pub mod retention;
+mod rule_tokens;
 pub mod trash_merge;
 pub(crate) mod trash_relocation;
 
