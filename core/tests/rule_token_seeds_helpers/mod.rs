@@ -36,9 +36,11 @@ pub struct SeedCase {
     ///
     /// The token alone is coarser than the check a shape names. Nine
     /// `container_malformed` shapes span seven `BlockError` variants, so a
-    /// decoder that lost its `sig_ed_len` check and failed a few bytes later
-    /// as `Truncated` still named the row's token (PR #673 review, measured on
-    /// the Python side). Section RTS pins the Python half by class name.
+    /// raise site that names a sibling variant, or a plant that drifts onto a
+    /// sibling's fault, still names the row's token: swapping
+    /// `SigEdWrongLength` for `Truncated` reds only this column (PR #673
+    /// review). Section RTS pins the Python half by class name, where deleting
+    /// the `sig_ed_len` check had left every token check green.
     pub variant: &'static str,
     /// Build the seed from the target's committed accepting base.
     pub plant: fn(&[u8]) -> Vec<u8>,

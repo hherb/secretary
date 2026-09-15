@@ -4,7 +4,8 @@ says, in this package as in Rust (#641).
 
 WHAT THIS PINS.  `core/tests/rule_token_seeds.rs` generates one seed per
 `(token, shape)` row, binds each committed file's BYTES to its row, and
-requires the Rust decoder to name the file's token.  This section is the
+requires the Rust decoder to name the file's token and the row's exact error
+variant.  This section is the
 Python half of the same binding: every `<token>__<shape>.bin` must be
 REJECTED -- a verdict, never an `error` -- with exactly `<token>`, through
 `diff_replay.replay_bytes`, the very function the differential replay's

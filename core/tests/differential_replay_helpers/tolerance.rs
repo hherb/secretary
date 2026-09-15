@@ -59,7 +59,10 @@ use super::targets::PHASE_DEPENDENT_TOLERANCE_TARGETS;
 /// also breaks". So a pair naming `malformed_cbor` against a phase-dependent
 /// token has no §4.2 licence, and withholding it manufactures no false
 /// disagreement. It is why `manifest_body`'s breadth is **54**, not the 58
-/// pairs that have a phase-dependent member.
+/// pairs that have a phase-dependent member. One caveat on "false": Rust's
+/// `malformed_cbor` also covers ciborium's recursion limit, which is not a
+/// well-formedness fault at all. A disagreement it causes is #667's Rust-only
+/// depth rejection surfacing, a real divergence, not a spurious one.
 ///
 /// That exception is not cosmetic. Python's scanner raises `malformed_cbor`
 /// for `undefined` and for a nested indefinite-length chunk; `ciborium`

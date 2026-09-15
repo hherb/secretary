@@ -129,8 +129,9 @@ fn running_out_of_input_is_an_io_fault() {
     let mut overrun = vec![BYTES_FOUR_BYTE_LENGTH];
     overrun.extend_from_slice(&u32::MAX.to_be_bytes());
     assert_eq!(walk_first_item(&overrun), Err(io(0)));
-    // An eight-byte length takes `payload_end`'s `usize::try_from` and
-    // `checked_add` path, which a four-byte one cannot reach on 64-bit.
+    // An eight-byte length near `u64::MAX` overflows `payload_end`'s
+    // `checked_add` on 64-bit (and fails its `usize::try_from` on 32-bit),
+    // which no four-byte length can reach there.
     let mut overrun = vec![BYTES_EIGHT_BYTE_LENGTH];
     overrun.extend_from_slice(&u64::MAX.to_be_bytes());
     assert_eq!(walk_first_item(&overrun), Err(io(0)));
