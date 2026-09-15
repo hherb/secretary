@@ -78,7 +78,12 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
     issues = []
     for path in seeds:
         want = _label_token(path)
-        verdict = replay_bytes(target, path.read_bytes()).verdict
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            issues.append(f"{target}/{path.name}: cannot read seed: {type(exc).__name__}: {exc}")
+            continue
+        verdict = replay_bytes(target, data).verdict
         if verdict.get("status") != "reject":
             issues.append(f"{target}/{path.name}: expected a rejection naming {want!r}, got {verdict}")
         elif verdict.get("rule") != want:
