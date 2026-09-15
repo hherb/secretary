@@ -102,6 +102,11 @@ jobs:
       - name: Provision Android SDK
         if: matrix.language == 'java-kotlin'
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        # Override the default "tools platform-tools": Google stopped serving
+        # the deprecated `tools` package on 2026-09-15 (#674; see test.yml's
+        # android-host step).
+        with:
+          packages: platform-tools
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
