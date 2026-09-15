@@ -11,28 +11,34 @@ from __future__ import annotations
 from typing import Any
 
 from conformance_lib.canonical import encode_canonical_map_raw
+from conformance_lib.codec.record_rules import (
+    RecordDuplicateKey,
+    RecordMissingField,
+    RecordNonCanonical,
+    RecordWrongType,
+    check_field_value,
+    check_record_value,
+)
 from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
-from conformance_lib.codec.scanner import _check_canonical_item, _decode_head, _scan_map_entries
+from conformance_lib.codec.scanner import NonCanonicalItem, _check_canonical_item, _decode_head, _scan_map_entries
+from conformance_lib.codec.well_formed import MAJOR_MAP, MAJOR_TEXT, walk_body
 
 # ---------------------------------------------------------------------------
 # §6.3 record BODY decoder/encoder -- forward-compat unknown-bag retention
 # ---------------------------------------------------------------------------
-# Mirrors the manifest body decoder/encoder pair further down this file
-# (`py_decode_manifest` / `py_encode_manifest`), one nesting level
-# shallower: a `Record` has a forward-compat `unknown` bag at exactly TWO
-# levels -- the record itself (`Record::unknown`) and each field's own
-# sub-map (`RecordField::unknown`) -- unlike the manifest's three (top
-# level, block entry, trash entry). `cbor2.loads` collapses a duplicate key
-# and re-sorts key order inside either bag, rejecting records
+# Mirrors the manifest body decoder/encoder pair (`codec/manifest_decode.py`'s
+# `py_decode_manifest`, `codec/manifest_encode.py`'s `py_encode_manifest`),
+# one nesting level shallower: a `Record` has a forward-compat `unknown` bag
+# at exactly TWO levels -- the record itself (`Record::unknown`) and each
+# field's own sub-map (`RecordField::unknown`) -- unlike the manifest's three
+# (top level, block entry, trash entry). `cbor2.loads` collapses a duplicate
+# key and re-sorts key order inside either bag, rejecting records
 # `record.rs::decode` accepts (#592; ground truth pinned by `record.rs`'s
 # `unknown_subtree_tolerates_key_order_and_duplicates_but_not_encoding_at_both_levels`).
-# These two helpers plus the span-recording scanner primitives defined
-# further down this file (`_scan_map_entries` / `_decode_head` /
-# `_check_canonical_item`) are what let `py_decode_record` retain both
-# bags' raw bytes instead of collapsing them through `cbor2.loads`. Being
-# referenced here before their own definitions further down is fine --
-# Python resolves a module-level name at CALL time, not at `def` time, and
-# the whole module has finished loading before any of these are invoked.
+# The two map decoders below plus the span-recording scanner primitives
+# imported above (`_scan_map_entries` / `_decode_head` /
+# `_check_canonical_item`) are what let `py_decode_record` retain both bags'
+# raw bytes instead of collapsing them through `cbor2.loads`.
 
 RECORD_KNOWN_KEYS = frozenset({
     "record_uuid", "record_type", "fields", "tags",
@@ -51,226 +57,145 @@ RECORD_REQUIRED_KEYS = frozenset({
 RECORD_FIELD_KNOWN_KEYS = frozenset({"value", "last_mod", "device_uuid"})
 
 
-def _decode_record_field_map(data: bytes, pos: int, end: int) -> dict:
-    """Decode one `fields[name]` sub-map (`RecordField`, §6.3.2): the three
-    known keys dispatch through `cbor2.loads`; any other key is retained as
-    raw bytes under `"unknown"`, mirroring `RecordField::unknown` -- the
-    SECOND (and last) of the two levels a `Record` has an unknown bag at
-    (#592). Rejects a duplicate key -- known or unknown -- within this one
-    field's own map (mirrors `RecordError::DuplicateKey { field: "<field>",
-    .. }`); required-key presence and value-type checks are left to
-    `_validate_record_field`, called by `py_decode_record` once this dict
-    is built, so that behaviour is unchanged by this rework.
+def _decode_record_field_map(data: bytes, pos: int, fname: str) -> dict:
+    """Decode one `fields[fname]` sub-map (`RecordField`, §6.3.2) in
+    `parse_field_map`'s order: per entry in wire order, the key's type, then a
+    repeat, then the value checked the moment it is read; this field's missing
+    keys last.  Unknown keys are retained as raw bytes under `"unknown"`, the
+    second of the two levels a `Record` has an unknown bag at (#592).
     """
     import cbor2
 
-    entries, entry_end = _scan_map_entries(data, pos)
-    if entry_end != end:
-        raise ValueError(f"record field map span mismatch at offset {pos}")
-
+    major, _, _, _ = _decode_head(data, pos)
+    if major != MAJOR_MAP:
+        raise RecordWrongType(f"record field {fname!r} value must be a map, got major type {major}")
+    entries, _ = _scan_map_entries(data, pos)
     out: dict[str, Any] = {}
     unknown: dict[str, bytes] = {}
     seen: set[str] = set()
-
     for (ks, ke), (vs, ve) in entries:
         kmaj, _, _, _ = _decode_head(data, ks)
-        if kmaj != 3:
-            raise ValueError(f"record field map key at offset {ks} is not a text string")
+        if kmaj != MAJOR_TEXT:
+            raise RecordWrongType(f"record field map key at offset {ks} is not a text string")
         key = cbor2.loads(data[ks:ke])
         if key in seen:
-            raise ValueError(f"duplicate record field-level key: {key!r}")
+            raise RecordDuplicateKey(f"duplicate record field-level key: {key!r}")
         seen.add(key)
-
-        # Rules 2/3/4 apply to every value, known or unknown; rules 1/5
-        # (key order, duplicate keys) do not -- see `_check_canonical_item`.
-        _check_canonical_item(data, vs)
-
         if key in RECORD_FIELD_KNOWN_KEYS:
-            out[key] = cbor2.loads(data[vs:ve])
+            out[key] = check_field_value(fname, key, cbor2.loads(data[vs:ve]))
         else:
             unknown[key] = data[vs:ve]
-
+    _validate_record_field(fname, out)
     out["unknown"] = unknown
     return out
 
 
-def _decode_record_fields_map(data: bytes, pos: int, end: int) -> dict:
-    """Decode the record's `fields` map at `pos`: each VALUE is a
-    `RecordField` sub-map decoded via `_decode_record_field_map`. The
-    `fields` map itself carries no forward-compat bag of its own --
-    `Record.fields` is a plain `BTreeMap<String, RecordField>`, not a
-    struct with an `unknown` field (`record.rs`'s module doc) -- so an
-    unrecognised field NAME is simply another field, never
-    retained-but-uninterpreted bytes; only each field's VALUE gets that
-    treatment, one level down. Rejects a duplicate field name (mirrors
-    `RecordError::DuplicateKey { field: "fields", .. }`).
+def _decode_record_fields_map(data: bytes, pos: int) -> dict:
+    """Decode the record's `fields` map at `pos` in `take_fields_map`'s order:
+    per entry, the key's type, then a repeated field name, then that field's
+    own sub-map in full.  `fields` has no unknown bag of its own -- an
+    unrecognised field NAME is simply another field (`record.rs`'s module doc).
     """
     import cbor2
 
-    entries, entry_end = _scan_map_entries(data, pos)
-    if entry_end != end:
-        raise ValueError(f"record fields map span mismatch at offset {pos}")
-
+    major, _, _, _ = _decode_head(data, pos)
+    if major != MAJOR_MAP:
+        raise RecordWrongType(f"record fields must be a map, got major type {major}")
+    entries, _ = _scan_map_entries(data, pos)
     out: dict[str, dict] = {}
-    seen: set[str] = set()
-    for (ks, ke), (vs, ve) in entries:
+    for (ks, ke), (vs, _ve) in entries:
         kmaj, _, _, _ = _decode_head(data, ks)
-        if kmaj != 3:
-            raise ValueError(f"record fields map key at offset {ks} is not a text string")
+        if kmaj != MAJOR_TEXT:
+            raise RecordWrongType(f"record fields map key at offset {ks} is not a text string")
         fname = cbor2.loads(data[ks:ke])
-        if fname in seen:
-            raise ValueError(f"duplicate record field name: {fname!r}")
-        seen.add(fname)
-
-        _check_canonical_item(data, vs)
-        out[fname] = _decode_record_field_map(data, vs, ve)
+        if fname in out:
+            raise RecordDuplicateKey(f"duplicate record field name: {fname!r}")
+        out[fname] = _decode_record_field_map(data, vs, fname)
     return out
 
 
 def py_decode_record(data: bytes) -> dict:
-    """Strict §6.3 canonical-CBOR record decoder matching record.rs::decode.
+    """Strict §6.3 canonical-CBOR record decoder, in `record.rs::decode`'s phase
+    order (#641), so that a body breaking several rules names the same one in
+    both languages:
 
-    Validates:
-    - Top-level item is a CBOR map with text-string keys.
-    - No duplicate key at the top level, in the `fields` map, or within
-      any one field's own sub-map -- checked on the SPAN list (a `dict`
-      would silently collapse a repeat) (#592).
-    - No floats, no CBOR tags anywhere in the tree (`_check_canonical_item`
-      rule 4, applied to every top-level value's whole subtree).
-    - Required fields: record_uuid (16-byte bstr), record_type (tstr),
-      fields (map), created_at_ms (uint), last_mod_ms (uint).
-    - Optional: tags (array of tstr), tombstone (bool), tombstoned_at_ms (uint).
-    - Input is already canonical (re-encode == input).
+      1. `walk_body`: well-formed CBOR, then no tag or float anywhere (rule 4).
+      2. The top-level item is a map.
+      3. Entries in wire order: key type, then a repeat, then the value checked
+         the moment it is read (`fields` recursing in the same order, each
+         field's missing keys at the end of that field).
+      4. Missing required top-level keys.
+      5. Canonical form, last: §6.2 rules 2/3 per value, trailing bytes, then
+         the re-encode comparison -- all `RecordNonCanonical`, because Rust's
+         fieldless `NonCanonicalEncoding` cannot tell them apart.
 
-    Unknown record-level keys AND unknown per-field keys are RETAINED as
-    raw bytes rather than decoded through `cbor2.loads`: §4.2/§6.2 rules 1
-    (map-key order) and 5 (duplicate keys) are deliberately unenforced
-    inside either forward-compat `unknown` bag, mirroring
-    `record.rs::decode`'s own tolerance (ground truth:
+    Unknown record-level and per-field keys are RETAINED as raw bytes rather
+    than decoded through `cbor2.loads`: §4.2/§6.2 rules 1 and 5 are deliberately
+    unenforced inside either forward-compat `unknown` bag (ground truth:
     `unknown_subtree_tolerates_key_order_and_duplicates_but_not_encoding_at_both_levels`
-    in `record.rs`'s `mod tests`). A `Record` has exactly two such levels;
-    there is no third the way the manifest has a block/trash-entry level
-    below its own top level.
+    in `record.rs`'s tests).
 
     Returns a dict of parsed fields, with `"unknown"` mapping to
     `{key: raw_bytes}` at BOTH the record level and inside each
-    `fields[name]` sub-dict. Raises on any violation.
+    `fields[name]` sub-dict.
     """
-    entries, end = _scan_map_entries(data, 0)
-    if end != len(data):
-        raise ValueError(f"trailing bytes after record map: {len(data) - end}")
-
     import cbor2
+
+    end = walk_body(data)
+    major, _, _, _ = _decode_head(data, 0)
+    if major != MAJOR_MAP:
+        raise RecordWrongType(f"expected a CBOR map at offset 0, got major type {major}")
+    entries, _ = _scan_map_entries(data, 0)
 
     out: dict[str, Any] = {}
     unknown: dict[str, bytes] = {}
     seen: set[str] = set()
-
     for (ks, ke), (vs, ve) in entries:
         kmaj, _, _, _ = _decode_head(data, ks)
-        if kmaj != 3:
-            raise ValueError(f"record map key at offset {ks} is not a text string")
+        if kmaj != MAJOR_TEXT:
+            raise RecordWrongType(f"record map key at offset {ks} is not a text string")
         key = cbor2.loads(data[ks:ke])
         if key in seen:
-            raise ValueError(f"duplicate record key: {key!r}")
+            raise RecordDuplicateKey(f"duplicate record key: {key!r}")
         seen.add(key)
-
-        # Rules 2/3/4 apply to every value, known or unknown; rules 1/5 do
-        # not -- see `_check_canonical_item`'s own doc for why.
-        _check_canonical_item(data, vs)
-
         if key == "fields":
-            out[key] = _decode_record_fields_map(data, vs, ve)
+            out[key] = _decode_record_fields_map(data, vs)
         elif key in RECORD_KNOWN_KEYS:
-            out[key] = cbor2.loads(data[vs:ve])
+            out[key] = check_record_value(key, cbor2.loads(data[vs:ve]))
         else:
             unknown[key] = data[vs:ve]
 
     absent = first_missing_key_in_sorted_order(out, RECORD_REQUIRED_KEYS)
     if absent is not None:
-        raise KeyError(f"record missing required field: {absent!r}")
-
-    rec_uuid = out["record_uuid"]
-    if not isinstance(rec_uuid, bytes) or len(rec_uuid) != 16:
-        raise ValueError(f"record_uuid must be 16-byte bstr, got {type(rec_uuid).__name__}")
-
-    rec_type = out["record_type"]
-    if not isinstance(rec_type, str):
-        raise ValueError("record_type must be tstr")
-
-    # `out["fields"]` is already guaranteed to be a dict of str -> dict by
-    # `_decode_record_fields_map`'s own scanning, so only the per-field
-    # required-key-presence and value-type checks remain to do here.
-    for fname, fval in out["fields"].items():
-        _validate_record_field(fname, fval)
-
-    cat = out["created_at_ms"]
-    if not isinstance(cat, int) or cat < 0:
-        raise ValueError(f"created_at_ms must be uint, got {cat!r}")
-
-    lmm = out["last_mod_ms"]
-    if not isinstance(lmm, int) or lmm < 0:
-        raise ValueError(f"last_mod_ms must be uint, got {lmm!r}")
-
-    # Optional: tags
-    if "tags" in out:
-        tags_val = out["tags"]
-        if not isinstance(tags_val, list):
-            raise ValueError("record tags must be array")
-        for t in tags_val:
-            if not isinstance(t, str):
-                raise ValueError("record tags entries must be tstr")
-
-    # Optional: tombstone
-    if "tombstone" in out:
-        if not isinstance(out["tombstone"], bool):
-            raise ValueError("record tombstone must be bool")
-
-    # Optional: tombstoned_at_ms
-    if "tombstoned_at_ms" in out:
-        tam = out["tombstoned_at_ms"]
-        if not isinstance(tam, int) or tam < 0:
-            raise ValueError(f"tombstoned_at_ms must be uint, got {tam!r}")
-
+        raise RecordMissingField(f"record missing required field: {absent!r}")
     out["unknown"] = unknown
 
-    # Canonical-input check: re-encode and compare. Retained unknown
-    # subtrees -- record-level AND per-field -- are spliced verbatim by
-    # `py_encode_record` and compare equal, so this does not undo the
-    # byte-retention above.
-    #
-    # What it does and does NOT catch (#595). It catches KEY ORDER inside a
-    # nested KNOWN map. It does NOT catch a DUPLICATE key there: those are
-    # rejected earlier and explicitly, by the `seen`-set checks in
-    # `_decode_record_fields_map` / `_decode_record_field_map`, which raise
-    # before this line runs. Since #592 those maps do not go through
-    # `cbor2.loads` at all -- `_scan_map_entries` preserves a repeat, so it
-    # would survive the round trip and compare EQUAL. Attributing duplicate
-    # rejection to the re-encode is the exact reasoning this slice deleted
-    # from `_check_no_duplicate_keys`; do not remove a `seen` set as
-    # redundant with this check.
-    reencoded = py_encode_record(out)
-    if reencoded != data:
-        raise ValueError("record is not in canonical CBOR form")
-
+    for _key_span, (vs, _ve) in entries:
+        try:
+            _check_canonical_item(data, vs)
+        except NonCanonicalItem as exc:
+            raise RecordNonCanonical(str(exc)) from exc
+    if end != len(data):
+        raise RecordNonCanonical(f"trailing bytes after record map: {len(data) - end}")
+    # What this comparison does and does NOT catch (#595): it catches KEY
+    # ORDER inside a nested known map, and map-head non-canonicality. It does
+    # NOT catch a DUPLICATE key: those are rejected earlier by the repeat
+    # checks (a `seen` set at the record and field levels, `fname in out` at
+    # the `fields` level), and a repeat would survive `_scan_map_entries` and
+    # compare EQUAL. Do not remove a repeat check as redundant with this one.
+    if py_encode_record(out) != data:
+        raise RecordNonCanonical("record is not in canonical CBOR form")
     return out
 
 
 def _validate_record_field(fname: str, fval: dict) -> None:
-    """Validate a single §6.3 RecordField sub-map."""
+    """The per-field required-key check, run once `fields[fname]`'s map has
+    been read -- `parse_field_map` requires its three keys only after its loop.
+    Value types are checked as each key is read (`check_field_value`)."""
     REQUIRED_FIELD_KEYS = {"value", "last_mod", "device_uuid"}
     absent = first_missing_key_in_sorted_order(fval, REQUIRED_FIELD_KEYS)
     if absent is not None:
-        raise KeyError(f"record field {fname!r} missing {absent!r}")
-    v = fval["value"]
-    if not isinstance(v, (str, bytes)):
-        raise ValueError(f"field {fname!r} value must be tstr or bstr")
-    lm = fval["last_mod"]
-    if not isinstance(lm, int) or lm < 0:
-        raise ValueError(f"field {fname!r} last_mod must be uint")
-    du = fval["device_uuid"]
-    if not isinstance(du, bytes) or len(du) != 16:
-        raise ValueError(f"field {fname!r} device_uuid must be 16-byte bstr")
+        raise RecordMissingField(f"record field {fname!r} missing {absent!r}")
 
 
 def _reject_floats_and_tags_py(v: Any) -> None:

@@ -31,16 +31,19 @@ have been satisfied by a wrong table.
 
 Values here are structural placeholders, not cryptographic material -- but
 "placeholder" does not mean "any width will do", and the obvious wider claim is
-false. A decoder reaches its own required-key check before its own value-shape
-checks, so a card's `x25519_pk` never has to be 32 bytes. It does NOT follow
-that nothing here is load-bearing: the three NESTED cases (`record_field`,
-`manifest_block_entry`, `manifest_kdf_params`) are reached through a decoder one
-level up, whose shape checks run first. `_UUID` must therefore be a real 16
-bytes -- narrowed to one byte, `record_field` stops reaching its check at all
-and rejects with `record_uuid must be 16-byte bstr`. `_SALT` and the block
-entry's `fingerprint`, by contrast, are never presented to a decoder by any
-case (every key that would carry them is in that case's `missing`), so their
-widths are documentation of the position rather than a constraint.
+false. `py_decode_contact_card` reaches its own required-key check before its
+own value-shape checks, so a card's `x25519_pk` never has to be 32 bytes. It
+does NOT follow that nothing here is load-bearing: `py_decode_record` checks
+each value the moment its key is read, in `record::decode`'s order (#641), so a
+value a record case presents is type-checked before that map's required-key
+check. `_UUID` must therefore be a real 16 bytes -- narrowed to one byte,
+`record_field`'s restored decode presents it as `device_uuid` and rejects with
+`field 'f' device_uuid must be 16-byte bstr` before reaching its check (before
+#641's reorder it was `record_uuid must be 16-byte bstr`, one level up).
+`_SALT` and the block entry's `fingerprint`, by contrast, are never presented
+to a decoder by any case (every key that would carry them is in that case's
+`missing`), so their widths are documentation of the position rather than a
+constraint.
 """
 
 from __future__ import annotations
