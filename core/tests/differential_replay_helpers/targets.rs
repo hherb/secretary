@@ -23,15 +23,17 @@ pub const TARGETS: &[&str] = &[
 ///
 /// `manifest_body` (#634) and `block_file` (#641). `block_file` needed no
 /// decoder change: both implementations walk the §6.1 layout in the same
-/// order, and #641 split Python's merged sort/repeat check. `record` follows
-/// once its Python decoder reports in Rust's phase order. `contact_card`,
-/// `bundle_file` and `vault_toml` each still need their own taxonomy (#641);
-/// `manifest_file` is blocked for a different, measured reason (#640) —
+/// order, and #641 split Python's merged sort/repeat check. `record` (#641)
+/// compares strictly too, since `conformance.py`'s record decoder reports in
+/// `record::decode`'s phase order and `record::decode` walks its bytes for
+/// well-formedness before ciborium. `contact_card`, `bundle_file` and
+/// `vault_toml` each still need their own taxonomy (#641); `manifest_file` is
+/// blocked for a different, measured reason (#640) —
 /// Rust's header raises `UnsupportedFormatVersion` where Python raises the
 /// same `ParseError` it raises for every envelope fault, and because that
 /// variant is shared with the BODY sentinel check no per-variant token can
 /// reconcile the two.
-pub const TOKEN_COMPARED_TARGETS: &[&str] = &["manifest_body", "block_file"];
+pub const TOKEN_COMPARED_TARGETS: &[&str] = &["record", "manifest_body", "block_file"];
 
 /// The rest, listed explicitly rather than by omission.
 ///
@@ -40,13 +42,8 @@ pub const TOKEN_COMPARED_TARGETS: &[&str] = &["manifest_body", "block_file"];
 /// the loose behaviour — the fail-open shape #595 found in
 /// `differential_replay.rs`'s own corpus discovery. `agreement::judge` reads
 /// it too, and reports a target in neither list as a harness failure.
-pub const NOT_TOKEN_COMPARED_TARGETS: &[&str] = &[
-    "vault_toml",
-    "record",
-    "contact_card",
-    "bundle_file",
-    "manifest_file",
-];
+pub const NOT_TOKEN_COMPARED_TARGETS: &[&str] =
+    &["vault_toml", "contact_card", "bundle_file", "manifest_file"];
 
 /// The compared targets on which a phase-dependent token may stand against a
 /// different token and still count as agreement.
@@ -97,7 +94,7 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// all green. Tracked as #658.
 pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("vault_toml", 3),
-    ("record", 3),
+    ("record", 25),
     ("contact_card", 2),
     ("bundle_file", 1),
     ("manifest_file", 1),

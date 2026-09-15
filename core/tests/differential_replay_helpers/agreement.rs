@@ -278,6 +278,23 @@ mod tests {
         ));
     }
 
+    /// `record` is compared strictly (#641): its canonical-form faults share
+    /// one coarse token in both languages, so no phase-dependent pair is
+    /// needed, or tolerated.
+    #[test]
+    fn record_is_compared_strictly() {
+        const RECORD: &str = "record";
+        assert!(TOKEN_COMPARED_TARGETS.contains(&RECORD));
+        assert!(matches!(
+            judge(
+                RECORD,
+                &rust_err(Some("non_canonical_unclassified")),
+                &py_reject(Some("wrong_type"))
+            ),
+            Judgement::Disagree(_)
+        ));
+    }
+
     #[test]
     fn both_accepting_agrees_only_on_identical_bytes() {
         assert_eq!(
