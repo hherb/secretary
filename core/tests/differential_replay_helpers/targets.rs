@@ -21,12 +21,12 @@ pub const TARGETS: &[&str] = &[
 /// Targets whose reject-vs-reject pairs are compared on WHICH rule each side
 /// named, not merely on the fact that both rejected (#634).
 ///
-/// `manifest_body` (#634) and `block_file` (#641). `block_file` needed no
-/// decoder change: both implementations walk the §6.1 layout in the same
-/// order, and #641 split Python's merged sort/repeat check. `record` (#641)
-/// compares strictly too, since `conformance.py`'s record decoder reports in
-/// `record::decode`'s phase order and `record::decode` walks its bytes for
-/// well-formedness before ciborium. `contact_card`, `bundle_file` and
+/// Three: `manifest_body` (#634), `block_file` and `record` (#641).
+/// `block_file` needed no decoder change: both implementations walk the §6.1
+/// layout in the same order, and #641 split Python's merged sort/repeat
+/// check. `record` compares strictly too, since `conformance.py`'s record
+/// decoder reports in `record::decode`'s phase order and `record::decode`
+/// walks its bytes for well-formedness before ciborium. `contact_card`, `bundle_file` and
 /// `vault_toml` each still need their own taxonomy (#641); `manifest_file` is
 /// blocked for a different, measured reason (#640) —
 /// Rust's header raises `UnsupportedFormatVersion` where Python raises the
