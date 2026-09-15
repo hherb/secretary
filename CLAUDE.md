@@ -379,9 +379,13 @@ Practical consequence: when a Rust change alters observable byte format or merge
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
 was 6849 lines; it is now 156, over a **72**-file package whose largest module is
 `sections/manifest_canonicality_cause.py` at **486** lines, ahead of
-`codec/scanner.py` at 484, `codec/manifest_decode.py` at 418,
+`codec/scanner.py` at 476, `codec/manifest_decode.py` at 418,
 `sections/required_key_determinism.py` at 390 and `merge/records.py` at 383.
-Re-measured at #655, which grew the entrypoint 136 -> 156 (the
+Re-measured at #641, which added six modules (66 -> 72) and SHRANK
+`scanner.py` 484 -> 474 by moving its UTF-8 and simple-value predicates out to
+`codec/cbor_faults.py` (476 after that slice's review round lengthened one
+docstring), without moving the top five. Before that, re-measured at #655,
+which grew the entrypoint 136 -> 156 (the
 `--diff-replay-serve` branch) and added `sections/diff_replay_serve.py`
 without moving the top five. Before that, re-measured at #634, which grew `scanner.py` 468 -> 484 and
 `manifest_decode.py` 405 -> 418 (both gained rule tokens) and added
