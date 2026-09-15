@@ -89,8 +89,12 @@ only when the target is in `PHASE_DEPENDENT_TOLERANCE_TARGETS` (today
 `manifest_body` alone) and either token is phase-dependent. The licence comes
 from vault-format §4.2's two manifest reader designs, which say nothing about
 §6.1 or §6.3. `tolerance_admits_only_phase_dependent_pairs` pins the breadth per
-target: 58 of 136 unequal pairs on `manifest_body` (unchanged), **0** on every
-other target.
+target: **54** of 136 unequal pairs on `manifest_body`, **0** on every other
+target. It was 58 on `manifest_body` until the PR #673 review withheld the
+four pairs that name `malformed_cbor` against a phase-dependent token. §4.2
+makes well-formedness a precondition for both orderings, so those pairs have
+no licence. This slice's own `MalformedCbor` retyping of Python's scanner
+raises had turned what used to be harness failures into tolerated agreement.
 
 ### (1b) `block_file`: a Python split
 

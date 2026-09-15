@@ -210,7 +210,10 @@ There are exactly three valid output shapes:
   **derived from**
   §4.2's "deliberately unspecified" paragraphs rather than being them — a
   per-token predicate is strictly BROADER than a per-pair rule: it tolerates
-  **58 of the 136 unequal token pairs**, and the FOUR groups it tolerates
+  **54 of the 136 unequal token pairs** (58 have a phase-dependent member;
+  the four pairing one with `malformed_cbor` are withheld, because §4.2 makes
+  well-formedness a precondition that outranks every rule), and the FOUR
+  groups it tolerates
   that §4.2 does not license are written out in that method's own LIMITS
   block. Read "generally declares the order unspecified" above with that in
   mind — because all four `NonCanonicalCause` outcomes map to phase-dependent

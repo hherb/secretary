@@ -205,9 +205,12 @@ impl RuleToken {
     /// that token appears in, so the tolerated set is far wider than the set
     /// §4.2 frees, and the honest way to state it is a count rather than a
     /// short list of exceptions. Four of the seventeen tokens are
-    /// phase-dependent, so of the 136 unequal token pairs **58 are
-    /// tolerated** — every pair with at least one phase-dependent member.
-    /// §4.2 licenses a strict subset of those 58.
+    /// phase-dependent, so 58 of the 136 unequal token pairs have at least
+    /// one phase-dependent member, and **54 are tolerated**: the harness
+    /// withholds the four that pair one with [`Self::MalformedCbor`], because
+    /// §4.2 makes well-formedness the precondition for both of its orderings
+    /// rather than a rule inside them (PR #673 review). §4.2 licenses a
+    /// strict subset of those 54.
     ///
     /// **What that costs on the committed corpus, measured rather than
     /// argued.** All four [`NonCanonicalCause`] outcomes map to

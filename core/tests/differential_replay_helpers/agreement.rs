@@ -245,6 +245,23 @@ mod tests {
         );
     }
 
+    /// `malformed_cbor` outranks every rule, so even on the licensed target
+    /// it is never a tolerated mismatch (§4.2's well-formedness precondition;
+    /// PR #673 review). This is the call-site twin of the breadth test: the
+    /// pair below is `undefined` in a manifest body, which Python names at
+    /// its scan and `ciborium` lets through to the re-encode.
+    #[test]
+    fn malformed_cbor_against_a_phase_dependent_token_disagrees_on_the_licensed_target() {
+        assert!(matches!(
+            judge(
+                COMPARED,
+                &rust_err(Some("non_canonical_unclassified")),
+                &py_reject(Some("malformed_cbor"))
+            ),
+            Judgement::Disagree(_)
+        ));
+    }
+
     /// An unrecognised token is a DISAGREEMENT, not a harness failure: the
     /// missing-token guard catches only `None`, and a typo'd token must still
     /// red the run rather than read as tolerated.

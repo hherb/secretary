@@ -290,13 +290,25 @@ fn tolerance_admits_only_phase_dependent_pairs() {
         }
     }
 
+    // §4.2's well-formedness precondition: a body that is not well-formed
+    // CBOR is reported as such "whatever else the body also breaks", so
+    // `malformed_cbor` against a phase-dependent token is never licensed
+    // (#641, PR #673 review). Without this, Python naming `malformed_cbor`
+    // for a shape ciborium parses leniently scored as agreement.
+    for t in RuleToken::ALL.iter().filter(|t| t.is_phase_dependent()) {
+        assert!(!tokens_agree(LICENSED, "malformed_cbor", t.as_str()), "{t:?}");
+        assert!(!tokens_agree(LICENSED, t.as_str(), "malformed_cbor"), "{t:?}");
+    }
+
     // The BREADTH itself, pinned as a number. The four groups in
     // `is_phase_dependent`'s LIMITS block are tolerated with no §4.2
-    // licence, so the honest statement of this predicate is "58 of the 136
-    // unequal pairs", not "the pairs §4.2 frees". Asserting the count means
-    // a fifth phase-dependent token, or an 18th token, cannot widen the
-    // tolerance without someone re-deriving this figure against §4.2 and
-    // updating the LIMITS block in the same edit. #646 owns narrowing it.
+    // licence, so the honest statement of this predicate is "54 of the 136
+    // unequal pairs", not "the pairs §4.2 frees": 58 pairs have a
+    // phase-dependent member, less the four that pair it with
+    // `malformed_cbor`. Asserting the count means a fifth phase-dependent
+    // token, or an 18th token, cannot widen the tolerance without someone
+    // re-deriving this figure against §4.2 and updating the LIMITS block in
+    // the same edit. #646 owns narrowing it.
     let n = RuleToken::ALL.len();
     let mut unequal = 0usize;
     let mut tolerated = 0usize;
@@ -313,7 +325,7 @@ fn tolerance_admits_only_phase_dependent_pairs() {
     }
     assert_eq!(unequal, n * (n - 1) / 2, "unordered pair count");
     assert_eq!(
-        tolerated, 58,
+        tolerated, 54,
         "the tolerated-pair count moved: re-derive it against vault-format \
          §4.2 and update RuleToken::is_phase_dependent's LIMITS block, which \
          states this figure and the four groups it covers"

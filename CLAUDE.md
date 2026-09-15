@@ -1019,8 +1019,13 @@ survived it. Six things:
   documents did, the fifth being the shared JSON fixture BOTH languages read.
   **State the breadth as a number, because the list-of-exceptions form has now
   been wrong twice.** A per-TOKEN predicate tolerates every pair its token
-  appears in, so with 4 of the 17 tokens phase-dependent it tolerates **58 of
-  the 136 unequal pairs**; §4.2 frees a strict subset. All four
+  appears in, so with 4 of the 17 tokens phase-dependent it tolerates **54 of
+  the 136 unequal pairs**; §4.2 frees a strict subset. That is 58 pairs with a
+  phase-dependent member, less the four pairing one with `malformed_cbor`,
+  which is never tolerated: §4.2 makes well-formedness the precondition for
+  both orderings. Withholding it came from the PR #673 review, which measured
+  Python's newly tokened scanner raises turning a would-be harness failure into
+  agreement for `undefined` and nested-chunk manifest bodies. All four
   `NonCanonicalCause` outcomes map to phase-dependent tokens, so **every**
   `NonCanonicalEncoding` rejection Rust makes is scored as agreement whatever
   Python said — measured on the committed corpus, that is **17 of the 24

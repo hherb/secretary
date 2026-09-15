@@ -201,8 +201,10 @@ def section_rule_token_vocabulary() -> tuple[bool, list[str]]:
     #
     # Note what this set is and is not.  It is the set of tokens whose ORDER
     # §4.2 leaves free.  It is NOT a statement that `tokens_agree` tolerates
-    # only pairs §4.2 frees: that predicate is per-token, so it tolerates 58
-    # of the 136 unequal pairs, four groups of which §4.2 does not license.
+    # only pairs §4.2 frees: that predicate is per-token, so it tolerates 54
+    # of the 136 unequal pairs on `manifest_body` (the 58 with a
+    # phase-dependent member, less the four pairing one with `malformed_cbor`),
+    # four groups of which §4.2 does not license.
     # `RuleToken::is_phase_dependent`'s LIMITS block enumerates them and #646
     # tracks narrowing the predicate.
     want_phase_dependent = {
