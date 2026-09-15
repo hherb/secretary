@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use secretary_core::vault::manifest::RuleToken;
 
 pub mod block_file;
+pub mod record;
 
 /// One committed seed.
 pub struct SeedCase {
@@ -100,5 +101,7 @@ pub fn rust_token(target: &str, bytes: &[u8]) -> Option<RuleToken> {
 
 /// Every case, in a stable order.
 pub fn all_cases() -> Vec<SeedCase> {
-    block_file::cases()
+    let mut cases = block_file::cases();
+    cases.extend(record::cases());
+    cases
 }

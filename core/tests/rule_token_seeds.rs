@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use rule_token_seeds_helpers::{all_cases, rust_token, seed_dir, SeedCase, LABEL_SEPARATOR};
 
 /// The targets whose seed directories this table owns every labelled file in.
-const SEEDED_TARGETS: &[&str] = &["block_file"];
+const SEEDED_TARGETS: &[&str] = &["block_file", "record"];
 
 /// How to regenerate, quoted in every failure that needs it.
 const REGENERATE: &str = "cargo test --release --locked -p secretary-core --test \
