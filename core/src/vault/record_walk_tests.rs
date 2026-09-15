@@ -33,6 +33,10 @@ const TEXT_INDEFINITE: u8 = 0x7f;
 const BREAK: u8 = 0xff;
 const UINT_0: u8 = 0x00;
 const ASCII_A: u8 = b'a';
+// A UTF-8 sequence split across two indefinite-length chunks (RFC 8949
+// §3.2.3 makes each chunk a text string in its own right).
+const UTF8_TWO_BYTE_LEAD: u8 = 0xc3;
+const UTF8_CONTINUATION: u8 = 0xa9;
 
 fn legacy_decode(bytes: &[u8]) -> Result<Record, RecordError> {
     let parsed = from_secret_reader(bytes).map_err(RecordError::CborDecode)?;
@@ -133,6 +137,36 @@ fn each_ciborium_leniency_is_rejected_by_both_and_renamed_by_the_walk() {
     ));
     assert!(matches!(
         decode(&nested_chunk_key),
+        Err(RecordError::CborDecode(_))
+    ));
+}
+
+/// A UTF-8 sequence split across two chunks of an indefinite-length map KEY
+/// is malformed at the byte level (RFC 8949 §3.2.3), not merely non-canonical
+/// -- and ciborium agrees, unlike the three leniencies pinned above. Both
+/// pipelines report `CborDecode`, from the SAME cause: measured pre-#641,
+/// ciborium itself rejects these bytes as `Syntax` at offset 2, so
+/// `legacy_decode`'s `from_secret_reader` call fails before its walk or
+/// re-encode ever runs, and `decode`'s byte walk (#641) fails at the same
+/// offset for the same reason.
+#[test]
+fn a_utf8_sequence_split_across_chunks_is_rejected_by_both() {
+    let split_utf8_key = [
+        MAP_1,
+        TEXT_INDEFINITE,
+        TEXT_1,
+        UTF8_TWO_BYTE_LEAD,
+        TEXT_1,
+        UTF8_CONTINUATION,
+        BREAK,
+        UINT_0,
+    ];
+    assert!(matches!(
+        legacy_decode(&split_utf8_key),
+        Err(RecordError::CborDecode(_))
+    ));
+    assert!(matches!(
+        decode(&split_utf8_key),
         Err(RecordError::CborDecode(_))
     ));
 }
