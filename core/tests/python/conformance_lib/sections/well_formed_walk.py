@@ -54,6 +54,9 @@ UINT_INDEFINITE = 0x1F
 RESERVED_AI_28 = 0x1C
 BYTES_1 = 0x41
 BYTES_FOUR_BYTE_LENGTH = 0x5A
+BYTES_EIGHT_BYTE_LENGTH = 0x5B
+BYTES_INDEFINITE = 0x5F
+MAX_U64 = 0xFFFFFFFFFFFFFFFF
 TEXT_1 = 0x61
 TEXT_3 = 0x63
 TEXT_INDEFINITE = 0x7F
@@ -130,12 +133,15 @@ CASES: tuple[tuple[str, bytes, str, int | None], ...] = (
     ("indefinite map", _b(MAP_INDEFINITE, TEXT_1, ASCII_A, UINT_0, BREAK), "end", 5),
     ("chunked text", _b(TEXT_INDEFINITE, TEXT_1, ASCII_A, BREAK), "end", 4),
     ("first item only", _b(UINT_0, UNDEFINED), "end", 1),
+    ("chunked bytes", _b(BYTES_INDEFINITE, BYTES_1, ASCII_A, BREAK), "end", 4),
+    ("definite array closing inside an indefinite one", _b(ARRAY_INDEFINITE, ARRAY_1, UINT_0, BREAK), "end", 4),
     ("empty input", b"", "malformed", None),
     ("text overruns", _b(TEXT_3, ASCII_A), "malformed", None),
     ("map value missing", _b(MAP_1, TEXT_1), "malformed", None),
     ("indefinite array unterminated", _b(ARRAY_INDEFINITE, UINT_0), "malformed", None),
     ("float truncated", _b(FLOAT16, UINT_0), "malformed", None),
     ("length past input", bytes([BYTES_FOUR_BYTE_LENGTH]) + MAX_U32.to_bytes(4, "big"), "malformed", None),
+    ("eight-byte length past input", bytes([BYTES_EIGHT_BYTE_LENGTH]) + MAX_U64.to_bytes(8, "big"), "malformed", None),
     ("reserved additional-info", _b(RESERVED_AI_28), "malformed", None),
     ("indefinite integer", _b(UINT_INDEFINITE), "malformed", None),
     ("stray break", _b(BREAK), "malformed", None),

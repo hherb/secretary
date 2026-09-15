@@ -10,6 +10,8 @@ const UINT_INDEFINITE: u8 = 0x1f;
 const RESERVED_AI_28: u8 = 0x1c;
 const BYTES_1: u8 = 0x41;
 const BYTES_FOUR_BYTE_LENGTH: u8 = 0x5a;
+const BYTES_EIGHT_BYTE_LENGTH: u8 = 0x5b;
+const BYTES_INDEFINITE: u8 = 0x5f;
 const TEXT_1: u8 = 0x61;
 const TEXT_3: u8 = 0x63;
 const TEXT_INDEFINITE: u8 = 0x7f;
@@ -100,6 +102,16 @@ fn a_well_formed_item_returns_the_offset_one_past_it() {
         walk_first_item(&[TEXT_INDEFINITE, TEXT_1, ASCII_A, BREAK_BYTE]),
         Ok(4)
     );
+    // Byte-string chunks too, and a definite container closing inside an
+    // indefinite one before that one's break (PR #673 review).
+    assert_eq!(
+        walk_first_item(&[BYTES_INDEFINITE, BYTES_1, ASCII_A, BREAK_BYTE]),
+        Ok(4)
+    );
+    assert_eq!(
+        walk_first_item(&[ARRAY_INDEFINITE, ARRAY_1, UINT_0, BREAK_BYTE]),
+        Ok(4)
+    );
 }
 
 #[test]
@@ -116,6 +128,11 @@ fn running_out_of_input_is_an_io_fault() {
     assert_eq!(walk_first_item(&[FLOAT16, UINT_0]), Err(io(0)));
     let mut overrun = vec![BYTES_FOUR_BYTE_LENGTH];
     overrun.extend_from_slice(&u32::MAX.to_be_bytes());
+    assert_eq!(walk_first_item(&overrun), Err(io(0)));
+    // An eight-byte length takes `payload_end`'s `usize::try_from` and
+    // `checked_add` path, which a four-byte one cannot reach on 64-bit.
+    let mut overrun = vec![BYTES_EIGHT_BYTE_LENGTH];
+    overrun.extend_from_slice(&u64::MAX.to_be_bytes());
     assert_eq!(walk_first_item(&overrun), Err(io(0)));
 }
 
