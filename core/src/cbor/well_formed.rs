@@ -26,7 +26,7 @@
 //!
 //! **Iterative.** An explicit stack, no recursion and no depth cap of its own.
 //! ciborium's recursion limit still applies to the parse that follows; that
-//! residual is filed, not fixed here.
+//! residual is tracked by #667, not fixed here.
 //!
 //! **Pure.** It reads a byte slice and allocates only its container stack;
 //! nothing it holds is a copy of a payload.
