@@ -402,11 +402,22 @@ so for them the input floor already is a strict-comparison floor. That covers
 #658 for these two targets without new machinery; `manifest_body`'s #658 stays
 open.
 
-### 6.2 Python: Section RTS
+### 6.2 Python: Sections WF and RTS
 
-A new registered section, `sections/rule_token_seeds.py` (Section **RTS**),
-takes REG from 30/30 to 31/31. Section RTV is at 263 lines and is not grown.
-RTS runs four checks:
+Two new registered sections take REG from 30/30 to 32/32. Section RTV (263
+lines) and Section CS (252 lines) are not grown.
+
+**Section WF** (`sections/well_formed_walk.py`) is `walk_body`'s unit coverage,
+case for case the twin of `core/src/cbor/well_formed/tests.rs`. It pins the
+return offset on well-formed items; each well-formedness fault as
+`MalformedCbor`; tags (bignum included) and floats as rule 4; precedence in both
+directions; a nested indefinite chunk; a UTF-8 sequence split across two chunks
+(rejected, which ciborium also does, measured 2026-09-15); and a depth-300 array
+accepted without a `RecursionError`. It was added while planning, because seed
+label binding reaches the walk only through the shapes the seeds happen to
+plant.
+
+**Section RTS** (`sections/rule_token_seeds.py`) runs five checks:
 
 1. **Identity:** each new typed class carries exactly its expected token
    (`MalformedCbor`, the five record classes, the three envelope classes).
@@ -500,7 +511,8 @@ Mutation rows run through `scripts/mutate.py`, with scoped probes for
 - `codec/cbor_faults.py`, `codec/well_formed.py`, `codec/record_rules.py` (new)
 - `codec/scanner.py`, `codec/record.py`
 - `wire/envelope_rules.py` (new), `wire/block_file.py`
-- `sections/rule_token_seeds.py` (new), `sections/registry.py`
+- `sections/rule_token_seeds.py`, `sections/well_formed_walk.py` (new), `sections/registry.py`, `fixtures.py`
+- `sections/rule_token_vocabulary.py` (its docstring's scanner-coverage figures, which `MalformedCbor` changes)
 
 **Docs:**
 
