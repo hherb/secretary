@@ -6,13 +6,22 @@ is not well-formed CBOR is reported as that, and a well-formed body carrying a
 tag or a float as rule 4 -- the order `record::decode` reports them in.
 Section RTS reaches the walk only through the shapes the committed seeds
 plant; this section pins every rule, the precedence in both directions, and
-the depth behaviour directly.
+the depth behaviour directly: one row past ciborium's recursion limit, as the
+Rust twin has, and one past Python's, which is the only row a recursive walk
+fails.
 
 Each case is `(label, body, outcome, value)`.  `outcome` is `"end"` (the walk
 returns `value`, the offset one past the item), `"malformed"` (it raises
 `MalformedCbor`), or `"tag"` / `"float"` (it raises `NonCanonicalItem` with
 rule 4 for a tag or a float at offset `value` -- the Rust twin's
 `WalkFault::Tag` / `WalkFault::Float`, both checked exactly, kind and offset).
+
+"Case for case" is about the CASES, not their strength, in two ways.  A
+`"malformed"` row checks only that `MalformedCbor` is raised, where the Rust
+twin also asserts the fault's `Io`/`Syntax` kind and offset; the token the
+differential replay compares depends on neither.  And the row nested past
+Python's recursion limit has no Rust twin, because the Rust walk cannot
+recurse.
 
 The last eight cases pin branches the first cut of both test lists left
 open, each mirroring an assertion in the Rust twin: the indefinite form on
@@ -33,6 +42,7 @@ the end of a payload.
 from __future__ import annotations
 
 import re
+import sys
 
 from conformance_lib.codec.cbor_faults import MalformedCbor
 from conformance_lib.codec.scanner import NonCanonicalItem
@@ -63,9 +73,15 @@ BREAK = 0xFF
 ASCII_A = ord("a")
 INVALID_UTF8 = 0xFF
 UTF8_TWO_BYTE_LEAD, UTF8_CONTINUATION = 0xC3, 0xA9
-# Deeper than ciborium's recursion limit, and than a recursive Python walk
-# could be trusted with.
+# Deeper than ciborium's recursion limit: the Rust twin's case.  It is NOT
+# deeper than Python's own limit (1000 by default), so a recursive
+# reimplementation of `walk_body` passes it -- the PR #673 review measured
+# `scanner._scan_item` walking these 300 levels fine.  The row after it is the
+# one that catches a recursive walk.
 DEPTH_BEYOND_CIBORIUM_LIMIT = 300
+# Twice this interpreter's recursion limit, read when this module is imported,
+# so a recursive walk raises `RecursionError` wherever the limit has been set.
+DEPTH_BEYOND_PYTHON_RECURSION_LIMIT = 2 * sys.getrecursionlimit()
 MAX_U32 = 0xFFFFFFFF
 
 # The bytes below are used only by the last eight rows the module docstring
@@ -143,6 +159,9 @@ CASES: tuple[tuple[str, bytes, str, int | None], ...] = (
     ("indefinite map ends mid-entry", _b(MAP_INDEFINITE, TEXT_1, ASCII_A, BREAK), "malformed", None),
     ("deep nesting",
      bytes([ARRAY_1] * DEPTH_BEYOND_CIBORIUM_LIMIT + [UINT_0]), "end", DEPTH_BEYOND_CIBORIUM_LIMIT + 1),
+    ("nesting past Python's recursion limit",
+     bytes([ARRAY_1] * DEPTH_BEYOND_PYTHON_RECURSION_LIMIT + [UINT_0]), "end",
+     DEPTH_BEYOND_PYTHON_RECURSION_LIMIT + 1),
     # -- The branches the first cut of both test lists left open (see the
     # module docstring). --
     ("negative-int indefinite", _b(NINT_INDEFINITE), "malformed", None),

@@ -23,7 +23,11 @@ whole item has proven well-formed.
 
 ITERATIVE on purpose.  `scanner._scan_item` recurses, so a deeply nested body
 raises `RecursionError` -- a harness failure, not a verdict.  This walk keeps
-an explicit stack and has no depth cap of its own, like its Rust twin.
+an explicit stack and has no depth cap of its own, like its Rust twin.  That
+keeps the WALK from failing, not the decoder: `py_decode_record` calls the
+recursive `_scan_map_entries` right after it, so a record nested past Python's
+recursion limit (about 1,000 levels) is still a harness failure.  That residual
+is #667, beside ciborium's own 256-level limit on the Rust side.
 
 SCOPE.  The first item only.  Trailing bytes are the caller's to judge, and
 `py_decode_record` judges them LAST, where `record::decode` meets them: its
