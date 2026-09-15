@@ -1,0 +1,104 @@
+//! The committed single-fault seeds for the token-compared `record` and
+//! `block_file` replay targets (#641), and the ONE table the generator and the
+//! label-binding check both read.
+//!
+//! **Why generated.** CI replays only committed inputs. Before #641 these two
+//! targets held four, all ACCEPTING, so a strict token comparison on them
+//! would have compared nothing in CI.
+//!
+//! **Why label-bound.** A corpus whose bytes are not bound to their labels
+//! can collapse silently (#614's review measured it). A seed's file name is
+//! DERIVED from its row, and the check regenerates every row and requires the
+//! committed bytes to match, so a label and its bytes cannot disagree.
+//!
+//! **Why each seed plants ONE fault.** `docs/vault-format.md` §6.1/§6.3 fix no
+//! report order, and a committed row must not pin an order the spec leaves
+//! open (#618's lesson). A planted fault can have a downstream consequence —
+//! an `undefined` value also fails the re-encode — but both implementations
+//! meet the planted fault first.
+
+use std::path::PathBuf;
+
+use secretary_core::vault::manifest::RuleToken;
+
+pub mod block_file;
+
+/// One committed seed.
+pub struct SeedCase {
+    /// The replay target whose seed directory holds this file.
+    pub target: &'static str,
+    /// The rule BOTH decoders must name for this seed.
+    pub token: RuleToken,
+    /// What was planted, as a file-name-safe label unique within `token`.
+    pub shape: &'static str,
+    /// Build the seed from the target's committed accepting base.
+    pub plant: fn(&[u8]) -> Vec<u8>,
+}
+
+/// Separates a seed's token from its shape in its file name. No token and no
+/// accepting base file name contains it.
+pub const LABEL_SEPARATOR: &str = "__";
+
+/// A seed's file extension. The replay reads every file in the directory
+/// whatever its extension; this only makes the files recognisable.
+const SEED_EXTENSION: &str = "bin";
+
+impl SeedCase {
+    pub fn file_name(&self) -> String {
+        format!(
+            "{}{LABEL_SEPARATOR}{}.{SEED_EXTENSION}",
+            self.token.as_str(),
+            self.shape
+        )
+    }
+
+    pub fn path(&self) -> PathBuf {
+        seed_dir(self.target).join(self.file_name())
+    }
+
+    pub fn bytes(&self) -> Vec<u8> {
+        (self.plant)(&base(self.target))
+    }
+}
+
+/// `core/fuzz/seeds/<target>/`.
+pub fn seed_dir(target: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("fuzz/seeds")
+        .join(target)
+}
+
+/// The committed ACCEPTING input each target's seeds are planted into.
+pub fn base(target: &str) -> Vec<u8> {
+    let name = match target {
+        "block_file" => "golden.bin",
+        "record" => "login.cbor",
+        other => panic!("no seed base for target {other}"),
+    };
+    let path = seed_dir(target).join(name);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("read seed base {}: {e}", path.display()))
+}
+
+/// The token the Rust decoder names for `bytes`, or `None` if it accepts.
+///
+/// The same decode → re-encode pipeline `differential_replay_helpers::rust_decoder`
+/// runs for the target.
+pub fn rust_token(target: &str, bytes: &[u8]) -> Option<RuleToken> {
+    use secretary_core::vault::{block, record};
+    match target {
+        "block_file" => block::decode_block_file(bytes)
+            .and_then(|f| block::encode_block_file(&f))
+            .err()
+            .map(|e| e.rule_token()),
+        "record" => record::decode(bytes)
+            .and_then(|r| record::encode(&r))
+            .err()
+            .map(|e| e.rule_token()),
+        other => panic!("no Rust decoder for target {other}"),
+    }
+}
+
+/// Every case, in a stable order.
+pub fn all_cases() -> Vec<SeedCase> {
+    block_file::cases()
+}
