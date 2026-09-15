@@ -79,8 +79,8 @@ Run `git log --oneline main..HEAD` for the current set.
 Nothing in `core/tests/data/` changed (`rule_token_vocabulary.json` included),
 and no `RecordError`/`BlockError` variant, public signature or FFI mapping
 changed. `record.rs` grew 3,037 → 3,060 lines and `block.rs` 3,222 → 3,228;
-both were already tracked for splitting (#556, #563). Every new file is under
-500 lines.
+both were already tracked for splitting (#556, #563). Every new SOURCE file is
+under 500 lines; the design spec, the plan and this handoff are not.
 
 ### (1a) Target-aware tolerance
 

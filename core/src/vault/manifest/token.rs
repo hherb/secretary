@@ -70,11 +70,12 @@ pub enum RuleToken {
     RepeatedArrayValue,
     /// A map this reader interprets carries the same key twice.
     DuplicateMapKey,
-    /// A required key is absent (§4.2 manifest body, §6.3 record).
+    /// A required key is absent (§4.2 manifest body; §6.3 record or block
+    /// plaintext).
     MissingField,
     /// A field's CBOR major type, or a byte string's length, is not what §4.2
-    /// (the manifest body) or §6.3 (a record, alone or inside a block's
-    /// plaintext) requires — including a body that is not a map, and a
+    /// (the manifest body) or §6.3 (a block's plaintext, or a record alone or
+    /// inside it) requires — including a body that is not a map, and a
     /// non-text map key.
     WrongType,
     /// An integer field is outside the width §4.2 or §6.3 gives it.

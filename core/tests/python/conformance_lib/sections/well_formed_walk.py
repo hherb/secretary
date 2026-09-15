@@ -23,20 +23,24 @@ differential replay compares depends on neither.  And the row nested past
 Python's recursion limit has no Rust twin, because the Rust walk cannot
 recurse.
 
-The last eight cases pin branches the first cut of both test lists left
-open, each mirroring an assertion in the Rust twin: the indefinite form on
-major 1 and on major 6 (both a well-formedness fault, never a tag), reserved
-additional-info 29 and 30, float32 and float64 (beside float16), tag 3 (beside
-tags 1 and 2), and a byte-order-sensitive two-byte length argument -- a
-little-endian argument fold would read `0x01 0x00` as length 1 and report the
-item ending one payload byte in, at offset 4, rather than at 259.
+Eight cases, under their own comment in `CASES`, pin branches the first cut
+of both test lists left open, each mirroring an assertion in the Rust twin:
+the indefinite form on major 1 and on major 6 (both a well-formedness fault,
+never a tag), reserved additional-info 29 and 30, float32 and float64 (beside
+float16), tag 3 (beside tags 1 and 2), and a byte-order-sensitive two-byte
+length argument -- a little-endian argument fold would read `0x01 0x00` as
+length 1 and report the item ending one payload byte in, at offset 4, rather
+than at 259.
 
 The five argument-width rows after those came from the PR #673 review, which
 found only the two-byte width pinned: a Rust walk reading a four-byte argument
 as three bytes passed every test.  Each integer width sits in a two-item array
 ahead of a one-byte item, so an argument misread by a byte ends the array
 elsewhere, and a four-byte string LENGTH checks the same width where it moves
-the end of a payload.
+the end of a payload.  The same review added three rows beside the cases they
+extend (chunked bytes, a definite array closing inside an indefinite one, an
+eight-byte length past the input) and the row nested past Python's recursion
+limit.
 """
 
 from __future__ import annotations
@@ -87,8 +91,8 @@ DEPTH_BEYOND_CIBORIUM_LIMIT = 300
 DEPTH_BEYOND_PYTHON_RECURSION_LIMIT = 2 * sys.getrecursionlimit()
 MAX_U32 = 0xFFFFFFFF
 
-# The bytes below are used only by the last eight rows the module docstring
-# names.  `TAG_3_BIGNUM_NEGATIVE` is numerically the same byte as
+# The bytes below are used only by the eight rows the module docstring names,
+# apart from `FILL_BYTE`, which the argument-width rows share.  `TAG_3_BIGNUM_NEGATIVE` is numerically the same byte as
 # `UTF8_TWO_BYTE_LEAD` above -- CBOR gives 0xC3 two different meanings
 # depending on whether it is a head or a string payload byte -- so each gets
 # its own name for the case it plants.
