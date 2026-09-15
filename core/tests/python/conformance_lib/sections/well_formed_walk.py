@@ -10,7 +10,9 @@ the depth behaviour directly.
 
 Each case is `(label, body, outcome, value)`.  `outcome` is `"end"` (the walk
 returns `value`, the offset one past the item), `"malformed"` (it raises
-`MalformedCbor`), or `"rule4"` (it raises `NonCanonicalItem` with rule 4).
+`MalformedCbor`), or `"tag"` / `"float"` (it raises `NonCanonicalItem` with
+rule 4 for a tag or a float at offset `value` -- the Rust twin's
+`WalkFault::Tag` / `WalkFault::Float`, both checked exactly, kind and offset).
 
 Eight cases below the "RULING R8" marker have no counterpart in the original
 task brief: the Rust unit tests (`core/src/cbor/well_formed/tests.rs`) left
@@ -25,6 +27,8 @@ argument fold would misread `0x01 0x00` (256) as truncated.
 """
 
 from __future__ import annotations
+
+import re
 
 from conformance_lib.codec.cbor_faults import MalformedCbor
 from conformance_lib.codec.scanner import NonCanonicalItem
@@ -115,12 +119,12 @@ CASES: tuple[tuple[str, bytes, str, int | None], ...] = (
     ("invalid utf-8 in a chunk", _b(TEXT_INDEFINITE, TEXT_1, INVALID_UTF8, BREAK), "malformed", None),
     ("utf-8 split across chunks",
      _b(TEXT_INDEFINITE, TEXT_1, UTF8_TWO_BYTE_LEAD, TEXT_1, UTF8_CONTINUATION, BREAK), "malformed", None),
-    ("tag", _b(TAG_1, UINT_0), "rule4", 0),
-    ("bignum tag", _b(TAG_BIGNUM_POSITIVE, BYTES_1, ASCII_A), "rule4", 0),
-    ("float", _b(FLOAT16, UINT_0, UINT_0), "rule4", 0),
+    ("tag", _b(TAG_1, UINT_0), "tag", 0),
+    ("bignum tag", _b(TAG_BIGNUM_POSITIVE, BYTES_1, ASCII_A), "tag", 0),
+    ("float", _b(FLOAT16, UINT_0, UINT_0), "float", 0),
     ("malformed after a tag", _b(ARRAY_2, TAG_1, UINT_0, UNDEFINED), "malformed", None),
     ("malformed before a tag", _b(ARRAY_2, UNDEFINED, TAG_1, UINT_0), "malformed", None),
-    ("first rule-4 fault wins", _b(ARRAY_2, FLOAT16, UINT_0, UINT_0, TAG_1, UINT_0), "rule4", 1),
+    ("first rule-4 fault wins", _b(ARRAY_2, FLOAT16, UINT_0, UINT_0, TAG_1, UINT_0), "float", 1),
     ("indefinite map ends mid-entry", _b(MAP_INDEFINITE, TEXT_1, ASCII_A, BREAK), "malformed", None),
     ("deep nesting",
      bytes([ARRAY_1] * DEPTH_BEYOND_CIBORIUM_LIMIT + [UINT_0]), "end", DEPTH_BEYOND_CIBORIUM_LIMIT + 1),
@@ -130,18 +134,24 @@ CASES: tuple[tuple[str, bytes, str, int | None], ...] = (
     ("tag indefinite", _b(TAG_INDEFINITE), "malformed", None),
     ("reserved additional-info 29", _b(RESERVED_AI_29), "malformed", None),
     ("reserved additional-info 30", _b(RESERVED_AI_30), "malformed", None),
-    ("float32", _b(FLOAT32, FILL_BYTE, FILL_BYTE, FILL_BYTE, FILL_BYTE), "rule4", 0),
+    ("float32", _b(FLOAT32, FILL_BYTE, FILL_BYTE, FILL_BYTE, FILL_BYTE), "float", 0),
     ("float64",
      _b(FLOAT64, FILL_BYTE, FILL_BYTE, FILL_BYTE, FILL_BYTE, FILL_BYTE, FILL_BYTE, FILL_BYTE, FILL_BYTE),
-     "rule4", 0),
-    ("tag 3 bignum negative", _b(TAG_3_BIGNUM_NEGATIVE, BYTES_1, ASCII_A), "rule4", 0),
+     "float", 0),
+    ("tag 3 bignum negative", _b(TAG_3_BIGNUM_NEGATIVE, BYTES_1, ASCII_A), "tag", 0),
     ("two-byte length argument is big-endian",
      _b(BYTES_TWO_BYTE_LENGTH, LENGTH_HIGH_BYTE, LENGTH_LOW_BYTE) + bytes([FILL_BYTE]) * BIG_ENDIAN_PAYLOAD_LEN,
      "end", BIG_ENDIAN_HEAD_LEN + BIG_ENDIAN_PAYLOAD_LEN),
 )
 
-# Mirrors the Rust twin's offset for each rule-4 case: the message names it.
-_RULE4_OFFSET_FRAGMENT = "at offset {}"
+# The two rule-4 messages this walk can raise: `scanner._reject_rule4_head`
+# composes "CBOR tag at offset N" or "float at offset N", and
+# `NonCanonicalItem` prefixes "rule 4: ".  Both groups are read back and
+# compared for EQUALITY -- the Rust twin asserts `WalkFault::Tag { offset }` /
+# `WalkFault::Float { offset }` exactly, and a substring test for
+# "at offset 1" would also have matched offsets 10 through 19.
+_RULE4_MESSAGE = re.compile(r"rule 4: (?P<kind>CBOR tag|float) at offset (?P<offset>\d+)")
+_RULE4_KIND = {"CBOR tag": "tag", "float": "float"}
 
 
 def _case_issue(label: str, body: bytes, outcome: str, value: int | None) -> str | None:
@@ -150,10 +160,12 @@ def _case_issue(label: str, body: bytes, outcome: str, value: int | None) -> str
     except MalformedCbor:
         return None if outcome == "malformed" else f"{label}: raised MalformedCbor, expected {outcome}"
     except NonCanonicalItem as exc:
-        if outcome != "rule4" or exc.rule != 4:
-            return f"{label}: raised rule {exc.rule}, expected {outcome}"
-        if _RULE4_OFFSET_FRAGMENT.format(value) not in str(exc):
-            return f"{label}: rule 4 reported as {exc}, expected offset {value}"
+        match = _RULE4_MESSAGE.fullmatch(str(exc))
+        if exc.rule != 4 or match is None:
+            return f"{label}: raised {exc!r}, expected {outcome} {value}"
+        got = (_RULE4_KIND[match["kind"]], int(match["offset"]))
+        if got != (outcome, value):
+            return f"{label}: reported a {got[0]} at offset {got[1]}, expected {outcome} {value}"
         return None
     except RecursionError:
         return f"{label}: RecursionError -- the walk must be iterative"
