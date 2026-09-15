@@ -80,7 +80,9 @@ Run `git log --oneline main..HEAD` for the current set.
 | `80dd11b1`..`1d172304` | the final review's fix wave, 25 commits — §(1f) |
 | `6bc7b58c` | this baton and the `NEXT_SESSION.md` retarget |
 | `43e40052`..`ba48487c` | the PR #673 review's fix wave, 13 commits — §(1i) |
-| (this commit) | this baton updated for that fix wave |
+| `ec430bdf` | this baton updated for that fix wave |
+| `c9abdd50` | four claims the fix wave's own self-review tightened — §(1i) |
+| (this commit) | this table and the trailer count |
 
 In `core/tests/data/` only the `_comment` of `rule_token_vocabulary.json`
 changed (PR #673 review: its "58 of the 136" tolerance figure); no token and
@@ -378,6 +380,7 @@ execution before it was fixed. One commit per concern:
 | Walker cases: chunked bytes, a nested close, an eight-byte overrun | `bef18e20` |
 | Stale "one token-compared target" (2), "Four follow-ups", `WrongType`/`MissingField` scope, "every new file under 500 lines", WF "last eight" | `04096abd` |
 | rustfmt; the record seed table split at 555 lines | `c8601343`, `ba48487c` |
+| the fix wave's own self-review: the eight-byte overrun's path, the recursion-limit caveat on `malformed_cbor`, `SeedCase::variant`'s example, RTS's docstring | `c9abdd50` |
 | `is_phase_dependent()` reads as target-independent | comment on **#648** |
 | a fourth leniency and `UnknownValue::from_canonical_cbor` on the unwalked paths | comments on **#666** |
 | four optional type refactors (one target table, a seed-target enum, `Head.major`, Python `_Frame`) | filed **#676** |
@@ -550,7 +553,7 @@ grep -c '"RTS"\|"WF"' core/tests/python/conformance_lib/sections/registry.py   #
   **When token agreement is 100%, ask what the corpus cannot generate.**
 - **The design spec is stale by design** (§(2)). The plan and spec stay in
   `docs/superpowers/` as the approved record.
-- **Mixed `Co-Authored-By` trailers**: 55 commits name Opus, 2 name Sonnet (the
+- **Mixed `Co-Authored-By` trailers**: 57 commits name Opus, 2 name Sonnet (the
   model that wrote them). No history was rewritten; a squash merge makes it
   moot.
 - **`.gitignore`'s `corpus/` rule matches directories only**, so a
