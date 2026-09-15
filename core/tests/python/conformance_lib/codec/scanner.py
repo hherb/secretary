@@ -275,12 +275,14 @@ def _scan_item(buf: bytes, pos: int, visit: Callable[[bytes, int], None] | None 
 def _reject_rule4_head(major: int, ai: int, off: int) -> None:
     """Raise if a decoded CBOR head is a tag or a float (§6.2 rule 4).
 
-    ONE implementation, called by `reject_floats_and_tags`'s whole-body walk
-    and by `_check_canonical_item`'s per-value check. They apply the rule at
-    different times and for different reasons, but it is the same rule, and
-    two hand-copies of it in one file are how the two drift -- the more so
-    now that the walk runs first on the manifest path and would mask a
-    divergence in the per-value copy.
+    ONE implementation, with three callers: `reject_floats_and_tags`'s
+    whole-body walk, `_check_canonical_item`'s per-value check, and (#641)
+    `well_formed._rule4_at`, which the record path's `walk_body` uses to
+    remember the first tag or float. They apply the rule at different times
+    and for different reasons, but it is the same rule, and hand-copies of it
+    are how they drift -- the more so now that a walk runs first on both the
+    manifest and the record path and would mask a divergence in the
+    per-value copy.
     """
     if major == 6:
         raise NonCanonicalItem(4, f"CBOR tag at offset {off}")
