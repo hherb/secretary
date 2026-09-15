@@ -99,7 +99,7 @@ pub fn rust_decode(
             .and_then(|f| vault::block::encode_block_file(&f))
             .map(SecretBytes::new)
             .map_err(|e| RustRejection {
-                token: None,
+                token: Some(e.rule_token().as_str()),
                 detail: format!("{:?}", e),
             }),
         _ => panic!("unknown target {}", target),

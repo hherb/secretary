@@ -21,14 +21,17 @@ pub const TARGETS: &[&str] = &[
 /// Targets whose reject-vs-reject pairs are compared on WHICH rule each side
 /// named, not merely on the fact that both rejected (#634).
 ///
-/// `manifest_body` and nothing else. The five ordinary targets each need
-/// their own Rust taxonomy and typed Python exceptions (#641);
+/// `manifest_body` (#634) and `block_file` (#641). `block_file` needed no
+/// decoder change: both implementations walk the §6.1 layout in the same
+/// order, and #641 split Python's merged sort/repeat check. `record` follows
+/// once its Python decoder reports in Rust's phase order. `contact_card`,
+/// `bundle_file` and `vault_toml` each still need their own taxonomy (#641);
 /// `manifest_file` is blocked for a different, measured reason (#640) —
 /// Rust's header raises `UnsupportedFormatVersion` where Python raises the
 /// same `ParseError` it raises for every envelope fault, and because that
 /// variant is shared with the BODY sentinel check no per-variant token can
 /// reconcile the two.
-pub const TOKEN_COMPARED_TARGETS: &[&str] = &["manifest_body"];
+pub const TOKEN_COMPARED_TARGETS: &[&str] = &["manifest_body", "block_file"];
 
 /// The rest, listed explicitly rather than by omission.
 ///
@@ -43,7 +46,6 @@ pub const NOT_TOKEN_COMPARED_TARGETS: &[&str] = &[
     "contact_card",
     "bundle_file",
     "manifest_file",
-    "block_file",
 ];
 
 /// The compared targets on which a phase-dependent token may stand against a
@@ -100,7 +102,7 @@ pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("bundle_file", 1),
     ("manifest_file", 1),
     ("manifest_body", 39),
-    ("block_file", 1),
+    ("block_file", 16),
 ];
 
 pub fn min_inputs(target: &str) -> usize {

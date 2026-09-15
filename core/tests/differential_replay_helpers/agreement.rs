@@ -260,6 +260,24 @@ mod tests {
         ));
     }
 
+    /// The tolerance is per TARGET (#641). A pair that agrees on
+    /// `manifest_body` because one token is phase-dependent is a disagreement
+    /// on a compared target the licence does not reach: a `block_file` sort
+    /// check mis-reported as a malformed container must red.
+    #[test]
+    fn a_phase_dependent_pair_on_an_unlicensed_compared_target_disagrees() {
+        const UNLICENSED: &str = "block_file";
+        assert!(TOKEN_COMPARED_TARGETS.contains(&UNLICENSED));
+        assert!(matches!(
+            judge(
+                UNLICENSED,
+                &rust_err(Some("array_sort_order")),
+                &py_reject(Some("container_malformed"))
+            ),
+            Judgement::Disagree(_)
+        ));
+    }
+
     #[test]
     fn both_accepting_agrees_only_on_identical_bytes() {
         assert_eq!(
