@@ -30,6 +30,8 @@ pub mod manifest;
 pub(crate) mod orchestrators;
 pub mod purge;
 pub mod record;
+#[cfg(test)]
+mod record_walk_tests;
 mod repair;
 pub mod retention;
 mod rule_tokens;
