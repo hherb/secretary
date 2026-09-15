@@ -14,16 +14,12 @@ returns `value`, the offset one past the item), `"malformed"` (it raises
 rule 4 for a tag or a float at offset `value` -- the Rust twin's
 `WalkFault::Tag` / `WalkFault::Float`, both checked exactly, kind and offset).
 
-Eight cases below the "RULING R8" marker have no counterpart in the original
-task brief: the Rust unit tests (`core/src/cbor/well_formed/tests.rs`) left
-several branches unpinned, and a controller ruling closed that gap in BOTH
-languages before this section was written, so it starts case-complete rather
-than needing a follow-up slice.  Each mirrors one Rust `#[test]` addition:
-the indefinite form on major 1 and on major 6 (both a well-formedness fault,
-never `WalkFault::Tag`), reserved additional-info 29 and 30, float32 and
-float64 (only float16 was pinned before), tag 3 (only tags 1 and 2 were),
-and a byte-order-sensitive two-byte length argument -- a little-endian
-argument fold would misread `0x01 0x00` (256) as truncated.
+The last eight cases pin branches the first cut of both test lists left
+open, each mirroring an assertion in the Rust twin: the indefinite form on
+major 1 and on major 6 (both a well-formedness fault, never a tag), reserved
+additional-info 29 and 30, float32 and float64 (beside float16), tag 3 (beside
+tags 1 and 2), and a byte-order-sensitive two-byte length argument -- a
+little-endian argument fold would misread `0x01 0x00` (256) as truncated.
 """
 
 from __future__ import annotations
@@ -64,11 +60,11 @@ UTF8_TWO_BYTE_LEAD, UTF8_CONTINUATION = 0xC3, 0xA9
 DEPTH_BEYOND_CIBORIUM_LIMIT = 300
 MAX_U32 = 0xFFFFFFFF
 
-# RULING R8: the additional bytes below are used only by the eight rows the
-# module docstring names.  `TAG_3_BIGNUM_NEGATIVE` is numerically the same
-# byte as `UTF8_TWO_BYTE_LEAD` above -- CBOR gives 0xC3 two different
-# meanings depending on the major type of the byte that precedes it -- so
-# each gets its own name for the case it plants.
+# The bytes below are used only by the last eight rows the module docstring
+# names.  `TAG_3_BIGNUM_NEGATIVE` is numerically the same byte as
+# `UTF8_TWO_BYTE_LEAD` above -- CBOR gives 0xC3 two different meanings
+# depending on whether it is a head or a string payload byte -- so each gets
+# its own name for the case it plants.
 NINT_INDEFINITE = 0x3F  # major 1 (negative int), ai 31.
 TAG_INDEFINITE = 0xDF  # major 6 (tag), ai 31.
 RESERVED_AI_29 = 0x1D
@@ -128,8 +124,8 @@ CASES: tuple[tuple[str, bytes, str, int | None], ...] = (
     ("indefinite map ends mid-entry", _b(MAP_INDEFINITE, TEXT_1, ASCII_A, BREAK), "malformed", None),
     ("deep nesting",
      bytes([ARRAY_1] * DEPTH_BEYOND_CIBORIUM_LIMIT + [UINT_0]), "end", DEPTH_BEYOND_CIBORIUM_LIMIT + 1),
-    # -- RULING R8: the Rust twin's untested branches, closed in both
-    # languages before this section existed (see the module docstring). --
+    # -- The branches the first cut of both test lists left open (see the
+    # module docstring). --
     ("negative-int indefinite", _b(NINT_INDEFINITE), "malformed", None),
     ("tag indefinite", _b(TAG_INDEFINITE), "malformed", None),
     ("reserved additional-info 29", _b(RESERVED_AI_29), "malformed", None),
