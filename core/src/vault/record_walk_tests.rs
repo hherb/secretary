@@ -8,11 +8,16 @@
 //! indefinite item or invalid UTF-8, so no input the walk rejects was ever
 //! accepted. The property test checks that argument rather than trusting it.
 
+use std::collections::BTreeMap;
+
 use proptest::prelude::*;
 
-use crate::cbor::{from_secret_reader, CborErrorKind, CborFault, SecretValueTree};
+use crate::cbor::{from_secret_reader, walk_first_item, CborErrorKind, CborFault, SecretValueTree};
 use crate::vault::canonical::reject_floats_and_tags;
-use crate::vault::record::{decode, decode_value, encode, Record, RecordError};
+use crate::vault::record::{
+    decode, decode_value, encode, Record, RecordError, RecordField, RecordFieldValue,
+    RECORD_UUID_LEN,
+};
 
 /// A canonical record every mutation starts from.
 const LOGIN_RECORD: &[u8] = include_bytes!("../../fuzz/seeds/record/login.cbor");
@@ -94,8 +99,74 @@ proptest! {
         for m in &mutations {
             apply(&mut bytes, m);
         }
-        prop_assert_eq!(legacy_decode(&bytes).is_ok(), decode(&bytes).is_ok());
+        let accepted = legacy_decode(&bytes).is_ok();
+        prop_assert_eq!(accepted, decode(&bytes).is_ok());
+        // An accepted record is exactly one CBOR item, so the walk must end
+        // at its last byte. `decode` discards that offset, so without this a
+        // walk that lost count could return `Ok` early and pass (#673 review).
+        if accepted {
+            prop_assert_eq!(walk_first_item(&bytes), Ok(bytes.len()));
+        }
     }
+}
+
+// Argument widths a canonical encoder emits for the values below.
+/// Needs a one-byte argument (24..=255).
+const ONE_BYTE_ARG_VALUE: u64 = 200;
+/// Needs a four-byte argument (65,536..=u32::MAX).
+const FOUR_BYTE_ARG_VALUE: u64 = 100_000;
+/// Needs an eight-byte argument (above u32::MAX).
+const EIGHT_BYTE_ARG_VALUE: u64 = 1_714_060_800_002;
+/// A byte-string length needing a four-byte argument.
+const FOUR_BYTE_LENGTH: usize = 70_000;
+/// A text length needing a two-byte argument.
+const TWO_BYTE_LENGTH: usize = 300;
+/// Any byte works: the length heads are under test, not the payload.
+const FILL: u8 = 0x5a;
+
+/// `login.cbor` uses only one- and eight-byte integer heads and short
+/// strings, so the property test above never produces a four-byte head.
+/// This record carries every argument width. It must still be accepted, and
+/// walked to its last byte, by both pipelines (PR #673 review: a walk that
+/// read four-byte arguments as three passed every test in the crate).
+#[test]
+fn a_record_using_every_argument_width_is_accepted_and_walked_to_its_end() {
+    let device_uuid = [0x11; RECORD_UUID_LEN];
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        "blob".to_string(),
+        RecordField {
+            value: RecordFieldValue::Bytes(vec![FILL; FOUR_BYTE_LENGTH].into()),
+            last_mod: ONE_BYTE_ARG_VALUE,
+            device_uuid,
+            unknown: BTreeMap::new(),
+        },
+    );
+    fields.insert(
+        "note".to_string(),
+        RecordField {
+            value: RecordFieldValue::Text("n".repeat(TWO_BYTE_LENGTH).into()),
+            last_mod: FOUR_BYTE_ARG_VALUE,
+            device_uuid,
+            unknown: BTreeMap::new(),
+        },
+    );
+    let record = Record {
+        record_uuid: [0x22; RECORD_UUID_LEN],
+        record_type: "login".to_string(),
+        fields,
+        tags: Vec::new(),
+        created_at_ms: FOUR_BYTE_ARG_VALUE,
+        last_mod_ms: EIGHT_BYTE_ARG_VALUE,
+        tombstone: false,
+        tombstoned_at_ms: 0,
+        unknown: BTreeMap::new(),
+    };
+    let bytes = encode(&record).expect("encode");
+    let bytes = bytes.expose();
+    assert_eq!(walk_first_item(bytes), Ok(bytes.len()));
+    assert!(legacy_decode(bytes).is_ok());
+    assert!(decode(bytes).is_ok());
 }
 
 #[test]

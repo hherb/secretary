@@ -62,6 +62,13 @@ const LENGTH_LOW_BYTE: u8 = 0x00;
 const BIG_ENDIAN_PAYLOAD_LEN: usize = 256;
 /// The two-byte length head itself: one initial byte plus two argument bytes.
 const BIG_ENDIAN_HEAD_LEN: usize = 3;
+/// Major 0 heads carrying a one-, two-, four- and eight-byte argument.
+const UINT_ONE_BYTE_ARG: u8 = 0x18;
+const UINT_TWO_BYTE_ARG: u8 = 0x19;
+const UINT_FOUR_BYTE_ARG: u8 = 0x1a;
+const UINT_EIGHT_BYTE_ARG: u8 = 0x1b;
+/// The first length a four-byte argument is needed for: one past `u16::MAX`.
+const FOUR_BYTE_PAYLOAD_LEN: u32 = 65_536;
 
 fn io(offset: usize) -> WalkFault {
     WalkFault::Malformed(CborFault {
@@ -256,4 +263,42 @@ fn a_two_byte_length_argument_is_read_big_endian() {
         walk_first_item(&body),
         Ok(BIG_ENDIAN_HEAD_LEN + BIG_ENDIAN_PAYLOAD_LEN)
     );
+}
+
+/// Every argument width consumes exactly its own bytes. Each integer sits in
+/// a two-item array ahead of a one-byte item, so a head read one byte short
+/// ends the array early and one read a byte long runs out of input. Until
+/// the PR #673 review only the two-byte width had a case, and
+/// `AI_FOUR_BYTES => 3` in `read_head` passed every test in the crate while
+/// rejecting any record with a field of 64 KiB or more.
+#[test]
+fn each_argument_width_consumes_exactly_its_own_bytes() {
+    for (head, arg_len) in [
+        (UINT_ONE_BYTE_ARG, 1),
+        (UINT_TWO_BYTE_ARG, 2),
+        (UINT_FOUR_BYTE_ARG, 4),
+        (UINT_EIGHT_BYTE_ARG, 8),
+    ] {
+        let mut body = vec![ARRAY_2, head];
+        body.extend(std::iter::repeat_n(FILL_BYTE, arg_len));
+        body.push(UINT_0);
+        assert_eq!(
+            walk_first_item(&body),
+            Ok(body.len()),
+            "argument width {arg_len}"
+        );
+    }
+}
+
+/// The same width as a string LENGTH, where a misread argument moves the end
+/// of the payload rather than the end of an array.
+#[test]
+fn a_four_byte_length_argument_spans_its_whole_payload() {
+    let mut body = vec![BYTES_FOUR_BYTE_LENGTH];
+    body.extend_from_slice(&FOUR_BYTE_PAYLOAD_LEN.to_be_bytes());
+    body.extend(std::iter::repeat_n(
+        FILL_BYTE,
+        usize::try_from(FOUR_BYTE_PAYLOAD_LEN).expect("fits usize"),
+    ));
+    assert_eq!(walk_first_item(&body), Ok(body.len()));
 }

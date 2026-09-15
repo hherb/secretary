@@ -21,6 +21,13 @@ additional-info 29 and 30, float32 and float64 (beside float16), tag 3 (beside
 tags 1 and 2), and a byte-order-sensitive two-byte length argument -- a
 little-endian argument fold would read `0x01 0x00` as length 1 and report the
 item ending one payload byte in, at offset 4, rather than at 259.
+
+The five argument-width rows after those came from the PR #673 review, which
+found only the two-byte width pinned: a Rust walk reading a four-byte argument
+as three bytes passed every test.  Each integer width sits in a two-item array
+ahead of a one-byte item, so an argument misread by a byte ends the array
+elsewhere, and a four-byte string LENGTH checks the same width where it moves
+the end of a payload.
 """
 
 from __future__ import annotations
@@ -80,6 +87,17 @@ LENGTH_LOW_BYTE = 0x00
 BIG_ENDIAN_PAYLOAD_LEN = 256
 BIG_ENDIAN_HEAD_LEN = 3  # the two-byte length head: one initial byte plus two argument bytes.
 FILL_BYTE = 0x00  # any byte works: these rows check the argument-length head, not the payload.
+# Major 0 heads carrying a one-, two-, four- and eight-byte argument.
+UINT_ONE_BYTE_ARG, UINT_TWO_BYTE_ARG, UINT_FOUR_BYTE_ARG, UINT_EIGHT_BYTE_ARG = 0x18, 0x19, 0x1A, 0x1B
+ARRAY_2_HEAD_LEN = 1
+# The first length a four-byte argument is needed for: one past u16::MAX.
+FOUR_BYTE_PAYLOAD_LEN = 65_536
+FOUR_BYTE_HEAD_LEN = 5  # one initial byte plus four argument bytes.
+
+
+def _width_row(head: int, arg_len: int) -> tuple[str, bytes, str, int]:
+    body = bytes([ARRAY_2, head]) + bytes([FILL_BYTE]) * arg_len + bytes([UINT_0])
+    return (f"{arg_len}-byte argument", body, "end", ARRAY_2_HEAD_LEN + 1 + arg_len + 1)
 
 
 def _b(*items: int) -> bytes:
@@ -139,6 +157,14 @@ CASES: tuple[tuple[str, bytes, str, int | None], ...] = (
     ("two-byte length argument is big-endian",
      _b(BYTES_TWO_BYTE_LENGTH, LENGTH_HIGH_BYTE, LENGTH_LOW_BYTE) + bytes([FILL_BYTE]) * BIG_ENDIAN_PAYLOAD_LEN,
      "end", BIG_ENDIAN_HEAD_LEN + BIG_ENDIAN_PAYLOAD_LEN),
+    # -- Every argument width (PR #673 review; see the module docstring). --
+    _width_row(UINT_ONE_BYTE_ARG, 1),
+    _width_row(UINT_TWO_BYTE_ARG, 2),
+    _width_row(UINT_FOUR_BYTE_ARG, 4),
+    _width_row(UINT_EIGHT_BYTE_ARG, 8),
+    ("four-byte length argument",
+     bytes([BYTES_FOUR_BYTE_LENGTH]) + FOUR_BYTE_PAYLOAD_LEN.to_bytes(4, "big") + bytes(FOUR_BYTE_PAYLOAD_LEN),
+     "end", FOUR_BYTE_HEAD_LEN + FOUR_BYTE_PAYLOAD_LEN),
 )
 
 # The two rule-4 messages this walk can raise: `scanner._reject_rule4_head`
