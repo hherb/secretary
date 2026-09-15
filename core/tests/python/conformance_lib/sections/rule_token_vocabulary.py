@@ -69,10 +69,13 @@ from conformance_lib.rejection import _REJECTION_EXCEPTIONS
 # in no CI workflow.  A `test.yml` step runs it as of #647, but only over the
 # one token-compared target; identity is what makes this section a pin.
 #
-# FOUR tokened classes reachable from `py_decode_manifest` are deliberately
+# FIVE tokened classes reachable from `py_decode_manifest` are deliberately
 # absent, because they are tokened at their own raise sites in other modules:
 # `manifest_decode.ArraySortOrderViolation`, `manifest_decode.NonCanonicalBody`,
-# `scanner.NonCanonicalItem` and `scanner.DuplicateMapKey`.
+# `scanner.NonCanonicalItem`, `scanner.DuplicateMapKey` and (#641)
+# `cbor_faults.MalformedCbor`.  Counted over the modules `manifest_decode`
+# imports, transitively; `manifest_rules.ManifestRejection` is their base
+# here, carries the empty token, and is never raised itself.
 # `cursor.ParseError` also carries a token but is NOT reachable from
 # `py_decode_manifest` -- nothing on that function's import path imports
 # `cursor`; it belongs to the wire ENVELOPE decoders, which is why its token
