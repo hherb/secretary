@@ -87,7 +87,7 @@ pub fn judge(
                 true
             } else {
                 match (r.token, rule.as_deref()) {
-                    (Some(rt), Some(pt)) => tokens_agree(rt, pt),
+                    (Some(rt), Some(pt)) => tokens_agree(target, rt, pt),
                     // Default-deny: unreachable after the missing-token guard
                     // above, and never agreement if it were reached.
                     _ => false,
@@ -126,7 +126,7 @@ mod tests {
     use super::*;
 
     const COMPARED: &str = "manifest_body";
-    const UNCOMPARED: &str = "record";
+    const UNCOMPARED: &str = "contact_card";
 
     fn rust_ok(bytes: &[u8]) -> Result<SecretBytes, RustRejection> {
         Ok(SecretBytes::new(bytes.to_vec()))
@@ -245,6 +245,23 @@ mod tests {
         );
     }
 
+    /// `malformed_cbor` outranks every rule, so even on the licensed target
+    /// it is never a tolerated mismatch (§4.2's well-formedness precondition;
+    /// PR #673 review). This is the call-site twin of the breadth test: the
+    /// pair below is `undefined` in a manifest body, which Python names at
+    /// its scan and `ciborium` lets through to the re-encode.
+    #[test]
+    fn malformed_cbor_against_a_phase_dependent_token_disagrees_on_the_licensed_target() {
+        assert!(matches!(
+            judge(
+                COMPARED,
+                &rust_err(Some("non_canonical_unclassified")),
+                &py_reject(Some("malformed_cbor"))
+            ),
+            Judgement::Disagree(_)
+        ));
+    }
+
     /// An unrecognised token is a DISAGREEMENT, not a harness failure: the
     /// missing-token guard catches only `None`, and a typo'd token must still
     /// red the run rather than read as tolerated.
@@ -255,6 +272,41 @@ mod tests {
                 COMPARED,
                 &rust_err(Some("array_sort_order")),
                 &py_reject(Some("not_a_real_token"))
+            ),
+            Judgement::Disagree(_)
+        ));
+    }
+
+    /// The tolerance is per TARGET (#641). A pair that agrees on
+    /// `manifest_body` because one token is phase-dependent is a disagreement
+    /// on a compared target the licence does not reach: a `block_file` sort
+    /// check mis-reported as a malformed container must red.
+    #[test]
+    fn a_phase_dependent_pair_on_an_unlicensed_compared_target_disagrees() {
+        const UNLICENSED: &str = "block_file";
+        assert!(TOKEN_COMPARED_TARGETS.contains(&UNLICENSED));
+        assert!(matches!(
+            judge(
+                UNLICENSED,
+                &rust_err(Some("array_sort_order")),
+                &py_reject(Some("container_malformed"))
+            ),
+            Judgement::Disagree(_)
+        ));
+    }
+
+    /// `record` is compared strictly (#641): its canonical-form faults share
+    /// one coarse token in both languages, so no phase-dependent pair is
+    /// needed, or tolerated.
+    #[test]
+    fn record_is_compared_strictly() {
+        const RECORD: &str = "record";
+        assert!(TOKEN_COMPARED_TARGETS.contains(&RECORD));
+        assert!(matches!(
+            judge(
+                RECORD,
+                &rust_err(Some("non_canonical_unclassified")),
+                &py_reject(Some("wrong_type"))
             ),
             Judgement::Disagree(_)
         ));

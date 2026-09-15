@@ -66,6 +66,12 @@ mod scratch;
 
 pub(crate) use scratch::from_secret_reader;
 
+// The byte-level well-formedness and rule-4 walk `record::decode` runs before
+// ciborium (#641). `pub(crate)`, like `from_secret_reader`.
+mod well_formed;
+
+pub(crate) use well_formed::{walk_first_item, WalkFault};
+
 // `wipe_leaked_value` wipes a single, already-yielded `ciborium::Value` in
 // place — for a caller of `SecretEntries::take_next` (or similar) that
 // folds a yielded value into NOTHING (an early return that never examines

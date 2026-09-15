@@ -132,6 +132,8 @@ jobs:
       # a corpus that shrinks to nothing fails rather than passing vacuously —
       # read the totals there rather than duplicating a count in this comment,
       # which nothing re-measures.
+      # Since #641 that includes generated single-fault seeds for `record` and
+      # `block_file`, so the two targets make a STRICT token comparison per seed here.
       #
       # `--test differential_replay` is bound to the feature by
       # `required-features` in `core/Cargo.toml`, so dropping `--features`

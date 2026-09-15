@@ -8,6 +8,8 @@
 //! `an_unknown_token_is_never_tolerated` — stay in the entry file so their
 //! test names do not change.
 
+use super::targets::PHASE_DEPENDENT_TOLERANCE_TARGETS;
+
 /// Do two rule tokens count as agreement?
 ///
 /// Equal tokens always do. Unequal tokens do **only** when at least one is
@@ -18,8 +20,10 @@
 ///
 /// **Derived from, and strictly BROADER than, those paragraphs — it is not
 /// them.** A per-token predicate tolerates every pair its token appears in,
-/// so with 4 of the 17 tokens phase-dependent this tolerates **58 of the 136
-/// unequal pairs**, of which §4.2 frees a strict subset. FOUR groups are
+/// so with 4 of the 17 tokens phase-dependent this tolerates **54 of the 136
+/// unequal pairs** on `manifest_body` (58 have a phase-dependent member; the
+/// `malformed_cbor` exception below withholds four), of which §4.2 frees a
+/// strict subset. FOUR groups are
 /// tolerated with no §4.2 licence at all, and on the committed corpus the
 /// cost is that **17 of the 24 rejecting `manifest_body` seeds never compare
 /// the Python token**, because every `NonCanonicalEncoding` cause maps to a
@@ -43,12 +47,43 @@
 /// as a harness failure. Both red the test, so nothing is lost — but
 /// "unrecognised or missing is a harness failure" is wrong about half of it.
 ///
+/// **Per target (#641).** The phase-dependent licence applies only on
+/// [`PHASE_DEPENDENT_TOLERANCE_TARGETS`]; everywhere else unequal tokens
+/// never agree. Every other target's breadth is 0, and
+/// `tolerance_admits_only_phase_dependent_pairs` pins both figures.
+///
+/// **`malformed_cbor` is never tolerated, on any target (#641, PR #673
+/// review).** §4.2 makes well-formedness the precondition for both of its
+/// orderings rather than a third rule inside them: a reader that cannot find
+/// a body's item boundaries "reports that instead, whatever else the body
+/// also breaks". So a pair naming `malformed_cbor` against a phase-dependent
+/// token has no §4.2 licence, and withholding it manufactures no false
+/// disagreement. It is why `manifest_body`'s breadth is **54**, not the 58
+/// pairs that have a phase-dependent member. One caveat on "false": Rust's
+/// `malformed_cbor` also covers ciborium's recursion limit, which is not a
+/// well-formedness fault at all. A disagreement it causes is #667's Rust-only
+/// depth rejection surfacing, a real divergence, not a spurious one.
+///
+/// That exception is not cosmetic. Python's scanner raises `malformed_cbor`
+/// for `undefined` and for a nested indefinite-length chunk; `ciborium`
+/// accepts both, so Rust rejects the same body later, under a phase-dependent
+/// token. Tolerating that pair turned what used to be a harness failure (an
+/// untokened raise) into agreement, and would have let #666's `manifest_body`
+/// seeds pass before the Rust manifest walk exists.
+///
 /// [`RuleToken::is_phase_dependent`]: secretary_core::vault::manifest::RuleToken::is_phase_dependent
-pub fn tokens_agree(rust: &str, python: &str) -> bool {
+pub fn tokens_agree(target: &str, rust: &str, python: &str) -> bool {
     use secretary_core::vault::manifest::RuleToken;
     let lookup = |s: &str| RuleToken::ALL.iter().find(|t| t.as_str() == s).copied();
     let (Some(r), Some(p)) = (lookup(rust), lookup(python)) else {
         return false;
     };
-    r == p || r.is_phase_dependent() || p.is_phase_dependent()
+    if r == p {
+        return true;
+    }
+    let well_formedness_precondition =
+        r == RuleToken::MalformedCbor || p == RuleToken::MalformedCbor;
+    PHASE_DEPENDENT_TOLERANCE_TARGETS.contains(&target)
+        && !well_formedness_precondition
+        && (r.is_phase_dependent() || p.is_phase_dependent())
 }

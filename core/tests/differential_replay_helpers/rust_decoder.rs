@@ -58,7 +58,7 @@ pub fn rust_decode(
         "record" => vault::record::decode(bytes)
             .and_then(|r| vault::record::encode(&r))
             .map_err(|e| RustRejection {
-                token: None,
+                token: Some(e.rule_token().as_str()),
                 detail: format!("{:?}", e),
             }),
         "contact_card" => identity::card::ContactCard::from_canonical_cbor(bytes)
@@ -99,7 +99,7 @@ pub fn rust_decode(
             .and_then(|f| vault::block::encode_block_file(&f))
             .map(SecretBytes::new)
             .map_err(|e| RustRejection {
-                token: None,
+                token: Some(e.rule_token().as_str()),
                 detail: format!("{:?}", e),
             }),
         _ => panic!("unknown target {}", target),

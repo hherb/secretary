@@ -71,7 +71,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ciborium::Value;
 
-use crate::cbor::{classify_ser, CborFault, SecretValueTree};
+use crate::cbor::{classify_ser, walk_first_item, CborFault, SecretValueTree, WalkFault};
 use crate::crypto::secret::{SecretBytes, SecretString};
 
 use super::canonical::{
@@ -668,19 +668,32 @@ fn field_to_canonical(field: &RecordField) -> CanonicalMap<'_> {
 ///
 /// Validates:
 ///
-/// 1. Top-level item is a map.
-/// 2. All map keys are text strings.
-/// 3. No floats anywhere in the tree (canonical CBOR rule).
-/// 4. No CBOR tags anywhere in the tree (canonical CBOR rule).
-/// 5. No duplicate map keys at any level.
-/// 6. All required §6.3 fields are present with their spec types.
-/// 7. The bytes are themselves canonical (re-encode-and-compare): rejects
+/// 1. The FIRST CBOR item in the bytes is well-formed and carries no tag or
+///    float, checked on the raw bytes before any parse (#641). Bytes after
+///    that item are not examined here; rule 8's re-encode comparison rejects
+///    them.
+/// 2. Top-level item is a map.
+/// 3. All map keys are text strings.
+/// 4. No floats anywhere in the tree (canonical CBOR rule).
+/// 5. No CBOR tags anywhere in the tree (canonical CBOR rule).
+/// 6. No duplicate map keys at any level.
+/// 7. All required §6.3 fields are present with their spec types.
+/// 8. The bytes are themselves canonical (re-encode-and-compare): rejects
 ///    indefinite-length items, non-canonical key order, and non-shortest
 ///    length / integer prefixes.
 ///
 /// Forward-compat unknown keys are preserved into [`Record::unknown`]
 /// and [`RecordField::unknown`] verbatim.
 pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
+    // Byte-level well-formedness, then crypto-design §6.2 rule 4, BEFORE
+    // ciborium (#641). ciborium reads `undefined` and the two-byte simple forms
+    // as ordinary simple values, turns a bignum that fits 64 bits into an
+    // integer and accepts nested indefinite chunks; `cbor/well_formed.rs`'s
+    // module doc names the rule each breaks. Every such input is
+    // still rejected below, by the re-encode at the latest, so this changes
+    // which error is reported, never whether a record is accepted —
+    // `record_walk_tests` checks that.
+    walk_first_item(bytes).map_err(walk_fault_to_record_error)?;
     // `from_secret_reader`, not `from_reader` (#561): this input is
     // decrypted record field plaintext.
     let parsed: Value = crate::cbor::from_secret_reader(bytes).map_err(RecordError::CborDecode)?;
@@ -695,6 +708,8 @@ pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
     // Walk the tree to enforce the no-float and no-tag rules everywhere
     // (including inside forward-compat unknown values). Doing this once
     // up front means the per-field decoders don't need to re-check.
+    // Since #641 the byte walk above answers first for every tag and float
+    // ciborium would still represent; this stays as defence in depth.
     reject_floats_and_tags(parsed.as_value(), "<root>")?;
 
     let record = decode_value(parsed.as_value())?;
@@ -723,6 +738,16 @@ pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
 // `From<CanonicalError> for RecordError` impl above for how its
 // `FloatRejected` / `TagRejected` errors map back to the record-layer
 // variants without changing the public surface.
+
+/// Map a byte-walk fault onto the variant this decoder has always reported
+/// for the same condition (#641): no new variant, no new message.
+fn walk_fault_to_record_error(fault: WalkFault) -> RecordError {
+    match fault {
+        WalkFault::Malformed(fault) => RecordError::CborDecode(fault),
+        WalkFault::Tag { .. } => RecordError::TagRejected,
+        WalkFault::Float { .. } => RecordError::FloatRejected { field: "<root>" },
+    }
+}
 
 /// Decode a record from an already-parsed CBOR value.
 ///

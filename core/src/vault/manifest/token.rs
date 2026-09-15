@@ -25,7 +25,8 @@ use super::cause::NonCanonicalCause;
 use super::error::ManifestError;
 use crate::vault::canonical::CanonicalError;
 
-/// Which rule a rejecting manifest decoder is reporting.
+/// Which rule a rejecting decoder is reporting: the manifest body (#634), and
+/// the record and block-file envelope replay targets (#641).
 ///
 /// Fieldless by construction (#474): every variant is a compile-time
 /// constant, so no decrypted manifest content can ride along. Note the
@@ -58,36 +59,51 @@ pub enum RuleToken {
     /// body to point at, and trailing bytes — see this module's own doc for
     /// why the latter has no token of its own.
     NonCanonicalUnclassified,
-    /// One of `docs/vault-format.md` §4.2's five array sort disciplines.
+    /// One of `docs/vault-format.md` §4.2's five array sort disciplines, or a
+    /// §6.1 block file's vector clock or recipient table out of ascending
+    /// order (#641).
     ArraySortOrder,
-    /// §4.2's repeated-array-value prohibition, in one of the four arrays it
-    /// binds. `recipients` is the explicit exception and never produces this.
+    /// A repeated value in a table that forbids one: §4.2's
+    /// repeated-array-value prohibition, in one of the four arrays it binds
+    /// (`recipients` is the explicit exception and never produces this), or
+    /// a repeat in a §6.1 block file's vector clock or recipient table (#641).
     RepeatedArrayValue,
     /// A map this reader interprets carries the same key twice.
     DuplicateMapKey,
-    /// A §4.2 required key is absent.
+    /// A required key is absent (§4.2 manifest body; §6.3 record or block
+    /// plaintext).
     MissingField,
     /// A field's CBOR major type, or a byte string's length, is not what §4.2
-    /// requires — including a body that is not a map, and a non-text map key.
+    /// (the manifest body) or §6.3 (a block's plaintext, or a record alone or
+    /// inside it) requires — including a body that is not a map, and a
+    /// non-text map key.
     WrongType,
-    /// An integer field is outside the width §4.2 gives it.
+    /// An integer field is outside the width §4.2 or §6.3 gives it.
     IntegerOutOfRange,
     /// A v1 sentinel — `manifest_version`, `format_version`, `suite_id` — is
-    /// not the v1 value, at either the body or the file-header layer.
+    /// not the v1 value, at either the body or the file-header layer,
+    /// including a §6.1 block file's header (#641).
     UnsupportedVersion,
     /// The bytes are not well-formed CBOR at all.
     MalformedCbor,
-    /// The §4.1 file envelope is malformed: magic, file kind, header or
-    /// section truncation, a declared length that does not match, trailing
-    /// bytes after the file, or a wrong signature length.
+    /// A §4.1 manifest or §6.1 block file envelope is malformed: magic, file
+    /// kind, header or section truncation, a declared length that does not
+    /// match, trailing bytes after the file, a wrong signature length, or
+    /// (for a block file) an empty recipient table.
     ContainerMalformed,
-    /// §4.1 AEAD verification failed.
+    /// AEAD verification failed: §4.1's, for a manifest. `BlockError`'s AEAD,
+    /// KEM and not-a-recipient arms map here too (#641), as diagnostics only
+    /// — the `block_file` replay target never decrypts, so it cannot reach
+    /// them.
     AeadFailure,
-    /// An §8 hybrid signature half did not verify.
+    /// An §8 hybrid signature half did not verify. `BlockError`'s signature
+    /// and author-fingerprint arms map here too (#641), as diagnostics only
+    /// — the envelope-only `block_file` replay target never verifies.
     SignatureInvalid,
     /// The ENCODER refused to emit a body its own decoder would reject. Not a
     /// property of any input — a caller built a malformed `Manifest` in
-    /// memory (#600, #587).
+    /// memory (#600, #587), or a `BlockFile` whose recipient count or
+    /// ciphertext and signature lengths the block encoder refuses (#641).
     EncoderRefusal,
     /// A fault in this implementation rather than in the input: an encode
     /// failure, a capacity bound, a signing error.
@@ -179,13 +195,23 @@ impl RuleToken {
     ///
     /// # LIMITS
     ///
-    /// Marking a TOKEN phase-dependent tolerates EVERY pair that token
-    /// appears in, so the tolerated set is far wider than the set §4.2
-    /// frees, and the honest way to state it is a count rather than a short
-    /// list of exceptions. Four of the seventeen tokens are phase-dependent,
-    /// so of the 136 unequal token pairs **58 are tolerated** — every pair
-    /// with at least one phase-dependent member. §4.2 licenses a strict
-    /// subset of those 58.
+    /// **On `manifest_body` only.** Since #641 the replay harness applies
+    /// this predicate solely on the targets its
+    /// `PHASE_DEPENDENT_TOLERANCE_TARGETS` lists, today `manifest_body`: the
+    /// licence is §4.2's two manifest reader designs, and §6.1 and §6.3 give
+    /// none, so `record` and `block_file` compare strictly and tolerate no
+    /// unequal pair. Every count below is about `manifest_body`.
+    ///
+    /// On that target, marking a TOKEN phase-dependent tolerates EVERY pair
+    /// that token appears in, so the tolerated set is far wider than the set
+    /// §4.2 frees, and the honest way to state it is a count rather than a
+    /// short list of exceptions. Four of the seventeen tokens are
+    /// phase-dependent, so 58 of the 136 unequal token pairs have at least
+    /// one phase-dependent member, and **54 are tolerated**: the harness
+    /// withholds the four that pair one with [`Self::MalformedCbor`], because
+    /// §4.2 makes well-formedness the precondition for both of its orderings
+    /// rather than a rule inside them (PR #673 review). §4.2 licenses a
+    /// strict subset of those 54.
     ///
     /// **What that costs on the committed corpus, measured rather than
     /// argued.** All four [`NonCanonicalCause`] outcomes map to
