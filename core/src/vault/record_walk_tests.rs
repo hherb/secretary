@@ -10,7 +10,7 @@
 
 use proptest::prelude::*;
 
-use crate::cbor::{from_secret_reader, SecretValueTree};
+use crate::cbor::{from_secret_reader, CborErrorKind, CborFault, SecretValueTree};
 use crate::vault::canonical::reject_floats_and_tags;
 use crate::vault::record::{decode, decode_value, encode, Record, RecordError};
 
@@ -37,6 +37,9 @@ const ASCII_A: u8 = b'a';
 // §3.2.3 makes each chunk a text string in its own right).
 const UTF8_TWO_BYTE_LEAD: u8 = 0xc3;
 const UTF8_CONTINUATION: u8 = 0xa9;
+/// Where the first chunk's head sits in that key, after the map and
+/// indefinite-string heads: the offset both pipelines report.
+const SPLIT_UTF8_CHUNK_AT: usize = 2;
 
 fn legacy_decode(bytes: &[u8]) -> Result<Record, RecordError> {
     let parsed = from_secret_reader(bytes).map_err(RecordError::CborDecode)?;
@@ -144,11 +147,11 @@ fn each_ciborium_leniency_is_rejected_by_both_and_renamed_by_the_walk() {
 /// A UTF-8 sequence split across two chunks of an indefinite-length map KEY
 /// is malformed at the byte level (RFC 8949 §3.2.3), not merely non-canonical
 /// -- and ciborium agrees, unlike the three leniencies pinned above. Both
-/// pipelines report `CborDecode`, from the SAME cause: measured pre-#641,
-/// ciborium itself rejects these bytes as `Syntax` at offset 2, so
-/// `legacy_decode`'s `from_secret_reader` call fails before its walk or
-/// re-encode ever runs, and `decode`'s byte walk (#641) fails at the same
-/// offset for the same reason.
+/// pipelines report the SAME `CborFault`, and this test asserts it exactly:
+/// ciborium itself rejects these bytes as `Syntax` at offset 2 (the first
+/// chunk's head), so `legacy_decode`'s `from_secret_reader` call fails before
+/// its walk or re-encode ever runs, and `decode`'s byte walk (#641) fails
+/// with the same kind at the same offset.
 #[test]
 fn a_utf8_sequence_split_across_chunks_is_rejected_by_both() {
     let split_utf8_key = [
@@ -161,12 +164,16 @@ fn a_utf8_sequence_split_across_chunks_is_rejected_by_both() {
         BREAK,
         UINT_0,
     ];
+    let same_fault = CborFault {
+        kind: CborErrorKind::Syntax,
+        offset: Some(SPLIT_UTF8_CHUNK_AT),
+    };
     assert!(matches!(
         legacy_decode(&split_utf8_key),
-        Err(RecordError::CborDecode(_))
+        Err(RecordError::CborDecode(fault)) if fault == same_fault
     ));
     assert!(matches!(
         decode(&split_utf8_key),
-        Err(RecordError::CborDecode(_))
+        Err(RecordError::CborDecode(fault)) if fault == same_fault
     ));
 }
