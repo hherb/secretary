@@ -1058,9 +1058,11 @@ survived it. Six things:
   token cannot tell the layers apart, and `ParseError` is one class shared by every
   target's wire decoder (#640). `contact_card`, `bundle_file` and `vault_toml` remain #641. `record`
   needed its Python decoder reordered into `record::decode`'s phase order and a byte-level
-  well-formedness walk in front of ciborium on both sides (ciborium reads `undefined` as
-  `null`, turns bignum tags into integers and accepts nested indefinite chunks — rejected
-  anyway, but under a later rule); `block_file` needed only Python's merged sort/repeat check
+  well-formedness walk that runs before anything is interpreted, in both languages: in Rust
+  in front of ciborium's parse (ciborium reads `undefined` as `null`, turns bignum tags into
+  integers and accepts nested indefinite chunks — rejected anyway, but under a later rule),
+  in Python in front of `py_decode_record`'s map-head and key reads, which never parse the
+  body through `cbor2`; `block_file` needed only Python's merged sort/repeat check
   split. Both have committed single-fault seeds, generated and label-bound by
   `core/tests/rule_token_seeds.rs` and Section RTS, so CI makes a strict comparison per seed;
   the orders they rely on are PARITY, not spec (§6.1/§6.3 fix none; #668). The classification
