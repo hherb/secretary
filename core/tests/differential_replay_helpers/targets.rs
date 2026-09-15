@@ -22,9 +22,10 @@ pub const TARGETS: &[&str] = &[
 /// named, not merely on the fact that both rejected (#634).
 ///
 /// Three: `manifest_body` (#634), `block_file` and `record` (#641).
-/// `block_file` needed no decoder change: both implementations walk the §6.1
-/// layout in the same order, and #641 split Python's merged sort/repeat
-/// check. `record` compares strictly too, since `conformance.py`'s record
+/// `block_file` needed no decoder reordering: both implementations walk the
+/// §6.1 layout in the same order. What changed is what Python's raises carry:
+/// #641 split its merged sort/repeat check and typed its version checks
+/// `unsupported_version`. `record` compares strictly too, since `conformance.py`'s record
 /// decoder reports in `record::decode`'s phase order and `record::decode`
 /// walks its bytes for well-formedness before ciborium. `contact_card`, `bundle_file` and
 /// `vault_toml` each still need their own taxonomy (#641); `manifest_file` is

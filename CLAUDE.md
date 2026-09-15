@@ -1064,11 +1064,14 @@ survived it. Six things:
   target's wire decoder (#640). `contact_card`, `bundle_file` and `vault_toml` remain #641. `record`
   needed its Python decoder reordered into `record::decode`'s phase order and a byte-level
   well-formedness walk that runs before anything is interpreted, in both languages: in Rust
-  in front of ciborium's parse (ciborium reads `undefined` as `null`, turns bignum tags into
-  integers and accepts nested indefinite chunks — rejected anyway, but under a later rule),
-  in Python in front of `py_decode_record`'s map-head and key reads, which never parse the
-  body through `cbor2`; `block_file` needed only Python's merged sort/repeat check
-  split. Both have committed single-fault seeds, generated and label-bound by
+  in front of ciborium's parse (ciborium reads `undefined` and the two-byte simple forms as
+  ordinary simple values, turns a bignum that fits 64 bits into an integer and accepts nested
+  indefinite chunks — rejected anyway, but under a later rule; `cbor/well_formed.rs`'s module
+  doc names the rule each breaks), in Python in front of `py_decode_record`'s map-head and key
+  reads, which never parse the body through `cbor2`. `block_file` needed no decoder
+  reordering, only Python-side typing: its merged sort/repeat check split, and its
+  `format_version`/`suite_id` raises typed `unsupported_version` where they had been plain
+  `ParseError`. Both have committed single-fault seeds, generated and label-bound by
   `core/tests/rule_token_seeds.rs` and Section RTS, so CI makes a strict comparison per seed;
   the orders they rely on are PARITY, not spec (§6.1/§6.3 fix none; #668). The classification
   table must PARTITION `TARGETS`, so a new target cannot default into the loose

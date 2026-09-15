@@ -99,11 +99,15 @@ raises had turned what used to be harness failures into tolerated agreement.
 ### (1b) `block_file`: a Python split
 
 The spike found every rejecting `block_file` input already pairing one Rust
-variant with one Python raise site. The one gap was Python's merged
-`prev >= nxt`, one message for both "unsorted" and "repeated". It is now two
-typed classes in `wire/envelope_rules.py`, reporting the FIRST adjacent pair
-that is not strictly ascending, as `block.rs`'s `match cmp` over `windows(2)`
-does.
+variant with one Python raise site. Both gaps were in what Python's raises
+carried. Python's merged `prev >= nxt` gave one message for both "unsorted"
+and "repeated"; it is now two typed classes in `wire/envelope_rules.py`,
+reporting the FIRST adjacent pair that is not strictly ascending, as
+`block.rs`'s `match cmp` over `windows(2)` does. And the `format_version` and
+`suite_id` raises were plain `ParseError` (`container_malformed`) where Rust
+says `unsupported_version`; they are now `UnsupportedEnvelopeVersion`
+(`fe181845`). The PR #673 review added one `container_malformed` class per
+remaining envelope check, so each seed pins its check, not only its token.
 
 ### (1c) `record`: the #618 shape, one target down
 
