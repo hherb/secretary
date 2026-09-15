@@ -296,8 +296,14 @@ fn tolerance_admits_only_phase_dependent_pairs() {
     // (#641, PR #673 review). Without this, Python naming `malformed_cbor`
     // for a shape ciborium parses leniently scored as agreement.
     for t in RuleToken::ALL.iter().filter(|t| t.is_phase_dependent()) {
-        assert!(!tokens_agree(LICENSED, "malformed_cbor", t.as_str()), "{t:?}");
-        assert!(!tokens_agree(LICENSED, t.as_str(), "malformed_cbor"), "{t:?}");
+        assert!(
+            !tokens_agree(LICENSED, "malformed_cbor", t.as_str()),
+            "{t:?}"
+        );
+        assert!(
+            !tokens_agree(LICENSED, t.as_str(), "malformed_cbor"),
+            "{t:?}"
+        );
     }
 
     // The BREADTH itself, pinned as a number. The four groups in

@@ -245,7 +245,10 @@ fn each_ciborium_leniency_is_rejected_by_both_and_renamed_by_the_walk() {
 fn a_bignum_wider_than_64_bits_stays_a_tag_in_ciborium() {
     let mut body = vec![MAP_1, TEXT_1, ASCII_A, TAG_BIGNUM_POSITIVE, BYTES_9];
     body.extend_from_slice(&BIGNUM_WIDER_THAN_U64);
-    assert!(matches!(legacy_decode(&body), Err(RecordError::TagRejected)));
+    assert!(matches!(
+        legacy_decode(&body),
+        Err(RecordError::TagRejected)
+    ));
     assert!(matches!(decode(&body), Err(RecordError::TagRejected)));
 }
 

@@ -42,7 +42,9 @@ fn assert_rust_names_its_token(case: &SeedCase, bytes: &[u8]) {
 /// with three `malformed_cbor` seeds overwritten by `truncated`'s bytes —
 /// exactly the leniencies the byte walk exists for. The same floor Section
 /// MPR's body-distinctness check gives the manifest precedence corpus.
-fn assert_each_target_plants_distinct_bytes<'a>(built: impl Iterator<Item = (&'a SeedCase, &'a [u8])>) {
+fn assert_each_target_plants_distinct_bytes<'a>(
+    built: impl Iterator<Item = (&'a SeedCase, &'a [u8])>,
+) {
     let mut planted: BTreeMap<(&str, &[u8]), String> = BTreeMap::new();
     for (case, bytes) in built {
         if let Some(other) = planted.insert((case.target, bytes), case.file_name()) {
@@ -71,9 +73,7 @@ fn every_seed_label_is_unique() {
 fn rule_token_seeds_are_committed_and_label_bound() {
     let cases = all_cases();
     let built: Vec<Vec<u8>> = cases.iter().map(SeedCase::bytes).collect();
-    assert_each_target_plants_distinct_bytes(
-        cases.iter().zip(built.iter().map(Vec::as_slice)),
-    );
+    assert_each_target_plants_distinct_bytes(cases.iter().zip(built.iter().map(Vec::as_slice)));
     for (case, want) in cases.iter().zip(&built) {
         assert!(
             SEEDED_TARGETS.contains(&case.target),
@@ -129,9 +129,7 @@ fn rule_token_seeds_are_committed_and_label_bound() {
 fn generate_rule_token_seeds() {
     let cases = all_cases();
     let built: Vec<Vec<u8>> = cases.iter().map(SeedCase::bytes).collect();
-    assert_each_target_plants_distinct_bytes(
-        cases.iter().zip(built.iter().map(Vec::as_slice)),
-    );
+    assert_each_target_plants_distinct_bytes(cases.iter().zip(built.iter().map(Vec::as_slice)));
     for (case, bytes) in cases.iter().zip(&built) {
         assert_rust_names_its_token(case, bytes);
     }

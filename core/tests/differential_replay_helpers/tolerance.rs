@@ -78,7 +78,8 @@ pub fn tokens_agree(target: &str, rust: &str, python: &str) -> bool {
     if r == p {
         return true;
     }
-    let well_formedness_precondition = r == RuleToken::MalformedCbor || p == RuleToken::MalformedCbor;
+    let well_formedness_precondition =
+        r == RuleToken::MalformedCbor || p == RuleToken::MalformedCbor;
     PHASE_DEPENDENT_TOLERANCE_TARGETS.contains(&target)
         && !well_formedness_precondition
         && (r.is_phase_dependent() || p.is_phase_dependent())

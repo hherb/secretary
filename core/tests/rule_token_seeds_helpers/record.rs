@@ -297,7 +297,9 @@ fn created_at_ms_bool(base: &[u8]) -> Vec<u8> {
 }
 
 fn field_last_mod_bool(base: &[u8]) -> Vec<u8> {
-    with_edited_field(base, |field| map(&with_value(field, "last_mod", vec![TRUE])))
+    with_edited_field(base, |field| {
+        map(&with_value(field, "last_mod", vec![TRUE]))
+    })
 }
 
 fn tags_not_an_array(base: &[u8]) -> Vec<u8> {
@@ -305,7 +307,11 @@ fn tags_not_an_array(base: &[u8]) -> Vec<u8> {
 }
 
 fn tag_not_text(base: &[u8]) -> Vec<u8> {
-    map(&inserted(&entries(base), text("tags"), vec![ARRAY_1, UINT_ONE]))
+    map(&inserted(
+        &entries(base),
+        text("tags"),
+        vec![ARRAY_1, UINT_ONE],
+    ))
 }
 
 fn tombstone_not_a_bool(base: &[u8]) -> Vec<u8> {
@@ -313,15 +319,23 @@ fn tombstone_not_a_bool(base: &[u8]) -> Vec<u8> {
 }
 
 fn negative_tombstoned_at_ms(base: &[u8]) -> Vec<u8> {
-    map(&inserted(&entries(base), text("tombstoned_at_ms"), vec![NINT_ONE]))
+    map(&inserted(
+        &entries(base),
+        text("tombstoned_at_ms"),
+        vec![NINT_ONE],
+    ))
 }
 
 fn field_value_wrong_type(base: &[u8]) -> Vec<u8> {
-    with_edited_field(base, |field| map(&with_value(field, "value", vec![UINT_ZERO])))
+    with_edited_field(base, |field| {
+        map(&with_value(field, "value", vec![UINT_ZERO]))
+    })
 }
 
 fn negative_field_last_mod(base: &[u8]) -> Vec<u8> {
-    with_edited_field(base, |field| map(&with_value(field, "last_mod", vec![NINT_ONE])))
+    with_edited_field(base, |field| {
+        map(&with_value(field, "last_mod", vec![NINT_ONE]))
+    })
 }
 
 fn field_device_uuid_short(base: &[u8]) -> Vec<u8> {
@@ -333,17 +347,27 @@ fn field_device_uuid_short(base: &[u8]) -> Vec<u8> {
 
 fn fields_non_text_key(base: &[u8]) -> Vec<u8> {
     let top = entries(base);
-    let fields = inserted(&entries(&value_of(&top, "fields")), vec![UINT_ONE], vec![UINT_ZERO]);
+    let fields = inserted(
+        &entries(&value_of(&top, "fields")),
+        vec![UINT_ONE],
+        vec![UINT_ZERO],
+    );
     map(&with_value(&top, "fields", map(&fields)))
 }
 
 fn field_non_text_key(base: &[u8]) -> Vec<u8> {
-    with_edited_field(base, |field| map(&inserted(field, vec![UINT_ONE], vec![UINT_ZERO])))
+    with_edited_field(base, |field| {
+        map(&inserted(field, vec![UINT_ONE], vec![UINT_ZERO]))
+    })
 }
 
 fn field_not_a_map(base: &[u8]) -> Vec<u8> {
     let top = entries(base);
-    let fields = with_value(&entries(&value_of(&top, "fields")), EDITED_FIELD, vec![UINT_ZERO]);
+    let fields = with_value(
+        &entries(&value_of(&top, "fields")),
+        EDITED_FIELD,
+        vec![UINT_ZERO],
+    );
     map(&with_value(&top, "fields", map(&fields)))
 }
 
@@ -364,31 +388,86 @@ pub fn cases() -> Vec<SeedCase> {
     };
     vec![
         case(MalformedCbor, "truncated", "CborDecode", truncated),
-        case(MalformedCbor, "undefined_value", "CborDecode", undefined_value),
+        case(
+            MalformedCbor,
+            "undefined_value",
+            "CborDecode",
+            undefined_value,
+        ),
         case(
             MalformedCbor,
             "nested_indefinite_chunk",
             "CborDecode",
             nested_indefinite_chunk,
         ),
-        case(MalformedCbor, "invalid_utf8_text", "CborDecode", invalid_utf8_text),
+        case(
+            MalformedCbor,
+            "invalid_utf8_text",
+            "CborDecode",
+            invalid_utf8_text,
+        ),
         case(Rule4TagOrFloat, "float_value", "FloatRejected", float_value),
         case(Rule4TagOrFloat, "tag_value", "TagRejected", tag_value),
         case(Rule4TagOrFloat, "bignum_tag", "TagRejected", bignum_tag),
         case(WrongType, "top_level_array", "NotAMap", top_level_array),
         case(WrongType, "non_text_key", "NonTextKey", non_text_key),
         case(WrongType, "record_uuid_text", "WrongType", record_uuid_text),
-        case(WrongType, "record_uuid_short", "InvalidUuid", record_uuid_short),
+        case(
+            WrongType,
+            "record_uuid_short",
+            "InvalidUuid",
+            record_uuid_short,
+        ),
         case(WrongType, "fields_not_a_map", "WrongType", fields_not_a_map),
-        case(WrongType, "created_at_ms_bool", "WrongType", created_at_ms_bool),
-        case(WrongType, "field_last_mod_bool", "WrongType", field_last_mod_bool),
-        case(WrongType, "tags_not_an_array", "WrongType", tags_not_an_array),
+        case(
+            WrongType,
+            "created_at_ms_bool",
+            "WrongType",
+            created_at_ms_bool,
+        ),
+        case(
+            WrongType,
+            "field_last_mod_bool",
+            "WrongType",
+            field_last_mod_bool,
+        ),
+        case(
+            WrongType,
+            "tags_not_an_array",
+            "WrongType",
+            tags_not_an_array,
+        ),
         case(WrongType, "tag_not_text", "WrongType", tag_not_text),
-        case(WrongType, "tombstone_not_a_bool", "WrongType", tombstone_not_a_bool),
-        case(WrongType, "field_value_uint", "WrongType", field_value_wrong_type),
-        case(WrongType, "field_device_uuid_short", "InvalidUuid", field_device_uuid_short),
-        case(WrongType, "fields_non_text_key", "NonTextKey", fields_non_text_key),
-        case(WrongType, "field_non_text_key", "NonTextKey", field_non_text_key),
+        case(
+            WrongType,
+            "tombstone_not_a_bool",
+            "WrongType",
+            tombstone_not_a_bool,
+        ),
+        case(
+            WrongType,
+            "field_value_uint",
+            "WrongType",
+            field_value_wrong_type,
+        ),
+        case(
+            WrongType,
+            "field_device_uuid_short",
+            "InvalidUuid",
+            field_device_uuid_short,
+        ),
+        case(
+            WrongType,
+            "fields_non_text_key",
+            "NonTextKey",
+            fields_non_text_key,
+        ),
+        case(
+            WrongType,
+            "field_non_text_key",
+            "NonTextKey",
+            field_non_text_key,
+        ),
         case(WrongType, "field_not_a_map", "WrongType", field_not_a_map),
         case(
             IntegerOutOfRange,
@@ -408,12 +487,42 @@ pub fn cases() -> Vec<SeedCase> {
             "IntegerOverflow",
             negative_field_last_mod,
         ),
-        case(MissingField, "record_uuid", "MissingField", missing_record_uuid),
-        case(MissingField, "field_value", "MissingField", missing_field_value),
-        case(DuplicateMapKey, "record_level", "DuplicateKey", duplicate_record_key),
-        case(DuplicateMapKey, "fields_level", "DuplicateKey", duplicate_field_name),
-        case(DuplicateMapKey, "field_level", "DuplicateKey", duplicate_field_level_key),
-        case(NonCanonicalUnclassified, "key_order", "NonCanonicalEncoding", key_order),
+        case(
+            MissingField,
+            "record_uuid",
+            "MissingField",
+            missing_record_uuid,
+        ),
+        case(
+            MissingField,
+            "field_value",
+            "MissingField",
+            missing_field_value,
+        ),
+        case(
+            DuplicateMapKey,
+            "record_level",
+            "DuplicateKey",
+            duplicate_record_key,
+        ),
+        case(
+            DuplicateMapKey,
+            "fields_level",
+            "DuplicateKey",
+            duplicate_field_name,
+        ),
+        case(
+            DuplicateMapKey,
+            "field_level",
+            "DuplicateKey",
+            duplicate_field_level_key,
+        ),
+        case(
+            NonCanonicalUnclassified,
+            "key_order",
+            "NonCanonicalEncoding",
+            key_order,
+        ),
         case(
             NonCanonicalUnclassified,
             "indefinite_map",
