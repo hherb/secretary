@@ -115,10 +115,13 @@ trailing bytes before schema faults (~120).
 
 - **Rust** (`492a9c08`): `walk_first_item` walks the first CBOR item's bytes
   iteratively, then checks rule 4 (no tag, no float), before ciborium parses.
-  It closes three places ciborium is laxer than vault-format §4.2's
-  well-formedness precondition: `undefined` read as `null` (57 inputs), bignum
-  tags 2/3 turned into integers before the parsed-tree rule-4 walk sees a tag
-  (28), nested indefinite-length string chunks accepted (4). Rust already rejected every
+  It closes four forms ciborium's parse lets through. `undefined` read as
+  `null` (57 inputs) is well-formed RFC 8949 that vault-format §4.2's
+  well-formedness precondition excludes. A bignum tag 2/3 that fits 64 bits,
+  turned into an integer before the parsed-tree rule-4 walk sees a tag (28), is
+  well-formed and breaks crypto-design §6.2 rule 4. A nested indefinite-length
+  string chunk (4) breaks RFC 8949 §3.2.3. The fourth, the two-byte simple forms
+  `f8 14`..`f8 17` (RFC 8949 §3.3), was found only in the PR #673 review. Rust already rejected every
   one of those bodies, at the latest at the re-encode comparison, so **no Rust
   verdict moved**:
   over the 7,454-input corpus, accept 3 → 3, **0 statuses moved**, **89 reported

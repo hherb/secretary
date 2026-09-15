@@ -686,8 +686,10 @@ fn field_to_canonical(field: &RecordField) -> CanonicalMap<'_> {
 /// and [`RecordField::unknown`] verbatim.
 pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
     // Byte-level well-formedness, then crypto-design §6.2 rule 4, BEFORE
-    // ciborium (#641). ciborium reads `undefined` as `null`, turns bignum tags
-    // into integers and accepts nested indefinite chunks. Every such input is
+    // ciborium (#641). ciborium reads `undefined` and the two-byte simple forms
+    // as ordinary simple values, turns a bignum that fits 64 bits into an
+    // integer and accepts nested indefinite chunks; `cbor/well_formed.rs`'s
+    // module doc names the rule each breaks. Every such input is
     // still rejected below, by the re-encode at the latest, so this changes
     // which error is reported, never whether a record is accepted —
     // `record_walk_tests` checks that.

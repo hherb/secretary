@@ -28,9 +28,16 @@ const MAX_MUTATIONS: usize = 3;
 /// could tell the pipelines apart are rare.
 const PROPTEST_CASES: u32 = 4096;
 
-// RFC 8949 bytes for the three measured ciborium leniencies.
+// RFC 8949 bytes for the four measured ciborium leniencies.
 const MAP_1: u8 = 0xa1;
 const UNDEFINED: u8 = 0xf7;
+/// Major 7, additional-info 24: the two-byte simple form.
+const SIMPLE_TWO_BYTE: u8 = 0xf8;
+/// Simple value 20 (`false`), which RFC 8949 §3.3 allows only in one byte.
+const SIMPLE_ARG_FALSE: u8 = 0x14;
+/// A byte-string head carrying nine bytes: a bignum one byte wider than u64.
+const BYTES_9: u8 = 0x49;
+const BIGNUM_WIDER_THAN_U64: [u8; 9] = [0x01, 0, 0, 0, 0, 0, 0, 0, 0];
 const TAG_BIGNUM_POSITIVE: u8 = 0xc2;
 const BYTES_1: u8 = 0x41;
 const TEXT_1: u8 = 0x61;
@@ -213,6 +220,33 @@ fn each_ciborium_leniency_is_rejected_by_both_and_renamed_by_the_walk() {
         decode(&nested_chunk_key),
         Err(RecordError::CborDecode(_))
     ));
+
+    // The fourth, missed by the first cut (PR #673 review): ciborium reads the
+    // two-byte simple form `f8 14` as `false`, though RFC 8949 §3.3 makes that
+    // encoding not well-formed.
+    let two_byte_simple_key = [MAP_1, SIMPLE_TWO_BYTE, SIMPLE_ARG_FALSE, UINT_0];
+    assert!(matches!(
+        legacy_decode(&two_byte_simple_key),
+        Err(RecordError::NonTextKey)
+    ));
+    assert!(matches!(
+        decode(&two_byte_simple_key),
+        Err(RecordError::CborDecode(_))
+    ));
+}
+
+/// The "never changes acceptance" argument needs ciborium to keep any bignum
+/// wider than 64 bits as a `Value::Tag`. If a bump let `Integer` hold one,
+/// its re-encode would emit the same tag, a record carrying it in an unknown
+/// subtree would pass the legacy pipeline, and the walk would reject it. The
+/// property test cannot generate that input, so it is pinned here: ciborium
+/// 0.2.2 keeps the tag, so both pipelines reject it as rule 4 (PR #673 review).
+#[test]
+fn a_bignum_wider_than_64_bits_stays_a_tag_in_ciborium() {
+    let mut body = vec![MAP_1, TEXT_1, ASCII_A, TAG_BIGNUM_POSITIVE, BYTES_9];
+    body.extend_from_slice(&BIGNUM_WIDER_THAN_U64);
+    assert!(matches!(legacy_decode(&body), Err(RecordError::TagRejected)));
+    assert!(matches!(decode(&body), Err(RecordError::TagRejected)));
 }
 
 /// A UTF-8 sequence split across two chunks of an indefinite-length map KEY

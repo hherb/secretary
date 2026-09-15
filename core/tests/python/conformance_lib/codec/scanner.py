@@ -421,10 +421,13 @@ def _check_canonical_item(buf: bytes, pos: int) -> int:
     check EXPLICITLY, since it never materialises either type (#592
     findings A/B): a major-3 text string's content must be valid UTF-8
     (a `str`/`String` cannot hold anything else), and a major-7 item must
-    be one of false/true/null (measured 2026-09-15: ciborium reads
-    `undefined` as `null` rather than rejecting it, so the Rust decoders
-    reject it only through their re-encode -- and `record::decode` through
-    its byte walk since #641).
+    be one of false/true/null, in its one-byte form (measured 2026-09-15:
+    ciborium reads `undefined` as `null`, and the two-byte forms `f8 14`..
+    `f8 17` as ordinary simple values, rather than rejecting them).  So a
+    Rust decoder rejects one only by what the resulting value then fails: a
+    type check where the reader interprets it (an `undefined` map key is
+    `NonTextKey`), the re-encode inside an unknown subtree.  `record::decode`
+    names it malformed first, through its byte walk, since #641.
 
     Rule 2 (definite lengths), rule 3 (shortest-form heads), rule 4 (no
     floats, no tags).  Returns the offset one past the item; raises

@@ -1036,9 +1036,10 @@ fn plaintext_to_canonical(plaintext: &BlockPlaintext) -> CanonicalMap<'_> {
 /// the same properties, with two differences. Rule 7 is called out where it
 /// stops matching. And since #641 `record::decode` first walks its raw bytes
 /// for well-formedness and §6.2 rule 4 before ciborium parses them; this
-/// decoder does not, so ciborium's measured leniencies (`undefined` read as
-/// `null`, bignum tags read as integers, nested indefinite-length chunks)
-/// still reach the parsed-tree checks here, as they did on the record path
+/// decoder does not, so ciborium's leniencies (`undefined` and the two-byte
+/// simple forms read as simple values, a bignum that fits 64 bits read as an
+/// integer, nested indefinite-length chunks) still reach the parsed-tree
+/// checks here, as they did on the record path
 /// before #641. Wiring the walk in here is #666.
 ///
 /// 1. Top-level item is a map.

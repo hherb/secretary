@@ -1,16 +1,27 @@
 //! A byte-level walk over the first CBOR item: well-formedness first, then
 //! crypto-design §6.2 rule 4 (#641).
 //!
-//! **Why it exists.** ciborium's `Value` reader is laxer than RFC 8949 and than
-//! `docs/vault-format.md` §4.2's well-formedness list in three ways, measured
-//! over the fuzz corpus: it reads `undefined` (`0xf7`) as `null`, it turns
-//! bignum tags 2 and 3 into integers so a later parsed-tree rule-4 walk never
-//! sees the tag, and it accepts nested indefinite-length string chunks. None of
-//! those changes whether a record is accepted — none of the forms is canonical,
-//! so the re-encode comparison rejects them all — but each changes WHICH error
-//! is reported, and `core/tests/differential_replay.rs` compares that against
-//! `conformance.py`. Walking the bytes before ciborium reports what the bytes
-//! actually are.
+//! **Why it exists.** ciborium's `Value` reader lets four forms through that
+//! this format rejects, and each changes WHICH error a record reports, which
+//! `core/tests/differential_replay.rs` compares against `conformance.py`. They
+//! break different rules, so name the rule per form:
+//!
+//! - `undefined` (`0xf7`), read as `null`. RFC 8949 calls it well-formed;
+//!   `docs/vault-format.md` §4.2's well-formedness precondition excludes it
+//!   ("a major-7 value outside `false`/`true`/`null`").
+//! - The two-byte simple forms `f8 14`..`f8 17`, read as false, true, null and
+//!   undefined. RFC 8949 §3.3 makes those encodings not well-formed.
+//! - A nested indefinite-length string chunk, which RFC 8949 §3.2.3 forbids.
+//! - A bignum (tag 2 or 3) whose value fits in 64 bits, turned into an
+//!   integer, so a later parsed-tree rule-4 walk never sees the tag. It is
+//!   well-formed; it breaks crypto-design §6.2 rule 4. A wider bignum stays a
+//!   `Value::Tag` in ciborium 0.2.2, which that walk does see.
+//!
+//! The corpus measured the first, third and fourth; the two-byte simple form
+//! was found in ciborium's source in the PR #673 review. `record_walk_tests`
+//! pins all four, and the wide bignum. None changes whether a record is
+//! accepted — none is canonical, so the re-encode comparison rejects them all
+//! — and walking the bytes before ciborium reports what the bytes actually are.
 //!
 //! **What it checks.** RFC 8949 well-formedness plus §4.2's precondition list:
 //! a truncated head, argument or payload; reserved additional-info 28-30; the
@@ -38,8 +49,9 @@ use crate::cbor::{CborErrorKind, CborFault};
 /// Why [`walk_first_item`] stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WalkFault {
-    /// Not well-formed CBOR. The kind is `Io` when the input ended first,
-    /// `Syntax` otherwise; the offset is that of the offending head.
+    /// Not well-formed CBOR. `Syntax` at the offending head. `Io` when the
+    /// input ended first: at the head whose argument or payload runs past the
+    /// end, or at the end itself when a head or a break was still needed.
     Malformed(CborFault),
     /// §6.2 rule 4: a tag, at `offset`.
     Tag { offset: usize },
