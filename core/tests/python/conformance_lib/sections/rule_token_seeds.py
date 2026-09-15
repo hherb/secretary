@@ -21,13 +21,16 @@ WHY FLOORS (check 3) AND AN EXPECTED TOKEN SET (check 4).  An emptied
 directory satisfies check 2 vacuously, and a directory whose seeds were all
 relabelled onto one token satisfies checks 2 and 3.
 
-CHECK 5 IS PARITY, NOT SPEC.  Four two-fault `record` bodies are built in this
-section and never committed, because vault-format §6.3 fixes no report order
-and a committed cross-language row must not pin one (#618's lesson).  They pin
-the phase order `py_decode_record` shares with `record::decode` by design --
-walk, map, per-key checks in wire order, missing keys, canonical form last --
-so a drift in Python's order reds here rather than only in a local
-full-corpus replay.
+CHECK 5 IS PARITY, NOT SPEC.  Seven two-fault `record` bodies are built in
+this section and never committed, because vault-format §6.3 fixes no report
+order and a committed cross-language row must not pin one (#618's lesson).
+They pin the phase order `py_decode_record` shares with `record::decode` by
+design -- walk, map, per-key checks in wire order, missing keys, canonical
+form last -- so a drift in Python's order reds here rather than only in a
+local full-corpus replay.  Every committed seed plants ONE fault, so the CI
+replay cannot see an order drift at all; this check is what does.  Six rows
+each name the drift they catch; the seventh is a regression pin that the
+pre-#641 order also passed.
 """
 
 from __future__ import annotations
@@ -136,17 +139,33 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
 # built here, never committed: vault-format §6.3 states no report order, and a
 # committed cross-language row must not pin one (#618).  They pin the order
 # `py_decode_record` shares with `record::decode` by design.
+#
+# A two-fault body pins an order only if its two faults, each ALONE, name
+# DIFFERENT tokens, and a drifted order actually reaches the other one first.
+# Each row therefore names the drift it catches, and every named drift was
+# measured to move that row's token (single-fault controls, plus the drifted
+# decoder run on the body).  A row naming `None` is a regression pin only: its
+# body was measured to report the same token under the pre-#641 order, because
+# the entry scan meets a truncated key before any key type is read.
 _FLOAT16_ZERO = bytes([0xF9, 0x00, 0x00])
+_ARRAY_1_HEAD = bytes([0x81])
+_MAP_1_HEAD = bytes([0xA1])
 _MAP_2_HEAD = bytes([0xA2])
+_TAG_1_HEAD = bytes([0xC1])
+# An unsigned integer 1, in a map-key position where only text is allowed.
+_UINT_1 = bytes([0x01])
+# RFC 8949 §3.3 simple value 23: well-formed nowhere in this format.
+_UNDEFINED = bytes([0xF7])
 # A text head declaring 3 bytes, followed by 1.
 _TRUNCATED_TEXT = bytes([0x63, 0xFF])
 _TRAILING_BYTE = bytes([0x00])
 _UUID_LEN = record_rules.RECORD_UUID_LEN
 # How many parity-order cases `_ordering_issues` declares; asserted there.
-_ORDERING_CASES = 4
+_ORDERING_CASES = 7
 
 
-def _ordering_issues() -> list[str]:
+def _ordering_cases() -> tuple[tuple[str, bytes, str, str | None], ...]:
+    """`(label, body, token the shared order names, the drift it catches)`."""
     import cbor2
 
     base = {
@@ -157,26 +176,44 @@ def _ordering_issues() -> list[str]:
         "last_mod_ms": 0,
     }
     no_last_mod = {k: v for k, v in base.items() if k != "last_mod_ms"}
-    cases = (
+    return (
         ("a wrong type beside a missing key",
-         cbor2.dumps({**no_last_mod, "record_uuid": "text"}, canonical=True), "wrong_type"),
+         cbor2.dumps({**no_last_mod, "record_uuid": "text"}, canonical=True), "wrong_type",
+         "missing required keys checked before each value"),
         ("a repeated key whose second copy is a float",
          _MAP_2_HEAD + cbor2.dumps("record_type") + cbor2.dumps("t")
-         + cbor2.dumps("record_type") + _FLOAT16_ZERO, "rule4_tag_or_float"),
-        ("a malformed tail behind a non-text key",
-         _MAP_2_HEAD + cbor2.dumps(1) + cbor2.dumps(0) + _TRUNCATED_TEXT, "malformed_cbor"),
+         + cbor2.dumps("record_type") + _FLOAT16_ZERO, "rule4_tag_or_float",
+         "no whole-body rule-4 walk before interpretation"),
+        ("a truncated key behind a non-text key",
+         _MAP_2_HEAD + cbor2.dumps(1) + cbor2.dumps(0) + _TRUNCATED_TEXT, "malformed_cbor",
+         None),
         ("a schema fault followed by trailing bytes",
-         cbor2.dumps(no_last_mod, canonical=True) + _TRAILING_BYTE, "missing_field"),
+         cbor2.dumps(no_last_mod, canonical=True) + _TRAILING_BYTE, "missing_field",
+         "trailing bytes judged before the schema"),
+        ("a non-map top-level item holding a malformed item",
+         _ARRAY_1_HEAD + _UNDEFINED, "malformed_cbor",
+         "the top-level map head read before the walk"),
+        ("a non-text key whose value is malformed",
+         _MAP_1_HEAD + _UINT_1 + _UNDEFINED, "malformed_cbor",
+         "key types read before the walk"),
+        ("a tag wrapping an otherwise valid record map",
+         _TAG_1_HEAD + cbor2.dumps(base, canonical=True), "rule4_tag_or_float",
+         "the top-level map head read before the walk"),
     )
+
+
+def _ordering_issues() -> list[str]:
+    cases = _ordering_cases()
     if len(cases) != _ORDERING_CASES:
         raise AssertionError(f"_ORDERING_CASES is {_ORDERING_CASES}, the table holds {len(cases)}")
     issues = []
-    for label, body, want in cases:
+    for label, body, want, drift in cases:
         verdict = replay_bytes("record", body).verdict
         if verdict.get("status") != "reject" or verdict.get("rule") != want:
+            caught = f" -- the drift this row catches: {drift}" if drift else ""
             issues.append(
                 f"record order: {label} must report {want!r}, got {verdict.get('status')} "
-                f"{verdict.get('rule')!r} ({verdict.get('error_class')}: {verdict.get('detail')})"
+                f"{verdict.get('rule')!r} ({verdict.get('error_class')}: {verdict.get('detail')}){caught}"
             )
     return issues
 
