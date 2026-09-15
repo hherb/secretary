@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Callable
 
+from conformance_lib.codec.cbor_faults import MalformedCbor, require_false_true_or_null, require_utf8
+
 # ---------------------------------------------------------------------------
 # Span-recording CBOR scanner (§4.2 forward-compat subtree support)
 # ---------------------------------------------------------------------------
@@ -72,14 +74,11 @@ class NonCanonicalItem(ValueError):
     keys on it too -- and Section CS asserts it, because losing it turns
     every scanner rejection into a harness failure.
 
-    Only the five NUMBERED-rule raises use this type.  Inside
-    `_check_canonical_item` the remaining three raises stay plain
-    `ValueError`: the two well-formedness properties named in that
-    function's own docstring (invalid UTF-8; a major-7 value outside
-    {false, true, null}) plus a buffer-bounds check.  None is among §6.2's
-    five rules, so none has a number to carry.  Other `raise ValueError`
-    sites in this module belong to `_scan_item`, which is structure-only
-    by design and enforces no §6.2 rule.
+    Only the five NUMBERED-rule raises use this type.  Every well-formedness
+    raise in this module is `cbor_faults.MalformedCbor` (#641), which carries
+    the `malformed_cbor` token; the two type checks in `_scan_map_entries` and
+    `_scan_array_items` stay plain `ValueError`, because a map where a map was
+    required is not a well-formedness fault.
     """
 
     def __init__(self, rule: int, detail: str) -> None:
@@ -176,7 +175,7 @@ def _decode_head(buf: bytes, pos: int) -> tuple[int, int, int | None, int]:
     argument bytes.
     """
     if pos >= len(buf):
-        raise ValueError(f"truncated CBOR head at offset {pos}")
+        raise MalformedCbor(f"truncated CBOR head at offset {pos}")
     ib = buf[pos]
     major, ai = ib >> 5, ib & 0x1F
     if ai < 24:
@@ -196,15 +195,15 @@ def _decode_head(buf: bytes, pos: int) -> tuple[int, int, int | None, int]:
         # _scan_item / _scan_map_entries detect by reaching it, not by
         # decoding it as a head, so it must stay permitted here.
         if major not in (2, 3, 4, 5, 7):
-            raise ValueError(
+            raise MalformedCbor(
                 f"RFC 8949 §3.2: indefinite-length form is not valid for "
                 f"major type {major} at offset {pos}"
             )
         return major, ai, None, 1
     else:
-        raise ValueError(f"reserved additional-info {ai} at offset {pos}")
+        raise MalformedCbor(f"reserved additional-info {ai} at offset {pos}")
     if pos + 1 + n > len(buf):
-        raise ValueError(f"truncated {n}-byte argument at offset {pos}")
+        raise MalformedCbor(f"truncated {n}-byte argument at offset {pos}")
     return major, ai, int.from_bytes(buf[pos + 1 : pos + 1 + n], "big"), 1 + n
 
 
@@ -232,28 +231,28 @@ def _scan_item(buf: bytes, pos: int, visit: Callable[[bytes, int], None] | None 
         return p
     if major == 7:                            # simple value / float
         if ai == CBOR_AI_INDEFINITE:
-            raise ValueError(f"unexpected break at offset {pos}")
+            raise MalformedCbor(f"unexpected break at offset {pos}")
         return p
     if major in (2, 3):                       # byte string / text string
         if arg is None:                       # indefinite: definite chunks to break
             while True:
                 if p >= len(buf):
-                    raise ValueError("unterminated indefinite-length string")
+                    raise MalformedCbor("unterminated indefinite-length string")
                 if buf[p] == CBOR_BREAK:
                     return p + 1
                 cmaj, _, carg, chead = _decode_head(buf, p)
                 if cmaj != major or carg is None:
-                    raise ValueError(f"bad chunk in indefinite-length string at {p}")
+                    raise MalformedCbor(f"bad chunk in indefinite-length string at {p}")
                 p += chead + carg
         if p + arg > len(buf):
-            raise ValueError(f"string length {arg} overruns buffer at offset {pos}")
+            raise MalformedCbor(f"string length {arg} overruns buffer at offset {pos}")
         return p + arg
     if major in (4, 5):                       # array / map
         per = 1 if major == 4 else 2
         if arg is None:
             while True:
                 if p >= len(buf):
-                    raise ValueError("unterminated indefinite-length array/map")
+                    raise MalformedCbor("unterminated indefinite-length array/map")
                 if buf[p] == CBOR_BREAK:
                     return p + 1
                 for _ in range(per):
@@ -268,9 +267,9 @@ def _scan_item(buf: bytes, pos: int, visit: Callable[[bytes, int], None] | None 
             # head with ai=31 never reaches this point -- it raises inside
             # `_decode_head` first. Kept as defence in depth so this
             # primitive does not depend on a caller's validation.
-            raise ValueError(f"indefinite-length tag at offset {pos}")
+            raise MalformedCbor(f"indefinite-length tag at offset {pos}")
         return _scan_item(buf, p, visit)
-    raise ValueError(f"unreachable CBOR major type {major}")
+    raise MalformedCbor(f"unreachable CBOR major type {major}")
 
 
 def _reject_rule4_head(major: int, ai: int, off: int) -> None:
@@ -351,7 +350,7 @@ def _scan_map_entries(
     if arg is None:
         while True:
             if p >= len(buf):
-                raise ValueError("unterminated indefinite-length map")
+                raise MalformedCbor("unterminated indefinite-length map")
             if buf[p] == CBOR_BREAK:
                 return out, p + 1
             ks = p
@@ -385,7 +384,7 @@ def _scan_array_items(buf: bytes, pos: int) -> tuple[list[tuple[int, int]], int]
     if arg is None:
         while True:
             if p >= len(buf):
-                raise ValueError("unterminated indefinite-length array")
+                raise MalformedCbor("unterminated indefinite-length array")
             if buf[p] == CBOR_BREAK:
                 return out, p + 1
             s = p
@@ -420,17 +419,17 @@ def _check_canonical_item(buf: bytes, pos: int) -> int:
     check EXPLICITLY, since it never materialises either type (#592
     findings A/B): a major-3 text string's content must be valid UTF-8
     (a `str`/`String` cannot hold anything else), and a major-7 item must
-    be one of false/true/null (`ciborium::Value`'s major-7 variants are
-    exactly `Bool`/`Null`/`Float`, with no generic "other simple value"
-    case -- `record.rs`/`block.rs`/manifest decode all reject the other
-    six major-7 shapes wholesale, not just inside an `unknown` subtree).
+    be one of false/true/null (measured 2026-09-15: ciborium reads
+    `undefined` as `null` rather than rejecting it, so the Rust decoders
+    reject it only through their re-encode -- and `record::decode` through
+    its byte walk since #641).
 
     Rule 2 (definite lengths), rule 3 (shortest-form heads), rule 4 (no
     floats, no tags).  Returns the offset one past the item; raises
     `NonCanonicalItem` -- a `ValueError` subclass carrying the rule NUMBER
-    as `.rule` -- on any numbered-rule violation, and a plain `ValueError`
-    on the two well-formedness properties named above plus the
-    buffer-bounds check, none of which carries a §6.2 number.
+    as `.rule` -- on any numbered-rule violation, and `MalformedCbor` (a
+    `ValueError`) on the two well-formedness properties named above plus
+    the buffer-bounds check, none of which carries a §6.2 number.
 
     Rules 1 and 5 -- map-key order and duplicate keys -- are deliberately
     NOT checked.  `docs/vault-format.md` §4.2's table marks both unenforced
@@ -456,11 +455,7 @@ def _check_canonical_item(buf: bytes, pos: int) -> int:
             # here, ai is always <= 24. Kept as defence in depth so this
             # primitive does not depend on a caller's validation.
             raise NonCanonicalItem(3, f"non-shortest simple value at offset {pos}")
-        if ai not in (20, 21, 22):     # RFC 8949 §3.3: false(20)/true(21)/null(22) only
-            raise ValueError(
-                f"RFC 8949 §3.3: major-7 value outside {{false, true, null}} "
-                f"at offset {pos} (ai={ai})"
-            )
+        require_false_true_or_null(ai, pos)
         return pos + head
     if ai != _shortest_ai(arg):
         raise NonCanonicalItem(3, f"non-shortest-form head at offset {pos} (ai={ai})")
@@ -469,14 +464,9 @@ def _check_canonical_item(buf: bytes, pos: int) -> int:
         return p
     if major in (2, 3):
         if p + arg > len(buf):
-            raise ValueError(f"string length {arg} overruns buffer at offset {pos}")
+            raise MalformedCbor(f"string length {arg} overruns buffer at offset {pos}")
         if major == 3:                 # RFC 8949 §3.1: text string content MUST be valid UTF-8
-            try:
-                buf[p : p + arg].decode("utf-8")
-            except UnicodeDecodeError as e:
-                raise ValueError(
-                    f"RFC 8949 §3.1: invalid UTF-8 in text string at offset {pos}: {e}"
-                ) from e
+            require_utf8(buf, p, p + arg, pos)
         return p + arg
     per = 1 if major == 4 else 2
     for _ in range(arg * per):

@@ -78,6 +78,7 @@ from conformance_lib.sections.sync_pass import section_sync_pass_kat
 from conformance_lib.sections.unknown_map import (
     section5_unknown_map_case_insensitivity,
 )
+from conformance_lib.sections.well_formed_walk import section_well_formed_walk
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,8 @@ SECTIONS: tuple[Section, ...] = (
             section_purge_scenario),
     Section("CS", "span-recording CBOR scanner unit coverage", " (§4.2, #592)",
             section_cbor_scanner_units),
+    Section("WF", "well-formedness walk, the twin of cbor::well_formed", " (#641)",
+            section_well_formed_walk),
     Section("MD", "manifest body duplicate-key-in-nested-map guard", " (#585)",
             section_manifest_body_duplicate_key_guard),
     Section("MDN", "manifest body nested block/trash-entry unknown-bag guard",
