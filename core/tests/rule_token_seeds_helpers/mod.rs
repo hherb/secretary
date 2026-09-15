@@ -82,8 +82,12 @@ pub fn base(target: &str) -> Vec<u8> {
 
 /// The token the Rust decoder names for `bytes`, or `None` if it accepts.
 ///
-/// The same decode → re-encode pipeline `differential_replay_helpers::rust_decoder`
-/// runs for the target.
+/// A copy of the decode → re-encode pipeline
+/// `differential_replay_helpers::rust_decoder` runs for the target. Nothing
+/// ties the two together: `rust_decoder` belongs to the `differential_replay`
+/// test target, which requires the `differential-replay` feature and which
+/// this target does not import, so a change to one arm must be mirrored in
+/// the other by hand.
 pub fn rust_token(target: &str, bytes: &[u8]) -> Option<RuleToken> {
     use secretary_core::vault::{block, record};
     match target {
