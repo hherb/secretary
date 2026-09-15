@@ -143,10 +143,12 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
     return issues, f"{target}: {len(seeds)} labelled seeds covering {len(named)} tokens"
 
 
-# Check 5 -- LOCAL parity-order assertions for `record`.  Two-fault bodies
-# built here, never committed: vault-format §6.3 states no report order, and a
-# committed cross-language row must not pin one (#618).  They pin the order
-# `py_decode_record` shares with `record::decode` by design.
+# Check 5 -- LOCAL parity-order assertions for `record` and `block_file`.
+# Two-fault bodies built here, never committed: vault-format §6.1 and §6.3
+# state no report order, and a committed cross-language row must not pin one
+# (#618, #668).  They pin the order `py_decode_record` shares with
+# `record::decode`, and the first-out-of-place-pair rule the block envelope
+# reader shares with `block.rs`, by design.
 #
 # A two-fault body pins an order only if its two faults, each ALONE, name
 # DIFFERENT tokens, and a drifted order actually reaches the other one first.
