@@ -142,7 +142,7 @@ That is a measured convenience, not a design choice, and the seeds pin it.
 | D3 | `wire/` | Fix, but scan `codec/` only | `wire/` enforces no acceptance set, so a default-deny scan there polices code the rule does not govern |
 | D4 | Scope after the sweep | Both mechanisms in one slice | One symptom, one audience; M2 is the more serious and splitting means writing the section package twice |
 | D5 | M2's raise classes | Reuse `WrongFieldType` / `IntegerOutOfRange` | Their tokens already equal Rust's (§1.3); inventing classes would add vocabulary for no distinction |
-| D6 | M2's structural rule | Make it unrepresentable (two sanctioned mechanisms), not detected by AST | The AST census was prototyped and failed: 1 true positive, 39 false positives, **and it missed `trash[].fingerprint`** — see §5 check 4 |
+| D6 | M2's structural rule | A two-way census over `KNOWN − REQUIRED`, satisfied by the behavioural cases; **not** an AST census and **not** a table-driven refactor | Both alternatives were prototyped against the real tree and rejected on measurement — see §5 check 4 |
 
 ---
 
@@ -235,57 +235,68 @@ subscript at all); and not every check is a `_check_*` call. A guard that
 misses the defect it was written for, at a 97% false-positive rate, gets
 allowlisted into silence.
 
-**So the rule does not detect the invalid state — it makes it unrepresentable.**
-Two mechanisms are sanctioned, because the package has two check ORDERS and one
-shape does not fit both:
+**A table-driven refactor was the second candidate, and it was rejected on
+measurement too.** Having each schema map declare a `*_VALUE_CHECKS` table that
+its decoder iterates would make a skipped key unrepresentable, and check 4
+would reduce to `{k for k, _ in TABLE} == KNOWN_KEYS`. But
+`_validate_manifest_shape` **interleaves** type and sentinel checks today —
+`_check_uint(manifest_version)`, then `!= V1`, then `_check_uint(format_version)`,
+then `!= V1` — and Rust's `parse_manifest_map` interleaves the same way by
+construction (#587 records exactly this). A table of type checks separates
+them, so a body with a bad `manifest_version` *sentinel* and a bad
+`format_version` *type* would flip which fault is reported. On a token-compared
+target that is a **new cross-language divergence, introduced by the guard meant
+to prevent divergences** — the #589 `Once::set` lesson arriving from the other
+direction. Deferred to #678 as hardening against a class no measurement has
+observed; not built here on spec.
 
-- **Mechanism A — a total dispatch with a loud fall-through.** For decoders
-  that check values in **wire order**, a single `check_*_value(key, value)`
-  dispatch whose `else` raises `UncheckedKnownKey` — a `RuntimeError`,
-  deliberately outside `conformance_lib.rejection`'s verdict allowlist, so the
-  replay scores it a harness failure rather than a rejection. `record.py`
-  already works this way (#641's M8 fix); this slice does not refactor it, it
-  starts *enforcing* it.
-- **Mechanism B — a declared `*_VALUE_CHECKS` table the decoder iterates.** For
-  decoders that check in **schema order**. Declared beside its `*_KNOWN_KEYS`
-  constant so the two cannot drift, as an ordered tuple of pairs rather than a
-  dict — order becomes a declared property instead of an incidental one.
+**What check 4 actually is: the defect was about OPTIONAL keys, so the rule is
+about optional keys.** `TrashEntry`'s two `Option` fields were declared in
+`TRASH_ENTRY_KNOWN_KEYS` and excluded from `TRASH_ENTRY_REQUIRED_KEYS` — the
+presence census honoured that and the type check never followed. So:
 
-Check 4 is then exact, with no AST analysis, no allowlist and no false
-positives:
+> Every key in `KNOWN − REQUIRED`, for every key set under `codec/`, must have a
+> wrong-type behavioural case. Two-way census.
 
-- For every `*_KNOWN_KEYS` constant under `codec/`, exactly one mechanism must
-  cover it. Covered by neither is a FAILURE — default-deny, so a new schema map
-  cannot arrive uncovered.
-- **Mechanism B is a two-way set comparison:** `{k for k, _ in TABLE} ==
-  KNOWN_KEYS`. A declared key missing from the table fails; a table entry for a
-  key not declared fails.
-- **Mechanism A is a behavioural totality probe:** call the dispatch once per
-  declared key and require it not to raise `UncheckedKnownKey`. Behavioural,
-  not textual, so an aliased or restructured dispatch cannot evade it.
+Measured across the real tree — **7 optional keys**, which is the entire
+population the rule governs:
 
-A key cannot be skipped under either mechanism, because the decoder cannot
-iterate past a table row and cannot fall through a total dispatch.
+| Key set | `KNOWN − REQUIRED` |
+|---|---|
+| `TRASH_ENTRY_*` | `fingerprint`, `purged_at_ms` ← **the defect** |
+| `RECORD_KNOWN_KEYS` | `tags`, `tombstone`, `tombstoned_at_ms` (already checked, via mechanism A) |
+| `trash_entry.py` `KNOWN_KEYS` | `fingerprint`, `purged_at_ms` |
+| `MANIFEST_*`, `BLOCK_ENTRY_*`, `KDF_PARAMS_*`, `VECTOR_CLOCK_ENTRY_*`, `RECORD_FIELD_*`, `KNOWN_CARD_KEYS` | none |
 
-**The cost, stated rather than discovered later.** Under mechanism B the check
-order becomes table order. `manifest_body` is token-compared, so for a body
-with two faults in one map, which key is reported is observable. The tables
-must therefore reproduce today's order exactly for every existing key, with the
-two new optional-key checks appended where the source already put optional
-handling — and that must be proven by execution (the whole suite, the committed
-seeds and a full-corpus replay), not by reading. This is the #589 `Once::set`
-lesson: changing the control flow around a check changes which error a
-multi-fault body reports, silently, on a v1-frozen decoder.
+The cases that satisfy it are the §5 check 1 cases, so the rule costs almost
+nothing beyond the census itself. It has no AST analysis, no allowlist, no
+false positives and no order risk — and, unlike the AST version, **it would
+have caught this defect**, which is the bar any replacement had to clear.
 
-Which mechanism each map takes:
+**Companion — mechanism A totality.** For a decoder that checks in wire order
+through a `check_*_value(key, value)` dispatch, the guarantee is that the
+dispatch is TOTAL: `record.py`'s `else` raises `UncheckedKnownKey`, a
+`RuntimeError` deliberately outside `conformance_lib.rejection`'s verdict
+allowlist so the replay scores it a harness failure rather than a rejection
+(#641's M8 fix). Check 4b calls the dispatch once per declared key and requires
+it not to raise that. Behavioural, not textual, so an aliased or restructured
+dispatch cannot evade it. `record.py` is **not refactored** — the rule starts
+enforcing what it already does.
 
-| Map | Mechanism | Change |
-|---|---|---|
-| `RECORD_KNOWN_KEYS`, `RECORD_FIELD_KNOWN_KEYS` | A | none — already total; now enforced |
-| `MANIFEST_KNOWN_KEYS`, `BLOCK_ENTRY_*`, `TRASH_ENTRY_*`, `KDF_PARAMS_*`, `VECTOR_CLOCK_ENTRY_*` | B | new tables; this is where the defect was |
-| `KNOWN_CARD_KEYS` | B | new table |
-| `codec/vault_toml.py` | B | new table, plus a top-level key constant it currently lacks |
-| `codec/trash_entry.py` | B | new table |
+**The pairing must be DECLARED, not inferred**, and that is a measured finding
+rather than a preference: the five files use five different naming conventions
+(`*_KNOWN_KEYS`/`*_REQUIRED_KEYS`, `KNOWN_CARD_KEYS`/`REQUIRED_CARD_FIELDS`,
+`RECORD_FIELD_KNOWN_KEYS`/`REQUIRED_FIELD_KEYS`, `KNOWN_KEYS`/`REQUIRED`, and
+`KNOWN_KDF_KEYS` with no required set at all). A stem heuristic mis-paired six
+of ten sets when prototyped. The section therefore carries an explicit pairing
+table, censused two ways against the key sets discovered under `codec/`, so a
+new key set with no declared pairing FAILS rather than being skipped.
+
+**One gap the census surfaced:** `codec/vault_toml.py` declares
+`KNOWN_KDF_KEYS` and no required set. Every field of Rust's `KdfSectionWire` is
+non-`Option`, so all six are required; the slice adds
+`REQUIRED_KDF_KEYS = KNOWN_KDF_KEYS` to make the pairing total and the claim
+explicit.
 
 **Check 5 — the seed files are present and label-bound on the Python side**,
 the counterpart of the Rust generator in §6.
@@ -303,15 +314,21 @@ keeps re-finding:
 - **Check 3 reads TEXT.** `isinstance` is matched by spelling, so
   `from builtins import isinstance as _ii` evades it, as does any
   metaprogrammed call. This is the same limit every hygiene guard here carries.
-- **Check 4 does not read text at all**, so it has none of those limits.
-  Mechanism B is a set comparison over an evaluated constant and mechanism A is
-  a behavioural probe — an alias or a restructured dispatch changes neither.
-  Its limit is different and narrower: it governs only key sets it can
-  *discover*, and discovery is by name shape. A schema map whose key set is
-  built dynamically, or named outside the `KNOWN`/`REQUIRED` shape, is invisible
-  to it — not mis-reported, simply not covered. The two-way comparison also
-  says nothing about whether a table row's check is the *right* check; that is
-  what the behavioural cases and the seeds are for.
+- **Check 4 does not read text at all**, so it has none of those limits: it is
+  a set comparison over AST-evaluated literal constants plus a behavioural
+  probe. Its limits are different, narrower, and must be named rather than left
+  to be inferred from "structural rule":
+  - **It governs OPTIONAL keys only.** A *required* key losing its type check
+    is a real defect this rule does not see. No measurement has observed one —
+    the sweep found zero — and #678 is where that class is addressed if it ever
+    is. Do not describe check 4 as covering "every key".
+  - **It governs only key sets it can discover**, and discovery is by name
+    shape (`KNOWN`/`REQUIRED`). A key set built dynamically, or named outside
+    that shape, is invisible — not mis-reported, simply not covered. The
+    two-way pairing census is what stops a *newly added* set being silently
+    skipped.
+  - **It says nothing about whether a case asserts the RIGHT thing.** That is
+    what check 2's ambiguity control and the committed seeds are for.
 
 ---
 
@@ -378,9 +395,10 @@ Mutation rows, gate named per row, `scripts/mutate.py`, `--self-test` first:
 | A seed's planted bytes collapse onto a sibling's | the generator's byte-identity + distinctness test |
 | Check 2's ambiguity control removed | its own negative control |
 | The section left out of `registry.py` | Section REG |
-| A key removed from a `*_VALUE_CHECKS` table | check 4, mechanism B, both directions |
-| `check_record_value`'s `UncheckedKnownKey` fall-through replaced by a silent `pass` | check 4, mechanism A |
-| A `*_VALUE_CHECKS` table reordered | the existing order tests and RTS check 5 — the §5 order cost, demonstrated rather than asserted |
+| An optional key's behavioural case deleted | check 4, the `KNOWN − REQUIRED` census |
+| A key moved from `*_REQUIRED_KEYS` into optional with no case added | check 4, the same census, the other direction |
+| `check_record_value`'s `UncheckedKnownKey` fall-through replaced by a silent `pass` | check 4b, the mechanism-A totality probe |
+| A `codec/` key set renamed outside the pairing table | check 4's pairing census |
 
 Plus the full gate set from the baton's §(5), and a full-corpus differential
 replay with the runtime corpus symlinked in and removed afterwards.
@@ -398,8 +416,8 @@ New:
 
 Changed:
 - `codec/{card,vault_toml,trash_entry,manifest_decode,record_rules}.py`
-- `codec/manifest_schema.py` (the five `*_VALUE_CHECKS` tables, beside their
-  key constants)
+- `codec/manifest_schema.py` (unchanged constants; read by check 4's census)
+- `codec/vault_toml.py` gains `REQUIRED_KDF_KEYS` so its pairing is total
 - `wire/vault_toml.py`
 - `sections/registry.py`
 - `core/tests/differential_replay_helpers/targets.rs` (`MIN_CORPUS_INPUTS`)
