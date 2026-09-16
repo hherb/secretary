@@ -142,6 +142,7 @@ That is a measured convenience, not a design choice, and the seeds pin it.
 | D3 | `wire/` | Fix, but scan `codec/` only | `wire/` enforces no acceptance set, so a default-deny scan there polices code the rule does not govern |
 | D4 | Scope after the sweep | Both mechanisms in one slice | One symptom, one audience; M2 is the more serious and splitting means writing the section package twice |
 | D5 | M2's raise classes | Reuse `WrongFieldType` / `IntegerOutOfRange` | Their tokens already equal Rust's (§1.3); inventing classes would add vocabulary for no distinction |
+| D6 | M2's structural rule | Make it unrepresentable (two sanctioned mechanisms), not detected by AST | The AST census was prototyped and failed: 1 true positive, 39 false positives, **and it missed `trash[].fingerprint`** — see §5 check 4 |
 
 ---
 
@@ -215,28 +216,76 @@ built to avoid.
 outside `integer_rules.py`. Keyed on the construct that *imposes* the
 exclusion, not on statement form, per the #605 lesson.
 
-**Check 4 — M2, two-way census.** Stated precisely, because "every schema map"
-is where this rule would otherwise drift:
+**Check 4 — M2, coverage by a sanctioned mechanism.**
 
-- A *schema map* is discovered by NAME SHAPE, the way
-  `required_key_structure.py` discovers a required-key set: a module-level set
-  constant under `codec/` named `KNOWN_*`, `*_KEYS` or `*_FIELDS`. The rule
-  resolves no names and evaluates nothing.
-- For each such constant, every string literal it contains must appear as a
-  **subscript of the decoded map** (`t["fingerprint"]`) or as a membership test
-  (`"fingerprint" in t`) inside the same enclosing function that reads it, AND
-  that read must flow into a call to one of the module's type-check helpers.
-- Both directions: a declared key with no checked read fails, and a checked
-  read of a key absent from the constant fails. The second direction is what
-  stops a key being quietly renamed in one place.
+The first version of this check was an AST census: discover `*_KNOWN_KEYS`
+constants by name shape, then require each declared key to reach a type-check
+call. **It was prototyped against the real tree before this spec was approved,
+and it does not work** — 40 findings: **1 true positive, 39 false positives,
+and 1 false negative.** The false negative is disqualifying on its own: it
+missed `trash[].fingerprint`, one of the two gaps this slice exists to close,
+because a package-global key set sees `fingerprint` checked under `blocks[]`
+and credits `trash[]` with it.
 
-This is the check that would have caught the two trash keys, and it is the
-reason M2 gets a structural rule rather than two lines and a test. Where a
-decoder's shape makes the flow analysis unreliable — a key read through a loop
-variable rather than a literal — the rule reports the position as UNCHECKABLE
-and fails, rather than passing it silently; default-deny, as every other guard
-in this repo. Any position that genuinely cannot be expressed gets an
-explicitly reviewed allowlist row, not a widened rule.
+Four structural causes, none of them tuning: keys are not scoped to their map;
+checks reach values through local bindings (`cv = decoded["card_version"]`,
+then `isinstance(cv, int)`); checks are loop-mediated
+(`for name in (...): _check_uint(kdf[name], ...)`, which has no literal
+subscript at all); and not every check is a `_check_*` call. A guard that
+misses the defect it was written for, at a 97% false-positive rate, gets
+allowlisted into silence.
+
+**So the rule does not detect the invalid state — it makes it unrepresentable.**
+Two mechanisms are sanctioned, because the package has two check ORDERS and one
+shape does not fit both:
+
+- **Mechanism A — a total dispatch with a loud fall-through.** For decoders
+  that check values in **wire order**, a single `check_*_value(key, value)`
+  dispatch whose `else` raises `UncheckedKnownKey` — a `RuntimeError`,
+  deliberately outside `conformance_lib.rejection`'s verdict allowlist, so the
+  replay scores it a harness failure rather than a rejection. `record.py`
+  already works this way (#641's M8 fix); this slice does not refactor it, it
+  starts *enforcing* it.
+- **Mechanism B — a declared `*_VALUE_CHECKS` table the decoder iterates.** For
+  decoders that check in **schema order**. Declared beside its `*_KNOWN_KEYS`
+  constant so the two cannot drift, as an ordered tuple of pairs rather than a
+  dict — order becomes a declared property instead of an incidental one.
+
+Check 4 is then exact, with no AST analysis, no allowlist and no false
+positives:
+
+- For every `*_KNOWN_KEYS` constant under `codec/`, exactly one mechanism must
+  cover it. Covered by neither is a FAILURE — default-deny, so a new schema map
+  cannot arrive uncovered.
+- **Mechanism B is a two-way set comparison:** `{k for k, _ in TABLE} ==
+  KNOWN_KEYS`. A declared key missing from the table fails; a table entry for a
+  key not declared fails.
+- **Mechanism A is a behavioural totality probe:** call the dispatch once per
+  declared key and require it not to raise `UncheckedKnownKey`. Behavioural,
+  not textual, so an aliased or restructured dispatch cannot evade it.
+
+A key cannot be skipped under either mechanism, because the decoder cannot
+iterate past a table row and cannot fall through a total dispatch.
+
+**The cost, stated rather than discovered later.** Under mechanism B the check
+order becomes table order. `manifest_body` is token-compared, so for a body
+with two faults in one map, which key is reported is observable. The tables
+must therefore reproduce today's order exactly for every existing key, with the
+two new optional-key checks appended where the source already put optional
+handling — and that must be proven by execution (the whole suite, the committed
+seeds and a full-corpus replay), not by reading. This is the #589 `Once::set`
+lesson: changing the control flow around a check changes which error a
+multi-fault body reports, silently, on a v1-frozen decoder.
+
+Which mechanism each map takes:
+
+| Map | Mechanism | Change |
+|---|---|---|
+| `RECORD_KNOWN_KEYS`, `RECORD_FIELD_KNOWN_KEYS` | A | none — already total; now enforced |
+| `MANIFEST_KNOWN_KEYS`, `BLOCK_ENTRY_*`, `TRASH_ENTRY_*`, `KDF_PARAMS_*`, `VECTOR_CLOCK_ENTRY_*` | B | new tables; this is where the defect was |
+| `KNOWN_CARD_KEYS` | B | new table |
+| `codec/vault_toml.py` | B | new table, plus a top-level key constant it currently lacks |
+| `codec/trash_entry.py` | B | new table |
 
 **Check 5 — the seed files are present and label-bound on the Python side**,
 the counterpart of the Rust generator in §6.
@@ -246,12 +295,23 @@ shape and the count moves 32 → 33.
 
 ### 5.1 Stated limits
 
-Both structural rules read TEXT, not resolved names, and the LIMITS block will
-say so in the section's own file rather than here: an `import … as` alias
-evades check 3, a schema map built dynamically evades check 4's key census, and
-neither rule sees macro- or metaprogramming-generated code. These are the same
-limits every hygiene guard in this repo carries, and they are recorded so a
-future reader does not mistake the rule for a proof.
+The LIMITS block lives in `value_type_structure.py` rather than here, so the
+rules and their limits cannot drift apart. The two rules have **different**
+limits, and flattening them into one sentence is the failure mode this repo
+keeps re-finding:
+
+- **Check 3 reads TEXT.** `isinstance` is matched by spelling, so
+  `from builtins import isinstance as _ii` evades it, as does any
+  metaprogrammed call. This is the same limit every hygiene guard here carries.
+- **Check 4 does not read text at all**, so it has none of those limits.
+  Mechanism B is a set comparison over an evaluated constant and mechanism A is
+  a behavioural probe — an alias or a restructured dispatch changes neither.
+  Its limit is different and narrower: it governs only key sets it can
+  *discover*, and discovery is by name shape. A schema map whose key set is
+  built dynamically, or named outside the `KNOWN`/`REQUIRED` shape, is invisible
+  to it — not mis-reported, simply not covered. The two-way comparison also
+  says nothing about whether a table row's check is the *right* check; that is
+  what the behavioural cases and the seeds are for.
 
 ---
 
@@ -318,6 +378,9 @@ Mutation rows, gate named per row, `scripts/mutate.py`, `--self-test` first:
 | A seed's planted bytes collapse onto a sibling's | the generator's byte-identity + distinctness test |
 | Check 2's ambiguity control removed | its own negative control |
 | The section left out of `registry.py` | Section REG |
+| A key removed from a `*_VALUE_CHECKS` table | check 4, mechanism B, both directions |
+| `check_record_value`'s `UncheckedKnownKey` fall-through replaced by a silent `pass` | check 4, mechanism A |
+| A `*_VALUE_CHECKS` table reordered | the existing order tests and RTS check 5 — the §5 order cost, demonstrated rather than asserted |
 
 Plus the full gate set from the baton's §(5), and a full-corpus differential
 replay with the runtime corpus symlinked in and removed afterwards.
@@ -335,6 +398,8 @@ New:
 
 Changed:
 - `codec/{card,vault_toml,trash_entry,manifest_decode,record_rules}.py`
+- `codec/manifest_schema.py` (the five `*_VALUE_CHECKS` tables, beside their
+  key constants)
 - `wire/vault_toml.py`
 - `sections/registry.py`
 - `core/tests/differential_replay_helpers/targets.rs` (`MIN_CORPUS_INPUTS`)
