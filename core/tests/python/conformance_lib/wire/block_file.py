@@ -11,7 +11,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from conformance_lib.constants import AEAD_NONCE_LEN, AEAD_TAG_LEN, BLOCK_UUID_LEN, DEVICE_UUID_LEN, ED25519_SIG_LEN, FILE_KIND_BLOCK, FINGERPRINT_LEN, FORMAT_VERSION, MAGIC, ML_DSA_65_SIG_LEN, ML_KEM_768_CT_LEN, SUITE_ID, VAULT_UUID_LEN, WRAP_CT_LEN, WRAP_NONCE_LEN, WRAP_TAG_LEN, X25519_PK_LEN
-from conformance_lib.cursor import Cursor, ParseError, take, take_u16, take_u32, take_u64
+from conformance_lib.cursor import Cursor, take, take_u16, take_u32, take_u64
+from conformance_lib.wire.envelope_rules import (
+    EnvelopeBadMagic,
+    EnvelopeEd25519SignatureLength,
+    EnvelopeMlDsaSignatureLength,
+    EnvelopeNoRecipients,
+    EnvelopeTrailingBytes,
+    EnvelopeWrongFileKind,
+    UnsupportedEnvelopeVersion,
+    check_ascending_distinct,
+)
 
 # ---------------------------------------------------------------------------
 # §6.1 binary layout parser
@@ -72,19 +82,19 @@ def parse_header(cur: Cursor) -> tuple[BlockHeader, Cursor]:
     """Parse §6.1 file header through end of vector_clock_entries."""
     magic, cur = take_u32(cur, "magic")
     if magic != MAGIC:
-        raise ParseError(f"bad magic: got 0x{magic:08x}, expected 0x{MAGIC:08x}")
+        raise EnvelopeBadMagic(f"bad magic: got 0x{magic:08x}, expected 0x{MAGIC:08x}")
 
     format_version, cur = take_u16(cur, "format_version")
     if format_version != FORMAT_VERSION:
-        raise ParseError(f"unsupported format_version: 0x{format_version:04x}")
+        raise UnsupportedEnvelopeVersion(f"unsupported format_version: 0x{format_version:04x}")
 
     suite_id, cur = take_u16(cur, "suite_id")
     if suite_id != SUITE_ID:
-        raise ParseError(f"unsupported suite_id: 0x{suite_id:04x}")
+        raise UnsupportedEnvelopeVersion(f"unsupported suite_id: 0x{suite_id:04x}")
 
     file_kind, cur = take_u16(cur, "file_kind")
     if file_kind != FILE_KIND_BLOCK:
-        raise ParseError(
+        raise EnvelopeWrongFileKind(
             f"wrong file_kind: 0x{file_kind:04x}, expected block 0x{FILE_KIND_BLOCK:04x}"
         )
 
@@ -101,9 +111,7 @@ def parse_header(cur: Cursor) -> tuple[BlockHeader, Cursor]:
         vector_clock.append(VectorClockEntry(device_uuid=device_uuid, counter=counter))
 
     # §6.1 strict invariant: ascending lexicographic by device_uuid, no dups.
-    for prev, nxt in zip(vector_clock, vector_clock[1:]):
-        if prev.device_uuid >= nxt.device_uuid:
-            raise ParseError("vector_clock entries not strictly ascending by device_uuid")
+    check_ascending_distinct([e.device_uuid for e in vector_clock], "vector_clock entries", "device_uuid")
 
     header = BlockHeader(
         magic=magic,
@@ -139,7 +147,7 @@ def parse_recipient_entry(cur: Cursor, idx: int) -> tuple[RecipientEntry, Cursor
 def parse_recipient_table(cur: Cursor) -> tuple[list[RecipientEntry], Cursor]:
     count, cur = take_u16(cur, "recipient_count")
     if count == 0:
-        raise ParseError("§6.2: recipient_count must be non-zero (owner is always a recipient)")
+        raise EnvelopeNoRecipients("§6.2: recipient_count must be non-zero (owner is always a recipient)")
 
     recipients: list[RecipientEntry] = []
     for i in range(count):
@@ -147,9 +155,7 @@ def parse_recipient_table(cur: Cursor) -> tuple[list[RecipientEntry], Cursor]:
         recipients.append(entry)
 
     # §6.2: ascending by fingerprint, no dups.
-    for prev, nxt in zip(recipients, recipients[1:]):
-        if prev.fingerprint >= nxt.fingerprint:
-            raise ParseError("recipient_entries not strictly ascending by fingerprint")
+    check_ascending_distinct([r.fingerprint for r in recipients], "recipient_entries", "fingerprint")
 
     return recipients, cur
 
@@ -166,13 +172,13 @@ def parse_signature_suffix(cur: Cursor) -> tuple[SignatureSuffix, Cursor]:
     author, cur = take(cur, FINGERPRINT_LEN, "author_fingerprint")
     sig_ed_len, cur = take_u16(cur, "sig_ed_len")
     if sig_ed_len != ED25519_SIG_LEN:
-        raise ParseError(
+        raise EnvelopeEd25519SignatureLength(
             f"sig_ed_len: got {sig_ed_len}, expected {ED25519_SIG_LEN} (§14)"
         )
     sig_ed, cur = take(cur, sig_ed_len, "sig_ed")
     sig_pq_len, cur = take_u16(cur, "sig_pq_len")
     if sig_pq_len != ML_DSA_65_SIG_LEN:
-        raise ParseError(
+        raise EnvelopeMlDsaSignatureLength(
             f"sig_pq_len: got {sig_pq_len}, expected {ML_DSA_65_SIG_LEN} (§14)"
         )
     sig_pq, cur = take(cur, sig_pq_len, "sig_pq")
@@ -189,7 +195,7 @@ def parse_block_file(buf: bytes) -> ParsedBlockFile:
     aead, cur = parse_aead_section(cur)
     sig, cur = parse_signature_suffix(cur)
     if cur.remaining() != 0:
-        raise ParseError(
+        raise EnvelopeTrailingBytes(
             f"trailing bytes after signature suffix: {cur.remaining()} bytes left"
         )
     return ParsedBlockFile(header=header, recipients=recipients, aead=aead, signature=sig)

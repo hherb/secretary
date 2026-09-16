@@ -29,7 +29,7 @@ core/tests/          — integration tests; tests/data/ holds KATs and fuzz regr
 core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (156 lines; the PEP
                                              723 header is the sole dependency declaration).
                                              `conformance.py:NNN` citations predating #593 are
-                                             stale — the verifier is now a 66-file package.
+                                             stale — the verifier is now a 72-file package.
                                              RE-MEASURE: `find core/tests/python/conformance_lib
                                              -name '*.py' | wc -l` — this line said 62 while the
                                              paragraph below said 65 for a whole slice.
@@ -112,9 +112,11 @@ cargo test --release --locked -p secretary-core \
 # isolation, which conformance Section DRS checks rather than assumes, over
 # the committed corpus only.
 #
-# CI replays the 50 committed inputs (no `corpus/` there). The 5.98 s test body
+# CI replays the 107 committed inputs (no `corpus/` there). The 5.98 s test body
 # and 36 s step quoted in #656 measured the per-input spawn; re-measure before
 # quoting a CI figure. Do not compare a STEP duration against a test body.
+# #641 added 57 generated single-fault seeds for block_file and record; regenerate with
+# `cargo test --release --locked -p secretary-core --test rule_token_seeds -- --ignored generate_rule_token_seeds`.
 #
 # `-p secretary-core` is not a way to avoid rebuilding the CLI and bridge
 # crates — `core`'s [dev-dependencies] pull in the bridge, which depends on
@@ -375,11 +377,15 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 156, over a **66**-file package whose largest module is
+was 6849 lines; it is now 156, over a **72**-file package whose largest module is
 `sections/manifest_canonicality_cause.py` at **486** lines, ahead of
-`codec/scanner.py` at 484, `codec/manifest_decode.py` at 418,
+`codec/scanner.py` at 476, `codec/manifest_decode.py` at 418,
 `sections/required_key_determinism.py` at 390 and `merge/records.py` at 383.
-Re-measured at #655, which grew the entrypoint 136 -> 156 (the
+Re-measured at #641, which added six modules (66 -> 72) and SHRANK
+`scanner.py` 484 -> 474 by moving its UTF-8 and simple-value predicates out to
+`codec/cbor_faults.py` (476 after that slice's review round lengthened one
+docstring), without moving the top five. Before that, re-measured at #655,
+which grew the entrypoint 136 -> 156 (the
 `--diff-replay-serve` branch) and added `sections/diff_replay_serve.py`
 without moving the top five. Before that, re-measured at #634, which grew `scanner.py` 468 -> 484 and
 `manifest_decode.py` 405 -> 418 (both gained rule tokens) and added
@@ -863,7 +869,8 @@ out — it has been wrong twice:
   onto two ideas of which rows the fixture holds. It defines no
   `section*` driver, so Section REG discovers it and reports the full count
   (26/26 at #613; 27/27 after #587's Section MSN; 28/28 after #618's Section
-  MPR; 29/29 after #634's Section RTV; **30/30** since #655 added Section DRS).
+  MPR; 29/29 after #634's Section RTV; 30/30 after #655's Section DRS; **32/32**
+  since #641 added Sections RTS and WF).
 
 **WHICH rule a rejecting reader names is now normative, and getting there
 found a live divergence (#618).** A body can break several rules at once;
@@ -1006,14 +1013,19 @@ survived it. Six things:
   `Unclassified`, while `conformance.py` names them exactly. There is therefore
   no `trailing_bytes` token. That is coarsening, not a lie; the `detail` text
   stays specific.
-- **`tokens_agree` tolerates a mismatch iff either token is phase-dependent**,
+- **`tokens_agree` tolerates a mismatch iff either token is phase-dependent** — **on `manifest_body` only** since #641, which made the licence per TARGET (`PHASE_DEPENDENT_TOLERANCE_TARGETS`): §4.2's two reader designs are the manifest body's, so `record` and `block_file` compare strictly with 0 tolerated pairs, and the breadth test pins both figures —,
   which is DERIVED from §4.2's "deliberately unspecified" paragraphs and is
   strictly BROADER than them — do not write "it IS that sentence", which five
   documents did, the fifth being the shared JSON fixture BOTH languages read.
   **State the breadth as a number, because the list-of-exceptions form has now
   been wrong twice.** A per-TOKEN predicate tolerates every pair its token
-  appears in, so with 4 of the 17 tokens phase-dependent it tolerates **58 of
-  the 136 unequal pairs**; §4.2 frees a strict subset. All four
+  appears in, so with 4 of the 17 tokens phase-dependent it tolerates **54 of
+  the 136 unequal pairs**; §4.2 frees a strict subset. That is 58 pairs with a
+  phase-dependent member, less the four pairing one with `malformed_cbor`,
+  which is never tolerated: §4.2 makes well-formedness the precondition for
+  both orderings. Withholding it came from the PR #673 review, which measured
+  Python's newly tokened scanner raises turning a would-be harness failure into
+  agreement for `undefined` and nested-chunk manifest bodies. All four
   `NonCanonicalCause` outcomes map to phase-dependent tokens, so **every**
   `NonCanonicalEncoding` rejection Rust makes is scored as agreement whatever
   Python said — measured on the committed corpus, that is **17 of the 24
@@ -1042,14 +1054,26 @@ survived it. Six things:
   failure; an UNRECOGNISED one is an ordinary disagreement (`tokens_agree`
   returns `false`) — "unrecognised OR missing is a harness failure" is wrong
   about the first half, though both red the test.
-- **Only `manifest_body` is token-compared. `manifest_file` is BLOCKED, and the
+- **`manifest_body`, `block_file` and `record` are token-compared (#634, #641). `manifest_file` is BLOCKED, and the
   reason generalises: sharing an error enum is not sharing a granularity.**
   Measured on one file with `format_version = 0x0099`, Rust says
   `UnsupportedFormatVersion` (token `unsupported_version`) and Python says
   `ParseError` (token `container_malformed`). No mapping reconciles it —
   `header.rs` and the BODY sentinel check raise the same variant, so a per-variant
   token cannot tell the layers apart, and `ParseError` is one class shared by every
-  target's wire decoder (#640). The other five targets are #641. The classification
+  target's wire decoder (#640). `contact_card`, `bundle_file` and `vault_toml` remain #641. `record`
+  needed its Python decoder reordered into `record::decode`'s phase order and a byte-level
+  well-formedness walk that runs before anything is interpreted, in both languages: in Rust
+  in front of ciborium's parse (ciborium reads `undefined` and the two-byte simple forms as
+  ordinary simple values, turns a bignum that fits 64 bits into an integer and accepts nested
+  indefinite chunks — rejected anyway, but under a later rule; `cbor/well_formed.rs`'s module
+  doc names the rule each breaks), in Python in front of `py_decode_record`'s map-head and key
+  reads, which never parse the body through `cbor2`. `block_file` needed no decoder
+  reordering, only Python-side typing: its merged sort/repeat check split, and its
+  `format_version`/`suite_id` raises typed `unsupported_version` where they had been plain
+  `ParseError`. Both have committed single-fault seeds, generated and label-bound by
+  `core/tests/rule_token_seeds.rs` and Section RTS, so CI makes a strict comparison per seed;
+  the orders they rely on are PARITY, not spec (§6.1/§6.3 fix none; #668). The classification
   table must PARTITION `TARGETS`, so a new target cannot default into the loose
   behaviour.
 - **The tolerance has a committed WITNESS**, because every other corpus row breaks
@@ -1102,7 +1126,8 @@ survived it. Six things:
   because that is how the #647 gap itself survived three slices.
   **State the residual scope exactly, because the wider claim is the one
   someone will want to make.** CI replays the COMMITTED corpus only —
-  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, 50 inputs today.
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, 107 inputs today (#641
+  added 57 generated single-fault seeds for `block_file` and `record`).
   `core/fuzz/corpus/` is **gitignored**, so agreement on fuzz-DISCOVERED
   inputs is still proven only by whoever runs the fuzzer, and "the differential
   replay is in CI" must not be read as "the fuzz corpus is differentially

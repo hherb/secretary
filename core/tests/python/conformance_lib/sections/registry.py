@@ -70,6 +70,7 @@ from conformance_lib.sections.required_key_determinism import (
     section_required_key_determinism,
 )
 from conformance_lib.sections.revoke import section_revoke_kat
+from conformance_lib.sections.rule_token_seeds import section_rule_token_seeds
 from conformance_lib.sections.rule_token_vocabulary import (
     section_rule_token_vocabulary,
 )
@@ -77,6 +78,7 @@ from conformance_lib.sections.sync_pass import section_sync_pass_kat
 from conformance_lib.sections.unknown_map import (
     section5_unknown_map_case_insensitivity,
 )
+from conformance_lib.sections.well_formed_walk import section_well_formed_walk
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,8 @@ SECTIONS: tuple[Section, ...] = (
             section_purge_scenario),
     Section("CS", "span-recording CBOR scanner unit coverage", " (§4.2, #592)",
             section_cbor_scanner_units),
+    Section("WF", "well-formedness walk, the twin of cbor::well_formed", " (#641)",
+            section_well_formed_walk),
     Section("MD", "manifest body duplicate-key-in-nested-map guard", " (#585)",
             section_manifest_body_duplicate_key_guard),
     Section("MDN", "manifest body nested block/trash-entry unknown-bag guard",
@@ -164,6 +168,8 @@ SECTIONS: tuple[Section, ...] = (
             " (#597)", section_required_key_determinism),
     Section("DRS", "diff-replay serve mode matches single-shot, input by input",
             " (#655)", section_diff_replay_serve),
+    Section("RTS", "rule-token seeds are rejected with the rule their file names",
+            " (#641)", section_rule_token_seeds),
     # Last on purpose: it reports on the table above, so it reads as a summary
     # of the run rather than as a precondition for it.
     Section("REG", "section registry completeness", " (#593)",

@@ -191,8 +191,8 @@ There are exactly three valid output shapes:
   reject missing either is a harness failure, as an accept missing
   `reencoded_b64` already was (#662 review).
 - **`rule` is compared** (#634), for the targets in
-  `differential_replay_helpers/targets.rs::TOKEN_COMPARED_TARGETS` — today `manifest_body`
-  and nothing else. It is one of the tokens in
+  `differential_replay_helpers/targets.rs::TOKEN_COMPARED_TARGETS` — today `manifest_body`,
+  `block_file` and `record` (#641). It is one of the tokens in
   `core/tests/data/rule_token_vocabulary.json`, which the Rust enum
   `secretary_core::vault::manifest::RuleToken` and Section RTV both check
   themselves against, so the two languages cannot drift onto different
@@ -203,11 +203,17 @@ There are exactly three valid output shapes:
   silently restoring the blindness this field removed.
 - A token mismatch is a disagreement **unless either token is
   phase-dependent**, in which case `docs/vault-format.md` §4.2 generally
-  declares the order unspecified and both readers are conformant. The
-  predicate lives on `RuleToken::is_phase_dependent` and is **derived from**
+  declares the order unspecified and both readers are conformant. Since #641
+  that tolerance applies on manifest_body only
+  (`PHASE_DEPENDENT_TOLERANCE_TARGETS`); `block_file` and `record` compare
+  strictly. The predicate lives on `RuleToken::is_phase_dependent` and is
+  **derived from**
   §4.2's "deliberately unspecified" paragraphs rather than being them — a
   per-token predicate is strictly BROADER than a per-pair rule: it tolerates
-  **58 of the 136 unequal token pairs**, and the FOUR groups it tolerates
+  **54 of the 136 unequal token pairs** (58 have a phase-dependent member;
+  the four pairing one with `malformed_cbor` are withheld, because §4.2 makes
+  well-formedness a precondition that outranks every rule), and the FOUR
+  groups it tolerates
   that §4.2 does not license are written out in that method's own LIMITS
   block. Read "generally declares the order unspecified" above with that in
   mind — because all four `NonCanonicalCause` outcomes map to phase-dependent

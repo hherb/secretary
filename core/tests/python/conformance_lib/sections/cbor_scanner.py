@@ -6,6 +6,7 @@ forward-compat `unknown` subtree path depends on.
 
 from __future__ import annotations
 
+from conformance_lib.codec.cbor_faults import MalformedCbor
 from conformance_lib.codec.scanner import (
     DuplicateMapKey,
     NonCanonicalItem,
@@ -71,11 +72,16 @@ def section_cbor_scanner_units() -> tuple[bool, list[str]]:
     # Dropping the base aborts the whole run at this section with a raw
     # traceback and no `FAIL:` line, taking all 14 later sections with it --
     # MCK, MCC, MUQ, RC, DET and REG among them (#614 review).
-    # Swept over BOTH structured discriminators this module defines, not just
-    # the one that had the test: the argument for asserting one type's base
-    # applies verbatim to its sibling, and the reviewer who checks only the
-    # direction the author tested finds nothing (#589's generalisation).
-    for cls in (NonCanonicalItem, DuplicateMapKey):
+    # Swept over every rejection type reachable from this module's decoders,
+    # not just the one that had the test: the argument for asserting one
+    # type's base applies verbatim to its siblings, and the reviewer who
+    # checks only the direction the author tested finds nothing (#589's
+    # generalisation). `MalformedCbor` is declared in `codec/cbor_faults.py`,
+    # not here -- but every well-formedness raise in `scanner.py` and
+    # `well_formed.py` IS one (#641), and `cbor_faults.py`'s own module
+    # docstring already claimed this section asserted its base before this
+    # loop actually did (#641 fix round 1 review).
+    for cls in (NonCanonicalItem, DuplicateMapKey, MalformedCbor):
         if not issubclass(cls, ValueError):
             issues.append(
                 f"{cls.__name__} must subclass ValueError -- conformance_lib.rejection's "
@@ -244,9 +250,12 @@ def section_cbor_scanner_units() -> tuple[bool, list[str]]:
 # (`py_decode_record`, `py_decode_contact_card`) relied on nothing it did --
 # removing the call changes no behaviour in either decoder. The actual
 # duplicate-key protection now comes from two different places depending on
-# the decoder: `py_decode_record`'s span-list `seen`-set checks (this file,
-# above) reject a duplicate KNOWN key at every level that decoder interprets
-# structurally, while `py_decode_contact_card` (which has no `unknown` bag at
+# the decoder: `py_decode_record` (`codec/record.py`) rejects a repeated key,
+# known or unknown, in each of the three maps it interprets -- the record
+# itself and each field through a `seen` set, the `fields` map through its
+# already-decoded names -- checked as each entry is read, in wire order
+# (#641), and never inside an unknown value's subtree, while
+# `py_decode_contact_card` (which has no `unknown` bag at
 # all -- it rejects every unrecognised key outright) is still protected by
 # its own re-encode-and-compare, exactly as the deleted docstring argued --
 # correctly, in that one decoder's case.

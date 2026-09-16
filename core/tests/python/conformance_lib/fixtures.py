@@ -109,3 +109,12 @@ def _require_file(path: Path, label: str) -> bytes:
         print(f"MISSING: {label}: {path}", file=sys.stderr)
         sys.exit(2)
     return path.read_bytes()
+
+
+def fuzz_seed_dir(target: str) -> Path:
+    """`core/fuzz/seeds/<target>/` -- the committed fuzz seeds.
+
+    Hangs off `test_data_dir()` like every other path here: `parents[1]` of
+    `core/tests/data` is `core`.
+    """
+    return test_data_dir().parents[1] / "fuzz" / "seeds" / target

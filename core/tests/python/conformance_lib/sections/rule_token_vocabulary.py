@@ -21,25 +21,28 @@ decoder's.  Token coverage on this side is NOT total, and the honest sentence
 is narrower than the one this docstring used to carry -- and narrower again
 than the version before this one, whose three counts were each measured and
 each too small.  THREE modules on `py_decode_manifest`'s own import path
-raise untokened: `codec/scanner.py` (18 bare `raise ValueError`
-well-formedness sites, out of 19 grep hits, one of which is prose),
+raise untokened, and #641 shrank the first: `codec/scanner.py` now raises
+`MalformedCbor` (`malformed_cbor`) at every well-formedness site and plain
+`ValueError` at only its 2 type checks ("expected a CBOR map/array");
 `codec/manifest_schema.py` (9, FOUR of them the NESTED twins of top-level
 sites that DID get a typed class -- non-text key at `:148`/`:244` and
 missing required field at `:163`/`:269`, two per entry-map parser), and
 `codec/manifest_encode.py` (3), which is imported at `manifest_decode.py:17`
 and CALLED for the §4.3 step-4 re-encode, so its refusals are on the decode
-path even though it is an encoder.  FIVE of the seventeen vocabulary rows
-have no Python producer at all: `malformed_cbor`, `encoder_refusal`,
-`aead_failure`, `signature_invalid` and `internal_error` -- the last three
-because `py_decode_manifest_file` is a wire parse that performs no AEAD or
-signature verification.  This is
+path even though it is an encoder.  FOUR of the seventeen vocabulary rows
+have no Python producer at all (`malformed_cbor` gained one in #641):
+`encoder_refusal`, `aead_failure`, `signature_invalid` and `internal_error`
+-- the last three because `py_decode_manifest_file` is a wire parse that
+performs no AEAD or signature verification.  This is
 fail-closed and loud rather than silent: a body reaching one of those sites
 emits `"rule": null`, which `differential_replay.rs` records as a HARNESS
 FAILURE for a token-compared target, never as agreement.  Measured: a
 40-byte prefix of `top__control_canonical.bin` rejects with
-`ValueError("string length 13 overruns buffer at offset 37")` and
-`"rule": null`.  So the posture is right and the coverage is partial; do not
-restate the coverage as complete.
+`MalformedCbor("string length 13 overruns buffer at offset 37")`, which
+since #641 carries `"rule": "malformed_cbor"`.  (That example no longer
+demonstrates it; a `manifest_schema.py` nested-key site still does.)  So
+the posture is right and the coverage is partial; do not restate the
+coverage as complete.
 """
 
 from __future__ import annotations
@@ -63,13 +66,18 @@ from conformance_lib.rejection import _REJECTION_EXCEPTIONS
 # copy-paste, since `NonTextMapKey` and `WrongFieldType` legitimately DO
 # share `"wrong_type"` -- passed check 1, passed check 3, passed every Rust
 # test, and was caught only by `differential_replay.rs`, which at the time ran
-# in no CI workflow.  A `test.yml` step runs it as of #647, but only over the
-# one token-compared target; identity is what makes this section a pin.
+# in no CI workflow.  A `test.yml` step runs it as of #647, but it compares
+# tokens only on its token-compared targets (three since #641, one of them
+# `manifest_body`) and only for the inputs committed there; identity is what
+# makes this section a pin.
 #
-# FOUR tokened classes reachable from `py_decode_manifest` are deliberately
+# FIVE tokened classes reachable from `py_decode_manifest` are deliberately
 # absent, because they are tokened at their own raise sites in other modules:
 # `manifest_decode.ArraySortOrderViolation`, `manifest_decode.NonCanonicalBody`,
-# `scanner.NonCanonicalItem` and `scanner.DuplicateMapKey`.
+# `scanner.NonCanonicalItem`, `scanner.DuplicateMapKey` and (#641)
+# `cbor_faults.MalformedCbor`.  Counted over the modules `manifest_decode`
+# imports, transitively; `manifest_rules.ManifestRejection` is their base
+# here, carries the empty token, and is never raised itself.
 # `cursor.ParseError` also carries a token but is NOT reachable from
 # `py_decode_manifest` -- nothing on that function's import path imports
 # `cursor`; it belongs to the wire ENVELOPE decoders, which is why its token
@@ -195,8 +203,10 @@ def section_rule_token_vocabulary() -> tuple[bool, list[str]]:
     #
     # Note what this set is and is not.  It is the set of tokens whose ORDER
     # §4.2 leaves free.  It is NOT a statement that `tokens_agree` tolerates
-    # only pairs §4.2 frees: that predicate is per-token, so it tolerates 58
-    # of the 136 unequal pairs, four groups of which §4.2 does not license.
+    # only pairs §4.2 frees: that predicate is per-token, so it tolerates 54
+    # of the 136 unequal pairs on `manifest_body` (the 58 with a
+    # phase-dependent member, less the four pairing one with `malformed_cbor`),
+    # four groups of which §4.2 does not license.
     # `RuleToken::is_phase_dependent`'s LIMITS block enumerates them and #646
     # tracks narrowing the predicate.
     want_phase_dependent = {
