@@ -60,6 +60,10 @@ from typing import Callable
 
 from conformance_lib import fixtures
 from conformance_lib.diff_replay import replay_bytes
+from conformance_lib.sections.value_type_structure import (
+    sanctioned_module_issues,
+    scanned_module_count,
+)
 
 # The committed accepting bases each family of cases is built from.
 _CARD_BASE = "with_sigs.cbor"
@@ -308,11 +312,14 @@ def section_value_type_discipline() -> tuple[bool, list[str]]:
 
     issues.extend(_rejection_issues())
     issues.extend(_control_issues())
+    issues.extend(sanctioned_module_issues())
 
     lines = [
         f"PASS 1: {len(DIVERGENCE_CASES)} measured acceptance divergences, each rejected",
         f"PASS 2: {len({(c.target, c.position) for c in DIVERGENCE_CASES})} "
         f"control bodies accepted (the decoder discriminates)",
+        f"PASS 3: {scanned_module_count()} codec/ modules scanned, none writes "
+        f"`isinstance(..., int)` outside integer_rules.py",
     ]
     for issue in issues:
         lines.append(f"  ISSUE: {issue}")
