@@ -55,7 +55,11 @@ pub struct AcceptanceCase {
 
 impl AcceptanceCase {
     pub fn file_name(&self) -> String {
-        let extension = if self.target == "vault_toml" { "toml" } else { "bin" };
+        let extension = if self.target == "vault_toml" {
+            "toml"
+        } else {
+            "bin"
+        };
         format!("{SEED_PREFIX}{}.{extension}", self.shape)
     }
 
@@ -291,16 +295,36 @@ pub fn all_cases() -> Vec<AcceptanceCase> {
             })
         };
     }
-    trash!("trash_fingerprint_bool", "fingerprint", "WrongType", Value::Bool(true));
-    trash!("trash_fingerprint_text", "fingerprint", "WrongType", Value::Text("x".into()));
+    trash!(
+        "trash_fingerprint_bool",
+        "fingerprint",
+        "WrongType",
+        Value::Bool(true)
+    );
+    trash!(
+        "trash_fingerprint_text",
+        "fingerprint",
+        "WrongType",
+        Value::Text("x".into())
+    );
     trash!(
         "trash_fingerprint_short",
         "fingerprint",
         "InvalidByteLength",
         Value::Bytes(vec![0])
     );
-    trash!("trash_purged_bool", "purged_at_ms", "WrongType", Value::Bool(true));
-    trash!("trash_purged_text", "purged_at_ms", "WrongType", Value::Text("x".into()));
+    trash!(
+        "trash_purged_bool",
+        "purged_at_ms",
+        "WrongType",
+        Value::Bool(true)
+    );
+    trash!(
+        "trash_purged_text",
+        "purged_at_ms",
+        "WrongType",
+        Value::Text("x".into())
+    );
     trash!(
         "trash_purged_negative",
         "purged_at_ms",
