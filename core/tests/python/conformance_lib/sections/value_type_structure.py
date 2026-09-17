@@ -141,3 +141,223 @@ def scanned_module_count() -> int:
     would otherwise be indistinguishable from a rule that found nothing.
     """
     return sum(1 for p in CODEC_ROOT.rglob("*.py") if p.name != SANCTIONED_INTEGER_MODULE)
+
+
+# ---------------------------------------------------------------------------
+# Check 4 -- the optional-key census
+# ---------------------------------------------------------------------------
+
+
+class KeySetPair:
+    """One schema map's known/required key-set pair, and how its OPTIONAL keys
+    are covered.
+
+    `coverage` is verified, not merely declared -- each value names a
+    mechanism the census then checks the keys actually reach:
+
+      "cases"    a Section VT check-1 row, replayed through `replay_bytes`.
+      "direct"   a case that calls the decoder directly, for a decoder no
+                 replay target reaches (`codec/trash_entry.py`).
+      "dispatch" mechanism A: a total `check_*_value` dispatch whose `else`
+                 raises `UncheckedKnownKey` (#641's M8). Probed in check 4b.
+      "none"     this map declares no optional key at all. The census
+                 requires `known - required` to be EMPTY, so growing an
+                 optional key here is a deliberate edit to this table rather
+                 than a silent gap -- which is precisely how
+                 `trash[].fingerprint` and `trash[].purged_at_ms` arrived.
+    """
+
+    def __init__(self, file: str, known: str, required: str, coverage: str) -> None:
+        self.file = file
+        self.known = known
+        self.required = required
+        self.coverage = coverage
+
+    def label(self) -> str:
+        return f"{self.file}:{self.known}"
+
+
+#: Declared, never inferred -- see the module docstring's last paragraph.
+KEY_SET_PAIRS: tuple[KeySetPair, ...] = (
+    KeySetPair("manifest_schema.py", "MANIFEST_KNOWN_KEYS", "MANIFEST_REQUIRED_KEYS", "none"),
+    KeySetPair("manifest_schema.py", "BLOCK_ENTRY_KNOWN_KEYS", "BLOCK_ENTRY_REQUIRED_KEYS", "none"),
+    KeySetPair("manifest_schema.py", "TRASH_ENTRY_KNOWN_KEYS", "TRASH_ENTRY_REQUIRED_KEYS", "cases"),
+    KeySetPair("manifest_schema.py", "KDF_PARAMS_KNOWN_KEYS", "KDF_PARAMS_REQUIRED_KEYS", "none"),
+    KeySetPair("manifest_schema.py", "VECTOR_CLOCK_ENTRY_KNOWN_KEYS",
+               "VECTOR_CLOCK_ENTRY_REQUIRED_KEYS", "none"),
+    KeySetPair("record.py", "RECORD_KNOWN_KEYS", "RECORD_REQUIRED_KEYS", "dispatch"),
+    KeySetPair("record.py", "RECORD_FIELD_KNOWN_KEYS", "REQUIRED_FIELD_KEYS", "none"),
+    KeySetPair("card.py", "KNOWN_CARD_KEYS", "REQUIRED_CARD_FIELDS", "none"),
+    KeySetPair("trash_entry.py", "KNOWN_KEYS", "REQUIRED", "direct"),
+    KeySetPair("vault_toml.py", "KNOWN_KDF_KEYS", "REQUIRED_KDF_KEYS", "none"),
+)
+
+#: The measured population of optional keys across every pair above. Stated so
+#: a pairing that silently stops resolving shows up as a moved number rather
+#: than as a quietly smaller census.
+EXPECTED_OPTIONAL_KEY_COUNT = 7
+
+_NAME_SHAPES = ("KNOWN", "REQUIRED")
+
+
+def _literal_key_sets(path: Path) -> dict[str, frozenset[str]]:
+    """Every name in `path` bound to a literal set/list/tuple of strings.
+
+    Evaluated from the AST, so nothing in the decoder is imported or run.
+    Module-level and function-local bindings both count -- `card.py`,
+    `trash_entry.py` and `vault_toml.py` all declare theirs inside the decoder
+    function. A plain `X = Y` alias resolves to `Y`'s keys, which is how the
+    five `*_REQUIRED_KEYS = *_KNOWN_KEYS` lines are read.
+    """
+    out: dict[str, frozenset[str]] = {}
+    try:
+        tree = ast.parse(path.read_text())
+    except (OSError, SyntaxError):
+        return out
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        value = node.value
+        if isinstance(value, ast.Call) and getattr(value.func, "id", "") == "frozenset" and value.args:
+            value = value.args[0]
+        if isinstance(value, (ast.Set, ast.List, ast.Tuple)):
+            keys = frozenset(
+                e.value for e in value.elts
+                if isinstance(e, ast.Constant) and isinstance(e.value, str)
+            )
+            if keys:
+                out[target.id] = keys
+        elif isinstance(value, ast.Name) and value.id in out:
+            out[target.id] = out[value.id]
+    return out
+
+
+def _discovered_key_sets() -> set[tuple[str, str]]:
+    """Every `(file, name)` under `codec/` whose name carries a KNOWN/REQUIRED
+    shape and which binds a literal set of strings."""
+    found: set[tuple[str, str]] = set()
+    for path in sorted(CODEC_ROOT.rglob("*.py")):
+        for name in _literal_key_sets(path):
+            if any(shape in name.upper() for shape in _NAME_SHAPES):
+                found.add((path.name, name))
+    return found
+
+
+def optional_key_issues(case_keys: frozenset[str], direct_keys: frozenset[str]) -> tuple[list[str], int]:
+    """Check 4 -- every optional key is covered, and every key set is paired.
+
+    `case_keys` and `direct_keys` are DERIVED by the caller from the cases that
+    actually run, never declared here: a table that both declared the coverage
+    and certified it would be self-certifying, which is the defect #599's
+    review found in a sibling corpus.
+
+    Returns the issues and the optional-key population, so the caller can
+    report the number.
+    """
+    issues: list[str] = []
+    per_file = {p.file: _literal_key_sets(CODEC_ROOT / p.file) for p in KEY_SET_PAIRS}
+
+    # Direction 1: every pairing resolves, and its optional keys are covered.
+    optional_total = 0
+    for pair in KEY_SET_PAIRS:
+        sets = per_file.get(pair.file, {})
+        missing = [n for n in (pair.known, pair.required) if n not in sets]
+        if missing:
+            issues.append(
+                f"{pair.label()}: the pairing names {missing}, which "
+                f"{pair.file} does not bind to a literal set of strings"
+            )
+            continue
+        optional = sorted(sets[pair.known] - sets[pair.required])
+        optional_total += len(optional)
+        if pair.coverage == "none":
+            if optional:
+                issues.append(
+                    f"{pair.label()}: declares optional key(s) {optional}, but its "
+                    f"coverage is 'none'. An optional key with no type check is what "
+                    f"#669 was -- add a case and reclassify this row"
+                )
+            continue
+        for key in optional:
+            if pair.coverage == "cases" and key not in case_keys:
+                issues.append(
+                    f"{pair.label()}: optional key {key!r} has no Section VT check-1 case"
+                )
+            elif pair.coverage == "direct" and key not in direct_keys:
+                issues.append(
+                    f"{pair.label()}: optional key {key!r} has no direct-decoder case"
+                )
+        # "dispatch" keys are verified behaviourally by check 4b.
+
+    # Direction 2: no key set under codec/ is outside the pairing table. This
+    # is what stops a NEWLY ADDED schema map being skipped in silence.
+    declared = {(p.file, p.known) for p in KEY_SET_PAIRS} | {
+        (p.file, p.required) for p in KEY_SET_PAIRS
+    }
+    for file, name in sorted(_discovered_key_sets() - declared):
+        issues.append(
+            f"{file}:{name} looks like a schema key set but is in no KEY_SET_PAIRS row, "
+            f"so its optional keys are censused by nothing"
+        )
+
+    if optional_total != EXPECTED_OPTIONAL_KEY_COUNT:
+        issues.append(
+            f"EXPECTED_OPTIONAL_KEY_COUNT is {EXPECTED_OPTIONAL_KEY_COUNT}, the census "
+            f"found {optional_total}"
+        )
+    return issues, optional_total
+
+
+# ---------------------------------------------------------------------------
+# Check 4b -- mechanism A: the wire-order dispatch must be TOTAL
+# ---------------------------------------------------------------------------
+
+
+def dispatch_totality_issues() -> list[str]:
+    """Check 4b -- `record.py`'s dispatches have an arm for every declared key.
+
+    `py_decode_record` checks values in WIRE order, not schema order, so a
+    `*_VALUE_CHECKS` table would be the wrong shape for it. Its guarantee is
+    a TOTAL dispatch instead: `check_record_value` / `check_field_value` end
+    in an `else` that raises `UncheckedKnownKey`, a `RuntimeError` kept out of
+    `conformance_lib.rejection`'s verdict allowlist so the differential replay
+    scores it a harness failure rather than a rejection (#641's M8).
+
+    #669 does not refactor any of that -- this check starts ENFORCING it.
+    Behavioural, so an aliased or restructured dispatch cannot evade it; it
+    proves only that an arm EXISTS for each key, never that the arm checks the
+    right property.
+    """
+    from conformance_lib.codec.record_rules import (
+        UncheckedKnownKey,
+        check_field_value,
+        check_record_value,
+    )
+
+    issues: list[str] = []
+    sets = _literal_key_sets(CODEC_ROOT / "record.py")
+    probe = object()  # Fails every type check; reaches every arm.
+
+    for name, call in (
+        ("RECORD_KNOWN_KEYS", lambda k: check_record_value(k, probe)),
+        ("RECORD_FIELD_KNOWN_KEYS", lambda k: check_field_value("f", k, probe)),
+    ):
+        if name not in sets:
+            issues.append(f"record.py:{name} does not bind a literal set of strings")
+            continue
+        for key in sorted(sets[name]):
+            if key == "fields":
+                continue  # Not a value the dispatch checks; parsed structurally.
+            try:
+                call(key)
+            except UncheckedKnownKey:
+                issues.append(
+                    f"record.py: the dispatch has no arm for known key {key!r} "
+                    f"(UncheckedKnownKey) -- its value would be accepted unchecked"
+                )
+            except Exception:
+                pass  # Any other raise means the arm exists and ran.
+    return issues

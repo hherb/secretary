@@ -61,6 +61,9 @@ from typing import Callable
 from conformance_lib import fixtures
 from conformance_lib.diff_replay import replay_bytes
 from conformance_lib.sections.value_type_structure import (
+    EXPECTED_OPTIONAL_KEY_COUNT,
+    dispatch_totality_issues,
+    optional_key_issues,
     sanctioned_module_issues,
     scanned_module_count,
 )
@@ -238,6 +241,73 @@ EXPECTED_CASE_COUNT = 16
 
 
 # ---------------------------------------------------------------------------
+# `codec/trash_entry.py` -- the same M1 defect, on a decoder no replay
+# target reaches
+# ---------------------------------------------------------------------------
+
+#: Its two OPTIONAL keys. Named here so Section VT's optional-key census can
+#: be DERIVED from the cases that actually run rather than from a declaration.
+TRASH_ENTRY_DIRECT_KEYS = frozenset({"fingerprint", "purged_at_ms"})
+
+
+def _trash_entry_issues() -> list[str]:
+    """`codec/trash_entry.py`'s integer positions reject a CBOR bool.
+
+    This decoder is checked by CALLING it, not by `replay_bytes`, and the
+    reason is structural rather than a convenience: Section PRG and the
+    required-key probe are its only callers, and the manifest replay path goes
+    through `codec/manifest_decode.py` instead. No replay target reaches it, so
+    no committed seed can pin it and the differential replay cannot see it --
+    which is why its copy of the bool defect survived #641 untouched.
+
+    Both its `tombstoned_at_ms` (required) and `purged_at_ms` (optional)
+    positions accepted a boolean before #669; Rust's `take_u64` rejects both.
+    `fingerprint` is covered too, since the census requires a case for every
+    optional key and a bstr position is the other half of the same map.
+    """
+    import cbor2
+
+    from conformance_lib.codec.trash_entry import py_decode_trash_entry
+
+    base = {
+        "block_uuid": bytes(16),
+        "tombstoned_at_ms": 5,
+        "tombstoned_by": bytes(16),
+        "fingerprint": bytes(32),
+        "purged_at_ms": 7,
+    }
+
+    issues: list[str] = []
+
+    # The control first: the base body must round-trip, or every rejection
+    # below would be satisfied by a decoder that rejects everything.
+    try:
+        py_decode_trash_entry(cbor2.dumps(base, canonical=True))
+    except Exception as exc:  # noqa: BLE001 -- any raise is a control failure
+        issues.append(
+            f"trash_entry control: the all-valid entry must decode, got "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    for key, bad, why in (
+        ("tombstoned_at_ms", True, "a CBOR bool is not a uint"),
+        ("purged_at_ms", True, "a CBOR bool is not a uint"),
+        ("fingerprint", "x", "a tstr is not a 32-byte bstr"),
+    ):
+        entry = dict(base)
+        entry[key] = bad
+        try:
+            py_decode_trash_entry(cbor2.dumps(entry, canonical=True))
+        except Exception:  # noqa: BLE001 -- any rejection is what we require
+            continue
+        issues.append(
+            f"trash_entry {key} := {bad!r}: must be REJECTED ({why}); "
+            f"Rust's parse_trash_entry rejects it"
+        )
+    return issues
+
+
+# ---------------------------------------------------------------------------
 # Checks
 # ---------------------------------------------------------------------------
 
@@ -312,7 +382,15 @@ def section_value_type_discipline() -> tuple[bool, list[str]]:
 
     issues.extend(_rejection_issues())
     issues.extend(_control_issues())
+    issues.extend(_trash_entry_issues())
     issues.extend(sanctioned_module_issues())
+
+    # Derived from the cases that actually run, never declared: a table that
+    # both declared its coverage and certified it would be self-certifying.
+    case_keys = frozenset(c.position.rsplit(".", 1)[-1] for c in DIVERGENCE_CASES)
+    census_issues, optional_total = optional_key_issues(case_keys, TRASH_ENTRY_DIRECT_KEYS)
+    issues.extend(census_issues)
+    issues.extend(dispatch_totality_issues())
 
     lines = [
         f"PASS 1: {len(DIVERGENCE_CASES)} measured acceptance divergences, each rejected",
@@ -320,6 +398,9 @@ def section_value_type_discipline() -> tuple[bool, list[str]]:
         f"control bodies accepted (the decoder discriminates)",
         f"PASS 3: {scanned_module_count()} codec/ modules scanned, none writes "
         f"`isinstance(..., int)` outside integer_rules.py",
+        f"PASS 4: {optional_total} optional key(s) across 10 paired key sets, "
+        f"each covered (expected {EXPECTED_OPTIONAL_KEY_COUNT})",
+        "PASS 4b: record.py's wire-order dispatches have an arm for every declared key",
     ]
     for issue in issues:
         lines.append(f"  ISSUE: {issue}")

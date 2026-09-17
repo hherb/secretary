@@ -89,6 +89,12 @@ def py_decode_vault_toml(text: str) -> dict:
         raise ValueError("vault.toml missing [kdf] section")
 
     KNOWN_KDF_KEYS = {"algorithm", "version", "memory_kib", "iterations", "parallelism", "salt_b64"}
+    # Every field of Rust's `KdfSectionWire` is non-`Option`, so the whole
+    # known set is required -- there are no optional keys in this map. Declared
+    # so Section VT's optional-key census has a pairing for it rather than
+    # skipping it, and so that adding an optional key here must be a deliberate
+    # edit to this line (#669).
+    REQUIRED_KDF_KEYS = KNOWN_KDF_KEYS
     for k in kdf:
         if k not in KNOWN_KDF_KEYS:
             raise ValueError(f"vault.toml unknown kdf key: {k!r}")
