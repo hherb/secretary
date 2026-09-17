@@ -12,6 +12,7 @@ import base64
 import tomllib
 from dataclasses import dataclass
 
+from conformance_lib.codec.integer_rules import is_integer
 from conformance_lib.cursor import ParseError
 
 # ---------------------------------------------------------------------------
@@ -34,9 +35,21 @@ class VaultToml:
 def parse_vault_toml(text: str) -> VaultToml:
     """Parse `vault.toml` per `docs/vault-format.md` §2."""
     data = tomllib.loads(text)
-    if data.get("format_version") != 1:
+    # `is_integer` before the value comparison, and before every `int(...)`
+    # coercion below. `tomllib` returns a real `bool` for TOML `true`, and
+    # Python's `bool` subclasses `int`, so `True != 1` is `False` and
+    # `int(True)` is `1` -- a `vault.toml` declaring `format_version = true`
+    # parsed here as v1 while `unlock/vault_toml.rs` rejects it outright
+    # (`toml::Value::as_integer` returns `None` for a boolean). The same
+    # defect as #669's `codec/` sites.
+    #
+    # SCOPE: this module parses to INSPECT the committed golden vault and
+    # enforces no acceptance set, so it has no Rust counterpart to diverge
+    # from and Section VT's check 3 deliberately does not scan `wire/`. Fixed
+    # because it is the same defect, not because a gate demands it.
+    if not is_integer(data.get("format_version")) or data["format_version"] != 1:
         raise ParseError(f"vault.toml format_version {data.get('format_version')!r}")
-    if data.get("suite_id") != 1:
+    if not is_integer(data.get("suite_id")) or data["suite_id"] != 1:
         raise ParseError(f"vault.toml suite_id {data.get('suite_id')!r}")
     vault_uuid_str = data.get("vault_uuid")
     if not isinstance(vault_uuid_str, str):
@@ -57,6 +70,16 @@ def parse_vault_toml(text: str) -> VaultToml:
     salt = base64.b64decode(salt_b64)
     if len(salt) != 32:
         raise ParseError(f"vault.toml kdf salt length {len(salt)} (expected 32)")
+
+    # The four remaining integers had no type check at all before their
+    # `int(...)` coercion below, so a TOML boolean reached the struct as 1.
+    for holder, label, keys in (
+        (data, "vault.toml", ("created_at_ms",)),
+        (kdf, "vault.toml kdf", ("memory_kib", "iterations", "parallelism")),
+    ):
+        for key in keys:
+            if not is_integer(holder.get(key)):
+                raise ParseError(f"{label} {key} {holder.get(key)!r} is not an integer")
 
     return VaultToml(
         format_version=int(data["format_version"]),
