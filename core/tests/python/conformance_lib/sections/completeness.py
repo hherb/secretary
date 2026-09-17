@@ -53,6 +53,7 @@ _NON_DRIVER_MODULES = (
     "required_key_structure",
     "manifest_uniqueness_writer",
     "manifest_canonicality_corpus",
+    "value_type_structure",
 )
 
 

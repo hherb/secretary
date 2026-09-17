@@ -31,6 +31,10 @@ claiming more coverage than the code delivers is this repository's
 most-repeated review finding.
 
 CHECK 3 READS TEXT.
+  Its scan set is also FLOORED (`MIN_SCANNED_CODEC_MODULES`), because a
+  default-deny rule whose `rglob` yields nothing reports PASS having read
+  nothing.
+
   `isinstance` is matched by SPELLING, through the AST but without resolving
   names. `from builtins import isinstance as _ii` then `_ii(x, int)` evades
   it entirely, as does any metaprogrammed call, and `int` is whatever a
@@ -38,7 +42,10 @@ CHECK 3 READS TEXT.
   else -- `wire/` is deliberately outside its scope, because `wire/` parses
   to INSPECT the committed golden vault and enforces no acceptance set, so
   there is no Rust counterpart for it to diverge from. (`wire/vault_toml.py`
-  carries the same defect and is fixed, just not policed here.)
+  AND `wire/card.py` carried the same defect -- the latter in both of #669's
+  shapes, a bare `card_version != 1` and NO check at all on `created_at`.
+  Both are fixed, and both are covered behaviourally by check 1c, which is not
+  this rule. Check 3 still does not scan `wire/`.)
 
 CHECK 4 DOES NOT READ TEXT AT ALL, so it has none of those limits: it is a
 set comparison over AST-evaluated literal constants plus behavioural cases.
@@ -63,6 +70,16 @@ Its limits are different and narrower:
   - IT SAYS NOTHING ABOUT WHETHER A CASE ASSERTS THE RIGHT THING. That is
     what check 2's per-case ambiguity control and the committed seeds are
     for.
+
+  - AN ALIAS PAIRING (`REQUIRED = KNOWN`) CAN NEVER REPORT AN OPTIONAL KEY,
+    because `known - required` is identically empty. SIX of the ten rows are
+    that shape today -- the four in `manifest_schema.py`, `REQUIRED_CARD_FIELDS`
+    and `REQUIRED_FIELD_KEYS` -- so for them a key added to the KNOWN set alone
+    is absorbed into the required set in the same stroke and the census stays
+    silent. That is correct for a map with genuinely no optional keys and
+    WRONG the day one of them gains one. `vault_toml.py`'s pairing was an
+    alias too and is now written out as a literal for exactly this reason
+    (#679 review); the other six are pre-existing and tracked separately.
 
 CHECK 4b IS BEHAVIOURAL, so an aliased or restructured dispatch cannot evade
 it -- but it proves only that the dispatch has an ARM for each declared key,
@@ -109,8 +126,13 @@ def sanctioned_module_issues() -> list[str]:
     right, so "this copy is correct" is not the property worth enforcing.
     """
     issues: list[str] = []
+    sanctioned = CODEC_ROOT / SANCTIONED_INTEGER_MODULE
     for path in sorted(CODEC_ROOT.rglob("*.py")):
-        if path.name == SANCTIONED_INTEGER_MODULE:
+        # Anchored on the FULL PATH. Keyed on `path.name` a future
+        # `codec/<sub>/integer_rules.py` would be silently exempt from a
+        # default-deny rule -- the basename fail-open CLAUDE.md records by name
+        # for `required_key_structure.py` (#679 review).
+        if path == sanctioned:
             continue
         try:
             tree = ast.parse(path.read_text())
@@ -134,18 +156,41 @@ def sanctioned_module_issues() -> list[str]:
     return issues
 
 
+#: Floor for check 3's scan set. A printed denominator is not an asserted one:
+#: with `CODEC_ROOT` resolving to an empty or moved directory, check 3 found
+#: nothing and PASSED, printing "0 codec/ modules scanned" -- the
+#: `_HASH_SEEDS = ("0",)` shape CLAUDE.md records by name. Check 4 happens to
+#: red the same scenario, but only because it reads each file DIRECTLY; a
+#: symlinked subtree (#510) shrinks check 3's `rglob` while leaving check 4
+#: green. Re-measure rather than quoting: `ls codec/*.py | wc -l` minus one.
+MIN_SCANNED_CODEC_MODULES = 18
+
+
 def scanned_module_count() -> int:
     """How many `codec/` modules check 3 actually read.
 
-    Reported in the section's PASS line: a rule that silently scanned nothing
-    would otherwise be indistinguishable from a rule that found nothing.
+    Reported in the section's PASS line AND floored against
+    `MIN_SCANNED_CODEC_MODULES`: a rule that silently scanned nothing would
+    otherwise be indistinguishable from a rule that found nothing.
     """
-    return sum(1 for p in CODEC_ROOT.rglob("*.py") if p.name != SANCTIONED_INTEGER_MODULE)
+    sanctioned = CODEC_ROOT / SANCTIONED_INTEGER_MODULE
+    return sum(1 for p in CODEC_ROOT.rglob("*.py") if p != sanctioned)
 
 
 # ---------------------------------------------------------------------------
 # Check 4 -- the optional-key census
 # ---------------------------------------------------------------------------
+
+
+#: The four coverage mechanisms a `KeySetPair` may name. Closed: `KeySetPair`
+#: refuses anything else at construction, and `optional_key_issues` reports an
+#: unrecognised value as an issue rather than falling through (#679 review).
+COVERAGE_KINDS = frozenset({"cases", "direct", "dispatch", "none"})
+
+#: The one file `dispatch_totality_issues` probes. A `"dispatch"` row naming
+#: any other file is checked by NOTHING, so the census reports it rather than
+#: crediting it.
+DISPATCH_PROBED_FILE = "record.py"
 
 
 class KeySetPair:
@@ -167,11 +212,37 @@ class KeySetPair:
                  `trash[].fingerprint` and `trash[].purged_at_ms` arrived.
     """
 
-    def __init__(self, file: str, known: str, required: str, coverage: str) -> None:
+    def __init__(
+        self,
+        file: str,
+        known: str,
+        required: str,
+        coverage: str,
+        case_scope: str = "",
+    ) -> None:
+        # CLOSED VOCABULARY, refused at construction (#679 review). `coverage`
+        # was a free string, and an unrecognised value matched no branch in
+        # `optional_key_issues` and fell through with NO issue: a one-character
+        # typo silently meant "covered by nothing", re-opening M2 through the
+        # guard built to prevent it (measured, both the typo and a valid word
+        # applied to a file check 4b does not probe).
+        if coverage not in COVERAGE_KINDS:
+            raise ValueError(
+                f"{file}:{known}: coverage {coverage!r} is not one of "
+                f"{sorted(COVERAGE_KINDS)}"
+            )
+        if (coverage == "cases") != bool(case_scope):
+            raise ValueError(
+                f"{file}:{known}: coverage 'cases' requires a case_scope and no "
+                f"other coverage may carry one (got {coverage!r}, {case_scope!r})"
+            )
         self.file = file
         self.known = known
         self.required = required
         self.coverage = coverage
+        #: For `"cases"` rows only: the `(target, map)` scope, spelled as it
+        #: appears in a `Case.scope()`, whose check-1 cases cover this map.
+        self.case_scope = case_scope
 
     def label(self) -> str:
         return f"{self.file}:{self.known}"
@@ -181,7 +252,8 @@ class KeySetPair:
 KEY_SET_PAIRS: tuple[KeySetPair, ...] = (
     KeySetPair("manifest_schema.py", "MANIFEST_KNOWN_KEYS", "MANIFEST_REQUIRED_KEYS", "none"),
     KeySetPair("manifest_schema.py", "BLOCK_ENTRY_KNOWN_KEYS", "BLOCK_ENTRY_REQUIRED_KEYS", "none"),
-    KeySetPair("manifest_schema.py", "TRASH_ENTRY_KNOWN_KEYS", "TRASH_ENTRY_REQUIRED_KEYS", "cases"),
+    KeySetPair("manifest_schema.py", "TRASH_ENTRY_KNOWN_KEYS", "TRASH_ENTRY_REQUIRED_KEYS",
+               "cases", case_scope="manifest_body:trash[]"),
     KeySetPair("manifest_schema.py", "KDF_PARAMS_KNOWN_KEYS", "KDF_PARAMS_REQUIRED_KEYS", "none"),
     KeySetPair("manifest_schema.py", "VECTOR_CLOCK_ENTRY_KNOWN_KEYS",
                "VECTOR_CLOCK_ENTRY_REQUIRED_KEYS", "none"),
@@ -246,7 +318,21 @@ def _discovered_key_sets() -> set[tuple[str, str]]:
     return found
 
 
-def optional_key_issues(case_keys: frozenset[str], direct_keys: frozenset[str]) -> tuple[list[str], int]:
+def scan_floor_issues() -> list[str]:
+    """Check 3's denominator, asserted rather than printed."""
+    scanned = scanned_module_count()
+    if scanned < MIN_SCANNED_CODEC_MODULES:
+        return [
+            f"check 3 scanned {scanned} codec/ modules, below the floor of "
+            f"{MIN_SCANNED_CODEC_MODULES}. A default-deny rule that reads nothing "
+            f"passes vacuously -- has CODEC_ROOT moved, or is a subtree symlinked?"
+        ]
+    return []
+
+
+def optional_key_issues(
+    *, case_keys: frozenset, direct_keys: frozenset[str]
+) -> tuple[list[str], int]:
     """Check 4 -- every optional key is covered, and every key set is paired.
 
     `case_keys` and `direct_keys` are DERIVED by the caller from the cases that
@@ -282,15 +368,36 @@ def optional_key_issues(case_keys: frozenset[str], direct_keys: frozenset[str]) 
                 )
             continue
         for key in optional:
-            if pair.coverage == "cases" and key not in case_keys:
+            if pair.coverage == "cases":
+                # SCOPED: `(case_scope, key)`, never a bare key name. A flat
+                # namespace credited a `fingerprint` case planted in one map to
+                # an optional `fingerprint` in a DIFFERENT map -- the
+                # many-to-one crediting the AST census was rejected for, and
+                # measured live here (#679 review).
+                if (pair.case_scope, key) not in case_keys:
+                    issues.append(
+                        f"{pair.label()}: optional key {key!r} has no Section VT "
+                        f"check-1 case in scope {pair.case_scope!r}"
+                    )
+            elif pair.coverage == "direct":
+                if key not in direct_keys:
+                    issues.append(
+                        f"{pair.label()}: optional key {key!r} has no direct-decoder case"
+                    )
+            elif pair.coverage == "dispatch":
+                # Verified behaviourally by check 4b -- but 4b probes ONE file,
+                # so a dispatch row naming another is checked by nothing.
+                if pair.file != DISPATCH_PROBED_FILE:
+                    issues.append(
+                        f"{pair.label()}: coverage 'dispatch' but check 4b probes only "
+                        f"{DISPATCH_PROBED_FILE}, so optional key {key!r} is checked by "
+                        f"nothing. Add a probe or reclassify this row"
+                    )
+            else:  # pragma: no cover -- unreachable while KeySetPair validates
                 issues.append(
-                    f"{pair.label()}: optional key {key!r} has no Section VT check-1 case"
+                    f"{pair.label()}: unrecognised coverage {pair.coverage!r}; "
+                    f"optional key {key!r} is covered by nothing"
                 )
-            elif pair.coverage == "direct" and key not in direct_keys:
-                issues.append(
-                    f"{pair.label()}: optional key {key!r} has no direct-decoder case"
-                )
-        # "dispatch" keys are verified behaviourally by check 4b.
 
     # Direction 2: no key set under codec/ is outside the pairing table. This
     # is what stops a NEWLY ADDED schema map being skipped in silence.
@@ -358,8 +465,17 @@ def dispatch_totality_issues() -> list[str]:
                     f"record.py: the dispatch has no arm for known key {key!r} "
                     f"(UncheckedKnownKey) -- its value would be accepted unchecked"
                 )
-            except Exception:
-                pass  # Any other raise means the arm exists and ran.
+                continue
+            except Exception:  # noqa: BLE001
+                continue  # Any other raise means the arm exists and ran.
+            # No `else` here and an arm gutted to `pass` scored GREEN: "the call
+            # returned" is not "the arm checked something". `probe` is an
+            # `object()` chosen so that no correct arm can accept it (#679
+            # review).
+            issues.append(
+                f"record.py: the arm for known key {key!r} ACCEPTED a probe that "
+                f"fails every type check -- the arm exists but checks nothing"
+            )
 
     # NEGATIVE CONTROL, and without it this whole check is vacuous.
     #

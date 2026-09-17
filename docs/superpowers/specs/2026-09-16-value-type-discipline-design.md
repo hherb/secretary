@@ -77,11 +77,11 @@ golden vault and enforces no acceptance set, so it has no Rust counterpart to
 diverge from; its exact site count is established during implementation rather
 than asserted here.
 
-All three groups are fixed in this slice. Only the eight replay-visible ones
+All three groups are fixed in this slice. **Correction (#679 review): that sentence was true of `wire/vault_toml.py` and false of `wire/` as a whole — `wire/card.py` carried both mechanisms (a bare `card_version != 1`, and no check at all on `created_at`) and was missed. Fixed, with behavioural cover, in the review round.** Only the eight replay-visible ones
 can be pinned by a seed, and §7 says so.
 
 Two sites in the tree already carry the correct guard — `codec/record_rules.py:76`
-and `codec/manifest_decode.py:294`, both written in #641. So this is not one
+and `codec/manifest_decode.py:294`. (#679 review: the latter was written in **#595**, not #641 — `git log -S` puts it at `7fa4ddb3`, two weeks earlier. The copies span three PRs, not one.) So this is not one
 rule with a gap; it is **four independent copies of one sentence, of which two
 are right**. That is the #597 shape exactly, and it is why the fix is a shared
 predicate rather than eight edits.

@@ -12,13 +12,33 @@ mod acceptance_seeds_helpers;
 use std::collections::{BTreeMap, BTreeSet};
 
 use acceptance_seeds_helpers::{
-    all_cases, base, rust_rejection, seed_dir, sub_value, AcceptanceCase, SEEDED_TARGETS,
-    SEED_PREFIX,
+    all_cases, base, rust_rejection, seed_dir, sub_value, AcceptanceCase,
+    EXPECTED_ACCEPTANCE_CASE_COUNT, SEEDED_TARGETS, SEED_PREFIX,
 };
 
 /// How to regenerate, quoted in every failure that needs it.
 const REGENERATE: &str = "cargo test --release --locked -p secretary-core --test \
                           acceptance_seeds -- --ignored generate_acceptance_seeds";
+
+/// The table must not shrink unnoticed.
+///
+/// `acceptance_seeds_are_committed_and_label_bound` is a two-way census, so a
+/// row-only or file-only deletion is loud — but a MATCHED deletion of a row
+/// AND its committed seed shrinks both sides together and passes, having
+/// asserted nothing about that position. The Python half floors itself with
+/// `EXPECTED_CASE_COUNT`; this is its twin (#679 review).
+#[test]
+fn the_case_table_holds_every_expected_row() {
+    assert_eq!(
+        all_cases().len(),
+        EXPECTED_ACCEPTANCE_CASE_COUNT,
+        "the acceptance-case table holds {} rows, expected {}. A row and its seed \
+         deleted together are invisible to the two-way census; if this change is \
+         deliberate, move the constant.",
+        all_cases().len(),
+        EXPECTED_ACCEPTANCE_CASE_COUNT,
+    );
+}
 
 /// Every base must be ACCEPTED, or every row below would be satisfied by a
 /// decoder that rejects everything — the vacuity Section VT's check 2 closes

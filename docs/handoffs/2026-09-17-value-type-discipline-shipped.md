@@ -200,7 +200,7 @@ is the contract each row is about, rather than a source-text presence.
   not seen. The sweep found zero instances; #678 owns it.
 - **Check 3 reads TEXT.** An aliased `isinstance` import or a metaprogrammed
   call evades it. It scans `codec/` and nowhere else — `wire/` is out of scope
-  because it enforces no acceptance set (it is fixed, just not policed).
+  because it enforces no acceptance set. (#679 review: "it is fixed" was true of `wire/vault_toml.py` only — `wire/card.py` carried both mechanisms and was missed. Both are now fixed AND covered by check 1c; check 3 still does not scan `wire/`.)
 - **The sweep is not a proof of absence.** One leaf at a time, one base per
   target, a fixed substitution set. A divergence needing two simultaneous
   faults, or a value shape outside that set, was not measured. Say "the sweep
@@ -316,6 +316,91 @@ bash scripts/check-secret-slot-hygiene.sh --self-test      && bash scripts/check
 uv run scripts/check-error-payload-hygiene.py --self-test  && uv run scripts/check-error-payload-hygiene.py
 uv run scripts/check-test-support-placement.py --self-test && uv run scripts/check-test-support-placement.py
 ```
+
+---
+
+## (5b) The #679 review round — what it found, and the one generalisable lesson
+
+Five review agents plus direct verification. Every finding below was
+**measured**, with a control, in a throwaway sandbox; the worktree was never
+mutated.
+
+### Four critical, all in the new gate rather than in the fix
+
+1. **`codec/trash_entry.py`'s type checks were revertible with the verifier
+   green.** `TRASH_ENTRY_DIRECT_KEYS` was a hand-written frozenset passed as
+   the census's `direct_keys` while two docstrings said both arguments were
+   "DERIVED from the cases that actually run". Control: deleting the decoder's
+   `fingerprint` check alone → caught. Deleting the case row alone → silent.
+   Deleting **both** → silent, with `PASS 4: … each covered` still printed. No
+   replay target reaches that decoder, so nothing else in the tree covered it.
+   Now derived from `_TRASH_ENTRY_CASES`, with its own PASS line.
+2. **8 of check 1's 16 rows passed on any rejection.** Token-less targets have
+   no rule to compare, so `status == "reject"` was the whole assertion. With
+   `is_integer` reverted and the plants made to reject another way, those rows
+   reported nothing. They now require the rejection to name the position, and
+   reject an `ENCODER_REFUSAL_PREFIX` answer.
+3. **`_cbor_sub` INSERTED instead of substituting.** A misspelled or later-
+   renamed key added an unrecognised key and left the real value untouched;
+   the body was rejected as "unknown field" and counted as a pass. `_toml_sub`
+   and the Rust `set_at` both already failed closed here.
+4. **`KeySetPair.coverage` was a free string with a silent fall-through.** A
+   one-character typo, and equally a VALID word applied to a file check 4b
+   does not probe, matched no branch and appended no issue — re-opening M2
+   through the guard built to prevent M2. `coverage` is now a closed
+   vocabulary refused at construction.
+
+### The miss in the fix itself
+
+`wire/card.py` carried **both** of #669's mechanisms — a bare
+`card_version != 1` (M1) and no check at all on `created_at` (M2) — and was
+never touched. The handoff said `wire/` "is fixed, just not policed"; that was
+true of `wire/vault_toml.py` alone. `wire/golden_vault_verify.py:301`'s
+`!= 1` is **not** a defect: its input comes from `py_decode_manifest`, which
+has already type-gated `manifest_version`.
+
+### The generalisable lesson
+
+**A check written to close a backstop can itself be backstopped.** The first
+version of check 1c asserted only that `parse_and_verify_card` raised
+`ParseError` — and passed with `wire/card.py`'s fix fully reverted, because
+planting a bool changes the signed bytes and the hybrid self-signature rejects
+the body whatever the type check does. It was written *while* fixing finding 2,
+which is the same defect, and still shipped vacuous until mutation-tested.
+Assert the reason, not the rejection.
+
+### Mutation evidence (each `before → after`, with a passing control)
+
+| mutation | before | after |
+|---|---|---|
+| delete trash case row + the decoder check it pins | silent | caught |
+| misspell a `contact_card` position | silent | caught |
+| revert `is_integer` (the whole of #669) | 8 rows silent | 17 issues |
+| typo a `coverage` value | silent | unconstructible (raises) |
+| gut a `record.py` dispatch arm to accept | silent | caught |
+| `CODEC_ROOT` → empty directory | PASS, "0 scanned" | caught by the floor |
+| revert `wire/card.py` (either half) | silent | caught |
+| revert the `wire/vault_toml.py` loop | silent | caught |
+| two rows plant identical bytes | silent, printed 16 | caught |
+| cross-map optional-key crediting | silent | caught |
+
+### Also corrected
+
+`scanner.py "476 → 479"` (never touched by #669; 479 at both ends — a
+neighbouring-number copy inside the paragraph warning about them); "three
+other generators" → **two**; `manifest_decode.py`'s guard attributed to #641 →
+**#595**; the corpus-coverage figures 24/38 → **30/44** and "7 reach a real
+comparison" → **13**, in `token.rs`, `tolerance.rs`, `python_bridge.rs` and
+CLAUDE.md; `MIN_CORPUS_INPUTS`'s "only git-tracked inputs count" (the tagging
+is by DIRECTORY); the Rust `trash!` macro now DERIVES its label so a lying file
+name is unconstructible; `variant_name` keeps a `&'static str` payload, so the
+six `vault_toml` rows no longer all assert `MissingField` and the two card rows
+no longer assert `CardError`'s 16-site catch-all.
+
+Filed rather than fixed: **#680** (six alias key-set pairings whose census can
+never fire), plus measured detail added to **#678** (the specific required-key
+positions with zero cover) and **#677** (the 439-body sweep was never committed
+as a re-runnable generator).
 
 ---
 

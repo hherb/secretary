@@ -382,10 +382,17 @@ was 6849 lines; it is now 156, over a **75**-file package whose largest module i
 `codec/scanner.py` at 479, `codec/manifest_decode.py` at 446,
 `sections/value_type_discipline.py` at 407 and
 `sections/value_type_structure.py` at 391 — the last two added by #669, which
-also grew `manifest_decode.py` 418 -> 446 and `scanner.py` 476 -> 479, and
-displaced `sections/required_key_determinism.py` (390, unchanged) and
-`merge/records.py` (383, unchanged) out of the top five without either moving
-a line. Re-measured at #669 (72 -> 75 files).
+also grew `manifest_decode.py` 418 -> 446. It did **not** touch
+`codec/scanner.py`: that file is 479 at #669's merge-base AND at its head, and
+an earlier draft of this line wrote "`scanner.py` 476 -> 479", taking the 476
+from the sentence four lines below — the NEIGHBOURING-NUMBER COPY this very
+paragraph warns about, committed inside it (#679 review). #669 displaced
+`sections/required_key_determinism.py` (390, unchanged) out of the top five
+without it moving a line; `merge/records.py` (383) was already sixth beforehand,
+so it was not displaced by this slice. **There is an exact TIE at 391** —
+`sections/rule_token_seeds.py` is also 391 and untouched — so fifth place is
+shared and any ordering written here is stale on sight. Re-measured at #669
+(72 -> 75 files).
 Re-measured at #641, which added six modules (66 -> 72) and SHRANK
 `scanner.py` 484 -> 474 by moving its UTF-8 and simple-value predicates out to
 `codec/cbor_faults.py` (476 after that slice's review round lengthened one
@@ -543,11 +550,22 @@ is the one worth remembering:
   gives `Value::Bool` and `toml::Value::as_integer` gives `None`. Eight
   replay-visible positions (`codec/card.py` x2, `codec/vault_toml.py` x6),
   plus two on `codec/trash_entry.py` — a STANDALONE decoder no replay target
-  reaches, so no seed can pin it — and six more in `wire/vault_toml.py`, where
-  the shape is `!= 1` (because `True != 1` is `False`) and bare `int(...)`
-  coercions. Two copies in the tree were already correct (#641), which is the
-  #597 shape exactly: not one rule with a gap, four copies of one sentence of
-  which two were wrong. All twelve now call `codec/integer_rules.py`.
+  reaches, so no seed can pin it — and six more in `wire/vault_toml.py` plus
+  TWO in `wire/card.py`, where the shape is `!= 1` (because `True != 1` is
+  `False`) and bare `int(...)` coercions. Two copies in the tree were already
+  correct — `codec/record_rules.py` in #641, `codec/manifest_decode.py` two
+  weeks earlier in **#595** (`7fa4ddb3`; this line said "both (#641)", which
+  `git log -S` disproves) — which is the #597 shape exactly: not one rule with
+  a gap, several copies of one sentence, spanning three PRs, of which two were
+  right. All twelve `codec/` positions now call `codec/integer_rules.py`; the
+  eight in `wire/` do too. **`wire/card.py` was MISSED by #669 and found in the
+  #679 review**, carrying both mechanisms at once — a bare `card_version != 1`
+  (M1) and no check at all on `created_at` (M2). Its fix needed a rejection
+  that NAMES the position to have any force: planting a bool changes the signed
+  bytes, so the card's hybrid self-signature rejects the body whatever the type
+  check does, and a check asserting only "rejected" passed with the fix fully
+  reverted (measured). The `wire/` fixes are covered by Section VT's check 1c;
+  check 3 still does not scan `wire/`.
 - **M2 — the type check was never written.** `TrashEntry`'s two `Option`
   fields, `trash[].fingerprint` and `trash[].purged_at_ms`, were validated by
   NOTHING in `codec/manifest_decode.py` and accepted any CBOR value at all —
@@ -563,13 +581,43 @@ file. `record` swept clean (52 bodies, 0 divergences), the negative control
 for both the method and #641's record work.
 
 Section **VT** (`sections/value_type_discipline.py` +
-`sections/value_type_structure.py`) holds five checks. Three are worth knowing:
+`sections/value_type_structure.py`) holds **eight** checks — five as shipped,
+three added in the #679 review. Four are worth knowing:
+
+- **Every check has a PASS LINE reporting what it RAN, and that is the
+  review's structural lesson rather than a formatting choice.** As shipped,
+  the five PASS lines were each computed from a DECLARATION (`len(CASES)`, a
+  comprehension over the same table, an independently-recomputed module
+  count), and `_trash_entry_issues` had no line at all — so deleting its
+  `issues.extend(...)` call produced byte-identical output and `ok=True`. It
+  is the only value-type cover `codec/trash_entry.py` has (no replay target
+  reaches that decoder), and the census that claimed to guarantee it read a
+  hand-written frozenset rather than the cases. Measured with a control:
+  deleting the case row alone was silent, deleting the row AND the decoder's
+  `fingerprint` type check together was **also** silent — a real check
+  revertible with the whole verifier green. The coverage set is now DERIVED
+  from the case table.
 
 - **Check 3 is default-deny and denies CORRECT copies too.** `isinstance(...,
   int)` may be written under `codec/` only inside `integer_rules.py`. A
   hand-written `isinstance(value, bool) or not isinstance(value, int)` is
   still an issue, deliberately: "this copy is correct" is not the property
-  worth enforcing when the defect was four copies of which two were.
+  worth enforcing when the defect was several copies of which two were.
+  Its exemption is anchored on the FULL PATH and its scan set is FLOORED
+  (`MIN_SCANNED_CODEC_MODULES`): keyed on `path.name` under a recursive
+  `rglob` a future `codec/<sub>/integer_rules.py` was silently exempt, and
+  with `CODEC_ROOT` resolving to nothing the rule PASSED printing "0 codec/
+  modules scanned" — both #679-review fixes, both the fail-open shapes this
+  file records by name.
+- **A TOKEN-LESS row must not pass on any rejection.** `contact_card` and
+  `vault_toml` have no taxonomy, so "rejected" was check 1's whole assertion
+  for 8 of its 16 rows — and they passed on a tree carrying #669's defect in
+  full once the planted body was made to reject some other way (measured).
+  Those rows now require the rejection to NAME the position and reject an
+  encoder refusal. The same discipline is what makes check 1c non-vacuous:
+  planting a bool in a card changes the signed bytes, so the hybrid
+  self-signature rejects it whatever the type check does, and the first
+  version of that check passed with `wire/card.py`'s fix fully reverted.
 - **Check 4 governs OPTIONAL keys only, and the scope is the rule, not a
   caveat.** Every key in `KNOWN − REQUIRED`, censused two ways against the
   cases that actually run (7 optional keys tree-wide). A REQUIRED key losing
@@ -602,9 +650,15 @@ until #669 added `REQUIRED_KDF_KEYS`.
 `contact_card` and `vault_toml` have no token taxonomy (#641) — and the
 variant is finer anyway, separating `WrongType` from `InvalidByteLength` on
 one field. Its census is scoped to that prefix: `manifest_body/` already holds
-38 seeds from three other generators, and `rule_token_seeds.rs`'s "every file
-containing `__`" rule would claim all 38. Three substitutions per manifest key
-so a PARTIAL fix reds. **Adding those seeds moved Section RTV's
+38 seeds from **two** other generators (`manifest_canonicality_kat` writes 32
+across five prefix groups, `manifest_uniqueness_kat` 6;
+`manifest_precedence_kat` writes none — the "three" this line used to carry
+miscounted prefix GROUPS as generators, #679 review), and
+`rule_token_seeds.rs`'s "every file containing `__`" rule would claim all 38.
+Three substitutions per manifest key so a PARTIAL fix reds — genuinely three
+independent checks for `purged_at_ms` (bool / type / range), but only TWO for
+`fingerprint`, whose `bool` and `text` rows are both answered by the same
+`isinstance(fp, bytes)`. **Adding those seeds moved Section RTV's
 `_CORPUS_TOKENS` from 6 to 8** — they are the first committed manifest bodies
 to reach a schema fault at all, since those two keys were previously checked
 by nothing. That edit is RTV working, not breaking; its failure message asks
@@ -1113,9 +1167,13 @@ survived it. Six things:
   agreement for `undefined` and nested-chunk manifest bodies. All four
   `NonCanonicalCause` outcomes map to phase-dependent tokens, so **every**
   `NonCanonicalEncoding` rejection Rust makes is scored as agreement whatever
-  Python said — measured on the committed corpus, that is **17 of the 24
+  Python said — measured on the committed corpus, that is **17 of the 30
   rejecting `manifest_body` seeds** (7 `arraysort__*`, 4 `keyorder__*`, 3
-  rule-2, 3 rule-3), leaving 7 that reach a real comparison. FOUR groups are
+  rule-2, 3 rule-3), leaving 13 that reach a real comparison. #669 added 6
+  `valuetype__trash_*` rows answering `wrong_type` / `integer_out_of_range`,
+  so the TOLERATED count did not move and the strict one nearly doubled;
+  these figures stood stale at "17 of 24, leaving 7" for a whole slice, so
+  re-measure rather than quoting (#679 review). FOUR groups are
   tolerated with no §4.2 licence, enumerated in
   `RuleToken::is_phase_dependent`'s own LIMITS block and tracked by **#646**:
   (A) trailing bytes, folded into `non_canonical_unclassified` because Rust
@@ -1224,7 +1282,7 @@ survived it. Six things:
   the one machine the floor protects: with `fuzz/corpus/` populated, a deleted
   seed still cleared the floor by tens of thousands (#656 review; measured —
   38 committed against 41 total now reds). What it still does NOT floor is how
-  many inputs reach a STRICT token comparison, which is roughly 7 of 39 on
+  many inputs reach a STRICT token comparison, which is 13 of 45 on
   `manifest_body` because every `NonCanonicalEncoding` cause is
   phase-dependent; #658. The other CI cover is
   unchanged: `manifest/token/tests/` (the blocking `cargo test --workspace`)

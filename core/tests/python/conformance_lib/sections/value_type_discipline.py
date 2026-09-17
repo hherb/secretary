@@ -59,12 +59,17 @@ from dataclasses import dataclass
 from typing import Callable
 
 from conformance_lib import fixtures
+from conformance_lib.codec.manifest_encode import ENCODER_REFUSAL_PREFIX
 from conformance_lib.diff_replay import replay_bytes
+from conformance_lib.rejection import _REJECTION_EXCEPTIONS
 from conformance_lib.sections.value_type_structure import (
     EXPECTED_OPTIONAL_KEY_COUNT,
+    KEY_SET_PAIRS,
+    MIN_SCANNED_CODEC_MODULES,
     dispatch_totality_issues,
     optional_key_issues,
     sanctioned_module_issues,
+    scan_floor_issues,
     scanned_module_count,
 )
 
@@ -72,6 +77,17 @@ from conformance_lib.sections.value_type_structure import (
 _CARD_BASE = "with_sigs.cbor"
 _TOML_BASE = "golden.toml"
 _MANIFEST_BASE = "uniq__control__all_distinct.bin"
+
+#: What a body-builder can raise: ANY exception. `main()` has NO per-section
+#: catch, so an escape here is a traceback with no `FAIL:` line that also skips
+#: every LATER section, REG included. The guard used to be
+#: `(OSError, ValueError)` while `_manifest_base` indexes `root["trash"][0]`
+#: and `_cbor_sub` walks a path -- `KeyError`/`IndexError`/`TypeError` all
+#: escaped, and so did `cbor2.CBORDecodeEOF`, which is an `EOFError` rather
+#: than a `ValueError` (#679 review). Enumerating the classes is a denylist and
+#: would drift again; a builder that fails is ALWAYS a harness problem, never a
+#: verdict, so every class is reported as an issue naming itself.
+_BODY_BUILD_ERRORS = Exception
 
 # `manifest_body`'s two token spellings, measured against `manifest/token.rs`.
 _WRONG_TYPE = "wrong_type"
@@ -96,7 +112,23 @@ def _cbor_sub(base: bytes, path: tuple, value: object) -> bytes:
     node = root
     for step in path[:-1]:
         node = node[step]
-    node[path[-1]] = value
+    # The LAST step must already exist. `node[key] = value` on a dict INSERTS
+    # when the key is absent, so a misspelled position -- or a wire key renamed
+    # in `codec/` later -- silently added an unrecognised key and left the real
+    # value untouched. The body was then rejected as "unknown field", which
+    # check 1 counted as a pass for a position it never exercised (measured,
+    # #679 review). `_toml_sub` raises for the same reason, and the Rust twin
+    # panics at `acceptance_seeds_helpers::set_at`.
+    last = path[-1]
+    if isinstance(node, dict):
+        if last not in node:
+            raise ValueError(
+                f"_cbor_sub: no key {last!r} at path {path!r}; the plant would "
+                f"INSERT rather than substitute, testing nothing"
+            )
+    else:
+        node[last]  # IndexError if the index is out of range.
+    node[last] = value
     return cbor2.dumps(root, canonical=True)
 
 
@@ -149,6 +181,12 @@ def _manifest_base() -> bytes:
 # ---------------------------------------------------------------------------
 
 
+#: Mirrors `core/tests/differential_replay_helpers/targets.rs`'s
+#: `TOKEN_COMPARED_TARGETS`. Python had no copy of that classification, so the
+#: rule "pin a token iff the target has a taxonomy" lived only in prose.
+TOKEN_COMPARED_TARGETS = frozenset({"record", "manifest_body", "block_file"})
+
+
 @dataclass(frozen=True)
 class Case:
     """One measured acceptance divergence."""
@@ -164,8 +202,37 @@ class Case:
     #: token taxonomy (#641) and only the verdict is compared.
     token: str | None
 
+    def __post_init__(self) -> None:
+        # A row must pin a rule IFF its target is token-compared. `token=None`
+        # on a token-compared target silently degrades the row to verdict-only
+        # on the one target CI compares tokens for; a token on a target with no
+        # taxonomy pins a distinction that target cannot make. Both were
+        # representable and neither was checked (#679 review).
+        if (self.token is not None) != (self.target in TOKEN_COMPARED_TARGETS):
+            raise ValueError(
+                f"{self.label()}: token={self.token!r} disagrees with target "
+                f"{self.target!r} (token-compared: "
+                f"{self.target in TOKEN_COMPARED_TARGETS})"
+            )
+
     def label(self) -> str:
         return f"{self.target} {self.position} := {self.substitution}"
+
+    def scope(self) -> str:
+        """The `target:map` this case's position sits in.
+
+        Check 4 credits a case to an optional key only within its own scope.
+        A bare key name is a MANY-TO-ONE namespace: a `fingerprint` case
+        planted in one map credited an optional `fingerprint` in another
+        (measured) -- the mis-crediting the AST census was rejected for.
+        """
+        if "[" in self.position:
+            return f"{self.target}:{self.position.split('[', 1)[0]}[]"
+        return f"{self.target}:"
+
+    def key(self) -> str:
+        """The bare key name at the end of `position`."""
+        return self.position.rsplit(".", 1)[-1]
 
 
 def _card_case(position: str) -> Case:
@@ -245,16 +312,30 @@ EXPECTED_CASE_COUNT = 16
 # target reaches
 # ---------------------------------------------------------------------------
 
-#: Its two OPTIONAL keys. Named here so Section VT's optional-key census can
-#: be DERIVED from the cases that actually run rather than from a declaration.
-TRASH_ENTRY_DIRECT_KEYS = frozenset({"fingerprint", "purged_at_ms"})
+#: The cases `_trash_entry_issues` runs, at module scope so the census can be
+#: DERIVED from them. Hand-written, this was a DECLARATION certifying itself:
+#: deleting a row left its key reported "covered", and deleting the row
+#: together with the decoder check it pins left the whole section green while
+#: `codec/trash_entry.py` lost a real type check that nothing else in the tree
+#: covers (measured with a control, #679 review).
+_TRASH_ENTRY_CASES: tuple[tuple[str, object, str], ...] = (
+    ("tombstoned_at_ms", True, "a CBOR bool is not a uint"),
+    ("purged_at_ms", True, "a CBOR bool is not a uint"),
+    ("fingerprint", "x", "a tstr is not a 32-byte bstr"),
+)
+
+#: Its two OPTIONAL keys, derived from the cases that actually run.
+#: `tombstoned_at_ms` is required, so it is not part of the census's optional
+#: population -- the intersection with the map's optional keys is what check 4
+#: consumes.
+TRASH_ENTRY_DIRECT_KEYS = frozenset(key for key, _, _ in _TRASH_ENTRY_CASES)
 
 
-def _trash_entry_issues() -> list[str]:
+def _trash_entry_issues() -> tuple[list[str], int]:
     """`codec/trash_entry.py`'s integer positions reject a CBOR bool.
 
     This decoder is checked by CALLING it, not by `replay_bytes`, and the
-    reason is structural rather than a convenience: Section PRG and the
+    reason is structural rather than a convenience: Section P and the
     required-key probe are its only callers, and the manifest replay path goes
     through `codec/manifest_decode.py` instead. No replay target reaches it, so
     no committed seed can pin it and the differential replay cannot see it --
@@ -283,33 +364,166 @@ def _trash_entry_issues() -> list[str]:
     # below would be satisfied by a decoder that rejects everything.
     try:
         py_decode_trash_entry(cbor2.dumps(base, canonical=True))
-    except Exception as exc:  # noqa: BLE001 -- any raise is a control failure
+    except Exception as exc:  # noqa: BLE001 -- any raise at all fails the control
         issues.append(
             f"trash_entry control: the all-valid entry must decode, got "
             f"{type(exc).__name__}: {exc}"
         )
 
-    for key, bad, why in (
-        ("tombstoned_at_ms", True, "a CBOR bool is not a uint"),
-        ("purged_at_ms", True, "a CBOR bool is not a uint"),
-        ("fingerprint", "x", "a tstr is not a 32-byte bstr"),
-    ):
+    for key, bad, why in _TRASH_ENTRY_CASES:
         entry = dict(base)
         entry[key] = bad
         try:
             py_decode_trash_entry(cbor2.dumps(entry, canonical=True))
-        except Exception:  # noqa: BLE001 -- any rejection is what we require
+        except _REJECTION_EXCEPTIONS:
+            continue
+        except Exception as exc:  # noqa: BLE001
+            # "could not measure" is not "measured and fine". A class outside
+            # `conformance_lib.rejection`'s verdict allowlist is this script
+            # failing, not the decoder rejecting -- the split `diff_replay.py`
+            # makes for every other decoder (#595), which this check had
+            # collapsed back together (#679 review).
+            issues.append(
+                f"trash_entry {key} := {bad!r}: raised {type(exc).__name__}, which is a "
+                f"HARNESS failure, not a rejection verdict: {exc}"
+            )
             continue
         issues.append(
             f"trash_entry {key} := {bad!r}: must be REJECTED ({why}); "
             f"Rust's parse_trash_entry rejects it"
         )
-    return issues
+    return issues, len(_TRASH_ENTRY_CASES)
 
 
 # ---------------------------------------------------------------------------
 # Checks
 # ---------------------------------------------------------------------------
+
+
+def _plant_integrity_issues() -> list[str]:
+    """Checks 1a/1b -- the plants are canonical and mutually distinct.
+
+    Both are assertions the RUST half already makes
+    (`the_cbor_round_trip_is_an_identity_on_every_base` and
+    `assert_each_target_plants_distinct_bytes`) and the Python half only
+    claimed in a docstring.
+
+    1a  `cbor2.dumps(loads(base), canonical=True)` must reproduce each
+        committed base byte for byte. Without it a re-encode that stopped
+        being canonical would silently convert the token-less rows into
+        canonicality tests -- they assert a rejection, and a non-canonical
+        body is rejected.
+    1b  no two rows may plant the same bytes. `EXPECTED_CASE_COUNT` counts
+        ROWS, and `substitution` is free text used only in a label, so four
+        rows collapsing onto two bodies still printed "16 divergences"
+        (measured, #679 review).
+    """
+    import cbor2
+
+    issues: list[str] = []
+
+    for label, raw in (
+        ("contact_card/" + _CARD_BASE, _card_base()),
+        ("manifest_body/" + _MANIFEST_BASE,
+         (fixtures.fuzz_seed_dir("manifest_body") / _MANIFEST_BASE).read_bytes()),
+    ):
+        if cbor2.dumps(cbor2.loads(raw), canonical=True) != raw:
+            issues.append(
+                f"{label}: cbor2's canonical re-encode is not byte-identical to the "
+                f"committed base, so a case body differs from its base at more than "
+                f"the planted position"
+            )
+
+    bodies: dict[bytes, str] = {}
+    for case in DIVERGENCE_CASES:
+        try:
+            body = case.plant()
+        except _BODY_BUILD_ERRORS:
+            continue  # Reported by check 1.
+        if body in bodies:
+            issues.append(
+                f"{case.label()} plants the same bytes as {bodies[body]}; two rows "
+                f"claiming different substitutions test one body"
+            )
+            continue
+        bodies[body] = case.label()
+    return issues
+
+
+def _wire_issues() -> tuple[list[str], int]:
+    """Check 1c -- `wire/`'s integer positions reject a bool too.
+
+    `wire/` parses to INSPECT the committed golden vault and enforces no
+    acceptance set, so it has no Rust counterpart to diverge from and check 3
+    deliberately does not scan it. But it carried both of #669's mechanisms --
+    `wire/vault_toml.py` had six M1 positions and `wire/card.py` a bare
+    `card_version != 1` (M1) plus NO check at all on `created_at` (M2) -- and
+    fixing them left nothing to stop the fix being reverted: the only callers
+    parse the VALID golden vault, so the whole hunk could be undone with the
+    suite green. For a `!= 1` spelling, where `True != 1` is `False`, that is
+    the quietest possible revert.
+    """
+    import cbor2
+
+    from conformance_lib.cursor import ParseError
+    from conformance_lib.wire.card import parse_and_verify_card
+    from conformance_lib.wire.vault_toml import parse_vault_toml
+
+    issues: list[str] = []
+    checked = 0
+
+    toml_base = _toml_base_text()
+    try:
+        parse_vault_toml(toml_base)
+    except Exception as exc:  # noqa: BLE001
+        issues.append(f"wire control: the base vault.toml must parse, got {exc!r}")
+
+    def _expect_named_rejection(label: str, key: str, build, why: str) -> None:
+        """Reject, AND for this position -- not for some other reason.
+
+        The card arm needs this and does not merely benefit from it. Planting a
+        bool changes the signed bytes, so `parse_and_verify_card` rejects the
+        body at its hybrid self-signature check whatever the type check does:
+        the first version of this helper asserted only `ParseError` and passed
+        with `wire/card.py`'s fix fully reverted (measured). A rejection that
+        does not name the position is the SIGNATURE answering for the type
+        check -- the #600/#608 backstop direction, one layer down.
+        """
+        try:
+            build()
+        except ParseError as exc:
+            if key not in str(exc):
+                issues.append(
+                    f"{label} {key} := true: rejected, but not for {key!r} -- "
+                    f"{exc}. Something else is answering for the type check"
+                )
+            return
+        except Exception as exc:  # noqa: BLE001
+            issues.append(
+                f"{label} {key} := true: raised {type(exc).__name__}, not ParseError: {exc}"
+            )
+            return
+        issues.append(f"{label} {key} := true: must be REJECTED; {why}")
+
+    for key in ("format_version", "suite_id", "created_at_ms",
+                "memory_kib", "iterations", "parallelism"):
+        checked += 1
+        _expect_named_rejection(
+            "wire/vault_toml", key,
+            lambda k=key: parse_vault_toml(_toml_sub(toml_base, k, "true").decode()),
+            "a TOML bool is not an integer and `unlock/vault_toml.rs`'s "
+            "`as_integer` returns None for it",
+        )
+
+    card_base = _card_base()
+    for key in ("card_version", "created_at"):
+        checked += 1
+        _expect_named_rejection(
+            "wire/card", key,
+            lambda k=key: parse_and_verify_card(_cbor_sub(card_base, (k,), True)),
+            "`identity/card.rs`'s `take_u8`/`take_u64` match `Value::Integer` alone",
+        )
+    return issues, checked
 
 
 def _rejection_issues() -> list[str]:
@@ -319,7 +533,7 @@ def _rejection_issues() -> list[str]:
     for case in DIVERGENCE_CASES:
         try:
             body = case.plant()
-        except (OSError, ValueError) as exc:
+        except _BODY_BUILD_ERRORS as exc:
             # An issue, not a raise: `main()` has no per-section catch, so a
             # raise here would skip every later section, REG included, with
             # no `FAIL:` line.
@@ -332,10 +546,32 @@ def _rejection_issues() -> list[str]:
                 f"-- Rust rejects this body, so accepting it is an acceptance divergence"
             )
             continue
-        if case.token is not None and verdict.get("rule") != case.token:
+        detail = str(verdict.get("detail") or "")
+        if case.token is not None:
+            if verdict.get("rule") != case.token:
+                issues.append(
+                    f"{case.label()}: must report {case.token!r}, got {verdict.get('rule')!r} "
+                    f"({verdict.get('error_class')}: {verdict.get('detail')})"
+                )
+            continue
+        # TOKEN-LESS TARGETS (`contact_card`, `vault_toml`) have no taxonomy to
+        # compare, so "rejected" was the whole assertion -- and a rejection for
+        # an UNRELATED reason satisfied it. Eight of the sixteen rows passed on
+        # a tree carrying #669's defect in full, once the planted body was made
+        # to reject some other way (measured, #679 review). Require the
+        # rejection to name the position it is about.
+        if case.key() not in detail:
             issues.append(
-                f"{case.label()}: must report {case.token!r}, got {verdict.get('rule')!r} "
-                f"({verdict.get('error_class')}: {verdict.get('detail')})"
+                f"{case.label()}: rejected, but the reason does not name "
+                f"{case.key()!r} -- {verdict.get('error_class')}: {detail!r}. "
+                f"A rejection for an unrelated reason is not evidence for this row"
+            )
+        # And it must be the READER's rejection, not an encoder refusal
+        # answering for it (#600/#608's backstop direction).
+        if detail.startswith(ENCODER_REFUSAL_PREFIX):
+            issues.append(
+                f"{case.label()}: answered by the ENCODER ({detail!r}); check 1 "
+                f"asserts the DECODER rejects this body"
             )
     return issues
 
@@ -355,7 +591,7 @@ def _control_issues() -> list[str]:
         seen.add(key)
         try:
             body = case.base_body()
-        except (OSError, ValueError) as exc:
+        except _BODY_BUILD_ERRORS as exc:
             issues.append(
                 f"{case.target} {case.position}: cannot build the control body: "
                 f"{type(exc).__name__}: {exc}"
@@ -381,25 +617,40 @@ def section_value_type_discipline() -> tuple[bool, list[str]]:
         )
 
     issues.extend(_rejection_issues())
+    issues.extend(_plant_integrity_issues())
     issues.extend(_control_issues())
-    issues.extend(_trash_entry_issues())
+    trash_issues, trash_checked = _trash_entry_issues()
+    issues.extend(trash_issues)
+    wire_issues, wire_checked = _wire_issues()
+    issues.extend(wire_issues)
     issues.extend(sanctioned_module_issues())
+    issues.extend(scan_floor_issues())
 
-    # Derived from the cases that actually run, never declared: a table that
-    # both declared its coverage and certified it would be self-certifying.
-    case_keys = frozenset(c.position.rsplit(".", 1)[-1] for c in DIVERGENCE_CASES)
-    census_issues, optional_total = optional_key_issues(case_keys, TRASH_ENTRY_DIRECT_KEYS)
+    # DERIVED from the cases that actually run, and SCOPED to the map each one
+    # was planted in. A flat set of bare key names is many-to-one and credited
+    # a case in one map to an optional key in another (#679 review).
+    case_keys = frozenset((c.scope(), c.key()) for c in DIVERGENCE_CASES)
+    census_issues, optional_total = optional_key_issues(
+        case_keys=case_keys, direct_keys=TRASH_ENTRY_DIRECT_KEYS
+    )
     issues.extend(census_issues)
     issues.extend(dispatch_totality_issues())
 
     lines = [
         f"PASS 1: {len(DIVERGENCE_CASES)} measured acceptance divergences, each rejected",
+        f"PASS 1a/1b: every committed base re-encodes byte-identically and all "
+        f"{len(DIVERGENCE_CASES)} plants are distinct",
+        f"PASS 1c: {wire_checked} wire/ integer position(s) reject a bool "
+        f"(wire/vault_toml 6, wire/card 2)",
         f"PASS 2: {len({(c.target, c.position) for c in DIVERGENCE_CASES})} "
         f"control bodies accepted (the decoder discriminates)",
-        f"PASS 3: {scanned_module_count()} codec/ modules scanned, none writes "
+        f"PASS 2b: {trash_checked} codec/trash_entry.py position(s) rejected, "
+        f"plus the all-valid control",
+        f"PASS 3: {scanned_module_count()} codec/ modules scanned (floor "
+        f"{MIN_SCANNED_CODEC_MODULES}), none writes "
         f"`isinstance(..., int)` outside integer_rules.py",
-        f"PASS 4: {optional_total} optional key(s) across 10 paired key sets, "
-        f"each covered (expected {EXPECTED_OPTIONAL_KEY_COUNT})",
+        f"PASS 4: {optional_total} optional key(s) across {len(KEY_SET_PAIRS)} paired "
+        f"key sets, each covered (expected {EXPECTED_OPTIONAL_KEY_COUNT})",
         "PASS 4b: record.py's wire-order dispatches have an arm for every declared key",
     ]
     for issue in issues:

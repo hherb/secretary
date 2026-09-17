@@ -303,7 +303,7 @@ def _check_uint(value: Any, field: str, bits: int) -> None:
 def _check_fixed_bytes(value: Any, field: str, n: int) -> None:
     """Assert `value` is a byte string of exactly `n` bytes, mirroring
     `extract.rs`'s `take_fixed_bytes::<N>` (`WrongType` for a non-bstr,
-    `WrongLength` for the wrong size).
+    `InvalidByteLength` for the wrong size).
     """
     if not isinstance(value, bytes):
         raise WrongFieldType(f"{field} must be a bstr, got {type(value).__name__}")
@@ -378,8 +378,12 @@ def _validate_manifest_shape(out: dict) -> None:
         _check_fixed_bytes(t["block_uuid"], f"trash[{i}].block_uuid", UUID_LEN)
         _check_uint(t["tombstoned_at_ms"], f"trash[{i}].tombstoned_at_ms", 64)
         _check_fixed_bytes(t["tombstoned_by"], f"trash[{i}].tombstoned_by", UUID_LEN)
-        # `TrashEntry`'s two OPTIONAL keys (§4.2). Absent decodes to `None` and
-        # re-encodes to absent, so they are checked only when PRESENT -- but
+        # `TrashEntry`'s two OPTIONAL keys (§4.2). An absent key decodes to
+        # ABSENT here -- `_decode_manifest_entry_map` writes `out[key]` only for
+        # keys present on the wire -- so `in` means PRESENT and a present CBOR
+        # `null` IS checked. (Do not "simplify" to `t.get(k) is not None`: that
+        # reads as the Rust `Option` and would silently skip a present null.)
+        # They are therefore checked only when present -- but
         # when present they are checked, which until #669 they were not:
         # both accepted ANY CBOR value (bool, tstr, a short bstr, a negative
         # integer -- all four measured), while `decode/entries.rs` routes them

@@ -89,12 +89,21 @@ def py_decode_vault_toml(text: str) -> dict:
         raise ValueError("vault.toml missing [kdf] section")
 
     KNOWN_KDF_KEYS = {"algorithm", "version", "memory_kib", "iterations", "parallelism", "salt_b64"}
-    # Every field of Rust's `KdfSectionWire` is non-`Option`, so the whole
-    # known set is required -- there are no optional keys in this map. Declared
-    # so Section VT's optional-key census has a pairing for it rather than
-    # skipping it, and so that adding an optional key here must be a deliberate
-    # edit to this line (#669).
-    REQUIRED_KDF_KEYS = KNOWN_KDF_KEYS
+    # Written OUT, not aliased to `KNOWN_KDF_KEYS`. Every one of the six is
+    # required: `unlock/vault_toml.rs::decode` reads each through a
+    # `take_str`/`take_i64` that yields `MissingField` when absent, so this map
+    # has no optional key. (Cite the DECODER, not `KdfSectionWire` -- that
+    # struct is the encode side, and a reader checking the claim there is
+    # looking at the wrong function.)
+    #
+    # An ALIAS would make Section VT's census vacuous for this row: `known -
+    # required` is identically empty however `KNOWN_KDF_KEYS` grows, so a key
+    # added here that Rust treats as `Option` would be absorbed in the same
+    # stroke and reported "covered". Spelled out, adding to one set alone reds
+    # the census (#669, #679 review).
+    REQUIRED_KDF_KEYS = frozenset(
+        {"algorithm", "version", "memory_kib", "iterations", "parallelism", "salt_b64"}
+    )
     for k in kdf:
         if k not in KNOWN_KDF_KEYS:
             raise ValueError(f"vault.toml unknown kdf key: {k!r}")

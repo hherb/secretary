@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from conformance_lib.codec.integer_rules import is_integer
 from conformance_lib.canonical import encode_canonical_map
+from conformance_lib.codec.integer_rules import is_integer
 from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
 
 def py_decode_contact_card(data: bytes) -> dict:

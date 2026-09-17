@@ -71,13 +71,13 @@ from conformance_lib.sections.required_key_determinism import (
 )
 from conformance_lib.sections.revoke import section_revoke_kat
 from conformance_lib.sections.rule_token_seeds import section_rule_token_seeds
-from conformance_lib.sections.value_type_discipline import (
-    section_value_type_discipline,
-)
 from conformance_lib.sections.rule_token_vocabulary import (
     section_rule_token_vocabulary,
 )
 from conformance_lib.sections.sync_pass import section_sync_pass_kat
+from conformance_lib.sections.value_type_discipline import (
+    section_value_type_discipline,
+)
 from conformance_lib.sections.unknown_map import (
     section5_unknown_map_case_insensitivity,
 )

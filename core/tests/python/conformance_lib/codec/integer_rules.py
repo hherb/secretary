@@ -5,9 +5,13 @@ WHY A MODULE FOR ONE PREDICATE.  Python's `bool` subclasses `int`, so
 `isinstance(True, int)` is `True`, while `ciborium` decodes a CBOR bool to
 `Value::Bool` and `toml` to `Value::Boolean` -- neither of which any Rust
 `take_u*` or `as_integer` accepts.  Before this module the exclusion was
-hand-copied: four independent spellings across five files, of which two were
-right (`codec/record_rules.py` and `codec/manifest_decode.py`, both written in
-#641) and the rest omitted it, which let ten integer positions accept a
+hand-copied: THREE spellings across the five `codec/` files (a fourth, the
+bare `!= 1` comparison, lives one directory over in `wire/` -- so "four
+spellings across five files" mixed the two scopes), of which two were
+right -- `codec/record_rules.py` (written in #641) and
+`codec/manifest_decode.py` (written two weeks earlier in #595, `7fa4ddb3`; an
+earlier draft of this comment credited both to #641, which `git log -S`
+disproves) -- and the rest omitted it, which let ten integer positions accept a
 boolean the Rust decoder rejects -- an ACCEPTANCE divergence, measured on
 `contact_card`, `vault_toml` and the standalone `codec/trash_entry.py`.
 

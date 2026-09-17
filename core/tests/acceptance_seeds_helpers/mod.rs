@@ -15,21 +15,34 @@
 //!    `contact_card` and `vault_toml` have no token taxonomy yet (#641), so
 //!    there is no token to bind; requiring one would pin a distinction those
 //!    targets cannot make. `manifest_body` does have one, but the variant is
-//!    strictly finer, so binding the variant everywhere keeps one contract.
+//!    finer, so binding the variant everywhere keeps one contract. "Finer" is
+//!    a property of [`variant_name`] keeping a `&'static str` payload, NOT of
+//!    the variant alone: a bare `Malformed` is `card.rs`'s catch-all with 16
+//!    construction sites, and a bare `MissingField` is shared by all six
+//!    `vault_toml` rows. Both were true of this file until the #679 review.
 //!
 //! 2. **Its two-way census is scoped to `SEED_PREFIX`.**
 //!    `rule_token_seeds.rs` claims every file whose name contains `__` in its
 //!    targets' directories. `core/fuzz/seeds/manifest_body/` already holds 38
-//!    seeds written by three other generators (`arraysort__`, `keyorder__`,
-//!    `top__`/`block__`/`trash__`, `uniq__`), none of which censuses the
+//!    seeds written by TWO other generators — `manifest_canonicality_kat`
+//!    (32, across the prefixes `arraysort__`, `keyorder__`, `top__`,
+//!    `block__`, `trash__`) and `manifest_uniqueness_kat` (6, `uniq__`);
+//!    `manifest_precedence_kat` writes none. (This said "three", counting
+//!    prefix GROUPS as generators — #679 review.) Neither censuses the
 //!    directory. Copying that pattern verbatim would make this generator
 //!    claim all 38 and fail. Only `valuetype__*` is owned here.
 //!
 //! **Why three substitutions for each manifest key.** A partial fix must red.
 //! A bool-only guard leaves the `text` row accepted; a type check without the
-//! length or range check leaves `short` / `negative` accepted. Each of the
-//! three checks is pinned independently, rather than by one row any partial
-//! fix would satisfy.
+//! length or range check leaves `short` / `negative` accepted.
+//!
+//! State that per KEY, because it is not uniform (#679 review). For
+//! `purged_at_ms` the three rows pin three genuinely independent checks —
+//! not-bool, is-integer, in-range. For `fingerprint` there are only TWO
+//! independent checks (bstr type, 32-byte length): its `bool` and `text` rows
+//! are both answered by the same `isinstance(fp, bytes)`, so one of the three
+//! is redundant rather than independently pinning. "Each of the three checks
+//! is pinned independently" was written of both keys and is true of one.
 
 use std::path::PathBuf;
 
@@ -226,13 +239,34 @@ pub fn rust_rejection(target: &str, bytes: &[u8]) -> Option<String> {
     }
 }
 
-/// The variant name a derived `Debug` prints first: `WrongType { .. }` and
-/// `CborDecode(..)` give `WrongType` and `CborDecode`.
+/// The variant a derived `Debug` prints, plus a single `&'static str` payload
+/// when the variant carries one.
+///
+/// `WrongType { .. }` gives `WrongType`; `MissingField("memory_kib")` gives
+/// `MissingField("memory_kib")`.
+///
+/// KEEPING THE PAYLOAD IS THE POINT. Truncating at the first non-alphanumeric
+/// made all six `vault_toml` rows assert the identical string `MissingField`,
+/// so an ordering regression reporting a DIFFERENT missing key satisfied every
+/// one of them; `CardError::Malformed` is that decoder's catch-all with 16
+/// construction sites, so the two `contact_card` rows were weaker still. The
+/// payload is a compile-time constant in both enums
+/// (`VaultTomlError::MissingField(&'static str)`,
+/// `CardError::Malformed(&'static str)`), so it carries no runtime data
+/// (#679 review).
 fn variant_name(error: &impl std::fmt::Debug) -> String {
-    format!("{error:?}")
+    let debug = format!("{error:?}");
+    let name: String = debug
         .chars()
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect()
+        .collect();
+    let rest = &debug[name.len()..];
+    if let Some(stripped) = rest.strip_prefix("(\"") {
+        if let Some(end) = stripped.find("\")") {
+            return format!("{name}(\"{}\")", &stripped[..end]);
+        }
+    }
+    name
 }
 
 fn card_bool(key: &'static str) -> fn(&[u8]) -> Vec<u8> {
@@ -242,6 +276,12 @@ fn card_bool(key: &'static str) -> fn(&[u8]) -> Vec<u8> {
         other => panic!("no card plant for {other}"),
     }
 }
+
+/// The measured population. A MATCHED deletion of a row and its committed
+/// seed is invisible to the two-way census (both sets shrink together), so the
+/// count is floored the way the Python half floors `EXPECTED_CASE_COUNT`
+/// (#679 review).
+pub const EXPECTED_ACCEPTANCE_CASE_COUNT: usize = 14;
 
 /// Every case, in a stable order.
 pub fn all_cases() -> Vec<AcceptanceCase> {
@@ -253,7 +293,11 @@ pub fn all_cases() -> Vec<AcceptanceCase> {
         cases.push(AcceptanceCase {
             target: "contact_card",
             shape: key,
-            variant: "Malformed",
+            // The PAYLOAD, not the bare variant. `CardError::Malformed` is
+            // that decoder's catch-all with 16 construction sites, so a bare
+            // "Malformed" row was satisfied by any of them; the payload is a
+            // `&'static str` naming the one `take_u*` rejected this value.
+            variant: "Malformed(\"expected unsigned integer\")",
             plant: card_bool(key),
         });
     }
@@ -265,7 +309,10 @@ pub fn all_cases() -> Vec<AcceptanceCase> {
             cases.push(AcceptanceCase {
                 target: "vault_toml",
                 shape: $key,
-                variant: "MissingField",
+                // DERIVED from the key: `as_integer` returns `None` for a
+                // boolean, so the decoder reports THIS key as missing. A row
+                // satisfied by a different key's absence is unconstructible.
+                variant: concat!("MissingField(\"", $key, "\")"),
                 plant: |b| sub_toml(b, $key, "true"),
             })
         };
@@ -279,58 +326,63 @@ pub fn all_cases() -> Vec<AcceptanceCase> {
 
     // `manifest_body` — M2, the two keys that were validated by NOTHING.
     // Three substitutions each, so a partial fix reds: see the module doc.
+    //
+    // THE LABEL IS DERIVED, NOT PASSED. `$shape` used to be a free literal
+    // beside an independent `$key` and `$value`, so a row whose file name
+    // disagreed with what it planted was REPRESENTABLE and nothing caught it:
+    // two rows sharing a variant could have their shapes exchanged and stay
+    // byte-distinct, self-consistent and green, with the committed file names
+    // lying. `concat!` builds the shape from the same tokens that pick the key
+    // and the value, which is the treatment #613 gave `SortedArray` after the
+    // identical finding (#679 review).
+    macro_rules! trash_key {
+        (fingerprint) => {
+            "fingerprint"
+        };
+        (purged) => {
+            "purged_at_ms"
+        };
+    }
+    macro_rules! trash_value {
+        (bool) => {
+            Value::Bool(true)
+        };
+        (text) => {
+            Value::Text("x".into())
+        };
+        (short) => {
+            Value::Bytes(vec![0])
+        };
+        (negative) => {
+            Value::Integer((-1).into())
+        };
+    }
     macro_rules! trash {
-        ($shape:literal, $key:literal, $variant:literal, $value:expr) => {
+        ($key:ident, $sub:ident, $variant:literal) => {
             cases.push(AcceptanceCase {
                 target: "manifest_body",
-                shape: $shape,
+                shape: concat!("trash_", stringify!($key), "_", stringify!($sub)),
                 variant: $variant,
                 plant: |b| {
                     sub_value(
                         b,
-                        &[Step::Key("trash"), Step::Index(0), Step::Key($key)],
-                        $value,
+                        &[
+                            Step::Key("trash"),
+                            Step::Index(0),
+                            Step::Key(trash_key!($key)),
+                        ],
+                        trash_value!($sub),
                     )
                 },
             })
         };
     }
-    trash!(
-        "trash_fingerprint_bool",
-        "fingerprint",
-        "WrongType",
-        Value::Bool(true)
-    );
-    trash!(
-        "trash_fingerprint_text",
-        "fingerprint",
-        "WrongType",
-        Value::Text("x".into())
-    );
-    trash!(
-        "trash_fingerprint_short",
-        "fingerprint",
-        "InvalidByteLength",
-        Value::Bytes(vec![0])
-    );
-    trash!(
-        "trash_purged_bool",
-        "purged_at_ms",
-        "WrongType",
-        Value::Bool(true)
-    );
-    trash!(
-        "trash_purged_text",
-        "purged_at_ms",
-        "WrongType",
-        Value::Text("x".into())
-    );
-    trash!(
-        "trash_purged_negative",
-        "purged_at_ms",
-        "IntegerOutOfRange",
-        Value::Integer((-1i64).into())
-    );
+    trash!(fingerprint, bool, "WrongType");
+    trash!(fingerprint, text, "WrongType");
+    trash!(fingerprint, short, "InvalidByteLength");
+    trash!(purged, bool, "WrongType");
+    trash!(purged, text, "WrongType");
+    trash!(purged, negative, "IntegerOutOfRange");
 
     cases
 }

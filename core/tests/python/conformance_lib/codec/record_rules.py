@@ -76,8 +76,6 @@ class UncheckedKnownKey(RuntimeError):
     """
 
 
-
-
 def check_uint(value: Any, message: str) -> Any:
     """`record.rs::take_u64`: a non-integer is a wrong type; a negative
     integer does not fit a u64."""
