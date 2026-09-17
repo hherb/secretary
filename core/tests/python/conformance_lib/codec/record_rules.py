@@ -24,6 +24,11 @@ from __future__ import annotations
 
 from typing import Any
 
+# The one bool-excluding integer predicate, shared with every other
+# integer position under `codec/` (#669). Kept under its original private
+# name so this module's call sites are untouched.
+from conformance_lib.codec.integer_rules import is_integer as _is_integer
+
 # §6.3: `record_uuid` and each field's `device_uuid` are 16-byte bstr.
 RECORD_UUID_LEN = 16
 
@@ -71,9 +76,6 @@ class UncheckedKnownKey(RuntimeError):
     """
 
 
-def _is_integer(value: Any) -> bool:
-    # `bool` is an `int` subclass in Python; a CBOR boolean is not an integer.
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def check_uint(value: Any, message: str) -> Any:

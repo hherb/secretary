@@ -11,6 +11,8 @@ import base64
 import re
 import tomllib
 
+from conformance_lib.codec.integer_rules import is_integer
+
 # ---------------------------------------------------------------------------
 # Differential-replay helpers (--diff-replay mode)
 # ---------------------------------------------------------------------------
@@ -62,12 +64,12 @@ def py_decode_vault_toml(text: str) -> dict:
 
     # format_version
     fv = data.get("format_version")
-    if not isinstance(fv, int) or fv != 1:
+    if not is_integer(fv) or fv != 1:
         raise ValueError(f"vault.toml format_version {fv!r}")
 
     # suite_id
     si = data.get("suite_id")
-    if not isinstance(si, int) or si != 1:
+    if not is_integer(si) or si != 1:
         raise ValueError(f"vault.toml suite_id {si!r}")
 
     # vault_uuid — strict canonical form (lowercase hex, exact hyphens)
@@ -78,7 +80,7 @@ def py_decode_vault_toml(text: str) -> dict:
 
     # created_at_ms — must be a non-negative integer
     cat = data.get("created_at_ms")
-    if not isinstance(cat, int) or cat < 0:
+    if not is_integer(cat) or cat < 0:
         raise ValueError(f"vault.toml created_at_ms {cat!r}")
 
     # [kdf] section — strict: no unknown keys
@@ -100,15 +102,15 @@ def py_decode_vault_toml(text: str) -> dict:
         raise ValueError(f"vault.toml kdf.version {ver!r}")
 
     mem_kib = kdf.get("memory_kib")
-    if not isinstance(mem_kib, int) or mem_kib < 0 or mem_kib > 0xFFFFFFFF:
+    if not is_integer(mem_kib) or mem_kib < 0 or mem_kib > 0xFFFFFFFF:
         raise ValueError(f"vault.toml kdf.memory_kib {mem_kib!r}")
 
     iters = kdf.get("iterations")
-    if not isinstance(iters, int) or iters < 0 or iters > 0xFFFFFFFF:
+    if not is_integer(iters) or iters < 0 or iters > 0xFFFFFFFF:
         raise ValueError(f"vault.toml kdf.iterations {iters!r}")
 
     par = kdf.get("parallelism")
-    if not isinstance(par, int) or par < 0 or par > 0xFFFFFFFF:
+    if not is_integer(par) or par < 0 or par > 0xFFFFFFFF:
         raise ValueError(f"vault.toml kdf.parallelism {par!r}")
 
     salt_b64_str = kdf.get("salt_b64")

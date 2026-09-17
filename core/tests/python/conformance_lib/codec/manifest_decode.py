@@ -16,6 +16,7 @@ from typing import Any
 
 from conformance_lib.codec.manifest_encode import py_encode_manifest
 from conformance_lib.codec.array_uniqueness import first_repeated_value
+from conformance_lib.codec.integer_rules import is_integer
 from conformance_lib.codec.manifest_rules import (
     IntegerOutOfRange,
     MissingRequiredField,
@@ -289,9 +290,11 @@ def _check_uint(value: Any, field: str, bits: int) -> None:
     explicitly because Python's `bool` subclasses `int` -- `isinstance(True,
     int)` is `True` -- while ciborium decodes a CBOR bool to `Value::Bool`,
     which `take_u*` rejects. Without the guard a `true` would pass here and
-    be rejected by Rust.
+    be rejected by Rust. The exclusion itself lives in
+    `codec/integer_rules.py`, which is the only place under `codec/` allowed
+    to write it (#669).
     """
-    if isinstance(value, bool) or not isinstance(value, int):
+    if not is_integer(value):
         raise WrongFieldType(f"{field} must be a uint, got {type(value).__name__}")
     if not 0 <= value < (1 << bits):
         raise IntegerOutOfRange(f"{field} is out of range for u{bits}: {value}")
