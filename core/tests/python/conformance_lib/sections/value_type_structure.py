@@ -360,4 +360,32 @@ def dispatch_totality_issues() -> list[str]:
                 )
             except Exception:
                 pass  # Any other raise means the arm exists and ran.
+
+    # NEGATIVE CONTROL, and without it this whole check is vacuous.
+    #
+    # Every currently-declared key HAS an arm, so the `else` never fires and
+    # deleting `raise UncheckedKnownKey` is invisible to the loop above --
+    # measured, when this row was written as a mutation. The guarantee 4b
+    # exists for is about a FUTURE key, so it has to be tested with a key that
+    # is not declared: the fall-through must still raise.
+    for label, call in (
+        ("check_record_value", lambda k: check_record_value(k, probe)),
+        ("check_field_value", lambda k: check_field_value("f", k, probe)),
+    ):
+        try:
+            call("vt_probe_undeclared_key")
+        except UncheckedKnownKey:
+            continue
+        except Exception as exc:  # noqa: BLE001
+            issues.append(
+                f"record.py: {label} answered an UNDECLARED key with "
+                f"{type(exc).__name__} instead of UncheckedKnownKey; a key added to "
+                f"the known set without an arm would be checked by the wrong arm"
+            )
+            continue
+        issues.append(
+            f"record.py: {label} ACCEPTED an undeclared key without raising "
+            f"UncheckedKnownKey -- the fall-through that makes a missing check "
+            f"unrepresentable is gone, so a future known key would be accepted unchecked"
+        )
     return issues
