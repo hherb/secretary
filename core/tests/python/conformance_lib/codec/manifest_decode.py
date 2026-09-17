@@ -378,6 +378,31 @@ def _validate_manifest_shape(out: dict) -> None:
         _check_fixed_bytes(t["block_uuid"], f"trash[{i}].block_uuid", UUID_LEN)
         _check_uint(t["tombstoned_at_ms"], f"trash[{i}].tombstoned_at_ms", 64)
         _check_fixed_bytes(t["tombstoned_by"], f"trash[{i}].tombstoned_by", UUID_LEN)
+        # `TrashEntry`'s two OPTIONAL keys (§4.2). Absent decodes to `None` and
+        # re-encodes to absent, so they are checked only when PRESENT -- but
+        # when present they are checked, which until #669 they were not:
+        # both accepted ANY CBOR value (bool, tstr, a short bstr, a negative
+        # integer -- all four measured), while `decode/entries.rs` routes them
+        # through `take_fixed_bytes::<32>` and `take_u64`. An acceptance
+        # divergence, on `manifest_body`, a token-compared target replayed in
+        # CI, reachable from no committed or corpus input -- which is why the
+        # replay reported full agreement throughout.
+        #
+        # Neither check needs a new class or a new token: `_check_fixed_bytes`
+        # raises `WrongFieldType` for a non-bstr AND for a wrong length, which
+        # is exactly how Rust folds `WrongType` and `InvalidByteLength` onto
+        # `wrong_type`; `_check_uint` raises `IntegerOutOfRange` for a negative
+        # value, matching Rust's own. Measured against `manifest/token.rs`.
+        #
+        # These two were invisible to the census that found the bool class:
+        # a grep keyed on `isinstance(..., int)` can only find positions that
+        # HAVE a check. "Has no check to find" is its own search.
+        if "fingerprint" in t:
+            _check_fixed_bytes(
+                t["fingerprint"], f"trash[{i}].fingerprint", BLOCK_FINGERPRINT_LEN
+            )
+        if "purged_at_ms" in t:
+            _check_uint(t["purged_at_ms"], f"trash[{i}].purged_at_ms", 64)
 
 
 def _check_sorted_and_distinct(rows: list, key: str, label: str) -> None:
