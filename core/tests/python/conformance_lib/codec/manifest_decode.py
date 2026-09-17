@@ -16,6 +16,7 @@ from typing import Any
 
 from conformance_lib.codec.manifest_encode import py_encode_manifest
 from conformance_lib.codec.array_uniqueness import first_repeated_value
+from conformance_lib.codec.integer_rules import is_integer
 from conformance_lib.codec.manifest_rules import (
     IntegerOutOfRange,
     MissingRequiredField,
@@ -289,9 +290,11 @@ def _check_uint(value: Any, field: str, bits: int) -> None:
     explicitly because Python's `bool` subclasses `int` -- `isinstance(True,
     int)` is `True` -- while ciborium decodes a CBOR bool to `Value::Bool`,
     which `take_u*` rejects. Without the guard a `true` would pass here and
-    be rejected by Rust.
+    be rejected by Rust. The exclusion itself lives in
+    `codec/integer_rules.py`, which is the only place under `codec/` allowed
+    to write it (#669).
     """
-    if isinstance(value, bool) or not isinstance(value, int):
+    if not is_integer(value):
         raise WrongFieldType(f"{field} must be a uint, got {type(value).__name__}")
     if not 0 <= value < (1 << bits):
         raise IntegerOutOfRange(f"{field} is out of range for u{bits}: {value}")
@@ -300,7 +303,7 @@ def _check_uint(value: Any, field: str, bits: int) -> None:
 def _check_fixed_bytes(value: Any, field: str, n: int) -> None:
     """Assert `value` is a byte string of exactly `n` bytes, mirroring
     `extract.rs`'s `take_fixed_bytes::<N>` (`WrongType` for a non-bstr,
-    `WrongLength` for the wrong size).
+    `InvalidByteLength` for the wrong size).
     """
     if not isinstance(value, bytes):
         raise WrongFieldType(f"{field} must be a bstr, got {type(value).__name__}")
@@ -375,6 +378,35 @@ def _validate_manifest_shape(out: dict) -> None:
         _check_fixed_bytes(t["block_uuid"], f"trash[{i}].block_uuid", UUID_LEN)
         _check_uint(t["tombstoned_at_ms"], f"trash[{i}].tombstoned_at_ms", 64)
         _check_fixed_bytes(t["tombstoned_by"], f"trash[{i}].tombstoned_by", UUID_LEN)
+        # `TrashEntry`'s two OPTIONAL keys (§4.2). An absent key decodes to
+        # ABSENT here -- `_decode_manifest_entry_map` writes `out[key]` only for
+        # keys present on the wire -- so `in` means PRESENT and a present CBOR
+        # `null` IS checked. (Do not "simplify" to `t.get(k) is not None`: that
+        # reads as the Rust `Option` and would silently skip a present null.)
+        # They are therefore checked only when present -- but
+        # when present they are checked, which until #669 they were not:
+        # both accepted ANY CBOR value (bool, tstr, a short bstr, a negative
+        # integer -- all four measured), while `decode/entries.rs` routes them
+        # through `take_fixed_bytes::<32>` and `take_u64`. An acceptance
+        # divergence, on `manifest_body`, a token-compared target replayed in
+        # CI, reachable from no committed or corpus input -- which is why the
+        # replay reported full agreement throughout.
+        #
+        # Neither check needs a new class or a new token: `_check_fixed_bytes`
+        # raises `WrongFieldType` for a non-bstr AND for a wrong length, which
+        # is exactly how Rust folds `WrongType` and `InvalidByteLength` onto
+        # `wrong_type`; `_check_uint` raises `IntegerOutOfRange` for a negative
+        # value, matching Rust's own. Measured against `manifest/token.rs`.
+        #
+        # These two were invisible to the census that found the bool class:
+        # a grep keyed on `isinstance(..., int)` can only find positions that
+        # HAVE a check. "Has no check to find" is its own search.
+        if "fingerprint" in t:
+            _check_fixed_bytes(
+                t["fingerprint"], f"trash[{i}].fingerprint", BLOCK_FINGERPRINT_LEN
+            )
+        if "purged_at_ms" in t:
+            _check_uint(t["purged_at_ms"], f"trash[{i}].purged_at_ms", 64)
 
 
 def _check_sorted_and_distinct(rows: list, key: str, label: str) -> None:

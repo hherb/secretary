@@ -75,6 +75,9 @@ from conformance_lib.sections.rule_token_vocabulary import (
     section_rule_token_vocabulary,
 )
 from conformance_lib.sections.sync_pass import section_sync_pass_kat
+from conformance_lib.sections.value_type_discipline import (
+    section_value_type_discipline,
+)
 from conformance_lib.sections.unknown_map import (
     section5_unknown_map_case_insensitivity,
 )
@@ -170,6 +173,9 @@ SECTIONS: tuple[Section, ...] = (
             " (#655)", section_diff_replay_serve),
     Section("RTS", "rule-token seeds are rejected with the rule their file names",
             " (#641)", section_rule_token_seeds),
+    Section("VT", "value-type discipline: no bool in an integer position, "
+            "and every optional key checked", " (#669)",
+            section_value_type_discipline),
     # Last on purpose: it reports on the table above, so it reads as a summary
     # of the run rather than as a precondition for it.
     Section("REG", "section registry completeness", " (#593)",

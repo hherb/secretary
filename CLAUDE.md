@@ -29,7 +29,7 @@ core/tests/          — integration tests; tests/data/ holds KATs and fuzz regr
 core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (156 lines; the PEP
                                              723 header is the sole dependency declaration).
                                              `conformance.py:NNN` citations predating #593 are
-                                             stale — the verifier is now a 72-file package.
+                                             stale — the verifier is now a 75-file package.
                                              RE-MEASURE: `find core/tests/python/conformance_lib
                                              -name '*.py' | wc -l` — this line said 62 while the
                                              paragraph below said 65 for a whole slice.
@@ -377,10 +377,22 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 156, over a **72**-file package whose largest module is
+was 6849 lines; it is now 156, over a **75**-file package whose largest module is
 `sections/manifest_canonicality_cause.py` at **486** lines, ahead of
-`codec/scanner.py` at 476, `codec/manifest_decode.py` at 418,
-`sections/required_key_determinism.py` at 390 and `merge/records.py` at 383.
+`codec/scanner.py` at 479, `codec/manifest_decode.py` at 446,
+`sections/value_type_discipline.py` at 407 and
+`sections/value_type_structure.py` at 391 — the last two added by #669, which
+also grew `manifest_decode.py` 418 -> 446. It did **not** touch
+`codec/scanner.py`: that file is 479 at #669's merge-base AND at its head, and
+an earlier draft of this line wrote "`scanner.py` 476 -> 479", taking the 476
+from the sentence four lines below — the NEIGHBOURING-NUMBER COPY this very
+paragraph warns about, committed inside it (#679 review). #669 displaced
+`sections/required_key_determinism.py` (390, unchanged) out of the top five
+without it moving a line; `merge/records.py` (383) was already sixth beforehand,
+so it was not displaced by this slice. **There is an exact TIE at 391** —
+`sections/rule_token_seeds.py` is also 391 and untouched — so fifth place is
+shared and any ordering written here is stale on sight. Re-measured at #669
+(72 -> 75 files).
 Re-measured at #641, which added six modules (66 -> 72) and SHRANK
 `scanner.py` 484 -> 474 by moving its UTF-8 and simple-value predicates out to
 `codec/cbor_faults.py` (476 after that slice's review round lengthened one
@@ -524,6 +536,133 @@ fail-opens closed with it: a probe emitting `[]` skipped check 2 in full with no
 issue and no diagnostic; `_HASH_SEEDS = ("0",)` passed while printing "across 1
 PYTHONHASHSEED values"; and a row-shape mismatch raised out of `main()` as a
 traceback with no `FAIL:` line.
+
+**A value-type check that was never written is invisible to a census keyed on
+checks (#669).** A wrong-type sweep — 439 bodies, one substitution from a
+committed accepting base per target, both decoders run and compared — found
+**16 acceptance divergences across 10 positions**, every one Python-accepts /
+Rust-rejects, none reachable from any committed or corpus input, which is why
+the replay reported full agreement throughout. Two mechanisms, and the second
+is the one worth remembering:
+
+- **M1 — `isinstance(x, int)` with no bool exclusion.** Python's `bool`
+  subclasses `int`, so `isinstance(True, int)` is `True`, while `ciborium`
+  gives `Value::Bool` and `toml::Value::as_integer` gives `None`. Eight
+  replay-visible positions (`codec/card.py` x2, `codec/vault_toml.py` x6),
+  plus two on `codec/trash_entry.py` — a STANDALONE decoder no replay target
+  reaches, so no seed can pin it — and six more in `wire/vault_toml.py` plus
+  TWO in `wire/card.py`, where the shape is `!= 1` (because `True != 1` is
+  `False`) and bare `int(...)` coercions. Two copies in the tree were already
+  correct — `codec/record_rules.py` in #641, `codec/manifest_decode.py` two
+  weeks earlier in **#595** (`7fa4ddb3`; this line said "both (#641)", which
+  `git log -S` disproves) — which is the #597 shape exactly: not one rule with
+  a gap, several copies of one sentence, spanning three PRs, of which two were
+  right. All twelve `codec/` positions now call `codec/integer_rules.py`; the
+  eight in `wire/` do too. **`wire/card.py` was MISSED by #669 and found in the
+  #679 review**, carrying both mechanisms at once — a bare `card_version != 1`
+  (M1) and no check at all on `created_at` (M2). Its fix needed a rejection
+  that NAMES the position to have any force: planting a bool changes the signed
+  bytes, so the card's hybrid self-signature rejects the body whatever the type
+  check does, and a check asserting only "rejected" passed with the fix fully
+  reverted (measured). The `wire/` fixes are covered by Section VT's check 1c;
+  check 3 still does not scan `wire/`.
+- **M2 — the type check was never written.** `TrashEntry`'s two `Option`
+  fields, `trash[].fingerprint` and `trash[].purged_at_ms`, were validated by
+  NOTHING in `codec/manifest_decode.py` and accepted any CBOR value at all —
+  on `manifest_body`, a target that is token-compared and replayed in CI.
+  `BlockEntry` has no `Option` field, so those two are the whole class in the
+  manifest schema.
+
+**M2 was invisible to the grep that found M1, and that generalises:** a census
+keyed on `isinstance(..., int)` can only find positions that HAVE a check.
+"Has no check to find" is its own search — the identical lesson the
+memory-hygiene memo records for a `.zeroize()` grep, arriving in a different
+file. `record` swept clean (52 bodies, 0 divergences), the negative control
+for both the method and #641's record work.
+
+Section **VT** (`sections/value_type_discipline.py` +
+`sections/value_type_structure.py`) holds **eight** checks — five as shipped,
+three added in the #679 review. Four are worth knowing:
+
+- **Every check has a PASS LINE reporting what it RAN, and that is the
+  review's structural lesson rather than a formatting choice.** As shipped,
+  the five PASS lines were each computed from a DECLARATION (`len(CASES)`, a
+  comprehension over the same table, an independently-recomputed module
+  count), and `_trash_entry_issues` had no line at all — so deleting its
+  `issues.extend(...)` call produced byte-identical output and `ok=True`. It
+  is the only value-type cover `codec/trash_entry.py` has (no replay target
+  reaches that decoder), and the census that claimed to guarantee it read a
+  hand-written frozenset rather than the cases. Measured with a control:
+  deleting the case row alone was silent, deleting the row AND the decoder's
+  `fingerprint` type check together was **also** silent — a real check
+  revertible with the whole verifier green. The coverage set is now DERIVED
+  from the case table.
+
+- **Check 3 is default-deny and denies CORRECT copies too.** `isinstance(...,
+  int)` may be written under `codec/` only inside `integer_rules.py`. A
+  hand-written `isinstance(value, bool) or not isinstance(value, int)` is
+  still an issue, deliberately: "this copy is correct" is not the property
+  worth enforcing when the defect was several copies of which two were.
+  Its exemption is anchored on the FULL PATH and its scan set is FLOORED
+  (`MIN_SCANNED_CODEC_MODULES`): keyed on `path.name` under a recursive
+  `rglob` a future `codec/<sub>/integer_rules.py` was silently exempt, and
+  with `CODEC_ROOT` resolving to nothing the rule PASSED printing "0 codec/
+  modules scanned" — both #679-review fixes, both the fail-open shapes this
+  file records by name.
+- **A TOKEN-LESS row must not pass on any rejection.** `contact_card` and
+  `vault_toml` have no taxonomy, so "rejected" was check 1's whole assertion
+  for 8 of its 16 rows — and they passed on a tree carrying #669's defect in
+  full once the planted body was made to reject some other way (measured).
+  Those rows now require the rejection to NAME the position and reject an
+  encoder refusal. The same discipline is what makes check 1c non-vacuous:
+  planting a bool in a card changes the signed bytes, so the hybrid
+  self-signature rejects it whatever the type check does, and the first
+  version of that check passed with `wire/card.py`'s fix fully reverted.
+- **Check 4 governs OPTIONAL keys only, and the scope is the rule, not a
+  caveat.** Every key in `KNOWN − REQUIRED`, censused two ways against the
+  cases that actually run (7 optional keys tree-wide). A REQUIRED key losing
+  its check is a real defect it does NOT see; **#678** owns that, deferred
+  because the obvious fix — a `*_VALUE_CHECKS` table the decoder iterates —
+  would FLATTEN the interleaved type/sentinel checks that
+  `_validate_manifest_shape` and Rust's `parse_manifest_map` both perform,
+  changing which fault a two-fault body reports on a token-compared target.
+  A guard that introduces a cross-language divergence is worse than the gap.
+  An AST census was tried first and measured: 1 true positive, **39 false
+  positives**, and it MISSED `trash[].fingerprint` — a package-global key set
+  sees `fingerprint` checked under `blocks[]` and credits `trash[]` with it.
+  Do not rebuild it.
+- **Check 4b needed a NEGATIVE control to be worth anything.** Mechanism A —
+  `record.py`'s total `check_record_value` dispatch whose `else` raises
+  `UncheckedKnownKey` (#641's M8) — is probed per declared key. But every
+  declared key HAS an arm, so deleting the raise was invisible to it
+  (measured). It now also probes an UNDECLARED key and requires the
+  fall-through to fire. Generalise: a totality check over the things that
+  exist proves nothing about the fall-through that catches the things that do
+  not.
+
+The pairing of KNOWN to REQUIRED sets is **declared, never inferred**: the
+five files use five naming conventions and a stem heuristic mis-paired six of
+ten sets when prototyped. `codec/vault_toml.py` had no required set at all
+until #669 added `REQUIRED_KDF_KEYS`.
+
+**14 committed seeds** (`core/tests/acceptance_seeds.rs`, prefix
+`valuetype__`) bind a Rust error VARIANT rather than a rule token, because
+`contact_card` and `vault_toml` have no token taxonomy (#641) — and the
+variant is finer anyway, separating `WrongType` from `InvalidByteLength` on
+one field. Its census is scoped to that prefix: `manifest_body/` already holds
+38 seeds from **two** other generators (`manifest_canonicality_kat` writes 32
+across five prefix groups, `manifest_uniqueness_kat` 6;
+`manifest_precedence_kat` writes none — the "three" this line used to carry
+miscounted prefix GROUPS as generators, #679 review), and
+`rule_token_seeds.rs`'s "every file containing `__`" rule would claim all 38.
+Three substitutions per manifest key so a PARTIAL fix reds — genuinely three
+independent checks for `purged_at_ms` (bool / type / range), but only TWO for
+`fingerprint`, whose `bool` and `text` rows are both answered by the same
+`isinstance(fp, bytes)`. **Adding those seeds moved Section RTV's
+`_CORPUS_TOKENS` from 6 to 8** — they are the first committed manifest bodies
+to reach a schema fault at all, since those two keys were previously checked
+by nothing. That edit is RTV working, not breaking; its failure message asks
+for it by name.
 
 **It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and, at the time, never enabled in `test.yml` (a step enables it there since #647, which does not change this paragraph's history: that step postdates #546, and it invokes `conformance.py`'s replay mode (one `--diff-replay-serve` worker since #655, one process per corpus input before) rather than running its section suite, so it would not have caught the `pqcrypto` break either — nothing on the `--diff-replay` path calls `ml_dsa_65_verify` — state it as the IMPORT CLOSURE it is, `diff_replay.py` importing only `codec/*` plus `rejection` and no `codec/` module reaching `derivations.hybrid_verify`, rather than as "reachable only from `sections/`", which is false: the function lives in `derivations.py` and both `wire/card.py` and `wire/golden_vault_verify.py` import it, neither under `sections/` (#656 review)). The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. **The job now BLOCKS**, which this paragraph denied until the #599 review measured it: `clean-room conformance` is one of the 24 required contexts in `main`'s `protect_main` ruleset (`gh api repos/hherb/secretary/rules/branches/main`). The sentence "the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking" outlived its fact — and a stale claim in this direction is not harmless, because it gets a real gate discounted when someone weighs whether a Python-side-only pin is enough. One standing consequence remains: five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
 
@@ -869,8 +1008,8 @@ out — it has been wrong twice:
   onto two ideas of which rows the fixture holds. It defines no
   `section*` driver, so Section REG discovers it and reports the full count
   (26/26 at #613; 27/27 after #587's Section MSN; 28/28 after #618's Section
-  MPR; 29/29 after #634's Section RTV; 30/30 after #655's Section DRS; **32/32**
-  since #641 added Sections RTS and WF).
+  MPR; 29/29 after #634's Section RTV; 30/30 after #655's Section DRS; 32/32
+  after #641 added Sections RTS and WF; **33/33** since #669 added Section VT).
 
 **WHICH rule a rejecting reader names is now normative, and getting there
 found a live divergence (#618).** A body can break several rules at once;
@@ -1028,9 +1167,13 @@ survived it. Six things:
   agreement for `undefined` and nested-chunk manifest bodies. All four
   `NonCanonicalCause` outcomes map to phase-dependent tokens, so **every**
   `NonCanonicalEncoding` rejection Rust makes is scored as agreement whatever
-  Python said — measured on the committed corpus, that is **17 of the 24
+  Python said — measured on the committed corpus, that is **17 of the 30
   rejecting `manifest_body` seeds** (7 `arraysort__*`, 4 `keyorder__*`, 3
-  rule-2, 3 rule-3), leaving 7 that reach a real comparison. FOUR groups are
+  rule-2, 3 rule-3), leaving 13 that reach a real comparison. #669 added 6
+  `valuetype__trash_*` rows answering `wrong_type` / `integer_out_of_range`,
+  so the TOLERATED count did not move and the strict one nearly doubled;
+  these figures stood stale at "17 of 24, leaving 7" for a whole slice, so
+  re-measure rather than quoting (#679 review). FOUR groups are
   tolerated with no §4.2 licence, enumerated in
   `RuleToken::is_phase_dependent`'s own LIMITS block and tracked by **#646**:
   (A) trailing bytes, folded into `non_canonical_unclassified` because Rust
@@ -1126,8 +1269,10 @@ survived it. Six things:
   because that is how the #647 gap itself survived three slices.
   **State the residual scope exactly, because the wider claim is the one
   someone will want to make.** CI replays the COMMITTED corpus only —
-  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, 107 inputs today (#641
-  added 57 generated single-fault seeds for `block_file` and `record`).
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **121** inputs today
+  (#641 added 57 generated single-fault seeds for `block_file` and `record`;
+  #669 added 14 acceptance seeds for `contact_card`, `vault_toml` and
+  `manifest_body`).
   `core/fuzz/corpus/` is **gitignored**, so agreement on fuzz-DISCOVERED
   inputs is still proven only by whoever runs the fuzzer, and "the differential
   replay is in CI" must not be read as "the fuzz corpus is differentially
@@ -1137,7 +1282,7 @@ survived it. Six things:
   the one machine the floor protects: with `fuzz/corpus/` populated, a deleted
   seed still cleared the floor by tens of thousands (#656 review; measured —
   38 committed against 41 total now reds). What it still does NOT floor is how
-  many inputs reach a STRICT token comparison, which is roughly 7 of 39 on
+  many inputs reach a STRICT token comparison, which is 13 of 45 on
   `manifest_body` because every `NonCanonicalEncoding` cause is
   phase-dependent; #658. The other CI cover is
   unchanged: `manifest/token/tests/` (the blocking `cargo test --workspace`)

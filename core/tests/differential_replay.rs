@@ -67,11 +67,20 @@ fn differential_replay_full_corpus() {
         // target's own module doc records it happening here. Populating the
         // directory fixed the symptom; this fixes the mechanism.
         //
-        // The floor counts only the git-tracked inputs. Counting the runtime
-        // corpus too left it fail-open on the one machine it protects: with a
-        // populated `fuzz/corpus/` a deleted committed seed still cleared it
-        // by tens of thousands, so "deleting an input reds" was true only
-        // where `corpus/` was absent (#656 review).
+        // The floor counts only inputs under the two COMMITTED DIRECTORIES
+        // (`fuzz/seeds/<target>/` and `tests/data/diff_regressions/<target>/`),
+        // never the gitignored runtime corpus. Counting that too left it
+        // fail-open on the one machine it protects: with a populated
+        // `fuzz/corpus/` a deleted committed seed still cleared the floor by
+        // tens of thousands, so "deleting an input reds" was true only where
+        // `corpus/` was absent (#656 review).
+        //
+        // Say DIRECTORY, not "git-tracked": the tagging is positional
+        // (`corpus.rs`'s `committed` flag is set per directory), so an
+        // untracked file dropped into `fuzz/seeds/<target>/` counts toward the
+        // floor too. What actually binds each committed seed to a row is the
+        // prefix-scoped two-way census in the generator that owns it — for the
+        // `valuetype__` seeds, `acceptance_seeds.rs` (#679 review).
         let inputs = corpus_inputs(target).expect("list corpus inputs");
         let committed = inputs.iter().filter(|i| i.committed).count();
         let started = Instant::now();
@@ -118,9 +127,9 @@ fn differential_replay_full_corpus() {
              {searched:?}. A target that replays nothing, or almost nothing, \
              passes vacuously; either restore the committed inputs under \
              core/fuzz/seeds/{target}/ or update MIN_CORPUS_INPUTS \
-             deliberately in the same edit. Only git-tracked inputs count: a \
-             populated core/fuzz/corpus/ must not be able to mask a deleted \
-             seed.",
+             deliberately in the same edit. Only the committed DIRECTORIES \
+             count: a populated core/fuzz/corpus/ must not be able to mask a \
+             deleted seed.",
             inputs.len()
         );
         progress::emit(&progress::finish_line(

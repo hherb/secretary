@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from conformance_lib.canonical import encode_canonical_map, encode_pk_bundle
+from conformance_lib.codec.integer_rules import is_integer
 from conformance_lib.constants import TAG_CARD_SIG
 from conformance_lib.cursor import ParseError
 from conformance_lib.derivations import card_fingerprint, hybrid_verify
@@ -50,8 +51,16 @@ def parse_and_verify_card(card_bytes: bytes) -> dict[str, Any]:
     missing = required - set(decoded.keys())
     if missing:
         raise ParseError(f"card missing fields: {sorted(missing)}")
-    if decoded["card_version"] != 1:
+    # `is_integer` BEFORE the value comparison, and a type check on
+    # `created_at`, which had none at all. Python's `bool` subclasses `int`, so
+    # `True != 1` is `False` and a CBOR `true` parsed here as v1 while
+    # `identity/card.rs`'s `take_u8` matches `Value::Integer` alone and rejects
+    # it. The same defect as #669's `codec/` sites, in the same two shapes:
+    # a bare `!= 1` comparison (M1) and a position with no check at all (M2).
+    if not is_integer(decoded["card_version"]) or decoded["card_version"] != 1:
         raise ParseError(f"card_version {decoded['card_version']!r}")
+    if not is_integer(decoded["created_at"]) or decoded["created_at"] < 0:
+        raise ParseError(f"created_at {decoded['created_at']!r}")
 
     # Recompute the canonical bytes that the self-signature commits to
     # (§6 -- everything except the two self_sig_* fields).

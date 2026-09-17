@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from conformance_lib.canonical import encode_canonical_map
+from conformance_lib.codec.integer_rules import is_integer
 from conformance_lib.codec.record import _reject_floats_and_tags_py
 from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
 from conformance_lib.constants import BLOCK_UUID_LEN, DEVICE_UUID_LEN
@@ -68,7 +69,7 @@ def py_decode_trash_entry(data: bytes) -> dict:
         raise ValueError("TrashEntry block_uuid must be 16-byte bstr")
 
     tombstoned_at_ms = decoded["tombstoned_at_ms"]
-    if not isinstance(tombstoned_at_ms, int) or tombstoned_at_ms < 0:
+    if not is_integer(tombstoned_at_ms) or tombstoned_at_ms < 0:
         raise ValueError(f"TrashEntry tombstoned_at_ms must be uint, got {tombstoned_at_ms!r}")
 
     tombstoned_by = decoded["tombstoned_by"]
@@ -89,7 +90,7 @@ def py_decode_trash_entry(data: bytes) -> dict:
 
     if "purged_at_ms" in decoded:
         purged_at_ms = decoded["purged_at_ms"]
-        if not isinstance(purged_at_ms, int) or purged_at_ms < 0:
+        if not is_integer(purged_at_ms) or purged_at_ms < 0:
             raise ValueError(f"TrashEntry purged_at_ms must be uint, got {purged_at_ms!r}")
         out["purged_at_ms"] = purged_at_ms
 

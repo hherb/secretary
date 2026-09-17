@@ -108,18 +108,28 @@ _TOKENED_CLASSES: tuple[tuple[type, str], ...] = (
 # the observed set away, printing its size and asserting nothing about it, so
 # a Python side that collapsed every manifest rejection onto one token passed.
 # That is the `_HASH_SEEDS = ("0",)` shape recorded in CLAUDE.md: a figure
-# computed, printed, and never compared.  Six of the seventeen tokens are
-# reachable from `core/fuzz/seeds/manifest_body/`; the other eleven need
-# bodies the corpus does not hold, which is why this is an equality against a
-# named set rather than a count.
+# computed, printed, and never compared.  EIGHT of the seventeen tokens are
+# reachable from `core/fuzz/seeds/manifest_body/`; the other nine need bodies
+# the corpus does not hold, which is why this is an equality against a named
+# set rather than a count.
+#
+# It was six until #669 added six `valuetype__trash_*` seeds, which are the
+# first committed manifest bodies to reach a SCHEMA fault: `trash[].fingerprint`
+# and `trash[].purged_at_ms` were validated by nothing on the Python side, so
+# no corpus body had ever been rejected as a wrong type or an out-of-range
+# integer at all.  Growing this set is the deliberate edit this check's own
+# failure message asks for -- the seeds and this line move together, which is
+# the point.
 _CORPUS_TOKENS = frozenset(
     {
         "array_sort_order",
+        "integer_out_of_range",
         "non_canonical_unclassified",
         "repeated_array_value",
         "rule2_indefinite_length",
         "rule3_non_shortest_form",
         "rule4_tag_or_float",
+        "wrong_type",
     }
 )
 

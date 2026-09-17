@@ -11,6 +11,8 @@ import base64
 import re
 import tomllib
 
+from conformance_lib.codec.integer_rules import is_integer
+
 # ---------------------------------------------------------------------------
 # Differential-replay helpers (--diff-replay mode)
 # ---------------------------------------------------------------------------
@@ -62,12 +64,12 @@ def py_decode_vault_toml(text: str) -> dict:
 
     # format_version
     fv = data.get("format_version")
-    if not isinstance(fv, int) or fv != 1:
+    if not is_integer(fv) or fv != 1:
         raise ValueError(f"vault.toml format_version {fv!r}")
 
     # suite_id
     si = data.get("suite_id")
-    if not isinstance(si, int) or si != 1:
+    if not is_integer(si) or si != 1:
         raise ValueError(f"vault.toml suite_id {si!r}")
 
     # vault_uuid — strict canonical form (lowercase hex, exact hyphens)
@@ -78,7 +80,7 @@ def py_decode_vault_toml(text: str) -> dict:
 
     # created_at_ms — must be a non-negative integer
     cat = data.get("created_at_ms")
-    if not isinstance(cat, int) or cat < 0:
+    if not is_integer(cat) or cat < 0:
         raise ValueError(f"vault.toml created_at_ms {cat!r}")
 
     # [kdf] section — strict: no unknown keys
@@ -87,6 +89,21 @@ def py_decode_vault_toml(text: str) -> dict:
         raise ValueError("vault.toml missing [kdf] section")
 
     KNOWN_KDF_KEYS = {"algorithm", "version", "memory_kib", "iterations", "parallelism", "salt_b64"}
+    # Written OUT, not aliased to `KNOWN_KDF_KEYS`. Every one of the six is
+    # required: `unlock/vault_toml.rs::decode` reads each through a
+    # `take_str`/`take_i64` that yields `MissingField` when absent, so this map
+    # has no optional key. (Cite the DECODER, not `KdfSectionWire` -- that
+    # struct is the encode side, and a reader checking the claim there is
+    # looking at the wrong function.)
+    #
+    # An ALIAS would make Section VT's census vacuous for this row: `known -
+    # required` is identically empty however `KNOWN_KDF_KEYS` grows, so a key
+    # added here that Rust treats as `Option` would be absorbed in the same
+    # stroke and reported "covered". Spelled out, adding to one set alone reds
+    # the census (#669, #679 review).
+    REQUIRED_KDF_KEYS = frozenset(
+        {"algorithm", "version", "memory_kib", "iterations", "parallelism", "salt_b64"}
+    )
     for k in kdf:
         if k not in KNOWN_KDF_KEYS:
             raise ValueError(f"vault.toml unknown kdf key: {k!r}")
@@ -100,15 +117,15 @@ def py_decode_vault_toml(text: str) -> dict:
         raise ValueError(f"vault.toml kdf.version {ver!r}")
 
     mem_kib = kdf.get("memory_kib")
-    if not isinstance(mem_kib, int) or mem_kib < 0 or mem_kib > 0xFFFFFFFF:
+    if not is_integer(mem_kib) or mem_kib < 0 or mem_kib > 0xFFFFFFFF:
         raise ValueError(f"vault.toml kdf.memory_kib {mem_kib!r}")
 
     iters = kdf.get("iterations")
-    if not isinstance(iters, int) or iters < 0 or iters > 0xFFFFFFFF:
+    if not is_integer(iters) or iters < 0 or iters > 0xFFFFFFFF:
         raise ValueError(f"vault.toml kdf.iterations {iters!r}")
 
     par = kdf.get("parallelism")
-    if not isinstance(par, int) or par < 0 or par > 0xFFFFFFFF:
+    if not is_integer(par) or par < 0 or par > 0xFFFFFFFF:
         raise ValueError(f"vault.toml kdf.parallelism {par!r}")
 
     salt_b64_str = kdf.get("salt_b64")

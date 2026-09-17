@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from conformance_lib.canonical import encode_canonical_map
+from conformance_lib.codec.integer_rules import is_integer
 from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
 
 def py_decode_contact_card(data: bytes) -> dict:
@@ -61,7 +62,7 @@ def py_decode_contact_card(data: bytes) -> dict:
         raise KeyError(f"contact_card missing required field: {absent!r}")
 
     cv = decoded["card_version"]
-    if not isinstance(cv, int) or cv != 1:
+    if not is_integer(cv) or cv != 1:
         raise ValueError(f"card_version must be 1, got {cv!r}")
 
     cu = decoded["contact_uuid"]
@@ -89,7 +90,7 @@ def py_decode_contact_card(data: bytes) -> dict:
         raise ValueError(f"ml_dsa_65_pk must be 1952-byte bstr, got {len(mldsa) if isinstance(mldsa, bytes) else type(mldsa).__name__}")
 
     cat = decoded["created_at"]
-    if not isinstance(cat, int) or cat < 0:
+    if not is_integer(cat) or cat < 0:
         raise ValueError(f"created_at must be uint, got {cat!r}")
 
     sig_ed = decoded["self_sig_ed"]
