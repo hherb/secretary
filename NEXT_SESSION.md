@@ -1,1 +1,1 @@
-docs/handoffs/2026-09-15-token-compare-record-block-shipped.md
+docs/handoffs/2026-09-17-value-type-discipline-shipped.md
