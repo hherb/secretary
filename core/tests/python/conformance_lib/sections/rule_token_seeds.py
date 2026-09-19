@@ -116,6 +116,7 @@ _TOKENED_CLASSES: tuple[tuple[type, str], ...] = (
     (envelope_rules.EnvelopeSortOrder, "array_sort_order"),
     (envelope_rules.EnvelopeRepeatedValue, "repeated_array_value"),
     (cbor_faults.MalformedCbor, "malformed_cbor"),
+    (cbor_faults.NestingTooDeep, "malformed_cbor"),
     (record_rules.RecordWrongType, "wrong_type"),
     (record_rules.RecordIntegerOutOfRange, "integer_out_of_range"),
     (record_rules.RecordDuplicateKey, "duplicate_map_key"),

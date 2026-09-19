@@ -6,15 +6,16 @@ is not well-formed CBOR is reported as that, and a well-formed body carrying a
 tag or a float as rule 4 -- the order `record::decode` reports them in.
 Section RTS reaches the walk only through the shapes the committed seeds
 plant; this section pins every rule, the precedence in both directions, and
-the depth behaviour directly: one row past ciborium's recursion limit, as the
-Rust twin has, and one past Python's, which is the only row a recursive walk
-fails.
+crypto-design §6.2 rule 6 (#667): the v1 limit of 256 levels, row for row the
+Rust twin's, plus one row past Python's own recursion limit, which has no
+Rust twin because the Rust walk cannot recurse.
 
 Each case is `(label, body, outcome, value)`.  `outcome` is `"end"` (the walk
 returns `value`, the offset one past the item), `"malformed"` (it raises
-`MalformedCbor`), or `"tag"` / `"float"` (it raises `NonCanonicalItem` with
+`MalformedCbor`), `"tag"` / `"float"` (it raises `NonCanonicalItem` with
 rule 4 for a tag or a float at offset `value` -- the Rust twin's
-`WalkFault::Tag` / `WalkFault::Float`, both checked exactly, kind and offset).
+`WalkFault::Tag` / `WalkFault::Float`, both checked exactly, kind and offset),
+or `"too_deep"` (it raises `NestingTooDeep` at offset `value`).
 
 "Case for case" is about the CASES, not their strength, in two ways.  A
 `"malformed"` row checks only that `MalformedCbor` is raised, where the Rust
@@ -48,7 +49,7 @@ from __future__ import annotations
 import re
 import sys
 
-from conformance_lib.codec.cbor_faults import MalformedCbor
+from conformance_lib.codec.cbor_faults import MalformedCbor, NestingTooDeep, V1_MAX_NESTING_DEPTH
 from conformance_lib.codec.scanner import NonCanonicalItem
 from conformance_lib.codec.well_formed import walk_body
 
@@ -80,15 +81,13 @@ BREAK = 0xFF
 ASCII_A = ord("a")
 INVALID_UTF8 = 0xFF
 UTF8_TWO_BYTE_LEAD, UTF8_CONTINUATION = 0xC3, 0xA9
-# Deeper than ciborium's recursion limit: the Rust twin's case.  It is NOT
-# deeper than Python's own limit (1000 by default), so a recursive
-# reimplementation of `walk_body` passes it -- the PR #673 review measured
-# `scanner._scan_item` walking these 300 levels fine.  The row after it is the
-# one that catches a recursive walk.
-DEPTH_BEYOND_CIBORIUM_LIMIT = 300
 # Twice this interpreter's recursion limit, read when this module is imported,
 # so a recursive walk raises `RecursionError` wherever the limit has been set.
 DEPTH_BEYOND_PYTHON_RECURSION_LIMIT = 2 * sys.getrecursionlimit()
+# `{"a": …}`: a one-entry map head, a one-byte text head, the letter.
+_MAP_LEVEL_LEN = 3
+# `[<tag 1> 0, …]`: a two-item array head, a tag head, the tagged 0.
+_TAG_FIRST_LEN = 3
 MAX_U32 = 0xFFFFFFFF
 
 # The bytes below are used only by the eight rows the module docstring names,
@@ -167,11 +166,34 @@ CASES: tuple[tuple[str, bytes, str, int | None], ...] = (
     ("malformed before a tag", _b(ARRAY_2, UNDEFINED, TAG_1, UINT_0), "malformed", None),
     ("first rule-4 fault wins", _b(ARRAY_2, FLOAT16, UINT_0, UINT_0, TAG_1, UINT_0), "float", 1),
     ("indefinite map ends mid-entry", _b(MAP_INDEFINITE, TEXT_1, ASCII_A, BREAK), "malformed", None),
-    ("deep nesting",
-     bytes([ARRAY_1] * DEPTH_BEYOND_CIBORIUM_LIMIT + [UINT_0]), "end", DEPTH_BEYOND_CIBORIUM_LIMIT + 1),
+    # -- crypto-design §6.2 rule 6 (#667), row for row the Rust twin's.  A
+    # "too_deep" row's value is the offset of the head that would open level
+    # 257; the walk raises `NestingTooDeep` there, at once. --
+    ("nesting to the v1 limit",
+     bytes([ARRAY_1] * V1_MAX_NESTING_DEPTH + [UINT_0]), "end", V1_MAX_NESTING_DEPTH + 1),
+    ("one level past the limit",
+     bytes([ARRAY_1] * (V1_MAX_NESTING_DEPTH + 1) + [UINT_0]), "too_deep", V1_MAX_NESTING_DEPTH),
+    ("nesting far past the limit",
+     bytes([ARRAY_1] * (2 * V1_MAX_NESTING_DEPTH) + [UINT_0]), "too_deep", V1_MAX_NESTING_DEPTH),
+    ("maps to the limit",
+     bytes([MAP_1, TEXT_1, ASCII_A] * V1_MAX_NESTING_DEPTH + [UINT_0]), "end",
+     _MAP_LEVEL_LEN * V1_MAX_NESTING_DEPTH + 1),
+    ("maps one past the limit",
+     bytes([MAP_1, TEXT_1, ASCII_A] * (V1_MAX_NESTING_DEPTH + 1) + [UINT_0]), "too_deep",
+     _MAP_LEVEL_LEN * V1_MAX_NESTING_DEPTH),
+    ("indefinite containers are levels",
+     bytes([ARRAY_INDEFINITE] * (V1_MAX_NESTING_DEPTH + 1)), "too_deep", V1_MAX_NESTING_DEPTH),
+    ("a tag is a nesting level",
+     bytes([ARRAY_1] * V1_MAX_NESTING_DEPTH + [TAG_1, UINT_0]), "too_deep", V1_MAX_NESTING_DEPTH),
+    ("a tag at the limit is still rule 4",
+     bytes([ARRAY_1] * (V1_MAX_NESTING_DEPTH - 1) + [TAG_1, UINT_0]), "tag", V1_MAX_NESTING_DEPTH - 1),
+    ("excess depth outranks an earlier tag",
+     _b(ARRAY_2, TAG_1, UINT_0) + bytes([ARRAY_1] * V1_MAX_NESTING_DEPTH + [UINT_0]), "too_deep",
+     _TAG_FIRST_LEN + V1_MAX_NESTING_DEPTH - 1),
+    # No Rust twin: a recursive walk raises `RecursionError` here, which is a
+    # harness failure, not a verdict.  The iterative walk refuses level 257.
     ("nesting past Python's recursion limit",
-     bytes([ARRAY_1] * DEPTH_BEYOND_PYTHON_RECURSION_LIMIT + [UINT_0]), "end",
-     DEPTH_BEYOND_PYTHON_RECURSION_LIMIT + 1),
+     bytes([ARRAY_1] * DEPTH_BEYOND_PYTHON_RECURSION_LIMIT + [UINT_0]), "too_deep", V1_MAX_NESTING_DEPTH),
     # -- The branches the first cut of both test lists left open (see the
     # module docstring). --
     ("negative-int indefinite", _b(NINT_INDEFINITE), "malformed", None),
@@ -205,10 +227,21 @@ CASES: tuple[tuple[str, bytes, str, int | None], ...] = (
 _RULE4_MESSAGE = re.compile(r"rule 4: (?P<kind>CBOR tag|float) at offset (?P<offset>\d+)")
 _RULE4_KIND = {"CBOR tag": "tag", "float": "float"}
 
+# `cbor_faults.require_room_for_another_level` composes this; the offset is
+# read back and compared for equality, as the Rust twin asserts `Some(offset)`.
+_DEPTH_MESSAGE = re.compile(r"crypto-design §6\.2 rule 6: nesting past \d+ levels at offset (?P<offset>\d+)")
+
 
 def _case_issue(label: str, body: bytes, outcome: str, value: int | None) -> str | None:
     try:
         end = walk_body(body)
+    except NestingTooDeep as exc:
+        match = _DEPTH_MESSAGE.fullmatch(str(exc))
+        if outcome != "too_deep":
+            return f"{label}: raised NestingTooDeep ({exc}), expected {outcome}"
+        if match is None or int(match["offset"]) != value:
+            return f"{label}: raised {exc!r}, expected nesting past the limit at offset {value}"
+        return None
     except MalformedCbor:
         return None if outcome == "malformed" else f"{label}: raised MalformedCbor, expected {outcome}"
     except NonCanonicalItem as exc:

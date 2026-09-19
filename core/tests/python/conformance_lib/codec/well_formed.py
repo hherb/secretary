@@ -21,13 +21,14 @@ PRECEDENCE.  A well-formedness fault anywhere in the item outranks a rule-4
 fault anywhere: the first tag or float is remembered and raised only once the
 whole item has proven well-formed.
 
-ITERATIVE on purpose.  `scanner._scan_item` recurses, so a deeply nested body
-raises `RecursionError` -- a harness failure, not a verdict.  This walk keeps
-an explicit stack and has no depth cap of its own, like its Rust twin.  That
-keeps the WALK from failing, not the decoder: `py_decode_record` calls the
-recursive `_scan_map_entries` right after it, so a record nested past Python's
-recursion limit (about 1,000 levels) is still a harness failure.  That residual
-is #667, beside ciborium's own 256-level limit on the Rust side.
+ITERATIVE on purpose, and bounded by crypto-design §6.2 rule 6 (#667).
+`scanner._scan_item` recurses, so a deeply nested body used to raise
+`RecursionError` -- a harness failure, not a verdict.  This walk keeps an
+explicit stack, and the stack is the depth count: a head that would open level
+257 raises `NestingTooDeep` at once, like every well-formedness fault, so no
+recursive phase after it ever sees more than 256 levels.  `reject_excessive_nesting`
+is the same traversal with the content checks off, for the decoders that have
+no `walk_body` of their own.
 
 SCOPE.  The first item only.  Trailing bytes are the caller's to judge, and
 `py_decode_record` judges them LAST, where `record::decode` meets them: its
@@ -38,7 +39,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from conformance_lib.codec.cbor_faults import MalformedCbor, require_false_true_or_null, require_utf8
+from conformance_lib.codec.cbor_faults import MalformedCbor, NestingTooDeep, require_false_true_or_null, require_room_for_another_level, require_utf8
 from conformance_lib.codec.scanner import CBOR_AI_INDEFINITE, CBOR_BREAK, NonCanonicalItem, _decode_head, _reject_rule4_head
 
 MAJOR_UINT, MAJOR_NINT, MAJOR_BYTES, MAJOR_TEXT, MAJOR_ARRAY, MAJOR_MAP, MAJOR_TAG, MAJOR_SIMPLE = range(8)
@@ -74,8 +75,8 @@ def _payload_end(buf: bytes, head_at: int, start: int, length: int, text: bool) 
     return end
 
 
-def _string_end(buf: bytes, pos: int, major: int, arg: int | None, head: int) -> int:
-    text = major == MAJOR_TEXT
+def _string_end(buf: bytes, pos: int, major: int, arg: int | None, head: int, check_utf8: bool) -> int:
+    text = major == MAJOR_TEXT and check_utf8
     if arg is not None:
         return _payload_end(buf, pos, pos + head, arg, text)
     at = pos + head
@@ -119,12 +120,10 @@ def _count_one_item(stack: list[_Frame]) -> None:
         top.mid_entry = not top.mid_entry
 
 
-def walk_body(buf: bytes, pos: int = 0) -> int:
-    """Walk the CBOR item at `pos`; return the offset one past it.
-
-    Raises `MalformedCbor` for a well-formedness fault anywhere in the item,
-    else `NonCanonicalItem` (rule 4) for the first tag or float.
-    """
+def _walk(buf: bytes, pos: int, *, check_content: bool) -> int:
+    """The one traversal both entry points share: item boundaries, crypto-design
+    §6.2 rule 6 always, and -- when `check_content` -- UTF-8, simple values and
+    rule 4.  The depth check lives here once, so it cannot drift between them."""
     stack: list[_Frame] = []
     first_rule4: NonCanonicalItem | None = None
     started = False
@@ -140,21 +139,59 @@ def walk_body(buf: bytes, pos: int = 0) -> int:
         if major in (MAJOR_UINT, MAJOR_NINT):
             pos += head
         elif major in (MAJOR_BYTES, MAJOR_TEXT):
-            pos = _string_end(buf, pos, major, arg, head)
+            pos = _string_end(buf, pos, major, arg, head, check_utf8=check_content)
         elif major in (MAJOR_ARRAY, MAJOR_MAP):
+            require_room_for_another_level(len(stack), pos)
             is_map = major == MAJOR_MAP
             left = None if arg is None else arg * (ITEMS_PER_MAP_ENTRY if is_map else 1)
             stack.append(_Frame(definite_left=left, is_map=is_map))
             pos += head
         elif major == MAJOR_TAG:
-            first_rule4 = first_rule4 or _rule4_at(major, ai, pos)
+            require_room_for_another_level(len(stack), pos)
+            if check_content:
+                first_rule4 = first_rule4 or _rule4_at(major, ai, pos)
             stack.append(_Frame(definite_left=1))
             pos += head
         else:
             if ai == CBOR_AI_INDEFINITE:
                 raise MalformedCbor(f"unexpected break at offset {pos}")
-            rule4 = _rule4_at(major, ai, pos)
-            if rule4 is None:
-                require_false_true_or_null(ai, pos)
-            first_rule4 = first_rule4 or rule4
+            if check_content:
+                rule4 = _rule4_at(major, ai, pos)
+                if rule4 is None:
+                    require_false_true_or_null(ai, pos)
+                first_rule4 = first_rule4 or rule4
             pos += head
+
+
+def walk_body(buf: bytes, pos: int = 0) -> int:
+    """Walk the CBOR item at `pos`; return the offset one past it.
+
+    Raises `MalformedCbor` for a well-formedness fault anywhere in the item --
+    `NestingTooDeep`, a subclass, for a level past crypto-design §6.2 rule 6,
+    at once -- else `NonCanonicalItem` (rule 4) for the first tag or float.
+    """
+    return _walk(buf, pos, check_content=True)
+
+
+def reject_excessive_nesting(buf: bytes) -> None:
+    """crypto-design §6.2 rule 6 over a whole document, and nothing else (#667).
+
+    The first statement of every `codec/` decoder that has no `walk_body` of its
+    own (the manifest, the contact card, the trash entry), so a document nested
+    past the limit is refused before any RECURSIVE phase runs -- which is what
+    turned a 995-level manifest into a `RecursionError` harness failure.
+
+    It walks item boundaries only.  It reports no content-level fault (invalid
+    UTF-8, a disallowed simple value, a tag or float as rule 4), since none of
+    those moves a boundary; a tag still counts as a level.  At a fault it cannot
+    walk past -- a truncated head, an overrun, a bad chunk -- it stops and
+    returns, leaving that fault to the decoder's own phases to report as they
+    always have.  Every recursive phase after it scans in byte order, so it
+    meets that same fault before it could nest past 256 levels.
+    """
+    try:
+        _walk(buf, 0, check_content=False)
+    except NestingTooDeep:
+        raise
+    except MalformedCbor:
+        return
