@@ -361,7 +361,8 @@ further check. **Rule 4 is not an encoding-level choice** — a normalising pars
 *preserves* a tag or a float and re-encodes it identically, so the step-4
 comparison cannot see one. Every reader enforces rule 4 by the whole-body walk
 row 4 of the table names, separately from the re-encode. Nor can the re-encode
-see rule 6: a normalising parse must apply the limit as it builds the tree.
+see rule 6: a normalising parse must apply the limit itself, in its parse or
+in a walk of its own.
 
 **Retaining the subtree's raw input bytes and re-emitting them satisfies (1)
 but not (2)**, and is conformant only if the reader enforces (2) separately.

@@ -742,10 +742,11 @@ now says **a default value is written by omission**. Load-bearing:
   ciborium's actual limit (mutation N1).
 - **The manifest-path bignum edge is #666's, and Rust gives it two
   answers.** ciborium charges no level for a bignum tag over at most 16
-  bytes. When the value fits 64 bits (every bignum of up to 8 bytes) it folds
-  it to an integer, so a manifest whose 257th level is one fails the
-  re-encode as `non_canonical_unclassified`. When it is wider (9-16 bytes,
-  positive or negative) ciborium keeps a `Value::Tag`, and Rust answers
+  bytes. When the value fits 64 bits — every bignum of up to 8 bytes, plus a
+  wider one whose leading bytes are zero — it folds it to an integer, so a
+  manifest whose 257th level is one fails the re-encode as
+  `non_canonical_unclassified`. Otherwise, in the 9-16-byte range, positive
+  or negative, ciborium keeps a `Value::Tag`, and Rust answers
   `rule4_tag_or_float` (`Canonical(TagRejected)`): a rule-4 report where
   §4.2 now requires depth. Python answers `NestingTooDeep` (`malformed_cbor`)
   at every width, and a pair naming `malformed_cbor` is never tolerated.
@@ -1066,7 +1067,7 @@ out — it has been wrong twice:
   byte-retaining reader reaches them directly in `_check_canonical_item`.
   vault-format §4.2 requires exactly that ("a byte-retaining reader
   reproduces its input unconditionally … and it must therefore check
-  crypto-design §6.2 rules 2, 3 and 4 itself"). Rule 4 is not asymmetric
+  crypto-design §6.2 rules 2, 3, 4 and 6 itself"). Rule 4 is not asymmetric
   at all: §4.2 says **every** reader enforces it by a separate whole-body
   walk, so a `null` cause and "§6.2 rule 4" are one statement seen from
   two sides. Section MCC discriminates on a typed `NonCanonicalItem.rule`
@@ -1307,8 +1308,8 @@ survived it. Six things:
   cannot name them, beside ANY schema fault; (B) `array_sort_order` against
   `rule4_tag_or_float`, which §4.2's ordering 1 FIXES; (C) rules 2, 3 and
   `non_canonical_unclassified` against `rule4_tag_or_float`, where §4.2 does
-  not read consistently — ordering 1 puts rule 4 ahead of "§6.2's numbered
-  rules" while the next paragraph declares rules 1-3 unordered against both
+  not read consistently — ordering 1 puts rule 4 ahead of "§6.2 rules 1–5"
+  while the next paragraph declares rules 1-3 unordered against both
   fixed orderings; and (D) any of the four against `repeated_array_value`,
   where §4.2 is SILENT rather than ordering it, its closing paragraph
   withholding the freedom only "relative to the two fixed orderings above".
@@ -1898,8 +1899,9 @@ the writer and reader halves have different histories:
   written down nowhere, so a clean-room implementer reading `docs/` alone
   would have emitted unsorted arrays and been rejected by the new check —
   exactly the property `conformance.py` exists to gate. The same section carries the
-  per-rule split for `unknown` subtrees — a five-row table against
-  crypto-design §6.2's five rules, with **2/3/4 enforced and 1/5 not**. Be
+  per-rule split for `unknown` subtrees — a six-row table against
+  crypto-design §6.2's six rules, with **2/3/4/6 enforced and 1/5 not** (rule
+  6 is enforced by the parse or walk that finds item boundaries). Be
   careful with the mechanism, which is not uniform across those three: rules 2
   and 3 are caught by the §4.3 step-4 re-encode *for a normalising-parse
   reader* (a byte-retaining reader must check them directly, and the table's

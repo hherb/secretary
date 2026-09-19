@@ -270,7 +270,7 @@ impl RuleToken {
     ///    and [`Self::NonCanonicalUnclassified`] against
     ///    [`Self::Rule4TagOrFloat`], where §4.2 does not read consistently.**
     ///    Ordering 1 says rule 4 outranks "every check below it", scoped to
-    ///    "§6.2's numbered rules", which includes rules 1, 2 and 3; the
+    ///    "§6.2 rules 1–5", which includes rules 1, 2 and 3; the
     ///    paragraph immediately after declares the order of rules 1, 2 and 3
     ///    against BOTH fixed orderings unspecified. The two sentences cannot
     ///    both govern this pair. There is no live divergence today, because

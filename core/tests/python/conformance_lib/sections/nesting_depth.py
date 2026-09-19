@@ -43,7 +43,9 @@ as Section VT's check 3 does, so a module split into a directory stays
 visible), skipping `__pycache__`.  In each file it reads only TOP-LEVEL
 `def py_decode_*` names: a decoder under another name, or one nested in a
 class or function, is invisible to it.  A symlinked subdirectory is not
-followed (#510's `rglob` gap); `_MIN_DISCOVERED_DECODERS` floors the result.
+followed -- `Path.rglob` does not follow symlinked directories, the same gap
+#510 records for `scripts/payload_guard`, and nothing tracks it for this
+census; `_MIN_DISCOVERED_DECODERS` floors the result.
 
 GUARD AGAINST AN ESCAPING TRACEBACK.  `conformance.py`'s `main()` has no
 per-section try/except (#682), so an exception out of a section driver aborts
@@ -362,7 +364,10 @@ def _discovered_decoders() -> tuple[set[str], list[str], int, int]:
     actually read and parsed, so a skipped file shows in the PASS line."""
     names: set[str] = set()
     issues: list[str] = []
-    paths = sorted(p for p in _CODEC_DIR.rglob("*.py") if "__pycache__" not in p.parts)
+    paths = sorted(
+        p for p in _CODEC_DIR.rglob("*.py")
+        if "__pycache__" not in p.relative_to(_CODEC_DIR).parts
+    )
     declared_files = len(paths)
     executed_files = 0
     for path in paths:
