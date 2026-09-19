@@ -28,8 +28,8 @@
 //! indefinite form on majors 0, 1 and 6; a break outside an indefinite
 //! container; an indefinite-string chunk that is not a definite string of the
 //! same major (§3.2.3); text that is not valid UTF-8, per string and per chunk;
-//! a major-7 simple value other than false/true/null (depth past crypto-design
-//! §6.2 rule 6). Then rule 4: any tag
+//! a major-7 simple value other than false/true/null; a chain of arrays, maps
+//! and tags nested past crypto-design §6.2 rule 6's limit. Then rule 4: any tag
 //! (bignum tags included) and any float.
 //!
 //! **Precedence.** A well-formedness fault anywhere in the item outranks a

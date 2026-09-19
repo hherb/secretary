@@ -107,8 +107,12 @@ pub(crate) use secret_tree::wipe_calls;
 ///
 /// It is exactly the recursion limit `ciborium` 0.2.2 applies to every
 /// parse, which every reader in this crate has enforced since v1, so stating
-/// it narrowed nothing. The byte walk `record::decode` runs first enforces it
-/// itself; `core/tests/nesting_depth_seeds.rs` fails if `ciborium`'s limit
+/// it narrowed nothing a reader ACCEPTS. It is not exact about which rule a
+/// rejection REPORTS: `ciborium` charges no level for a bignum tag over at
+/// most 16 bytes, so on its paths a body whose 257th level is one is
+/// rejected under another rule rather than for depth (#666). The byte walk
+/// `record::decode` runs first enforces it itself, tags of every kind
+/// included; `core/tests/nesting_depth_seeds.rs` fails if `ciborium`'s limit
 /// ever stops equalling it on the paths that still rely on `ciborium` for it.
 pub const V1_MAX_NESTING_DEPTH: usize = 256;
 

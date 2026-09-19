@@ -15,6 +15,8 @@ precondition list, then rule 4:
   * text that is not valid UTF-8, per string and per chunk (a sequence split
     across two chunks is invalid; ciborium holds the same, measured);
   * a major-7 simple value other than false/true/null;
+  * a chain of arrays, maps and tags nested past crypto-design §6.2 rule 6's
+    limit of 256, as `NestingTooDeep` (see ITERATIVE below);
   * then any tag (bignum tags 2 and 3 included) or float, as rule 4.
 
 PRECEDENCE.  A well-formedness fault anywhere in the item outranks a rule-4
