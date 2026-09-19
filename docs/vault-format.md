@@ -295,7 +295,7 @@ forward-compat unknown key's value (the unknown-keys pattern, §6.3.2), whose
 shape this version does not interpret.
 
 **The version that introduces an extension is bound by the deterministic
-profile inside its own subtrees.** Crypto-design §6.2 rules 1–5 apply to every
+profile inside its own subtrees.** Crypto-design §6.2 rules 1–6 apply to every
 byte of the manifest body, because the body as a whole is `canonical_cbor(...)`
 under a signature, and §0's "preferred map key sorting wherever a signature
 covers the encoding" is not qualified for subtrees. There is no forward-compat
@@ -420,8 +420,9 @@ are fixed, and a conformant reader MUST follow both:
    also breaks. This is
    not a further precedence rule so much as the precondition for applying
    either of these two: a reader that cannot parse the body cannot locate the
-   tag it would otherwise report. Read "every rule below" as scoped to §6.2
-   rules 1–5 and to this section's schema checks; rule 6 belongs to this
+   tag it would otherwise report. Read "every check below it" as scoped to
+   §6.2 rules 1–5 (other than rule 4 itself) and to this section's schema
+   checks; rule 6 belongs to this
    precondition, not below it.
 2. **A repeated map key outranks the type, range and version checks on that
    key's value.** A reader that finds a key it has already seen MUST report the
