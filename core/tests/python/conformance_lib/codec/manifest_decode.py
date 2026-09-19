@@ -35,6 +35,7 @@ from conformance_lib.codec.scanner import (
     _scan_map_entries,
     reject_floats_and_tags,
 )
+from conformance_lib.codec.well_formed import reject_excessive_nesting
 from conformance_lib.constants import FORMAT_VERSION, SUITE_ID
 
 class ArraySortOrderViolation(ValueError):
@@ -142,6 +143,13 @@ def py_decode_manifest(data: bytes) -> dict:
     reproducing (#592).
     """
     import cbor2
+
+    # crypto-design §6.2 rule 6 FIRST (#667): `decode_manifest`'s ciborium parse
+    # enforces the same limit before it interprets anything, and vault-format
+    # §4.2 lists depth among the well-formedness preconditions, so it outranks
+    # rule 4.  It must also run before `reject_floats_and_tags` below, which
+    # recurses and would otherwise raise RecursionError on a deep body.
+    reject_excessive_nesting(data)
 
     # §6.2 rule 4 over the WHOLE body, BEFORE any key is interpreted --
     # §4.2's precedence paragraph (#618), and a byte-for-byte mirror of

@@ -62,6 +62,7 @@ from conformance_lib.sections.manifest_uniqueness_kat import (
 from conformance_lib.sections.ml_dsa_regression import (
     section3_ml_dsa_65_verify_regression,
 )
+from conformance_lib.sections.nesting_depth import section_nesting_depth
 from conformance_lib.sections.purge import section_purge_scenario
 from conformance_lib.sections.record_canonicality import (
     section_record_unknown_subtree_canonicality,
@@ -177,6 +178,8 @@ SECTIONS: tuple[Section, ...] = (
     Section("VT", "value-type discipline: no bool in an integer position, "
             "and every optional key checked", " (#669)",
             section_value_type_discipline),
+    Section("NDL", "CBOR nesting depth: the v1 limit of 256, in every CBOR decoder",
+            " (crypto-design §6.2 rule 6, #667)", section_nesting_depth),
     Section("RDO", "record optional keys: a default is written by omission",
             " (vault-format §6.3, #670)", section_record_default_omission),
     # Last on purpose: it reports on the table above, so it reads as a summary

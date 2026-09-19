@@ -14,6 +14,7 @@ from conformance_lib.canonical import encode_canonical_map
 from conformance_lib.codec.integer_rules import is_integer
 from conformance_lib.codec.record import _reject_floats_and_tags_py
 from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
+from conformance_lib.codec.well_formed import reject_excessive_nesting
 from conformance_lib.constants import BLOCK_UUID_LEN, DEVICE_UUID_LEN
 
 # ---------------------------------------------------------------------------
@@ -48,6 +49,9 @@ def py_decode_trash_entry(data: bytes) -> dict:
     Returns a dict of parsed fields. Raises on any violation.
     """
     import cbor2
+
+    # crypto-design §6.2 rule 6 before cbor2 parses anything (#667).
+    reject_excessive_nesting(data)
 
     try:
         decoded = cbor2.loads(data)
