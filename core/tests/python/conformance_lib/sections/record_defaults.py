@@ -64,9 +64,12 @@ def _with_key(key: str, value: object) -> bytes:
 def _base_round_trip_issue() -> str | None:
     import cbor2
 
-    base = _base_bytes()
-    if cbor2.dumps(cbor2.loads(base), canonical=True) != base:
-        return f"{_BASE_SEED}: cbor2's canonical re-encode is not byte-identical, so a body would carry faults nobody planted"
+    try:
+        base = _base_bytes()
+        if cbor2.dumps(cbor2.loads(base), canonical=True) != base:
+            return f"{_BASE_SEED}: cbor2's canonical re-encode is not byte-identical, so a body would carry faults nobody planted"
+    except Exception as exc:  # noqa: BLE001 -- a missing/corrupt base is an issue too
+        return f"{_BASE_SEED}: raised {type(exc).__name__} while checking the base round-trip: {exc}"
     return None
 
 
@@ -97,16 +100,20 @@ def _control_issues() -> tuple[list[str], int]:
 
 
 def _writer_issues() -> tuple[list[str], int]:
-    issues = []
-    decoded = py_decode_record(_base_bytes())
-    omitted = py_encode_record(decoded)
-    for key, value in _DEFAULTS:
-        if py_encode_record({**decoded, key: value}) != omitted:
-            issues.append(f"writer: {key}={value!r} was emitted; §6.3 requires it omitted")
-    for key, value in _NON_DEFAULTS:
-        if py_encode_record({**decoded, key: value}) == omitted:
-            issues.append(f"writer: {key}={value!r} was dropped; only a default is omitted")
-    return issues, len(_DEFAULTS) + len(_NON_DEFAULTS)
+    n = len(_DEFAULTS) + len(_NON_DEFAULTS)
+    try:
+        issues = []
+        decoded = py_decode_record(_base_bytes())
+        omitted = py_encode_record(decoded)
+        for key, value in _DEFAULTS:
+            if py_encode_record({**decoded, key: value}) != omitted:
+                issues.append(f"writer: {key}={value!r} was emitted; §6.3 requires it omitted")
+        for key, value in _NON_DEFAULTS:
+            if py_encode_record({**decoded, key: value}) == omitted:
+                issues.append(f"writer: {key}={value!r} was dropped; only a default is omitted")
+        return issues, n
+    except Exception as exc:  # noqa: BLE001 -- a decode/encode crash is an issue too
+        return [f"writer: raised {type(exc).__name__} while building the writer cases: {exc}"], n
 
 
 def section_record_default_omission() -> tuple[bool, list[str]]:
