@@ -175,7 +175,7 @@ def walk_body(buf: bytes, pos: int = 0) -> int:
     return _walk(buf, pos, check_content=True)
 
 
-def reject_excessive_nesting(buf: bytes) -> None:
+def reject_excessive_nesting(buf: bytes, *, later_phases_scan_in_byte_order: bool) -> None:
     """crypto-design §6.2 rule 6 over a whole document, and nothing else (#667).
 
     The first statement of every `codec/` decoder that has no `walk_body` of its
@@ -185,15 +185,27 @@ def reject_excessive_nesting(buf: bytes) -> None:
 
     It walks item boundaries only.  It reports no content-level fault (invalid
     UTF-8, a disallowed simple value, a tag or float as rule 4), since none of
-    those moves a boundary; a tag still counts as a level.  At a fault it cannot
-    walk past -- a truncated head, an overrun, a bad chunk -- it stops and
-    returns, leaving that fault to the decoder's own phases to report as they
-    always have.  Every recursive phase after it scans in byte order, so it
-    meets that same fault before it could nest past 256 levels.
+    those moves a boundary; a tag still counts as a level.
+
+    At a STRUCTURAL fault it cannot walk past -- a truncated head, an overrun, a
+    bad chunk, a stray break -- what it does depends on the caller, which must
+    say, because the answer is a property of the caller's later phases:
+
+      * `later_phases_scan_in_byte_order=True` (the manifest, whose later phases
+        are `scanner._scan_item`): it returns, leaving the fault to those phases
+        to report as they always have.  They scan in byte order and raise at
+        the same byte, so none of them can nest past 256 levels first.
+      * `later_phases_scan_in_byte_order=False` (the contact card and the trash
+        entry, whose next phase is `cbor2.loads`): it raises the fault.  cbor2
+        is NOT a byte-order well-formedness check -- it accepts a stray break
+        inside a definite array, returning a sentinel object -- so a body with
+        a break ahead of a 300-level chain used to pass this pass silently and
+        be rejected by the ENCODER failing on that sentinel (PR #684 review).
     """
     try:
         _walk(buf, 0, check_content=False)
     except NestingTooDeep:
         raise
     except MalformedCbor:
-        return
+        if not later_phases_scan_in_byte_order:
+            raise

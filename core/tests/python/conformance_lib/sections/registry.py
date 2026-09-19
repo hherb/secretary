@@ -178,7 +178,7 @@ SECTIONS: tuple[Section, ...] = (
     Section("VT", "value-type discipline: no bool in an integer position, "
             "and every optional key checked", " (#669)",
             section_value_type_discipline),
-    Section("NDL", "CBOR nesting depth: the v1 limit of 256, in every CBOR decoder",
+    Section("NDL", "CBOR nesting depth: the v1 limit of 256, in every codec/ CBOR decoder",
             " (crypto-design §6.2 rule 6, #667)", section_nesting_depth),
     Section("RDO", "record optional keys: a default is written by omission",
             " (vault-format §6.3, #670)", section_record_default_omission),

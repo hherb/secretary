@@ -2,8 +2,8 @@
 deeper than 256 (#667).
 
 Before #667 the Rust decoders rejected past 256 (ciborium's recursion limit)
-and this verifier did not: a record or manifest nested 257-993 deep was
-ACCEPTED here, and past ~995 the recursive scanner raised `RecursionError`,
+and this verifier did not: a record nested 257-995 deep, or a manifest
+257-993, was ACCEPTED here, and past that the recursive scanner raised `RecursionError`,
 a harness failure rather than a verdict.  `manifest_body` is token-compared
 and replayed in CI, and no corpus input reached either.
 
@@ -13,8 +13,9 @@ inspector enforces no acceptance set and is out of scope, as Section VT's
 check 3 already rules.
 
 Checks, each reporting what it RAN:
-  1. BOUNDARY, per CBOR decoder: depth 256 is not refused for depth (the
-     decoders with an unknown bag accept it); depth 257 raises NestingTooDeep.
+  1. BOUNDARY, per CBOR decoder: depth 256 gives the decoder's declared
+     outcome EXACTLY (accept, or the card's unknown-key `ValueError` -- so a
+     crash is never read as "not refused for depth"); 257 is NestingTooDeep.
   2. A VERDICT AT EVERY DEPTH: 257, 1,000 and 10,000 each raise NestingTooDeep,
      never `RecursionError` or an untokened exception.
   3. TAGS ARE LEVELS: a tag at level 257 is NestingTooDeep, not rule 4; the
@@ -29,11 +30,17 @@ Checks, each reporting what it RAN:
      manifest's content-blind pass only, which must still report the depth.
      The control for the pass's silence: a truncated body with no depth
      problem makes `reject_excessive_nesting` return, and the decoder reports
-     what it always did.  Same `_RECORD`/`_MANIFEST` naming as check 3.
+     `MalformedCbor` exactly, as it always did.  Same `_RECORD`/`_MANIFEST`
+     naming as check 3.  And the converse, on the two cbor2-backed decoders:
+     a stray break ahead of a deep chain is `MalformedCbor` from the pass
+     itself, since cbor2 accepts that break and would parse on (PR #684
+     review: the encoder, failing on cbor2's sentinel, used to answer).
   5. CENSUS, both ways, default-deny: every top-level `py_decode_*` under
      `codec/` is either a CBOR-document decoder in `_DECODERS` or named in
      `_NOT_CBOR_DOCUMENTS` with its reason.  A new decoder nobody classified
-     fails -- "has no check to find" is its own search (#669).
+     fails -- "has no check to find" is its own search (#669).  A decoder
+     listed as not-CBOR whose body names a CBOR entry point (`_CBOR_ENTRY_NAMES`)
+     fails too, so moving one there to skip checks 1-2 is not silent.
   6. SEED BINDING: the committed `nesting__` seeds, two-way against
      `expected_nesting_seeds()`, each replayed with the verdict its depth
      states -- accept at or under the limit, `NestingTooDeep` past it.
@@ -74,7 +81,7 @@ from pathlib import Path
 
 from conformance_lib import fixtures
 from conformance_lib.codec.card import py_decode_contact_card
-from conformance_lib.codec.cbor_faults import NestingTooDeep, V1_MAX_NESTING_DEPTH
+from conformance_lib.codec.cbor_faults import MalformedCbor, NestingTooDeep, V1_MAX_NESTING_DEPTH
 from conformance_lib.codec.manifest_decode import py_decode_manifest
 from conformance_lib.codec.record import py_decode_record
 from conformance_lib.codec.scanner import NonCanonicalItem
@@ -82,7 +89,7 @@ from conformance_lib.codec.trash_entry import py_decode_trash_entry
 from conformance_lib.codec.well_formed import reject_excessive_nesting
 from conformance_lib.diff_replay import replay_bytes
 from conformance_lib.sections.nesting_depth_bodies import (
-    ARRAY_2, INVALID_UTF8, TAG_1, TEXT_1, UINT_0, FUTURE_KEY, NESTING_SEED_PREFIX,
+    ARRAY_2, BREAK, INVALID_UTF8, TAG_1, TEXT_1, UINT_0, FUTURE_KEY, NESTING_SEED_PREFIX,
     document_nested_to, expected_nesting_seeds, nested_value, with_top_level_entry,
 )
 
@@ -90,6 +97,8 @@ _CODEC_DIR = Path(__file__).resolve().parent.parent / "codec"
 # The census must see at least this many decoders, or it scanned the wrong
 # directory and would pass having read nothing (#669's MIN_SCANNED_CODEC_MODULES lesson).
 _MIN_DISCOVERED_DECODERS = 8
+# Identifiers only a CBOR-document decoder's own body has cause to name.
+_CBOR_ENTRY_NAMES = frozenset({"cbor2", "walk_body", "reject_excessive_nesting", "_scan_item"})
 _DEEP_DEPTHS = (V1_MAX_NESTING_DEPTH + 1, 1_000, 10_000)
 # The trash-entry base Section VT's check 2b uses: every key valid.
 _TRASH_BASE = {
@@ -105,9 +114,9 @@ _TRASH_BASE = {
 class _Decoder:
     decode: Callable[[bytes], object]
     base: Callable[[], bytes]
-    # True when the schema keeps an unknown key, so a depth-256 body is ACCEPTED;
-    # False when it rejects one for its schema (the contact card).
-    keeps_unknown_keys: bool
+    # `_outcome` at exactly depth 256: "accept" where the schema keeps an
+    # unknown key, else the class the schema rejects one with (the card).
+    at_limit: str
 
 
 def _seed(target: str, name: str) -> Callable[[], bytes]:
@@ -125,10 +134,10 @@ def _trash_base() -> bytes:
 # `_MANIFEST` through the content-blind `reject_excessive_nesting` pass -- so
 # selecting them as `_DECODERS[0]`/`[1]` would let a reorder, or a decoder
 # inserted ahead of them, retarget both checks with nothing going red.
-_RECORD = _Decoder(py_decode_record, _seed("record", "login.cbor"), True)
-_MANIFEST = _Decoder(py_decode_manifest, _seed("manifest_body", "uniq__control__all_distinct.bin"), True)
-_CONTACT_CARD = _Decoder(py_decode_contact_card, _seed("contact_card", "with_sigs.cbor"), False)
-_TRASH_ENTRY = _Decoder(py_decode_trash_entry, _trash_base, True)
+_RECORD = _Decoder(py_decode_record, _seed("record", "login.cbor"), "accept")
+_MANIFEST = _Decoder(py_decode_manifest, _seed("manifest_body", "uniq__control__all_distinct.bin"), "accept")
+_CONTACT_CARD = _Decoder(py_decode_contact_card, _seed("contact_card", "with_sigs.cbor"), "ValueError")
+_TRASH_ENTRY = _Decoder(py_decode_trash_entry, _trash_base, "accept")
 
 _DECODERS: tuple[_Decoder, ...] = (_RECORD, _MANIFEST, _CONTACT_CARD, _TRASH_ENTRY)
 _NOT_CBOR_DOCUMENTS: dict[str, str] = {
@@ -196,8 +205,8 @@ def _boundary_issues() -> _CheckResult:
             continue
         at_limit = _outcome(d.decode, document_nested_to(base, V1_MAX_NESTING_DEPTH))
         executed += 1
-        if at_limit == "too_deep" or (d.keeps_unknown_keys and at_limit != "accept"):
-            issues.append(f"{name} at depth {V1_MAX_NESTING_DEPTH}: {at_limit}; rule 6 allows exactly this depth")
+        if at_limit != d.at_limit:
+            issues.append(f"{name} at depth {V1_MAX_NESTING_DEPTH}: {at_limit}, expected {d.at_limit}; rule 6 allows exactly this depth")
         else:
             passed += 1
         past = _outcome(d.decode, document_nested_to(base, V1_MAX_NESTING_DEPTH + 1))
@@ -258,7 +267,7 @@ def _precedence_issues() -> _CheckResult:
     issues: list[str] = []
     executed = 0
     passed = 0
-    declared = 5  # len(cases) + 2, fixed regardless of a guard firing below
+    declared = 7  # len(cases) + 2, fixed regardless of a guard firing below
     # A two-item array whose SECOND item is the chain: the first item sits
     # earlier in byte order, and the chain takes the document past the limit.
     deep = nested_value(V1_MAX_NESTING_DEPTH)
@@ -266,20 +275,24 @@ def _precedence_issues() -> _CheckResult:
     # the walk AND the pass; invalid UTF-8 is raised at once by the record walk
     # (in byte order, as its Rust twin does), so it runs on the pass only.
     # `_RECORD`/`_MANIFEST` by NAME -- same reasoning as `_tag_level_issues`.
+    # A stray break is a structural fault the pass RAISES for the cbor2-backed
+    # decoders, so there the break, earlier in byte order, is what is reported.
     cases = (
-        (_RECORD, "a tag", bytes([ARRAY_2, TAG_1, UINT_0])),
-        (_MANIFEST, "a tag", bytes([ARRAY_2, TAG_1, UINT_0])),
-        (_MANIFEST, "invalid utf-8", bytes([ARRAY_2, TEXT_1, INVALID_UTF8])),
+        (_RECORD, "a tag", bytes([ARRAY_2, TAG_1, UINT_0]), "too_deep"),
+        (_MANIFEST, "a tag", bytes([ARRAY_2, TAG_1, UINT_0]), "too_deep"),
+        (_MANIFEST, "invalid utf-8", bytes([ARRAY_2, TEXT_1, INVALID_UTF8]), "too_deep"),
+        (_CONTACT_CARD, "a stray break", bytes([ARRAY_2, BREAK]), MalformedCbor.__name__),
+        (_TRASH_ENTRY, "a stray break", bytes([ARRAY_2, BREAK]), MalformedCbor.__name__),
     )
-    for d, label, prefix in cases:
+    for d, label, prefix, want in cases:
         base, err = _base_or_issue(d, "PASS 4 (precedence)")
         if err is not None:
             issues.append(err)
             continue
         got = _outcome(d.decode, with_top_level_entry(base, FUTURE_KEY, prefix + deep))
         executed += 1
-        if got != "too_deep":
-            issues.append(f"{d.decode.__name__}: {label} before excess depth gave {got}, expected NestingTooDeep")
+        if got != want:
+            issues.append(f"{d.decode.__name__}: {label} before excess depth gave {got}, expected {want}")
         else:
             passed += 1
     manifest_base, err = _base_or_issue(_MANIFEST, "PASS 4 (precedence, truncation control)")
@@ -288,7 +301,7 @@ def _precedence_issues() -> _CheckResult:
         return _CheckResult(issues, executed, passed, declared)
     truncated = manifest_base[:-1]
     try:
-        reject_excessive_nesting(truncated)
+        reject_excessive_nesting(truncated, later_phases_scan_in_byte_order=True)
     except Exception as exc:  # noqa: BLE001 -- any raise breaks the pass's silence
         executed += 1
         issues.append(f"reject_excessive_nesting raised {type(exc).__name__} on a truncated body with no depth fault")
@@ -297,8 +310,8 @@ def _precedence_issues() -> _CheckResult:
         passed += 1
     got = _outcome(_MANIFEST.decode, truncated)
     executed += 1
-    if got in ("too_deep", "accept"):
-        issues.append(f"py_decode_manifest on a truncated body gave {got}; the decoder must report the truncation")
+    if got != MalformedCbor.__name__:
+        issues.append(f"py_decode_manifest on a truncated body gave {got}, expected {MalformedCbor.__name__}")
     else:
         passed += 1
     return _CheckResult(issues, executed, passed, declared)
@@ -318,6 +331,8 @@ def _seed_issues() -> _CheckResult:
     passed = 0
     expected = expected_nesting_seeds()
     declared = sum(len(names) for names in expected.values())
+    if declared == 0:
+        issues.append("expected_nesting_seeds() declares no seeds; check 6 would bind nothing")
     for target, want in expected.items():
         directory = fixtures.fuzz_seed_dir(target)
         try:
@@ -354,15 +369,16 @@ def _seed_issues() -> _CheckResult:
     return _CheckResult(issues, executed, passed, declared)
 
 
-def _discovered_decoders() -> tuple[set[str], list[str], int, int]:
+def _discovered_decoders() -> tuple[dict[str, set[str]], list[str], int, int]:
     """Top-level `py_decode_*` names in every `codec/**/*.py` outside
     `__pycache__`, plus any per-file read/parse failure as an ISSUE rather
     than a traceback -- one bad file must not blank the whole census.
 
-    Returns `(names, issues, executed_files, declared_files)`: `declared_files`
+    Returns `(names, issues, executed_files, declared_files)`, `names` mapping
+    each decoder to the `_CBOR_ENTRY_NAMES` its body mentions; `declared_files`
     is every `*.py` the scan found, `executed_files` how many of those were
     actually read and parsed, so a skipped file shows in the PASS line."""
-    names: set[str] = set()
+    names: dict[str, set[str]] = {}
     issues: list[str] = []
     paths = sorted(
         p for p in _CODEC_DIR.rglob("*.py")
@@ -380,7 +396,8 @@ def _discovered_decoders() -> tuple[set[str], list[str], int, int]:
         executed_files += 1
         for node in tree.body:
             if isinstance(node, ast.FunctionDef) and node.name.startswith("py_decode_"):
-                names.add(node.name)
+                idents = {getattr(n, "id", None) or getattr(n, "attr", None) for n in ast.walk(node)}
+                names[node.name] = idents & _CBOR_ENTRY_NAMES
     return names, issues, executed_files, declared_files
 
 
@@ -401,8 +418,12 @@ def _census_issues() -> _CensusResult:
         issues = issues + [f"census found {len(found)} decoders under {_CODEC_DIR}, floor is {_MIN_DISCOVERED_DECODERS}"]
         return _CensusResult(issues, len(found), None, executed_files, declared_files)
     classified = {d.decode.__name__ for d in _DECODERS} | set(_NOT_CBOR_DOCUMENTS)
-    wrong = [f"codec decoder {n} is unclassified: add it to _DECODERS or _NOT_CBOR_DOCUMENTS" for n in sorted(found - classified)]
-    wrong += [f"classified decoder {n} no longer exists under codec/" for n in sorted(classified - found)]
+    wrong = [f"codec decoder {n} is unclassified: add it to _DECODERS or _NOT_CBOR_DOCUMENTS" for n in sorted(found.keys() - classified)]
+    wrong += [f"classified decoder {n} no longer exists under codec/" for n in sorted(classified - found.keys())]
+    wrong += [
+        f"{n} is listed as not a CBOR document but names {sorted(found[n])}"
+        for n in sorted(set(_NOT_CBOR_DOCUMENTS) & found.keys()) if found[n]
+    ]
     return _CensusResult(issues + wrong, len(found), len(wrong), executed_files, declared_files)
 
 
@@ -448,4 +469,4 @@ def section_nesting_depth() -> tuple[bool, list[str]]:
     try:
         return _run_checks()
     except Exception as exc:  # noqa: BLE001 -- guard: report, never propagate
-        return False, [f"PASS: section_nesting_depth raised {type(exc).__name__}: {exc}"]
+        return False, [f"  ISSUE: section_nesting_depth raised {type(exc).__name__}: {exc}"]

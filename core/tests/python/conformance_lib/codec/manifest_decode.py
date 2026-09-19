@@ -151,7 +151,7 @@ def py_decode_manifest(data: bytes) -> dict:
     # §4.2 lists depth among the well-formedness preconditions, so it outranks
     # rule 4.  It must also run before `reject_floats_and_tags` below, which
     # recurses and would otherwise raise RecursionError on a deep body.
-    reject_excessive_nesting(data)
+    reject_excessive_nesting(data, later_phases_scan_in_byte_order=True)
 
     # §6.2 rule 4 over the WHOLE body, BEFORE any key is interpreted --
     # §4.2's precedence paragraph (#618), and a byte-for-byte mirror of

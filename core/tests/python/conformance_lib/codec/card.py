@@ -34,7 +34,7 @@ def py_decode_contact_card(data: bytes) -> dict:
     import cbor2
 
     # crypto-design §6.2 rule 6 before cbor2 parses anything (#667).
-    reject_excessive_nesting(data)
+    reject_excessive_nesting(data, later_phases_scan_in_byte_order=False)
 
     try:
         decoded = cbor2.loads(data)

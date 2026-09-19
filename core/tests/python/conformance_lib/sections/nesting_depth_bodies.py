@@ -22,6 +22,8 @@ TEXT_1 = 0x61
 TAG_1 = 0xC1
 UINT_0 = 0x00
 INVALID_UTF8 = 0xFF
+# RFC 8949 §3.2.1's stop code; outside an indefinite container it is malformed.
+BREAK = 0xFF
 
 # A key no v1 document defines, so it lands in a forward-compat unknown bag
 # where the schema accepts one.
