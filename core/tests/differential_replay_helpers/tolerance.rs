@@ -25,10 +25,11 @@ use super::targets::PHASE_DEPENDENT_TOLERANCE_TARGETS;
 /// `malformed_cbor` exception below withholds four), of which §4.2 frees a
 /// strict subset. FOUR groups are
 /// tolerated with no §4.2 licence at all, and on the committed corpus the
-/// cost is that **17 of the 30 rejecting `manifest_body` seeds never compare
+/// cost is that **17 of the 32 rejecting `manifest_body` seeds never compare
 /// the Python token**, because every `NonCanonicalEncoding` cause maps to a
-/// phase-dependent token. (Re-measure: #669 added 6 strictly-compared rows
-/// without moving the tolerated 17.) All four groups and that measurement are stated in
+/// phase-dependent token. The other 15 are compared strictly. (Re-measure:
+/// #669 added 6 strictly-compared rows and #667 2 more, without moving the
+/// tolerated 17.) All four groups and that measurement are stated in
 /// full on [`RuleToken::is_phase_dependent`]'s own LIMITS block, beside the
 /// predicate rather than beside this caller; #646 tracks closing them.
 /// Narrowing the predicate by hand would manufacture false disagreements on
