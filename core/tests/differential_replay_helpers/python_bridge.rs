@@ -17,10 +17,11 @@ use serde_json::Value;
 /// stdout or a `uv` that could not resolve its dependencies all collapsed
 /// into `Err` — and `Err` on both sides was scored as AGREEMENT by the match
 /// that is now [`super::agreement::judge`]. A completely non-functional Python side
-/// therefore "agreed" on every input the Rust decoder rejects, which is 30 of
-/// the 44 committed `manifest_body` seeds (20 canonicality rejects + 4
-/// uniqueness rejects + 6 value-type rejects; the count moves every time
-/// either corpus grows, so re-measure rather than quoting it). A harness failure is not a verdict, and
+/// therefore "agreed" on every input the Rust decoder rejects, which is 32 of
+/// the 47 committed `manifest_body` seeds (20 canonicality rejects + 4
+/// uniqueness rejects + 6 value-type rejects + 2 nesting-depth rejects; the
+/// count moves every time a corpus grows, so re-measure rather than quoting
+/// it). A harness failure is not a verdict, and
 /// `judge` returns before its agreement match ever sees one.
 #[derive(Debug, PartialEq)]
 pub enum PyOutcome {

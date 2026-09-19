@@ -28,23 +28,28 @@
 //! indefinite form on majors 0, 1 and 6; a break outside an indefinite
 //! container; an indefinite-string chunk that is not a definite string of the
 //! same major (§3.2.3); text that is not valid UTF-8, per string and per chunk;
-//! a major-7 simple value other than false/true/null. Then rule 4: any tag
+//! a major-7 simple value other than false/true/null; a chain of arrays, maps
+//! and tags nested past crypto-design §6.2 rule 6's limit. Then rule 4: any tag
 //! (bignum tags included) and any float.
 //!
 //! **Precedence.** A well-formedness fault anywhere in the item outranks a
 //! rule-4 fault anywhere: the first tag or float is remembered and reported only
 //! once the whole item has proven well-formed.
 //!
-//! **Iterative.** An explicit stack, no recursion and no depth cap of its own.
-//! ciborium's recursion limit still applies to the parse that follows; that
-//! residual is tracked by #667, not fixed here.
+//! **Iterative, and bounded by crypto-design §6.2 rule 6.** An explicit stack,
+//! no recursion. The stack is also the depth count: a head that would open a
+//! level past [`V1_MAX_NESTING_DEPTH`] (arrays, maps and tags alike; a scalar
+//! is not a level) is `Malformed` with kind `RecursionLimit`, reported at once
+//! like every well-formedness fault. It is the limit `ciborium`'s parse
+//! applies afterwards, so on the record path the walk now answers before
+//! `ciborium` can (#667).
 //!
 //! **Pure.** It reads a byte slice and allocates only its container stack;
 //! nothing it holds is a copy of a payload.
 //!
 //! Python's twin is `conformance_lib/codec/well_formed.py`'s `walk_body`.
 
-use crate::cbor::{CborErrorKind, CborFault};
+use crate::cbor::{CborErrorKind, CborFault, V1_MAX_NESTING_DEPTH};
 
 /// Why [`walk_first_item`] stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +288,21 @@ fn open_container(head: &Head) -> Frame {
     }
 }
 
+/// Open one more nesting level for the head at `head_at`, refusing the one
+/// past crypto-design §6.2 rule 6. Returned at once, like every
+/// well-formedness fault, so it outranks a rule-4 fault already remembered —
+/// vault-format §4.2's precondition.
+fn open_level(stack: &mut Vec<Frame>, head_at: usize, frame: Frame) -> Result<(), WalkFault> {
+    if stack.len() >= V1_MAX_NESTING_DEPTH {
+        return Err(WalkFault::Malformed(CborFault {
+            kind: CborErrorKind::RecursionLimit,
+            offset: Some(head_at),
+        }));
+    }
+    stack.push(frame);
+    Ok(())
+}
+
 /// Walk the first CBOR item in `bytes`; return the offset one past it.
 ///
 /// See the module doc for what is checked and in what precedence.
@@ -309,13 +329,13 @@ pub(crate) fn walk_first_item(bytes: &[u8]) -> Result<usize, WalkFault> {
                 pos = string_end(bytes, pos, &head).map_err(WalkFault::Malformed)?;
             }
             MAJOR_ARRAY | MAJOR_MAP => {
+                open_level(&mut stack, pos, open_container(&head))?;
                 pos += head.len;
-                stack.push(open_container(&head));
             }
             MAJOR_TAG => {
+                open_level(&mut stack, pos, Frame::Definite { left: 1 })?;
                 first_rule4.get_or_insert((Rule4::Tag, pos));
                 pos += head.len;
-                stack.push(Frame::Definite { left: 1 });
             }
             _ => {
                 match head.ai {

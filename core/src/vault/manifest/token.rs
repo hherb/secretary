@@ -217,17 +217,18 @@ impl RuleToken {
     /// argued.** All four [`NonCanonicalCause`] outcomes map to
     /// phase-dependent tokens, so every `NonCanonicalEncoding` rejection
     /// this crate makes is scored as agreement whatever `conformance.py`
-    /// said. `core/fuzz/seeds/manifest_body/` holds 44 bodies of which 30
-    /// are rejected by both implementations, and **17 of those 30** make
+    /// said. `core/fuzz/seeds/manifest_body/` holds 47 bodies of which 32
+    /// are rejected by both implementations, and **17 of those 32** make
     /// this crate answer with a phase-dependent token: 7 `arraysort__*`,
     /// 4 `keyorder__*`, 3 `*__rule2_indefinite_map`, 3
-    /// `*__rule3_non_shortest_int`. 13 reach a real comparison — the 3
-    /// `*__rule4_float` rows, the 4 `uniq__*` rows, and the 6
+    /// `*__rule3_non_shortest_int`. 15 reach a real comparison — the 3
+    /// `*__rule4_float` rows, the 4 `uniq__*` rows, the 6
     /// `valuetype__trash_*` rows #669 added, which answer `wrong_type` or
-    /// `integer_out_of_range` and so are compared strictly (measured, #679
-    /// review; the tolerated count did not move, the strict one nearly
-    /// doubled). Re-measure rather than quoting: these figures were stale by
-    /// a whole slice once already. Do not read the
+    /// `integer_out_of_range`, and the 2 rejecting `nesting__*` rows #667
+    /// added, which answer `malformed_cbor` (measured per seed, both
+    /// decoders; neither addition moved the tolerated 17, while the strict
+    /// count went 7 -> 13 -> 15). Re-measure rather than quoting: these
+    /// figures were stale by a whole slice twice already. Do not read the
     /// committed witness under `tests/data/diff_regressions/manifest_body/`
     /// as evidence against this: it is itself one of the tolerated pairs, so
     /// it proves the tolerance FIRES, not that it is tight.
@@ -269,7 +270,7 @@ impl RuleToken {
     ///    and [`Self::NonCanonicalUnclassified`] against
     ///    [`Self::Rule4TagOrFloat`], where §4.2 does not read consistently.**
     ///    Ordering 1 says rule 4 outranks "every check below it", scoped to
-    ///    "§6.2's numbered rules", which includes rules 1, 2 and 3; the
+    ///    "§6.2 rules 1–5", which includes rules 1, 2 and 3; the
     ///    paragraph immediately after declares the order of rules 1, 2 and 3
     ///    against BOTH fixed orderings unspecified. The two sentences cannot
     ///    both govern this pair. There is no live divergence today, because

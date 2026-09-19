@@ -86,7 +86,7 @@ from conformance_lib.sections.manifest_canonicality_corpus import (
 # both halves: a normalising reader (ciborium) gets them for free, because a
 # non-canonical head no longer re-encodes to its own bytes; a byte-retaining
 # reader (this one) "reproduces its input unconditionally ... and it must
-# therefore check crypto-design §6.2 rules 2, 3 and 4 itself to stay
+# therefore check crypto-design §6.2 rules 2, 3, 4 and 6 itself to stay
 # conformant".  That sentence is quoted from §6.3.2, which points back at
 # §4.2 for the manifest; §4.2 states the same two-part obligation in its own
 # words ("Retaining the subtree's raw input bytes and re-emitting them

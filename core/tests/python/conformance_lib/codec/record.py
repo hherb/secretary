@@ -56,6 +56,30 @@ RECORD_REQUIRED_KEYS = frozenset({
 # separate `unknown` bag.
 RECORD_FIELD_KNOWN_KEYS = frozenset({"value", "last_mod", "device_uuid"})
 
+# vault-format §6.3 (#670): a default value is written by omission. The three
+# optional keys and their defaults, exactly as `record.rs`'s
+# `record_to_canonical` omits them (`tags` when empty, `tombstone` when false,
+# `tombstoned_at_ms` when 0).
+RECORD_OPTIONAL_DEFAULTS: dict[str, object] = {
+    "tags": [],
+    "tombstone": False,
+    "tombstoned_at_ms": 0,
+}
+
+
+def _is_omitted_default(key: str, value: object) -> bool:
+    """True when `key` is an optional record key holding its default.
+
+    The TYPE is compared as well as the value: in Python `False == 0`, so a
+    value-only test would drop a (wrong-typed) `tombstoned_at_ms: False` and
+    silently change what the encoder was asked to emit.
+    """
+    if key not in RECORD_OPTIONAL_DEFAULTS:
+        return False
+    default = RECORD_OPTIONAL_DEFAULTS[key]
+    return type(value) is type(default) and value == default
+
+
 # The crypto-design §6.2 rules `record::decode` meets only at its re-encode
 # comparison, as the fieldless `NonCanonicalEncoding`: definite lengths (2)
 # and shortest-form heads (3).  Only a `NonCanonicalItem` carrying one of
@@ -266,20 +290,19 @@ def py_encode_record(record: dict) -> bytes:
     up). Top-level unknown subtrees are spliced from their retained bytes
     the same way, never re-encoded.
 
-    `record` is expected to carry exactly the shape `py_decode_record`
-    produces: `tags`/`tombstone`/`tombstoned_at_ms` keys are present only
-    when they were present on the wire, so §6.3's "absent on the wire"
-    rule for each of the three is automatic here -- this function does not
-    special-case any of them, it simply encodes whichever keys `record`
-    has -- and `"unknown"` maps to `{key: raw_bytes}` rather than being
-    flattened into the same level as the known keys (the pre-#592 shape
-    this function used to require).
+    `record` is expected to carry the shape `py_decode_record` produces, with
+    `"unknown"` mapping to `{key: raw_bytes}` rather than flattened into the
+    known keys (the pre-#592 shape). The three optional keys are omitted when
+    they hold their defaults (vault-format §6.3, #670), as
+    `record_to_canonical` omits them, so a decoded body that spelled a default
+    out fails the re-encode comparison in `py_decode_record` -- the same phase
+    and the same token (`non_canonical_unclassified`) as `record::decode`.
     """
     import cbor2
 
     entries: list[tuple[str, bytes]] = []
     for k, v in record.items():
-        if k == "unknown":
+        if k == "unknown" or _is_omitted_default(k, v):
             continue
         if k == "fields":
             entries.append((k, _encode_record_fields_map(v)))

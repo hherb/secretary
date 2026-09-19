@@ -25,10 +25,11 @@ use super::targets::PHASE_DEPENDENT_TOLERANCE_TARGETS;
 /// `malformed_cbor` exception below withholds four), of which §4.2 frees a
 /// strict subset. FOUR groups are
 /// tolerated with no §4.2 licence at all, and on the committed corpus the
-/// cost is that **17 of the 30 rejecting `manifest_body` seeds never compare
+/// cost is that **17 of the 32 rejecting `manifest_body` seeds never compare
 /// the Python token**, because every `NonCanonicalEncoding` cause maps to a
-/// phase-dependent token. (Re-measure: #669 added 6 strictly-compared rows
-/// without moving the tolerated 17.) All four groups and that measurement are stated in
+/// phase-dependent token. The other 15 are compared strictly. (Re-measure:
+/// #669 added 6 strictly-compared rows and #667 2 more, without moving the
+/// tolerated 17.) All four groups and that measurement are stated in
 /// full on [`RuleToken::is_phase_dependent`]'s own LIMITS block, beside the
 /// predicate rather than beside this caller; #646 tracks closing them.
 /// Narrowing the predicate by hand would manufacture false disagreements on
@@ -60,10 +61,10 @@ use super::targets::PHASE_DEPENDENT_TOLERANCE_TARGETS;
 /// also breaks". So a pair naming `malformed_cbor` against a phase-dependent
 /// token has no §4.2 licence, and withholding it manufactures no false
 /// disagreement. It is why `manifest_body`'s breadth is **54**, not the 58
-/// pairs that have a phase-dependent member. One caveat on "false": Rust's
-/// `malformed_cbor` also covers ciborium's recursion limit, which is not a
-/// well-formedness fault at all. A disagreement it causes is #667's Rust-only
-/// depth rejection surfacing, a real divergence, not a spurious one.
+/// pairs that have a phase-dependent member. Rust's `malformed_cbor` also
+/// covers the recursion limit, and since #667 that IS a well-formedness
+/// fault: crypto-design §6.2 rule 6, listed among §4.2's preconditions, and
+/// reported by both implementations under this token.
 ///
 /// That exception is not cosmetic. Python's scanner raises `malformed_cbor`
 /// for `undefined` and for a nested indefinite-length chunk; `ciborium`

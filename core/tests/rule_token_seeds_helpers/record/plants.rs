@@ -24,6 +24,8 @@ const TAG_BIGNUM_POSITIVE: u8 = 0xc2;
 const FLOAT16: u8 = 0xf9;
 /// A CBOR boolean, where an integer or another type belongs.
 const TRUE: u8 = 0xf5;
+/// A CBOR `false`: `tombstone`'s default.
+const FALSE: u8 = 0xf4;
 const UNDEFINED: u8 = 0xf7;
 const BREAK: u8 = 0xff;
 const INVALID_UTF8: u8 = 0xff;
@@ -231,4 +233,24 @@ pub(super) fn field_not_a_map(base: &[u8]) -> Vec<u8> {
         vec![UINT_ZERO],
     );
     map(&with_value(&top, "fields", map(&fields)))
+}
+
+// vault-format §6.3 (#670): a default value is written by omission, so each of
+// these is the base plus one optional key PRESENT at its default. Rust's
+// encoder omits all three, so the re-encode comparison rejects the body.
+
+pub(super) fn present_default_tags(base: &[u8]) -> Vec<u8> {
+    map(&inserted(&entries(base), text("tags"), vec![ARRAY_EMPTY]))
+}
+
+pub(super) fn present_default_tombstone(base: &[u8]) -> Vec<u8> {
+    map(&inserted(&entries(base), text("tombstone"), vec![FALSE]))
+}
+
+pub(super) fn present_default_tombstoned_at_ms(base: &[u8]) -> Vec<u8> {
+    map(&inserted(
+        &entries(base),
+        text("tombstoned_at_ms"),
+        vec![UINT_ZERO],
+    ))
 }

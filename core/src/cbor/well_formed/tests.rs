@@ -2,7 +2,7 @@
 //! Section WF; the two are kept case for case.
 
 use super::{walk_first_item, WalkFault};
-use crate::cbor::{CborErrorKind, CborFault};
+use crate::cbor::{CborErrorKind, CborFault, V1_MAX_NESTING_DEPTH};
 
 // RFC 8949 initial bytes, named so each case reads as the shape it plants.
 const UINT_0: u8 = 0x00;
@@ -41,8 +41,6 @@ const UTF8_TWO_BYTE_LEAD: u8 = 0xc3;
 const UTF8_CONTINUATION: u8 = 0xa9;
 /// A one-byte simple-value argument: 32 is the first value RFC 8949 allows in that form.
 const SIMPLE_ARG_32: u8 = 0x20;
-/// Deeper than ciborium's recursion limit (256), which the walk does not share.
-const DEPTH_BEYOND_CIBORIUM_LIMIT: usize = 300;
 /// Major 1 (negative int), additional-info 31: RFC 8949 §3.2 permits the
 /// indefinite form only for strings, arrays, maps and (as the break code)
 /// major 7 -- never for an integer.
@@ -262,11 +260,112 @@ fn an_indefinite_map_cannot_end_between_a_key_and_its_value() {
     assert_eq!(walk_first_item(&half), Err(syntax(3)));
 }
 
+fn too_deep(offset: usize) -> WalkFault {
+    WalkFault::Malformed(CborFault {
+        kind: CborErrorKind::RecursionLimit,
+        offset: Some(offset),
+    })
+}
+
+/// `levels` one-element arrays around a `0`: one byte per level.
+fn nested_arrays(levels: usize) -> Vec<u8> {
+    let mut body = vec![ARRAY_1; levels];
+    body.push(UINT_0);
+    body
+}
+
+/// crypto-design §6.2 rule 6: 256 levels around a scalar are within the limit.
 #[test]
-fn nesting_has_no_depth_cap_of_its_own() {
-    let mut deep = vec![ARRAY_1; DEPTH_BEYOND_CIBORIUM_LIMIT];
-    deep.push(UINT_0);
-    assert_eq!(walk_first_item(&deep), Ok(DEPTH_BEYOND_CIBORIUM_LIMIT + 1));
+fn nesting_to_the_v1_limit_is_well_formed() {
+    assert_eq!(
+        walk_first_item(&nested_arrays(V1_MAX_NESTING_DEPTH)),
+        Ok(V1_MAX_NESTING_DEPTH + 1)
+    );
+}
+
+/// The 257th array's head sits at offset 256, one byte per array before it.
+#[test]
+fn one_level_past_the_limit_is_malformed_at_that_level() {
+    assert_eq!(
+        walk_first_item(&nested_arrays(V1_MAX_NESTING_DEPTH + 1)),
+        Err(too_deep(V1_MAX_NESTING_DEPTH))
+    );
+}
+
+/// The walk stops at the first excess level, whatever lies beyond it.
+#[test]
+fn nesting_far_past_the_limit_stops_at_the_first_excess_level() {
+    assert_eq!(
+        walk_first_item(&nested_arrays(2 * V1_MAX_NESTING_DEPTH)),
+        Err(too_deep(V1_MAX_NESTING_DEPTH))
+    );
+}
+
+/// Maps are levels too: `{"a": {"a": … 0}}`, three bytes per level.
+#[test]
+fn maps_are_nesting_levels() {
+    let level = [MAP_1, TEXT_1, ASCII_A];
+    let nested = |levels: usize| {
+        let mut body = level.repeat(levels);
+        body.push(UINT_0);
+        body
+    };
+    assert_eq!(
+        walk_first_item(&nested(V1_MAX_NESTING_DEPTH)),
+        Ok(level.len() * V1_MAX_NESTING_DEPTH + 1)
+    );
+    assert_eq!(
+        walk_first_item(&nested(V1_MAX_NESTING_DEPTH + 1)),
+        Err(too_deep(level.len() * V1_MAX_NESTING_DEPTH))
+    );
+}
+
+/// An indefinite container is a level; the walk refuses the 257th before it
+/// needs any break.
+#[test]
+fn indefinite_containers_are_nesting_levels() {
+    assert_eq!(
+        walk_first_item(&vec![ARRAY_INDEFINITE; V1_MAX_NESTING_DEPTH + 1]),
+        Err(too_deep(V1_MAX_NESTING_DEPTH))
+    );
+}
+
+/// Rule 6 counts a tag as a level, so a tag that would be level 257 is a depth
+/// fault, not a rule-4 one.
+#[test]
+fn a_tag_is_a_nesting_level() {
+    let mut body = vec![ARRAY_1; V1_MAX_NESTING_DEPTH];
+    body.extend([TAG_1, UINT_0]);
+    assert_eq!(walk_first_item(&body), Err(too_deep(V1_MAX_NESTING_DEPTH)));
+}
+
+/// The control: the same tag one level shallower is within the limit, so
+/// rule 4 answers.
+#[test]
+fn a_tag_at_the_limit_is_still_rule_4() {
+    let mut body = vec![ARRAY_1; V1_MAX_NESTING_DEPTH - 1];
+    body.extend([TAG_1, UINT_0]);
+    assert_eq!(
+        walk_first_item(&body),
+        Err(WalkFault::Tag {
+            offset: V1_MAX_NESTING_DEPTH - 1
+        })
+    );
+}
+
+/// Depth is a well-formedness fault (vault-format §4.2's precondition), so it
+/// outranks a tag the walk has already remembered.
+#[test]
+fn excess_depth_outranks_an_earlier_tag() {
+    let tag_first = [ARRAY_2, TAG_1, UINT_0];
+    let mut body = tag_first.to_vec();
+    body.extend(nested_arrays(V1_MAX_NESTING_DEPTH));
+    // `ARRAY_2` is level 1, so the chain after the tag starts at level 2 and
+    // its `V1_MAX_NESTING_DEPTH`-th array is level 257.
+    assert_eq!(
+        walk_first_item(&body),
+        Err(too_deep(tag_first.len() + V1_MAX_NESTING_DEPTH - 1))
+    );
 }
 
 /// `read_head` folds a multi-byte argument big-endian

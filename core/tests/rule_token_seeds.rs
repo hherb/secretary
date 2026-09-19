@@ -6,6 +6,8 @@
 //!
 //! The Python half of the binding is conformance Section RTS.
 
+#[path = "nesting_depth_seeds_helpers/prefix.rs"]
+mod nesting_depth_seed_prefix;
 mod rule_token_seeds_helpers;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -108,7 +110,11 @@ fn rule_token_seeds_are_committed_and_label_bound() {
                     .into_string()
                     .expect("seed file names are UTF-8")
             })
-            .filter(|name| name.contains(LABEL_SEPARATOR))
+            // `nesting__` files belong to `nesting_depth_seeds.rs` (#667).
+            .filter(|name| {
+                name.contains(LABEL_SEPARATOR)
+                    && !name.starts_with(nesting_depth_seed_prefix::SEED_PREFIX)
+            })
             .collect();
         let declared: BTreeSet<String> = cases
             .iter()

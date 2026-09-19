@@ -101,6 +101,26 @@ pub(crate) use secret_tree::wipe_leaked_value;
 #[cfg(test)]
 pub(crate) use secret_tree::wipe_calls;
 
+/// crypto-design §6.2 rule 6: the longest chain of arrays, maps and tags a
+/// canonical-CBOR document may hold, its outermost item included (#667). A
+/// scalar is not a level.
+///
+/// It is exactly the recursion limit `ciborium` 0.2.2 applies to every
+/// parse, which every reader in this crate has enforced since v1, so stating
+/// it narrowed nothing a reader ACCEPTS. It is not exact about which rule a
+/// rejection REPORTS: `ciborium` charges no level for a bignum tag over a
+/// DEFINITE-length byte string of at most 16 bytes, so on its paths a body
+/// whose 257th level is one is rejected under another rule rather than for
+/// depth (#666). The byte walk `record::decode` runs first enforces it
+/// itself, tags of every kind included.
+/// `core/tests/nesting_depth_seeds.rs::every_decode_path_enforces_exactly_the_v1_limit`
+/// fails if `ciborium`'s limit ever stops equalling it, for arrays, tags,
+/// indefinite containers and map-key chains, on the four paths that still
+/// rely on `ciborium` for it. `UnknownValue::from_canonical_cbor` is not a
+/// row of its own: it parses through the same `from_secret_reader` as the
+/// manifest, block and bundle rows.
+pub const V1_MAX_NESTING_DEPTH: usize = 256;
+
 /// Which upstream codec failure occurred, with no payload of its own.
 ///
 /// A fieldless enum is provably data-free: every value is a compile-time
@@ -113,7 +133,9 @@ pub enum CborErrorKind {
     Io,
     /// The byte stream was not well-formed CBOR.
     Syntax,
-    /// Nesting exceeded `ciborium`'s recursion limit.
+    /// Nesting exceeded crypto-design §6.2 rule 6 ([`V1_MAX_NESTING_DEPTH`]):
+    /// reported by the byte walk on the record path, and by `ciborium`'s
+    /// equal recursion limit on every other path.
     RecursionLimit,
     /// The decoder rejected a well-formed item on semantic grounds. The
     /// upstream message explaining *which* item is deliberately discarded —

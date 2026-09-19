@@ -38,7 +38,8 @@
 //! not one of the seven `cargo-fuzz` targets -- #596 tracks that.
 //!
 //! Every row's expected verdict is the SPECIFICATION (vault-format
-//! §4.2's five-row table), not an observed decoder behaviour: rules 1
+//! §4.2's six-row table -- this corpus exercises rules 1-5 only; rule 6
+//! is #667's), not an observed decoder behaviour: rules 1
 //! (map-key order) and 5 (duplicate keys) are TOLERATED inside an
 //! `unknown` subtree, because `ciborium`'s `Value::Map` is an ordered
 //! `Vec` of pairs that survives the decode-then-re-encode check unchanged;

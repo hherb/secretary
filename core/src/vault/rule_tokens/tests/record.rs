@@ -19,8 +19,8 @@ fn every_variant_and_its_token() -> Vec<(RecordError, RuleToken)> {
             RuleToken::InternalError,
         ),
         // Every kind a decode can report is `malformed_cbor`, including
-        // `RecursionLimit`: ciborium's depth cap is Rust-only, the residual
-        // #667 tracks rather than fixes.
+        // `RecursionLimit`: crypto-design §6.2 rule 6 (#667), which
+        // `conformance_lib` reports under the same token.
         (
             RecordError::CborDecode(fault(CborErrorKind::Io)),
             RuleToken::MalformedCbor,

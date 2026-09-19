@@ -35,6 +35,7 @@ from conformance_lib.codec.scanner import (
     _scan_map_entries,
     reject_floats_and_tags,
 )
+from conformance_lib.codec.well_formed import reject_excessive_nesting
 from conformance_lib.constants import FORMAT_VERSION, SUITE_ID
 
 class ArraySortOrderViolation(ValueError):
@@ -43,7 +44,7 @@ class ArraySortOrderViolation(ValueError):
 
     **Deliberately NOT a `NonCanonicalItem`.**  That type carries a
     crypto-design §6.2 rule NUMBER, and array sort order is not one of §6.2's
-    five rules -- §6.2 says nothing about array elements at all.  It is §4.2's
+    six rules -- §6.2 says nothing about array elements at all.  It is §4.2's
     own rule, so there is no number to carry and inventing one would make this
     reader disagree with a conformant implementation over a rule neither
     document assigns.  Section MCC therefore discriminates on the TYPE here,
@@ -117,10 +118,12 @@ def py_decode_manifest(data: bytes) -> dict:
     - Known values are canonical per §6.2 rules 2 and 3.
     - Unknown subtrees -- at the top level AND inside each `blocks[i]` /
       `trash[i]` entry, per `BlockEntry`/`TrashEntry`'s OWN forward-compat
-      bag -- are checked for rules 2, 3 and 4 only, and their raw bytes
-      are RETAINED so they can be re-emitted verbatim (rules 1 and 5 are
-      unenforced there -- §4.2's table applies at every nesting level, not
-      only the top one; #585 fix round 1, Finding 1). `vector_clock` and
+      bag -- are checked for rules 2, 3, 4 and 6 only (depth via
+      `reject_excessive_nesting`, this function's first statement), and
+      their raw bytes are RETAINED so they can be re-emitted verbatim
+      (rules 1 and 5 are unenforced there -- §4.2's table applies at every
+      nesting level, not only the top one; #585 fix round 1, Finding 1).
+      `vector_clock` and
       every `vector_clock_summary` are NOT given this treatment: a
       `VectorClockEntry` has no unknown bag at all and rejects an unknown
       key outright (`manifest/decode/entries.rs::parse_vector_clock_entry`),
@@ -142,6 +145,13 @@ def py_decode_manifest(data: bytes) -> dict:
     reproducing (#592).
     """
     import cbor2
+
+    # crypto-design §6.2 rule 6 FIRST (#667): `decode_manifest`'s ciborium parse
+    # enforces the same limit before it interprets anything, and vault-format
+    # §4.2 lists depth among the well-formedness preconditions, so it outranks
+    # rule 4.  It must also run before `reject_floats_and_tags` below, which
+    # recurses and would otherwise raise RecursionError on a deep body.
+    reject_excessive_nesting(data, later_phases_scan_in_byte_order=True)
 
     # §6.2 rule 4 over the WHOLE body, BEFORE any key is interpreted --
     # §4.2's precedence paragraph (#618), and a byte-for-byte mirror of

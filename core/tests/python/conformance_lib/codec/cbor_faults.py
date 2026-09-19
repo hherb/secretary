@@ -52,3 +52,33 @@ def require_false_true_or_null(ai: int, off: int) -> None:
             f"RFC 8949 §3.3: major-7 value outside {{false, true, null}} "
             f"at offset {off} (ai={ai})"
         )
+
+
+# crypto-design §6.2 rule 6 (#667): the longest chain of arrays, maps and tags
+# a canonical-CBOR document may hold, its outermost item included; a scalar is
+# not a level.  The Rust twin is `secretary_core::cbor::V1_MAX_NESTING_DEPTH`.
+V1_MAX_NESTING_DEPTH = 256
+
+
+class NestingTooDeep(MalformedCbor):
+    """crypto-design §6.2 rule 6: a chain of arrays, maps and tags longer than
+    `V1_MAX_NESTING_DEPTH`.
+
+    Rust reports it as `CborDecode` with kind `RecursionLimit`, whose token is
+    `malformed_cbor`, and vault-format §4.2 lists it among the well-formedness
+    preconditions, so it is a `MalformedCbor`.  The token is declared here, not
+    inherited: Section RTS requires every verdict class to name its own."""
+
+    token = "malformed_cbor"
+
+
+def require_room_for_another_level(open_levels: int, head_at: int) -> None:
+    """Refuse to open a level past crypto-design §6.2 rule 6.
+
+    `open_levels` counts the arrays, maps and tags already open around the head
+    at `head_at`, which would open one more."""
+    if open_levels >= V1_MAX_NESTING_DEPTH:
+        raise NestingTooDeep(
+            f"crypto-design §6.2 rule 6: nesting past {V1_MAX_NESTING_DEPTH} levels "
+            f"at offset {head_at}"
+        )
