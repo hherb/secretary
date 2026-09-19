@@ -45,7 +45,9 @@ byte identity with nothing replaced.
   starts `recurse: 256`), which `from_secret_reader` and every
   `ciborium::de::from_reader` call site inherit. ciborium charges one level per
   array, map and tag, **except** a bignum tag (2/3) over a definite byte string
-  of at most 16 bytes, which it decodes as an integer without recursing.
+  of at most 16 bytes, which it reads without recursing: as an integer when the
+  value fits 64 bits, otherwise as a `Value::Tag` (corrected in the #667
+  review; this said "as an integer" for every such bignum).
 - **#667 is not record-only.** `manifest_body` carries the same acceptance
   divergence and the same harness failure, and it is a token-compared target
   that CI replays. The issue named only the record path.
@@ -357,9 +359,12 @@ canonicality, and #670 is a different rule. **REG goes 33 → 35.**
 
 - **The bignum edge on the manifest path.** ciborium does not charge a level
   for a bignum tag over ≤16 bytes. A manifest body whose 257th level is such a
-  tag gives `non_canonical_unclassified` in Rust (the bignum is folded to an
-  integer and the re-encode differs) and `NestingTooDeep` in Python. That pair
-  is never tolerated. It is a two-fault body (rule 4 and rule 6) that no input
+  tag gives `non_canonical_unclassified` in Rust when the value fits 64 bits
+  (the bignum is folded to an integer and the re-encode differs),
+  `rule4_tag_or_float` when it is 9-16 bytes wide (ciborium keeps a
+  `Value::Tag`; the #667 review measured this, where this paragraph had named
+  the first token for every width), and `NestingTooDeep` in Python at every
+  width. Neither pair is ever tolerated. It is a two-fault body (rule 4 and rule 6) that no input
   reaches, and it is #666's ciborium-leniency class. Wiring the walk into
   `decode_manifest` closes it. It gets a comment on #666, not a fix here.
 - **`contact_card` token comparison (#641)** will have to put depth first.

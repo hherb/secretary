@@ -389,7 +389,8 @@ was 6849 lines; it is now 156, over a **78**-file package whose largest module i
 `sections/value_type_structure.py` at 507 — both past the 500-line split
 threshold (#683) — then `sections/manifest_canonicality_cause.py` at 486,
 `codec/scanner.py` at 479 and `codec/manifest_decode.py` at 458, with
-`sections/nesting_depth.py` (457, new in #667) sixth by ONE line. Re-measured
+`sections/nesting_depth.py` (new in #667) sixth at 446: it was 457, sixth by
+ONE line, until the slice's review fix wave shortened its docstrings. Re-measured
 at #667/#670 (75 -> 78 files: `sections/nesting_depth.py`,
 `sections/nesting_depth_bodies.py`, `sections/record_defaults.py`), which grew
 `manifest_decode.py` 450 -> 458 (the depth pass is its first statement) and
@@ -698,10 +699,12 @@ now says **a default value is written by omission**. Load-bearing:
 - **Rule 6 counts containers, never a scalar, and the approved wording did
   not.** It counted the innermost item as a level, so a scalar inside 256
   arrays sat at level 257. That was one level stricter than every shipped
-  reader (ciborium 0.2.2 charges one level per array, map and tag), and it
-  was corrected in the design spec before `docs/` or any code took it. A tag IS a level
-  although rule 4 forbids tags, so a body breaking both rules is reported
-  alike by every reader.
+  reader (ciborium 0.2.2 charges one level per array, map and tag, bar the
+  short bignum below), and it was corrected in the design spec before `docs/`
+  or any code took it. A tag IS a level although rule 4 forbids tags, so that
+  a body breaking both rules is reported alike by every conformant reader.
+  That is a requirement, not yet a fact of this tree: the manifest path
+  reports a short bignum at level 257 under another rule (#666, below).
 - **Rust: the record walk answers first, and ciborium's equal limit is
   pinned everywhere else.** `cbor/well_formed.rs`'s `open_level` refuses the
   257th level before ciborium sees the body. It keeps ciborium's variant and
@@ -714,8 +717,12 @@ now says **a default value is written by omission**. Load-bearing:
   `IdentityBundle::from_canonical_cbor` and `record::decode`. A ciborium
   upgrade therefore cannot move the spec's limit silently. Over the full
   local `record` corpus (7,495 inputs, base against branch) **0 verdicts
-  moved**, and 49 inputs moved from a ciborium `Io`/`Syntax` fault to
-  `RecursionLimit`, under the same token.
+  moved**, and 49 inputs moved from an `Io`/`Syntax` fault to
+  `RecursionLimit`, under the same token. Those 49 were the pre-#667 WALK's
+  own faults, a truncation or bad head later in byte order than the 257th
+  level, not ciborium's:
+  ciborium never ran on them, and its `Io` always carries `offset: None`
+  (`classify_de`) where these carried `Some(..)`.
 - **Python has ONE traversal and two entry points.** `codec/well_formed.py`'s
   `_walk(.., check_content)` is reached through `walk_body` (record) and
   `reject_excessive_nesting`. The latter is the first statement of the
@@ -733,12 +740,22 @@ now says **a default value is written by omission**. Load-bearing:
   are built FROM the constant: they prove the check is relative to it and say
   nothing about its value. On the Rust side the path pin ties the constant to
   ciborium's actual limit (mutation N1).
-- **The manifest-path bignum edge is #666's.** ciborium charges no level for
-  a bignum tag over at most 16 bytes, so a manifest whose 257th level is one
-  answers `non_canonical_unclassified` in Rust and `NestingTooDeep`
-  (`malformed_cbor`, never tolerated) in Python. This was measured, and no
-  input reaches it. The path pin's all-array bodies cannot see it. Wiring the
-  walk into `decode_manifest` closes it.
+- **The manifest-path bignum edge is #666's, and Rust gives it two
+  answers.** ciborium charges no level for a bignum tag over at most 16
+  bytes. When the value fits 64 bits (every bignum of up to 8 bytes) it folds
+  it to an integer, so a manifest whose 257th level is one fails the
+  re-encode as `non_canonical_unclassified`. When it is wider (9-16 bytes,
+  positive or negative) ciborium keeps a `Value::Tag`, and Rust answers
+  `rule4_tag_or_float` (`Canonical(TagRejected)`): a rule-4 report where
+  §4.2 now requires depth. Python answers `NestingTooDeep` (`malformed_cbor`)
+  at every width, and a pair naming `malformed_cbor` is never tolerated.
+  This said "`non_canonical_unclassified`" for every width up to 16 bytes
+  until the #667 review measured 9 bytes. (A 16-byte negative whose top bit
+  is set overflows ciborium's `i128`, a `Semantic` fault, so both sides say
+  `malformed_cbor`; from 17 bytes ciborium charges the level.) No input
+  reaches any of it, and the path pin's all-array bodies cannot see it.
+  Wiring the walk into `decode_manifest` closes it; #666's seeds need both
+  widths, because the two take different ciborium paths.
 - **The writer half is unenforced in both languages (#681).** No production
   path emits a 257-deep document from decoded input. An `UnknownValue` built
   in memory can, which is the #586/#600 writer-half shape.
@@ -762,8 +779,8 @@ now says **a default value is written by omission**. Load-bearing:
   after its loop, and every section after RTV, REG included, never runs. The
   N4 row therefore declares `expect_red = []`.
 - **Coverage.** Section **NDL** (`sections/nesting_depth.py`, six checks,
-  including a default-deny census of every top-level `codec/*.py`
-  `py_decode_*`) and Section **RDO** (`sections/record_defaults.py`, three
+  including a default-deny census of every top-level `py_decode_*` in
+  `codec/**/*.py`, recursive since the review fix wave) and Section **RDO** (`sections/record_defaults.py`, three
   checks) report on their PASS lines what they ran. Ten committed seeds put
   both rules in CI's replay: 7 `nesting__`, including the ACCEPTING depth
   256, since a limit set too low is as wrong as none, and 3

@@ -2278,7 +2278,7 @@ ls core/fuzz/seeds/*/* core/tests/data/diff_regressions/*/* | grep -v gitkeep | 
 
 - [ ] **Step 4: Issues.** Standing authorization; file without asking.
   - File `[core] crypto-design §6.2 rule 6's writer half: no encoder refuses a document nested past 256`. Cite the design spec §8 bullet.
-  - Comment on #666: the manifest-path bignum edge (ciborium does not charge a level for a bignum tag over ≤16 bytes; a 257th-level bignum is `non_canonical_unclassified` in Rust and `NestingTooDeep` in Python; no input reaches it; wiring the walk into `decode_manifest` closes it).
+  - Comment on #666: the manifest-path bignum edge (ciborium does not charge a level for a bignum tag over ≤16 bytes; a 257th-level bignum is `non_canonical_unclassified` in Rust and `NestingTooDeep` in Python — corrected by the #667 review: that Rust token holds only when the value fits 64 bits, and a 9-16-byte bignum is `rule4_tag_or_float`; no input reaches it; wiring the walk into `decode_manifest` closes it).
   - Comment on #641: `contact_card` token comparison must place depth first (Rust: `CborDecode(RecursionLimit)`; Python: `NestingTooDeep`, both `malformed_cbor`).
   - Comment on #667 and #670: closed in code by this branch, per the `(#N)` convention. Name the seeds and sections.
 

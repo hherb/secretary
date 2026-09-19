@@ -4,11 +4,10 @@ Branch `feature/nesting-depth-and-record-defaults`, worktree
 `.worktrees/nesting-depth-defaults`, base `db6b1f5b` (`main`, immediately after
 PR #679 merged).
 
-**STATUS: implementation, measurement and docs are done; the whole-branch
-review is PENDING.** Task 9 of the plan (review → one-commit-per-finding fix
-wave → PR) has not run yet. §(5b) is a placeholder the fix wave fills in. Until
-it does, every claim below is the implementers' and the per-task reviewers',
-not a whole-branch reviewer's.
+**STATUS: implementation, measurement, docs, the whole-branch review and its
+fix wave are done; push and PR remain.** The review found 0 Critical and 3
+Important findings; all three and the triaged minors are fixed, and §(5b)
+records each with its commit and its evidence.
 
 **The headline:** `conformance.py` accepted two classes of body the Rust
 decoders reject. The first was a `record` **or** `manifest_body` nested past
@@ -31,7 +30,8 @@ now agrees, and 10 committed seeds make CI compare both decoders on both rules.
   naming its seeds and sections. Per the `(#N)`-not-`Closes #N` convention,
   both stay open on the tracker until a human closes them.
 - **Commented:** [#666](https://github.com/hherb/secretary/issues/666) (the
-  manifest-path bignum edge, measured) and
+  manifest-path bignum edge, measured; a second comment corrects the Rust
+  token for 9-16-byte bignums, §(2)) and
   [#641](https://github.com/hherb/secretary/issues/641) (`contact_card` must
   put depth first).
 - **Filed:**
@@ -71,7 +71,8 @@ now agrees, and 10 committed seeds make CI compare both decoders on both rules.
 | `c1d461de` | NDL's PASS lines count what RAN; checks 3/4 select decoders by name (review fix) |
 | `0ed2ae27` | 7 `nesting__` seeds + `nesting_depth_seeds.rs` + the ciborium path pin; NDL check 6; floors |
 | `d74e124a` | CLAUDE.md and ROADMAP |
-| (this commit) | this baton + `NEXT_SESSION.md` retarget |
+| `e2b96a15` | this baton + `NEXT_SESSION.md` retarget |
+| `053e22bd` … | the review fix wave; §(5b) lists its commits |
 
 Seven of the ten commits before `d74e124a` carry a `Claude Sonnet 5` trailer
 (the model that wrote them). That is accurate attribution, and the squash
@@ -86,7 +87,8 @@ table. The two facts that shaped the design:
 - **Rust's boundary is exactly 256 accepted / 257 rejected on both paths.**
   That is ciborium 0.2.2's default `recurse: 256`, which charges one level per
   array, map and tag. The exception is a bignum tag (2/3) over at most 16
-  bytes, which it folds to an integer without recursing.
+  bytes, which it reads without recursing: as an integer when the value fits
+  64 bits, otherwise as a `Value::Tag` (§(2)).
 - **Python was wrong in two ways.**
   - `record`: it accepted through depth 995 and raised `RecursionError` at
     2000.
@@ -111,9 +113,10 @@ level, which put a scalar inside 256 nested arrays at level 257, stricter than
 every shipped reader and than the design's own measured accept at 256. The
 normative text now says: "A scalar is not a level: an integer inside 256
 nested arrays is within the limit, and a 257th array around it is not." A tag
-IS a level although rule 4 forbids tags, so a body breaking both rules is
-reported alike. Unlike rules 1 and 5, rule 6 binds inside forward-compat
-unknown subtrees.
+IS a level although rule 4 forbids tags, so that a body breaking both rules is
+reported alike by every conformant reader; the reference manifest path does
+not yet do so for a short bignum (§(2), #666). Unlike rules 1 and 5, rule 6
+binds inside forward-compat unknown subtrees.
 
 ### (1c) Rust
 
@@ -152,12 +155,14 @@ unknown subtrees.
   existing re-encode comparison then rejects a present default as
   `RecordNonCanonical` (`non_canonical_unclassified`), at Rust's phase with
   Rust's token.
-- **Section NDL** (`sections/nesting_depth.py`, 457 lines):
+- **Section NDL** (`sections/nesting_depth.py`, 446 lines after the fix wave,
+  457 before):
   1. boundary per decoder;
   2. a verdict at 257 / 1,000 / 10,000;
   3. tags are levels;
   4. depth outranks a shallow tag, plus the pass's silence control;
-  5. a default-deny census of every top-level `codec/*.py` `py_decode_*`;
+  5. a default-deny census of every top-level `py_decode_*` in
+     `codec/**/*.py` (recursive since the fix wave; `codec/*.py` before);
   6. the committed seeds, two-way.
 - **Section RDO** (`sections/record_defaults.py`):
   1. each present default rejected;
@@ -246,7 +251,11 @@ $ awk -F'\t' '{print ($2=="ACCEPT")}' variants-branch.txt | sort | uniq -c
   `CborDecode(CborFault { kind: Io | Syntax, offset: Some(N) })` to
   `CborDecode(CborFault { kind: RecursionLimit, offset: Some(N') })`, under the
   same token, `malformed_cbor`. None moved to or from `TagRejected` or
-  `ACCEPT`.
+  `ACCEPT`. The base-side faults were the pre-#667 WALK's own (a truncation
+  or bad head later in byte order than the 257th level), not ciborium's, as
+  Task 7's report said: ciborium's `Io` always carries `offset: None`
+  (`classify_de`), and these carried `Some(N)`, so ciborium never ran on
+  them (the whole-branch review's correction).
 
 ### (1g) Mutation evidence (verbatim from Task 7's report)
 
@@ -337,14 +346,24 @@ gates, because no source file changed.
     writer check cannot backstop the reader's (#587's measured lesson).
 - **The manifest-path bignum edge is open, and #666 owns it.** ciborium does
   not charge a level for a bignum tag over ≤16 bytes. Measured while writing
-  this baton (scratch probe, both decoders, on `uniq__control__all_distinct.bin`
-  plus one unknown key):
-  - a short bignum at level **257** is `non_canonical_unclassified` in Rust
-    and `malformed_cbor` (`NestingTooDeep`) in Python. That pair is never
-    tolerated;
-  - an ordinary tag at 257 is `malformed_cbor` in both;
+  this baton, and corrected by the whole-branch review, which measured a
+  9-byte bignum (scratch probe, both decoders, on
+  `uniq__control__all_distinct.bin` plus one unknown key):
+  - a bignum at level **257** whose value fits 64 bits (every one of up to 8
+    bytes) is `non_canonical_unclassified` in Rust: ciborium folds it to an
+    integer and the re-encode differs;
+  - a 9-16-byte bignum at level 257, positive or negative, is
+    `rule4_tag_or_float` (`Canonical(TagRejected)`) in Rust: ciborium keeps
+    a `Value::Tag`. That is a rule-4 report where §4.2 now requires depth.
+    This bullet first named `non_canonical_unclassified` for every width;
+  - Python says `malformed_cbor` (`NestingTooDeep`) at every width, and a
+    pair naming `malformed_cbor` is never tolerated;
+  - a 16-byte negative with its top bit set overflows ciborium's `i128`
+    (`Semantic`, `malformed_cbor` on both sides); from 17 bytes ciborium
+    charges the level; an ordinary tag at 257 is `malformed_cbor` in both;
   - no input reaches the bignum case. The path pin's all-array bodies cannot
-    see it. Wiring the walk into `decode_manifest` closes it.
+    see it. Wiring the walk into `decode_manifest` closes it. The full width
+    table is in the second #666 comment.
 - **Removing the Python depth check crashes `conformance.py` instead of
   redding a section ([#682](https://github.com/hherb/secretary/issues/682)).**
   With N4 applied, Section RTV's `py_decode_manifest` over the committed
@@ -413,8 +432,12 @@ gates, because no source file changed.
   well-formedness walk into `decode_manifest` and block-plaintext decode, in
   both languages.** **Acceptance:**
   - the issue's own criteria;
-  - a `manifest_body` seed whose 257th level is a short bignum, answering
-    `malformed_cbor` in both languages. That closes the edge measured in §(2).
+  - `manifest_body` seeds whose 257th level is a short bignum, at **both
+    widths**, because they take different ciborium paths: one whose value
+    fits 64 bits (e.g. `c2 41 01`, today `non_canonical_unclassified`) and
+    one 9-16 bytes wide (e.g. `c2 49 01..01`, today `rule4_tag_or_float`),
+    each answering `malformed_cbor` in both languages. That closes the edge
+    measured in §(2).
 - **[#678](https://github.com/hherb/secretary/issues/678): the required-key
   half of Section VT's check 4.** Solve the interleaving rather than flatten
   it. The issue carries the measurements.
@@ -460,8 +483,9 @@ gates, because no source file changed.
 - **[#671](https://github.com/hherb/secretary/issues/671):** #641's residual
   nits.
 - **[#672](https://github.com/hherb/secretary/issues/672):** session-process
-  words in shipped source. **This slice adds more:** NDL's docstrings say
-  "controller ruling".
+  words in shipped source. This slice added some to NDL's docstrings
+  ("controller ruling", "Task 4/5", "review finding, fix round 1"); the fix
+  wave removed them (`f94e4da1`), so the class is back to #672's own list.
 - **[#676](https://github.com/hherb/secretary/issues/676):** type-level
   replay-target and seed-table invariants.
 
@@ -469,22 +493,16 @@ gates, because no source file changed.
 
 ## (4) Open decisions and risks
 
-- **The whole-branch review has NOT run.** The per-task reviews were scoped to
-  one task each and cannot see cross-task interactions (memory: "differential
-  review for guard changes"). Budget for findings.
-- **Stale corpus figures in SOURCE comments.** This slice moved them, and
-  Task 8 was scoped to docs, so they are left for the fix wave:
-
-  | File | Says | Should say |
-  |---|---|---|
-  | `core/src/vault/manifest/token.rs:220-224` | 44 bodies, 30 rejected, 17 of those 30, 13 reach a real comparison | 47 bodies, 32 rejected, 17 of 32, 15 |
-  | `core/tests/differential_replay_helpers/tolerance.rs:28-30` | 17 of the 30 | 17 of the 32 |
-  | `core/tests/differential_replay_helpers/python_bridge.rs:20-22` | 30 of the 44 (20 + 4 + 6) | 32 of the 47 (20 + 4 + 6 + 2 nesting) |
-  | `conformance_lib/diff_replay.py` docstring | 24 of the 38 | 32 of the 47 (already stale since #669) |
-
-  The rejection breakdown was measured per seed while writing this baton.
-- **`sections/nesting_depth.py` is 457 lines**, 91% of the split threshold.
-  The next check added to it should split it.
+- **The whole-branch review has run** (§(5b)). What it cannot see is what
+  no one measured: the depth measurements cover the three CBOR replay targets
+  at the depths in design spec §1.1, and the bignum widths in §(2).
+- **Stale corpus figures in SOURCE comments were fixed in the fix wave**
+  (`8d9510b2`), re-measured per seed with both decoders: 47 bodies, 32
+  rejected by both, 17 tolerated, 15 strict. The same commit also corrected
+  `docs/manual/contributors/differential-replay-protocol.md`'s "17 of the
+  24", stale since #669 and not in this baton's original list.
+- **`sections/nesting_depth.py` is 446 lines** after the fix wave, 89% of the
+  split threshold. The next check added to it should split it.
 - **RTV's `_CORPUS_TOKENS` and the seed set move together.** A new committed
   `manifest_body` seed reaching a new token needs that set edited; RTV's
   failure message asks for it by name.
@@ -518,26 +536,30 @@ gates, because no source file changed.
    this slice. *Cost if wrong:* a regression in the depth pass shows as a
    crash without a named `FAIL:` line.
 
-### (4b) Deferred minors from the ledger: NOT yet triaged by the final review
+### (4b) Deferred minors from the ledger, as the final review triaged them
+
+The review's triage: FIX the census glob and NDL's session-process text and
+"recursive `walk_body`" error (done, `f94e4da1`); SHIP the rest. The items
+below are therefore shipped as they stand unless marked otherwise.
 
 - **Task 1:** the design spec §3.1 blockquote's last sentence duplicates the
-  "Note on scope" paragraph below it. The ledger said to fold it during the
-  docs pass or the final review. Task 8's commit scope excluded the spec, so
-  it is left for the final review.
+  "Note on scope" paragraph below it. Shipped: a redundant sentence in a
+  design record, not a normative doc.
 - **Task 2:** RDO re-reads and re-parses `login.cbor` up to about 8 times per
   run; it could be hoisted once per section call.
 - **Task 2:** RDO `_writer_issues`' whole-body `try` discards per-key issues
   already collected when an exception fires. Its `PASS 3` count is then not a
   per-case tally, although `ok` is still `False`.
-- **Task 5:** NDL's census uses a NON-recursive `codec/*.py` glob, while
-  Section VT uses `rglob` with a documented rationale. NDL's LIMITS block does
-  not disclose the difference.
-- **Task 5:** the census's file-parse guard (the `ast.parse` failure branch of
-  `_census_line`) is verified by inspection only, never by a live
-  demonstration.
+- **Task 5, FIXED (`f94e4da1`):** NDL's census used a NON-recursive
+  `codec/*.py` glob, while Section VT uses `rglob`. It is recursive now,
+  skipping `__pycache__`, and its LIMITS block states the scope.
+- **Task 5, DEMONSTRATED (not committed):** the census's file-parse guard
+  was verified by inspection only. The fix wave ran it live against scratch
+  copies of `codec/`: an unparseable file yields an ISSUE line and
+  "(19/20 codec/ files read)", and no traceback.
 - **Task 6:** `nesting_depth_seeds_helpers::with_top_level_entry` is `pub` but
   used only inside the helper.
-- **Task 6:** `sections/nesting_depth.py` is 457 lines (above).
+- **Task 6:** `sections/nesting_depth.py` was 457 lines; 446 now (above).
 - **Closed, no action:**
   - Task 3's report lacked raw all-targets output; the reviewer ran it,
     53/53 binaries ok.
@@ -599,29 +621,89 @@ uv run scripts/check-error-payload-hygiene.py --self-test  && uv run scripts/che
 uv run scripts/check-test-support-placement.py --self-test && uv run scripts/check-test-support-placement.py
 ```
 
-**Then Task 9 of the plan:**
+**What remains of Task 9 of the plan** (the review and its fix wave are done,
+§(5b)):
 
 1. Re-check `main..origin/main`, and merge if it moved. The branch's copy of
    this document wins a conflict.
-2. Run the whole-branch review, verifying every finding by execution in a
-   scratch copy, never in this worktree.
-3. Fix each finding, one commit per finding.
-4. Fill in §(5b).
-5. Push and open the PR titled `Normative CBOR nesting limit (#667) and
+2. Push and open the PR titled `Normative CBOR nesting limit (#667) and
    record default omission (#670)`.
-6. Read the `cargo test (ubuntu-latest)` job's replay finish lines, not just
+3. Read the `cargo test (ubuntu-latest)` job's replay finish lines, not just
    the tick: `record: 44 of 44` and `manifest_body: 48 of 48` must appear.
 
 ---
 
-## (5b) The whole-branch review — PENDING
+## (5b) The whole-branch review and its fix wave
 
-*Not yet run. The fix wave appends here:*
+**Result: 0 Critical, 3 Important, minors triaged.** Reviewed on opus over
+`db6b1f5b..e2b96a15`. Every Important and every triaged minor is fixed; the
+fix wave changed no code behaviour, only normative docs, comments and
+docstrings, one census line and its PASS wording.
 
-- the findings;
-- each fix's commit;
-- before → after mutation evidence per fix;
-- anything filed rather than fixed.
+**Important 1: rule 6 was missing from the §4.2 places that enumerate the
+other rules.** Fixed in `053e22bd`.
+
+- vault-format §4.2 ordering 1 scoped "every rule below" to §6.2's numbered
+  rules, so read literally rule 4 outranked rule 6, contradicting the
+  precondition six lines up. Now "§6.2 rules 1–5 …; rule 6 belongs to this
+  precondition, not below it".
+- The unknown-subtree table gains a rule-6 row ("yes", by the parse or walk
+  that finds item boundaries, subtrees included); the unopenability
+  paragraph, part (2) of the two-part requirement, the byte-retention
+  paragraph, the implementation note and §6.3.2 name rule 6 beside 2-4. A
+  byte-retaining reader that followed the old text skipped depth, which is
+  the defect #667 fixed. A normalising parse applies the limit as it builds
+  the tree; nothing gets it from the re-encode.
+- crypto-design §6.2 rule 5's "vault-format §4.2 states the per-rule split …
+  in full" is true again with the rule-6 row; unchanged.
+- `spec_test_name_freshness.py`: 99 unresolved on `main` and on the branch,
+  the same citation set (pre-existing; this slice adds none).
+
+**Important 2: the bignum edge was wrong for 9-16 bytes.** Fixed in this
+commit (CLAUDE.md, ROADMAP, this baton §(1a)/(1b)/(2)/(3a), the design spec
+and the plan) and in a second #666 comment
+(<https://github.com/hherb/secretary/issues/666#issuecomment-5740367972>).
+Re-measured with the real decoders over 9 widths at level 257: value fits
+64 bits → `non_canonical_unclassified`; 9-16 bytes, positive or negative →
+`rule4_tag_or_float`; a 16-byte negative with its top bit set →
+`malformed_cbor` (`Semantic`); 17 bytes → `malformed_cbor`
+(`RecursionLimit`). Python: `malformed_cbor` at every width. §(3a)'s #666
+acceptance now seeds both widths.
+
+**Important 3: four source comments carried stale corpus figures.** Fixed in
+`8d9510b2`, re-measured per seed: 47 bodies, 32 rejected by both, 17
+tolerated (7 arraysort, 4 keyorder, 3 rule-2, 3 rule-3), 15 strict (3
+rule4_float, 4 uniq, 6 valuetype, 2 nesting). RTV's own `PASS 3` agrees
+("32/47 bodies rejected"). `diff_replay.py` also said "the other six
+targets" are scored on rejection alone, stale since #641 (it is four). A
+fifth copy, the replay protocol memo's "17 of the 24", was corrected in the
+same commit.
+
+**Minors fixed:**
+
+| Commit | What |
+|---|---|
+| `f94e4da1` | NDL: `walk_body` is iterative, not recursive; session-process text removed; census `rglob` minus `__pycache__` (a decoder in `codec/sub/` read "0 unclassified" at HEAD, "1" now; measured on scratch copies); PASS 5 counts classification issues only and names an unread file as "(x/y codec/ files read)"; docstring states the title's "every CBOR decoder" means `codec/`; 457 → 446 lines; real-tree output byte-identical |
+| `b5b7c7de` | `well_formed.rs`: depth is its own list item; the Python twin's list names `NestingTooDeep`; `V1_MAX_NESTING_DEPTH`'s "exactly" is about acceptance, with the #666 exception named |
+| `053e22bd` | crypto-design rule 6: "enforced exactly this limit since v1, as to which bodies they accept"; vault-format §6.3 schema comments say false and 0 are written by omission |
+| this commit | CLAUDE.md: the 49 record inputs' `Io`/`Syntax` faults were the pre-#667 walk's, never ciborium's; "reported alike by every reader" is a requirement the manifest path does not yet meet (#666); NDL's file size and census scope re-measured |
+
+**Filed rather than fixed:** nothing new. The review's other minors were
+triaged SHIP (§(4b)).
+
+**Verification after the fix wave** (the code changes are comments and one
+census line, so no mutation row moved; the census change's before → after
+evidence is the scratch-copy probe above):
+
+| Gate | Result |
+|---|---|
+| `uv run core/tests/python/conformance.py` | exit 0, 0 `FAIL`; NDL 8/8, 12/12, 4/4, 5/5, 8 censused, 7/7; RDO 3/3, 4/4, 6/6; RTV 9 distinct tokens; REG 35/35 |
+| `cargo test --release --locked -p secretary-core --features differential-replay --test differential_replay` | 46 passed; `record: 44 of 44`, `manifest_body: 48 of 48` |
+| `cargo test --release --locked -p secretary-core --lib` | 662 passed, 0 failed |
+| `cargo clippy --release --locked --workspace --tests -- -D warnings` | exit 0 |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` | exit 0 |
+| `cargo fmt --all --check` | exit 0 |
+| `uv run core/tests/python/spec_test_name_freshness.py` | 99 on `main`, 99 on the branch, same set |
 
 ---
 
