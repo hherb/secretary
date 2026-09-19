@@ -16,11 +16,16 @@ refusal answered for a reader check §4.2 states on its own.  The writer half
 is still asserted separately (check 3), so a reader-side special case cannot
 stand in for the encoder.
 
-Three checks, each reporting what it RAN:
+Three checks, each reporting what it RAN -- `passed`/`executed` counted per
+case as it completes, and every case guarded on its own, so a crash is an
+ISSUE naming that case and never a PASS line computed from the declared total
+(PR #684 review: a raising writer printed "5/6 writer cases" having run none):
   1. each key present at its default is rejected as `RecordNonCanonical`;
   2. controls: the same key absent, and the key at a non-default value, are
      each ACCEPTED -- without them a reader rejecting the key outright passes 1;
-  3. the writer omits each default and keeps each non-default.
+  3. the writer omits each default and keeps each non-default, including a
+     WRONG-TYPED look-alike (`tombstone: 0`, `tombstoned_at_ms: False`): in
+     Python `False == 0`, so a value-only default test would drop them.
 """
 
 from __future__ import annotations
@@ -41,6 +46,11 @@ _NON_DEFAULTS: tuple[tuple[str, object], ...] = (
     ("tags", ["x"]),
     ("tombstone", True),
     ("tombstoned_at_ms", 5),
+)
+# Equal to a default under `==` but not of its type; the writer must keep them.
+_WRONG_TYPED: tuple[tuple[str, object], ...] = (
+    ("tombstone", 0),
+    ("tombstoned_at_ms", False),
 )
 
 
@@ -73,61 +83,73 @@ def _base_round_trip_issue() -> str | None:
     return None
 
 
-def _reader_issues() -> tuple[list[str], int]:
-    issues = []
-    for key, value in _DEFAULTS:
+def _run(cases, check) -> tuple[list[str], int, int]:
+    """Run `check(label, *case)` per case; it returns an issue or None.  A raise
+    is an issue naming that case.  Returns `(issues, passed, executed)`."""
+    issues: list[str] = []
+    passed = executed = 0
+    for case in cases:
+        label = case[0]
         try:
-            py_decode_record(_with_key(key, value))
-        except RecordNonCanonical:
-            continue
-        except Exception as exc:  # noqa: BLE001 -- the wrong rejection is an issue too
-            issues.append(f"{key}={value!r}: raised {type(exc).__name__}, expected RecordNonCanonical ({exc})")
-            continue
-        issues.append(f"{key}={value!r}: ACCEPTED; vault-format §6.3 requires the default to be omitted")
-    return issues, len(_DEFAULTS)
+            issue = check(*case)
+        except Exception as exc:  # noqa: BLE001 -- guard: report, never propagate (#682)
+            issue = f"{label}: raised {type(exc).__name__}: {exc}"
+        executed += 1
+        if issue is None:
+            passed += 1
+        else:
+            issues.append(issue)
+    return issues, passed, executed
 
 
-def _control_issues() -> tuple[list[str], int]:
-    issues = []
-    bodies = [("absent (the base)", _base_bytes())]
-    bodies.extend((f"{key}={value!r}", _with_key(key, value)) for key, value in _NON_DEFAULTS)
-    for label, body in bodies:
-        try:
-            py_decode_record(body)
-        except Exception as exc:  # noqa: BLE001 -- any rejection fails a control
-            issues.append(f"control {label}: must be ACCEPTED, raised {type(exc).__name__}: {exc}")
-    return issues, len(bodies)
-
-
-def _writer_issues() -> tuple[list[str], int]:
-    n = len(_DEFAULTS) + len(_NON_DEFAULTS)
+def _reader_case(label: str, key: str, value: object) -> str | None:
     try:
-        issues = []
-        decoded = py_decode_record(_base_bytes())
-        omitted = py_encode_record(decoded)
-        for key, value in _DEFAULTS:
-            if py_encode_record({**decoded, key: value}) != omitted:
-                issues.append(f"writer: {key}={value!r} was emitted; §6.3 requires it omitted")
-        for key, value in _NON_DEFAULTS:
-            if py_encode_record({**decoded, key: value}) == omitted:
-                issues.append(f"writer: {key}={value!r} was dropped; only a default is omitted")
-        return issues, n
-    except Exception as exc:  # noqa: BLE001 -- a decode/encode crash is an issue too
-        return [f"writer: raised {type(exc).__name__} while building the writer cases: {exc}"], n
+        py_decode_record(_with_key(key, value))
+    except RecordNonCanonical:
+        return None
+    except Exception as exc:  # noqa: BLE001 -- the wrong rejection is an issue too
+        return f"{label}: raised {type(exc).__name__}, expected RecordNonCanonical ({exc})"
+    return f"{label}: ACCEPTED; vault-format §6.3 requires the default to be omitted"
+
+
+def _control_case(label: str, body: object) -> str | None:
+    body = body() if callable(body) else body
+    try:
+        py_decode_record(body)
+    except Exception as exc:  # noqa: BLE001 -- any rejection fails a control
+        return f"control {label}: must be ACCEPTED, raised {type(exc).__name__}: {exc}"
+    return None
+
+
+def _writer_case(label: str, key: str, value: object, omit: bool) -> str | None:
+    decoded = py_decode_record(_base_bytes())
+    emitted = py_encode_record({**decoded, key: value}) != py_encode_record(decoded)
+    if omit and emitted:
+        return f"writer: {label} was emitted; §6.3 requires it omitted"
+    if not omit and not emitted:
+        return f"writer: {label} was dropped; only a default (of its own type) is omitted"
+    return None
 
 
 def section_record_default_omission() -> tuple[bool, list[str]]:
-    issues = []
     if (issue := _base_round_trip_issue()) is not None:
         return False, [f"  ISSUE: {issue}"]
-    reader, n_reader = _reader_issues()
-    controls, n_controls = _control_issues()
-    writer, n_writer = _writer_issues()
-    issues = reader + controls + writer
+    reader = _run([(f"{k}={v!r}", k, v) for k, v in _DEFAULTS], _reader_case)
+    controls = _run(
+        [("absent (the base)", _base_bytes)]
+        + [(f"{k}={v!r}", (lambda k=k, v=v: _with_key(k, v))) for k, v in _NON_DEFAULTS],
+        _control_case,
+    )
+    writer = _run(
+        [(f"{k}={v!r}", k, v, True) for k, v in _DEFAULTS]
+        + [(f"{k}={v!r}", k, v, False) for k, v in _NON_DEFAULTS + _WRONG_TYPED],
+        _writer_case,
+    )
     lines = [
-        f"PASS 1: {n_reader - len(reader)}/{n_reader} present-default bodies rejected as RecordNonCanonical",
-        f"PASS 2: {n_controls - len(controls)}/{n_controls} controls accepted (absent, and each non-default)",
-        f"PASS 3: {n_writer - len(writer)}/{n_writer} writer cases (defaults omitted, non-defaults kept)",
+        f"PASS 1: {reader[1]}/{reader[2]} present-default bodies rejected as RecordNonCanonical",
+        f"PASS 2: {controls[1]}/{controls[2]} controls accepted (absent, and each non-default)",
+        f"PASS 3: {writer[1]}/{writer[2]} writer cases (defaults omitted; non-defaults and wrong-typed look-alikes kept)",
     ]
+    issues = reader[0] + controls[0] + writer[0]
     lines.extend(f"  ISSUE: {issue}" for issue in issues)
     return (not issues, lines)
