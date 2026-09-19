@@ -388,12 +388,15 @@ was 6849 lines; it is now 156, over a **78**-file package whose largest module i
 `sections/value_type_discipline.py` at **658** lines, ahead of
 `sections/value_type_structure.py` at 507 — both past the 500-line split
 threshold (#683) — then `sections/manifest_canonicality_cause.py` at 486,
-`codec/scanner.py` at 479 and `codec/manifest_decode.py` at 458, with
-`sections/nesting_depth.py` (new in #667) sixth at 446: it was 457, sixth by
-ONE line, until the slice's review fix wave shortened its docstrings. Re-measured
-at #667/#670 (75 -> 78 files: `sections/nesting_depth.py`,
+`codec/scanner.py` at 479, then `sections/nesting_depth.py` (new in #667) at
+472 and `codec/manifest_decode.py` at 460. `nesting_depth.py` went 457 -> 446
+in the slice's first fix wave and 446 -> 451 -> 472 after it, the last step in
+the PR #684 review's fix round, which moved it from sixth to fifth. The 458 and
+446 this line carried were measured at the docs commit and grown by a LATER
+commit (`38427086`) -- this paragraph's own warning, restated one slice on.
+Re-measured at #667/#670 (75 -> 78 files: `sections/nesting_depth.py`,
 `sections/nesting_depth_bodies.py`, `sections/record_defaults.py`), which grew
-`manifest_decode.py` 450 -> 458 (the depth pass is its first statement) and
+`manifest_decode.py` 450 -> 460 (the depth pass is its first statement) and
 `sections/rule_token_seeds.py` 391 -> 397 (the `nesting__` exclusion), and
 moved nothing else in the top five. **The ranking this replaced was stale on
 `main` the day it merged.** It named `manifest_canonicality_cause.py` (486)
@@ -710,12 +713,18 @@ now says **a default value is written by omission**. Load-bearing:
   257th level before ciborium sees the body. It keeps ciborium's variant and
   token (`CborDecode`, `malformed_cbor`), now always of kind `RecursionLimit`
   and with an offset, and excess depth now outranks an earlier tag the walk
-  would have reported as rule 4. `ciborium_enforces_exactly_the_v1_limit_on_every_decode_path`
+  would have reported as rule 4. `every_decode_path_enforces_exactly_the_v1_limit`
   (`core/tests/nesting_depth_seeds.rs`) requires depth 256 not to be refused
-  for depth, and 257 to be, on five paths: `decode_manifest`,
+  for depth, and 257 to be, on five paths -- `decode_manifest`,
   `block::decode_plaintext`, `ContactCard::from_canonical_cbor`,
-  `IdentityBundle::from_canonical_cbor` and `record::decode`. A ciborium
-  upgrade therefore cannot move the spec's limit silently. Over the full
+  `IdentityBundle::from_canonical_cbor` and `record::decode` -- in four
+  level shapes: plain arrays, a tag as the last level, indefinite arrays and
+  a map-key chain. Only the first four paths pin CIBORIUM; the record row
+  pins the walk, which answers before ciborium runs. So a ciborium upgrade
+  cannot move the spec's limit silently on those four, nor stop charging a
+  tag or an indefinite container. It was named
+  `ciborium_enforces_exactly_the_v1_limit_on_every_decode_path` and built
+  arrays only until the PR #684 review. Over the full
   local `record` corpus (7,495 inputs, base against branch) **0 verdicts
   moved**, and 49 inputs moved from an `Io`/`Syntax` fault to
   `RecursionLimit`, under the same token. Those 49 were the pre-#667 WALK's
@@ -730,9 +739,16 @@ now says **a default value is written by omission**. Load-bearing:
   `reject_excessive_nesting`. The latter is the first statement of the
   manifest, contact-card and trash-entry decoders. The pass is CONTENT-BLIND:
   no UTF-8, simple-value or rule-4 fault, since none moves an item boundary.
-  It is also SILENT at every non-depth fault: it re-raises only
-  `NestingTooDeep` and returns at a truncation or bad chunk, which every
-  later phase meets first because all of them scan in byte order. One copy
+  What it does at a STRUCTURAL fault it cannot walk past (a truncation, a
+  bad chunk, a stray break) is the CALLER's to declare, through a required
+  `later_phases_scan_in_byte_order`. The manifest passes `True`: its later
+  phases are `_scan_item`, which meets the same fault at the same byte, so
+  the pass returns and stays silent. The card and trash entry pass `False`,
+  because their next phase is `cbor2.loads`, which is NOT a byte-order
+  well-formedness check: it accepts a bare break inside a definite array.
+  Until the PR #684 review the pass was silent for all three, so a break
+  ahead of a 300-level chain skipped rule 6 there and was rejected by the
+  ENCODER failing on cbor2's sentinel -- the #608 shape. One copy
   of the traversal means one mutation reds both entry points. A second copy
   would be the #618 shape.
 - **The absolute value 256 is pinned by the committed seeds, not by Section
@@ -743,7 +759,8 @@ now says **a default value is written by omission**. Load-bearing:
   nothing about its value. On the Rust side the path pin ties the constant to
   ciborium's actual limit (mutation N1).
 - **The manifest-path bignum edge is #666's, and Rust gives it two
-  answers.** ciborium charges no level for a bignum tag over at most 16
+  answers.** ciborium charges no level for a bignum tag over a
+  DEFINITE-length byte string of at most 16
   bytes. When the value fits 64 bits — every bignum of up to 8 bytes, plus a
   wider one whose leading bytes are zero — it folds it to an integer, so a
   manifest whose 257th level is one fails the re-encode as
@@ -788,7 +805,9 @@ now says **a default value is written by omission**. Load-bearing:
   both rules in CI's replay: 7 `nesting__`, including the ACCEPTING depth
   256, since a limit set too low is as wrong as none, and 3
   `non_canonical_unclassified__present_default_*`. `rule_token_seeds`'
-  census excludes the `nesting__` prefix through one shared constant.
+  census excludes the `nesting__` prefix through one constant per language
+  (Rust's `SEED_PREFIX`, shared by two test binaries via `#[path]`, and
+  Python's `NESTING_SEED_PREFIX`).
 
 **It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and, at the time, never enabled in `test.yml` (a step enables it there since #647, which does not change this paragraph's history: that step postdates #546, and it invokes `conformance.py`'s replay mode (one `--diff-replay-serve` worker since #655, one process per corpus input before) rather than running its section suite, so it would not have caught the `pqcrypto` break either — nothing on the `--diff-replay` path calls `ml_dsa_65_verify` — state it as the IMPORT CLOSURE it is, `diff_replay.py` importing only `codec/*` plus `rejection` and no `codec/` module reaching `derivations.hybrid_verify`, rather than as "reachable only from `sections/`", which is false: the function lives in `derivations.py` and both `wire/card.py` and `wire/golden_vault_verify.py` import it, neither under `sections/` (#656 review)). The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. **The job now BLOCKS**, which this paragraph denied until the #599 review measured it: `clean-room conformance` is one of the 24 required contexts in `main`'s `protect_main` ruleset (`gh api repos/hherb/secretary/rules/branches/main`). The sentence "the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking" outlived its fact — and a stale claim in this direction is not harmless, because it gets a real gate discounted when someone weighs whether a Python-side-only pin is enough. One standing consequence remains: five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
 
@@ -1067,7 +1086,7 @@ out — it has been wrong twice:
   asymmetry is normative rather than incidental.** Rust reaches rules 2
   and 3 through the re-encode plus #590's classifier; `conformance.py`'s
   byte-retaining reader reaches them directly in `_check_canonical_item`.
-  vault-format §4.2 requires exactly that ("a byte-retaining reader
+  vault-format §6.3.2 requires exactly that ("a byte-retaining reader
   reproduces its input unconditionally … and it must therefore check
   crypto-design §6.2 rules 2, 3, 4 and 6 itself"). Rule 4 is not asymmetric
   at all: §4.2 says **every** reader enforces it by a separate whole-body
@@ -1904,7 +1923,7 @@ the writer and reader halves have different histories:
   per-rule split for `unknown` subtrees — a six-row table against
   crypto-design §6.2's six rules, with **2/3/4/6 enforced and 1/5 not** (rule
   6 is enforced by the parse or walk that finds item boundaries). Be
-  careful with the mechanism, which is not uniform across those three: rules 2
+  careful with the mechanism, which is not uniform across those four: rules 2
   and 3 are caught by the §4.3 step-4 re-encode *for a normalising-parse
   reader* (a byte-retaining reader must check them directly, and the table's
   row 2 says so); rule 4 is never the re-encode, because a normalising parse

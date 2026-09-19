@@ -128,11 +128,14 @@ binds inside forward-compat unknown subtrees.
   - Excess depth now outranks an earlier tag the walk would have reported as
     rule 4 (`excess_depth_outranks_an_earlier_tag_in_a_record`).
 - **ciborium's equal limit is pinned.**
-  `core/tests/nesting_depth_seeds.rs::ciborium_enforces_exactly_the_v1_limit_on_every_decode_path`
-  requires depth 256 not to be refused for depth, and 257 to be refused with
-  `RecursionLimit`. It covers `decode_manifest`, `block::decode_plaintext`,
+  `core/tests/nesting_depth_seeds.rs::every_decode_path_enforces_exactly_the_v1_limit`
+  (named `ciborium_enforces_exactly_the_v1_limit_on_every_decode_path`, and
+  arrays-only, until the PR #684 review) requires depth 256 not to be
+  refused for depth, and 257 to be refused with `RecursionLimit`, in four
+  level shapes (arrays, a tag last, indefinite arrays, a map-key chain). It
+  covers `decode_manifest`, `block::decode_plaintext`,
   `ContactCard::from_canonical_cbor`, `IdentityBundle::from_canonical_cbor`
-  and `record::decode`. It passed on its first run, before any seed existed:
+  and `record::decode`; the last row pins the walk, not ciborium. It passed on its first run, before any seed existed:
   the live proof that ciborium's limit IS the spec's.
 - No error enum, public signature, FFI mapping or rule token changed.
 
@@ -155,8 +158,8 @@ binds inside forward-compat unknown subtrees.
   existing re-encode comparison then rejects a present default as
   `RecordNonCanonical` (`non_canonical_unclassified`), at Rust's phase with
   Rust's token.
-- **Section NDL** (`sections/nesting_depth.py`, 446 lines after the fix wave,
-  457 before):
+- **Section NDL** (`sections/nesting_depth.py`: 457 lines, 446 after the fix
+  wave, 451 at the PR's head, 472 after the PR #684 review round):
   1. boundary per decoder;
   2. a verdict at 257 / 1,000 / 10,000;
   3. tags are levels;
@@ -501,8 +504,9 @@ gates, because no source file changed.
   rejected by both, 17 tolerated, 15 strict. The same commit also corrected
   `docs/manual/contributors/differential-replay-protocol.md`'s "17 of the
   24", stale since #669 and not in this baton's original list.
-- **`sections/nesting_depth.py` is 446 lines** after the fix wave, 89% of the
-  split threshold. The next check added to it should split it.
+- **`sections/nesting_depth.py` is 472 lines** after the PR #684 review
+  round, 94% of the split threshold. The next check added to it should split
+  it.
 - **RTV's `_CORPUS_TOKENS` and the seed set move together.** A new committed
   `manifest_body` seed reaching a new token needs that set edited; RTV's
   failure message asks for it by name.
@@ -559,7 +563,8 @@ below are therefore shipped as they stand unless marked otherwise.
   "(19/20 codec/ files read)", and no traceback.
 - **Task 6:** `nesting_depth_seeds_helpers::with_top_level_entry` is `pub` but
   used only inside the helper.
-- **Task 6:** `sections/nesting_depth.py` was 457 lines; 446 now (above).
+- **Task 6:** `sections/nesting_depth.py` was 457 lines; 446 after the fix
+  wave, 472 now (above).
 - **Closed, no action:**
   - Task 3's report lacked raw all-targets output; the reviewer ran it,
     53/53 binaries ok.
@@ -739,6 +744,90 @@ evidence is the scratch-copy probe above):
 | `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` | exit 0 |
 | `cargo fmt --all --check` | exit 0 |
 | `uv run core/tests/python/spec_test_name_freshness.py` | 99 on `main`, 99 on the branch, same set |
+
+## (5c) The PR #684 review round and its fixes
+
+Four parallel reviewers (code, tests, silent failures, comments) found **0
+Critical**. The code reviewer found no correctness bug: Rust and Python count
+depth identically for tags, map-key containers and indefinite containers,
+measured by probe. Two findings changed behaviour; the rest are docs.
+
+**Behaviour: the depth pass was bypassable on the two cbor2-backed decoders.**
+`reject_excessive_nesting` returned at every structural fault on the argument
+that "every later phase scans in byte order". That holds for `_scan_item` and
+not for `cbor2.loads`, which accepts a bare `0xff` inside a definite array. So
+on the contact card and the trash entry, a break ahead of a 300-level chain
+skipped rule 6 and was rejected by the ENCODER failing on cbor2's sentinel,
+the #608 shape. Two reviewers measured it independently. The pass now takes a
+required `later_phases_scan_in_byte_order`: the manifest passes `True`
+(byte-identical behaviour), the card and trash entry `False`, and there it
+raises the fault.
+
+**Behaviour: Section NDL passed on crashes.**
+- Check 1 accepted any outcome but `too_deep` for the card, so a
+  `RecursionError` scored 8/8. It now compares against a declared outcome per
+  decoder (`accept`, or the card's `ValueError`).
+- Check 4's truncation control accepted any exception; it now requires
+  `MalformedCbor`. Check 4 gained a break-then-deep row per cbor2 decoder.
+- The census rejects a not-CBOR decoder whose body names a CBOR entry point.
+  Moving `py_decode_trash_entry` to `_NOT_CBOR_DOCUMENTS` used to stay green.
+- Check 6 has a floor. The catch-all line reads `ISSUE:`, not `PASS:`.
+- The title reads "every codec/ CBOR decoder".
+
+**Section RDO** counts every case as it runs, under its own guard: a raising
+writer printed "5/6 writer cases" having run none. It gains two writer rows
+(`tombstone: 0`, `tombstoned_at_ms: False` must be KEPT), since reverting
+`_is_omitted_default` to `value == default` left every section green.
+
+**The Rust path pin** is renamed `every_decode_path_enforces_exactly_the_v1_limit`
+and runs four level shapes: arrays, a tag last, indefinite arrays and a
+map-key chain. Before, it ran arrays only, so a ciborium upgrade that stopped
+charging a tag or an indefinite container on the manifest path reddened
+nothing. The record row pins the walk, not ciborium, and the doc now says so.
+
+**Docs:**
+- Three comments still called the depth cap "Rust-only" (`rule_tokens/record.rs`,
+  its test, and `tolerance.rs`).
+- Two spec sentences said "rules 1–5" / "all five rules" where rule 6 binds
+  too.
+- The ordering-1 quote "every rule below" matched no text; it is now "every
+  check below it".
+- ROADMAP's #604 history entry had been rewritten to include rule 6; it is
+  reverted, since it records the spec as it was.
+- CLAUDE.md attributed §6.3.2's byte-retaining sentence to §4.2.
+- CLAUDE.md said "those three" for four rules, and "one shared constant" for
+  one per language.
+- The line counts were stale (458/446, measured before `38427086` grew them).
+
+**Mutation evidence** (`scripts/mutate.py`), every row `RED_AS_EXPECTED`:
+
+| # | Mutation | Reds |
+|---|---|---|
+| F1 | card passes `later_phases_scan_in_byte_order=True` | NDL |
+| F2 | trash entry passes `True` | NDL |
+| F3 | the pass returns at every structural fault again | NDL |
+| F4 | the card raises `RecursionError` after the pass | NDL (check 1) |
+| F5 | trash entry demoted to `_NOT_CBOR_DOCUMENTS` | NDL (census) |
+| F6 | `_is_omitted_default` compares value only | RDO |
+| F7 | the Rust walk pushes a tag frame without `open_level` | `every_decode_path_enforces_exactly_the_v1_limit` |
+
+**Gates after the fixes:**
+- `cargo test --release --locked --workspace`: 2216 passed, 0 failed.
+- Differential replay: 46 passed, `record` 44 of 44, `manifest_body` 48 of
+  48.
+- `conformance.py`: exit 0. NDL 8/8, 12/12, 4/4, 7/7, 8 censused, 7/7. RDO
+  3/3, 4/4, 8/8. REG 35/35.
+- Clean: clippy (both spellings), rustdoc `-D warnings`, fmt, the payload and
+  secret-slot guards.
+
+**Not done, deliberately:**
+- No `manifest_body` seed carries a tag at level 257. The Rust pin covers it
+  on four paths and NDL check 3 covers the Python side, so a seed would add
+  only cross-language replay of the same fact, at the cost of moving every
+  corpus count in five documents.
+- The #666 short-bignum probe is recorded on #666.
+- The trash entry's cyclic-tag `RecursionError` (tags 28/29, pre-existing) is
+  filed as **#685**.
 
 ---
 
