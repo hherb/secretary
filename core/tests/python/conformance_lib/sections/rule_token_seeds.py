@@ -88,7 +88,7 @@ _TARGETS: dict[str, tuple[int, frozenset[str]]] = {
         ),
     ),
     "record": (
-        34,
+        37,
         frozenset(
             {
                 "malformed_cbor",

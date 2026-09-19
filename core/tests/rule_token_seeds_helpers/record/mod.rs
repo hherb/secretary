@@ -187,6 +187,24 @@ pub fn cases() -> Vec<SeedCase> {
             "NonCanonicalEncoding",
             trailing_bytes,
         ),
+        case(
+            NonCanonicalUnclassified,
+            "present_default_tags",
+            "NonCanonicalEncoding",
+            present_default_tags,
+        ),
+        case(
+            NonCanonicalUnclassified,
+            "present_default_tombstone",
+            "NonCanonicalEncoding",
+            present_default_tombstone,
+        ),
+        case(
+            NonCanonicalUnclassified,
+            "present_default_tombstoned_at_ms",
+            "NonCanonicalEncoding",
+            present_default_tombstoned_at_ms,
+        ),
     ]
 }
 

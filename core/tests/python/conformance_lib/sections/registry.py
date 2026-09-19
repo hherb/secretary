@@ -66,6 +66,7 @@ from conformance_lib.sections.purge import section_purge_scenario
 from conformance_lib.sections.record_canonicality import (
     section_record_unknown_subtree_canonicality,
 )
+from conformance_lib.sections.record_defaults import section_record_default_omission
 from conformance_lib.sections.required_key_determinism import (
     section_required_key_determinism,
 )
@@ -176,6 +177,8 @@ SECTIONS: tuple[Section, ...] = (
     Section("VT", "value-type discipline: no bool in an integer position, "
             "and every optional key checked", " (#669)",
             section_value_type_discipline),
+    Section("RDO", "record optional keys: a default is written by omission",
+            " (vault-format §6.3, #670)", section_record_default_omission),
     # Last on purpose: it reports on the table above, so it reads as a summary
     # of the run rather than as a precondition for it.
     Section("REG", "section registry completeness", " (#593)",

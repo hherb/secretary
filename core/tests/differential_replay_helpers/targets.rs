@@ -106,7 +106,7 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// assertion and the negative control all green. Tracked as #658.
 pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("vault_toml", 9),
-    ("record", 37),
+    ("record", 40),
     ("contact_card", 4),
     ("bundle_file", 1),
     ("manifest_file", 1),
