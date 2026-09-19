@@ -1,1 +1,1 @@
-docs/handoffs/2026-09-17-value-type-discipline-shipped.md
+docs/handoffs/2026-09-19-nesting-depth-and-record-defaults-shipped.md
