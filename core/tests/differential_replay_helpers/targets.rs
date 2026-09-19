@@ -98,8 +98,10 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// of `block_file`'s 24 (`golden.bin`), leaving 40 and 23 strict comparisons
 /// today. And the floor
 /// is taken before any decode, so it holds that figure only while every
-/// labelled seed still rejects, which `rule_token_seeds` and Section RTS
-/// check and this floor does not. On `manifest_body` the gap is wider:
+/// `rule_token_seeds` seed still rejects, which that generator and Section
+/// RTS check and this floor does not. (The `nesting__` seeds are labelled
+/// too, and `nesting__256_unknown` ACCEPTS; `nesting_depth_seeds` and
+/// Section NDL check those.) On `manifest_body` the gap is wider:
 /// `tokens_agree` there lets a phase-dependent token on either side stand
 /// against a different token, so a change on the Rust
 /// raise side could route more of that corpus onto tolerated pairs and shrink

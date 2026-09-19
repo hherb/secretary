@@ -23,8 +23,9 @@ impl RecordError {
     /// decide acceptance.
     pub fn rule_token(&self) -> RuleToken {
         match self {
-            // Every kind, including `RecursionLimit`: ciborium's depth cap is
-            // Rust-only, a residual #667 tracks rather than one fixed here.
+            // Every kind, including `RecursionLimit`: crypto-design §6.2 rule
+            // 6 (#667), a well-formedness precondition the byte walk reports
+            // and `conformance_lib` reports alike, as `NestingTooDeep`.
             RecordError::CborDecode(_) => RuleToken::MalformedCbor,
             RecordError::NotAMap
             | RecordError::NonTextKey
