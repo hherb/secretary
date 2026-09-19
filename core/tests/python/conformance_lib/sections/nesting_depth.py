@@ -7,16 +7,20 @@ ACCEPTED here, and past ~995 the recursive scanner raised `RecursionError`,
 a harness failure rather than a verdict.  `manifest_body` is token-compared
 and replayed in CI, and no corpus input reached either.
 
+SCOPE.  "Every CBOR decoder" in this section's title means every CBOR-document
+decoder under `codec/`, the packages that decide acceptance.  A `wire/`
+inspector enforces no acceptance set and is out of scope, as Section VT's
+check 3 already rules.
+
 Checks, each reporting what it RAN:
   1. BOUNDARY, per CBOR decoder: depth 256 is not refused for depth (the
      decoders with an unknown bag accept it); depth 257 raises NestingTooDeep.
   2. A VERDICT AT EVERY DEPTH: 257, 1,000 and 10,000 each raise NestingTooDeep,
      never `RecursionError` or an untokened exception.
   3. TAGS ARE LEVELS: a tag at level 257 is NestingTooDeep, not rule 4; the
-     same tag at level 256 is rule 4 (the control).  Run on `_RECORD`
-     (Task 4's `walk_body`) and `_MANIFEST` (`reject_excessive_nesting`) --
-     the two decoders with different mechanisms -- named explicitly rather
-     than picked by `_DECODERS` position (review finding, fix round 1).
+     same tag at level 256 is rule 4 (the control).  Run on `_RECORD` (the
+     iterative `walk_body`) and `_MANIFEST` (`reject_excessive_nesting`), the
+     two decoders with different mechanisms, selected by name.
   4. DEPTH OUTRANKS A SHALLOW TAG, and the depth pass is content-blind.  A tag
      earlier in byte order is only REMEMBERED by both mechanisms, so depth
      wins on the record (walk) and the manifest (pass).  Invalid UTF-8 earlier
@@ -34,42 +38,28 @@ Checks, each reporting what it RAN:
      `expected_nesting_seeds()`, each replayed with the verdict its depth
      states -- accept at or under the limit, `NestingTooDeep` past it.
 
-LIMITS.  The census reads top-level `def py_decode_*` names in `codec/*.py`
-and nothing else: a decoder under another name, or one nested in a class, is
-invisible to it.  The depth pass protects the decoders that call it; a
-`wire/` inspector enforces no acceptance set and is out of scope, as Section
-VT's check 3 already rules.
+LIMITS.  The census reads every `*.py` under `codec/`, recursively (`rglob`,
+as Section VT's check 3 does, so a module split into a directory stays
+visible), skipping `__pycache__`.  In each file it reads only TOP-LEVEL
+`def py_decode_*` names: a decoder under another name, or one nested in a
+class or function, is invisible to it.  A symlinked subdirectory is not
+followed (#510's `rglob` gap); `_MIN_DISCOVERED_DECODERS` floors the result.
 
-GUARD AGAINST AN ESCAPING TRACEBACK (controller ruling on #667's Task 5).
-`conformance.py`'s `main()` iterates the section table with no per-section
-try/except, so an exception raised out of a section driver aborts the whole
-run before later sections (including Section REG) ever execute -- exactly
-the class of gap the #669 review found in a sibling section.  Two things a
-fixture-driven check like this one can hit that are not a plain assertion
-failure: `d.base()` reads a fixture off disk (missing file, truncated
-seed), and the census's `_discovered_decoders()` parses every `codec/*.py`
-file with `ast.parse` (unreadable file, a syntax a future Python version
-no longer parses).  Both are guarded PER CASE, so one decoder's or one
-file's failure becomes an ISSUE line naming the step and
-`type(exc).__name__: exc` rather than a traceback, and does not discard the
-other decoders' or files' results.  `section_nesting_depth` additionally
-wraps its own body in one last catch-all, so that even a failure this
-module's author did not anticipate still returns `(False, [...])` rather
-than propagating -- the same "any unexpected exception maps to its class
-name" posture `_outcome` already takes for a decoder call.
+GUARD AGAINST AN ESCAPING TRACEBACK.  `conformance.py`'s `main()` has no
+per-section try/except (#682), so an exception out of a section driver aborts
+the run before later sections, REG included, execute.  Two steps here can
+fail other than by assertion: `d.base()` reads a fixture off disk, and the
+census parses every `codec/` file with `ast.parse`.  Both are guarded PER
+CASE, so a failure becomes an ISSUE line naming the step and
+`type(exc).__name__: exc`, and the other decoders' and files' results stand.
+`section_nesting_depth` wraps its whole body in a last catch-all as well.
 
-PASS LINES REPORT WHAT RAN, NOT WHAT WAS DECLARED (review finding, fix
-round 1).  The first version of this section computed each PASS line as
-`declared_total - len(issues)`, so when a guard above skipped several cases
-in one decoder, ONE issue line stood in for all of them and the count read
-as if only that one case had failed -- e.g. "PASS 1: 7/8" when a skipped
-decoder actually meant only 6 of the 8 declared boundary checks ran at all.
-Each of `_boundary_issues` / `_every_depth_issues` / `_tag_level_issues` /
-`_precedence_issues` now increments `executed` and `passed` per case AS IT
-COMPLETES, and `_pass_line` reports `passed/executed`, naming the declared
-total separately (`... executed of N declared`) whenever a skip made the two
-diverge; when nothing was skipped it reads exactly as before.  `_census_line`
-does the same for the file-level guard in `_discovered_decoders`.
+PASS LINES REPORT WHAT RAN, NOT WHAT WAS DECLARED.  A line computed as
+`declared - len(issues)` lets one guard-triggered ISSUE stand in for several
+skipped cases (a skipped decoder reads "7/8" when only 6 of 8 ran).  Each
+check counts `executed` and `passed` per case AS IT COMPLETES, and
+`_pass_line` names the declared total separately whenever a skip made the two
+diverge.  `_census_line` does the same for the census's file-level guard.
 """
 
 from __future__ import annotations
@@ -128,13 +118,11 @@ def _trash_base() -> bytes:
     return cbor2.dumps(_TRASH_BASE, canonical=True)
 
 
-# Named module-level bindings, not tuple positions (review finding, fix
-# round 1).  Checks 3 and 4 exist specifically to cover TWO DIFFERENT
-# nesting-depth mechanisms -- `_RECORD` goes through Task 4's recursive
-# `walk_body`, `_MANIFEST` through the content-blind `reject_excessive_nesting`
-# pass -- and picking them as `_DECODERS[0]`/`_DECODERS[1]` (or `[:2]`) meant a
-# reorder, or inserting a fifth decoder ahead of these two, would silently
-# retarget both checks onto the wrong mechanism with nothing going red.
+# Named bindings, not tuple positions.  Checks 3 and 4 cover TWO DIFFERENT
+# depth mechanisms -- `_RECORD` goes through the iterative `walk_body`,
+# `_MANIFEST` through the content-blind `reject_excessive_nesting` pass -- so
+# selecting them as `_DECODERS[0]`/`[1]` would let a reorder, or a decoder
+# inserted ahead of them, retarget both checks with nothing going red.
 _RECORD = _Decoder(py_decode_record, _seed("record", "login.cbor"), True)
 _MANIFEST = _Decoder(py_decode_manifest, _seed("manifest_body", "uniq__control__all_distinct.bin"), True)
 _CONTACT_CARD = _Decoder(py_decode_contact_card, _seed("contact_card", "with_sigs.cbor"), False)
@@ -151,10 +139,9 @@ _NOT_CBOR_DOCUMENTS: dict[str, str] = {
 
 @dataclass(frozen=True)
 class _CheckResult:
-    """What one check (PASS 1-4) actually did.  `executed` and `passed` are
-    incremented per case AS IT COMPLETES, never derived from `declared` --
-    that derivation is what let a single guard-triggered ISSUE line stand in
-    for several silently-skipped cases (review finding, fix round 1)."""
+    """What one check (PASS 1-4, 6) actually did.  `executed` and `passed` are
+    incremented per case AS IT COMPLETES, never derived from `declared`, so
+    one guard-triggered ISSUE line cannot stand in for several skipped cases."""
 
     issues: list[str]
     executed: int
@@ -165,7 +152,7 @@ class _CheckResult:
 def _pass_line(number: str, result: _CheckResult, noun: str) -> str:
     """`PASS <number>: <passed>/<executed> <noun>`, naming the declared total
     separately whenever a guard made `executed` fall short of it, so a skip
-    is visible in the line itself and not only as an ISSUE (review finding)."""
+    is visible in the line itself and not only as an ISSUE."""
     if result.executed == result.declared:
         return f"PASS {number}: {result.passed}/{result.executed} {noun}"
     return f"PASS {number}: {result.passed}/{result.executed} {noun} executed of {result.declared} declared"
@@ -186,10 +173,8 @@ def _outcome(decode: Callable[[bytes], object], body: bytes) -> str:
 
 def _base_or_issue(d: _Decoder, step: str) -> tuple[bytes | None, str | None]:
     """Load `d`'s fixture, catching any failure so it becomes an ISSUE line
-    rather than a traceback out of the section (controller ruling).  Reading
-    a fixture is the one thing in this section that touches the filesystem
-    outside `_discovered_decoders`, and it must not abort the other
-    decoders' checks."""
+    rather than a traceback out of the section and does not abort the other
+    decoders' checks (see GUARD in the module docstring)."""
     try:
         return d.base(), None
     except Exception as exc:  # noqa: BLE001 -- guard: report, never propagate
@@ -323,11 +308,9 @@ _DEPTH_IN_NAME = re.compile(rf"^{NESTING_SEED_PREFIX}(?P<depth>\d+)_")
 def _seed_issues() -> _CheckResult:
     """Check 6: the committed `nesting__` seeds, two-way against
     `expected_nesting_seeds()`, each replayed with the verdict its depth
-    states.  `executed`/`passed` are counted per seed actually replayed, as
-    the other checks in this section do; a directory listing or file read
-    failure becomes an ISSUE line rather than a traceback (controller
-    ruling), and does not stop the other seeds or targets from being
-    checked."""
+    states.  `executed`/`passed` are counted per seed actually replayed; a
+    directory listing or file read failure becomes an ISSUE line rather than
+    a traceback, and does not stop the other seeds or targets."""
     issues: list[str] = []
     executed = 0
     passed = 0
@@ -370,24 +353,24 @@ def _seed_issues() -> _CheckResult:
 
 
 def _discovered_decoders() -> tuple[set[str], list[str], int, int]:
-    """Top-level `py_decode_*` names under `codec/*.py`, plus any per-file
-    read/parse failure as an ISSUE rather than a traceback (controller
-    ruling) -- one bad file must not blank the whole census.
+    """Top-level `py_decode_*` names in every `codec/**/*.py` outside
+    `__pycache__`, plus any per-file read/parse failure as an ISSUE rather
+    than a traceback -- one bad file must not blank the whole census.
 
     Returns `(names, issues, executed_files, declared_files)`: `declared_files`
-    is every `*.py` the glob found, `executed_files` how many of those were
-    actually read and parsed (review finding -- the census count must reveal
-    a skipped file too, not only the decoder-classification issues)."""
+    is every `*.py` the scan found, `executed_files` how many of those were
+    actually read and parsed, so a skipped file shows in the PASS line."""
     names: set[str] = set()
     issues: list[str] = []
-    paths = sorted(_CODEC_DIR.glob("*.py"))
+    paths = sorted(p for p in _CODEC_DIR.rglob("*.py") if "__pycache__" not in p.parts)
     declared_files = len(paths)
     executed_files = 0
     for path in paths:
         try:
-            tree = ast.parse(path.read_text())
+            tree = ast.parse(path.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001 -- guard: report, never propagate
-            issues.append(f"PASS 5 (census): reading {path.name} raised {type(exc).__name__}: {exc}")
+            rel = path.relative_to(_CODEC_DIR)
+            issues.append(f"PASS 5 (census): reading codec/{rel} raised {type(exc).__name__}: {exc}")
             continue
         executed_files += 1
         for node in tree.body:
@@ -400,6 +383,9 @@ def _discovered_decoders() -> tuple[set[str], list[str], int, int]:
 class _CensusResult:
     issues: list[str]
     found: int
+    # Unclassified plus classified-but-gone decoders; None when the floor
+    # failed and the classification was never compared.
+    misclassified: int | None
     executed_files: int
     declared_files: int
 
@@ -408,19 +394,22 @@ def _census_issues() -> _CensusResult:
     found, issues, executed_files, declared_files = _discovered_decoders()
     if len(found) < _MIN_DISCOVERED_DECODERS:
         issues = issues + [f"census found {len(found)} decoders under {_CODEC_DIR}, floor is {_MIN_DISCOVERED_DECODERS}"]
-        return _CensusResult(issues, len(found), executed_files, declared_files)
+        return _CensusResult(issues, len(found), None, executed_files, declared_files)
     classified = {d.decode.__name__ for d in _DECODERS} | set(_NOT_CBOR_DOCUMENTS)
-    issues = issues + [f"codec decoder {n} is unclassified: add it to _DECODERS or _NOT_CBOR_DOCUMENTS" for n in sorted(found - classified)]
-    issues = issues + [f"classified decoder {n} no longer exists under codec/" for n in sorted(classified - found)]
-    return _CensusResult(issues, len(found), executed_files, declared_files)
+    wrong = [f"codec decoder {n} is unclassified: add it to _DECODERS or _NOT_CBOR_DOCUMENTS" for n in sorted(found - classified)]
+    wrong += [f"classified decoder {n} no longer exists under codec/" for n in sorted(classified - found)]
+    return _CensusResult(issues + wrong, len(found), len(wrong), executed_files, declared_files)
 
 
 def _census_line(result: _CensusResult) -> str:
-    """Mirrors `_pass_line`'s "reveal a skip in the line itself" rule for the
-    census's file-level guard (review finding): unchanged wording when every
-    discovered file was read, an appended file-coverage fragment when one
-    was not."""
-    base = f"PASS 5: {result.found} codec decoders censused, {len(result.issues)} unclassified or missing"
+    """`_pass_line`'s "reveal a skip in the line itself" rule, for the census:
+    the classification count covers only unclassified or missing decoders,
+    and a file the scan could not read, or a floor that stopped the
+    classification, is named in the line rather than folded into that count."""
+    if result.misclassified is None:
+        base = f"PASS 5: {result.found} codec decoders censused, below the floor of {_MIN_DISCOVERED_DECODERS}, not classified"
+    else:
+        base = f"PASS 5: {result.found} codec decoders censused, {result.misclassified} unclassified or missing"
     if result.executed_files == result.declared_files:
         return base
     return f"{base} ({result.executed_files}/{result.declared_files} codec/ files read)"
@@ -450,7 +439,7 @@ def section_nesting_depth() -> tuple[bool, list[str]]:
     """Entry point the registry calls.  Wrapped in one last catch-all so that
     even a failure none of the per-case guards above anticipated still
     reports as a failing section rather than aborting `main()` before later
-    sections -- including Section REG -- ever run (controller ruling)."""
+    sections -- including Section REG -- ever run (#682)."""
     try:
         return _run_checks()
     except Exception as exc:  # noqa: BLE001 -- guard: report, never propagate
