@@ -317,6 +317,7 @@ difference is a gap in enforcement, not a grant to writers:
 | 3. shortest-form integer / length prefixes | **yes** (same) |
 | 4. no tags, no floats | **yes** — the reader walks the whole body, subtrees included |
 | 5. no duplicate map keys | **no** — a repeat is accepted as it arrives |
+| 6. nesting depth at most 256 | **yes** — by the parse or walk that finds item boundaries, subtrees included |
 
 The "no" rows are not discretionary. A reader treating the subtree as unknown
 **MUST** accept both, because it cannot otherwise reproduce the input bytes at
@@ -333,9 +334,9 @@ is not a relaxation of the format.
 
 The "yes" rows are the constraint that matters for a future version extending
 this map, and it is hard rather than advisory: a subtree containing an
-indefinite-length item, a non-shortest-form prefix, a tag or a float makes the
-**whole vault unopenable** by a client speaking only this version — it is not
-ignored as an unknown extension.
+indefinite-length item, a non-shortest-form prefix, a tag, a float or nesting
+deeper than 256 makes the **whole vault unopenable** by a client speaking only
+this version — it is not ignored as an unknown extension.
 
 **A reader MUST preserve an unknown subtree's entry order and any repeated
 entries.** This follows from §4.3 step 4: the re-encode must reproduce the input
@@ -347,10 +348,10 @@ structure is mandated — but it has **two** parts, and a reader MUST meet both:
 
 1. **Reproduce the subtree's entry order and any repeated entries** on
    re-encode, per the paragraph above.
-2. **Reject a subtree that violates crypto-design §6.2 rules 2, 3 or 4** — an
+2. **Reject a subtree that violates crypto-design §6.2 rules 2, 3, 4 or 6** — an
    indefinite-length item, a non-shortest-form integer or length prefix, a tag,
-   or a float — as the "yes" rows of the table above and the unopenability
-   paragraph require.
+   a float, or nesting deeper than 256 — as the "yes" rows of the table above
+   and the unopenability paragraph require.
 
 Any representation that satisfies both is admissible. An ordered list of
 key/value pairs, filled by a parse that normalises encoding-level choices,
@@ -359,12 +360,13 @@ prefix no longer re-encodes to its own bytes, so §4.3 step 4 rejects it with no
 further check. **Rule 4 is not an encoding-level choice** — a normalising parse
 *preserves* a tag or a float and re-encodes it identically, so the step-4
 comparison cannot see one. Every reader enforces rule 4 by the whole-body walk
-row 4 of the table names, separately from the re-encode.
+row 4 of the table names, separately from the re-encode. Nor can the re-encode
+see rule 6: a normalising parse must apply the limit as it builds the tree.
 
 **Retaining the subtree's raw input bytes and re-emitting them satisfies (1)
 but not (2)**, and is conformant only if the reader enforces (2) separately.
 Byte retention reproduces the input *unconditionally*, so on its own it would
-accept exactly the subtrees rules 2-4 exist to reject — and two readers of this
+accept exactly the subtrees rules 2-4 and 6 exist to reject — and two readers of this
 specification would then disagree about whether the same manifest is valid,
 which is the interoperability failure this section exists to prevent.
 
@@ -392,7 +394,9 @@ nothing else: such a reader gets no enforcement from the §4.3 step 4 re-encode
 for that subtree, so it MUST check rules 2 and 3 itself — as well as rule 4,
 which no reader gets from the re-encode (see the rule-4 row above: a
 normalising parse preserves a tag or a float and re-encodes it identically,
-so every reader enforces rule 4 by a separate whole-body walk).
+so every reader enforces rule 4 by a separate whole-body walk), and rule 6,
+which a normalising parse applies as it builds the tree and a byte-retaining
+reader must apply in its own scan.
 
 
 **Which rule a reader reports when a body breaks more than one.** A manifest
@@ -415,8 +419,9 @@ are fixed, and a conformant reader MUST follow both:
    also breaks. This is
    not a further precedence rule so much as the precondition for applying
    either of these two: a reader that cannot parse the body cannot locate the
-   tag it would otherwise report. Read "every rule below" as scoped to §6.2's
-   numbered rules and to this section's schema checks.
+   tag it would otherwise report. Read "every rule below" as scoped to §6.2
+   rules 1–5 and to this section's schema checks; rule 6 belongs to this
+   precondition, not below it.
 2. **A repeated map key outranks the type, range and version checks on that
    key's value.** A reader that finds a key it has already seen MUST report the
    repeat *without interpreting the second copy*. So a key repeated with a
@@ -627,8 +632,8 @@ Recipients are listed in a stable order: ascending lexicographic by `recipient_f
       "tags":            [<tstr>, ...],    ; optional cross-cutting labels
       "created_at_ms":   <u64>,
       "last_mod_ms":     <u64>,
-      "tombstone":       <bool, optional>, ; absent or false = live; true = deleted
-      "tombstoned_at_ms": <u64, optional>  ; absent or 0 = never tombstoned; otherwise the high-water mark of every tombstone observation on this record (see crypto-design §11)
+      "tombstone":       <bool, optional>, ; absent or false = live (false is written by omission, see below); true = deleted
+      "tombstoned_at_ms": <u64, optional>  ; absent or 0 = never tombstoned (0 is written by omission, see below); otherwise the high-water mark of every tombstone observation on this record (see crypto-design §11)
     },
     ...
   ]
@@ -657,7 +662,7 @@ Decoders preserve unknown record types and unknown field names on round-trip. A 
 
 This applies to any CBOR field in the block body: unknown keys at any level are preserved, and a v1 client re-saving a v2 record reproduces the unchanged portions *bit-identically*, so the v2 client's signature on the original block is preserved if no semantic change was made.
 
-**"Preserved" is preservation of the parsed value, not of the input bytes**, and the distinction is load-bearing for anyone extending the format. A reader parses the whole body before it can tell known keys from unknown ones, and that parse normalises the encoding: an indefinite-length item or a non-shortest-form integer or length prefix inside an unknown subtree is silently rewritten to its canonical form, so the re-encode no longer matches the input and the whole record or manifest is rejected as non-canonical. What genuinely survives a round trip is the subtree's *structure* — its entry order and any repeated keys included. Whatever a reader holds it in must be able to carry both: a representation that cannot hold two entries with the same key loses data outright at that point, the second overwriting the first with no later encoding choice able to recover it. An ordered list of key/value pairs can carry it; a `dict`, a `HashMap`/`BTreeMap` or any JSON-object-shaped type cannot. Retained input bytes can carry the structure too, but structure is only half the obligation: a byte-retaining reader reproduces its input unconditionally, so it accepts encoding-level non-canonicality that a normalising parse would have rejected for it, and it must therefore check crypto-design §6.2 rules 2, 3 and 4 itself to stay conformant. See §4.2, which states both halves of the requirement for the manifest — reproduce the structure, *and* reject rules 2-4 violations — behaviourally, without mandating a data structure. A future version extending any of these maps MUST therefore emit its own subtrees in the crypto-design §6.2 deterministic profile like the rest of the body; a subtree that departs from it makes the file unreadable by earlier clients rather than being ignored by them.
+**"Preserved" is preservation of the parsed value, not of the input bytes**, and the distinction is load-bearing for anyone extending the format. A reader parses the whole body before it can tell known keys from unknown ones, and that parse normalises the encoding: an indefinite-length item or a non-shortest-form integer or length prefix inside an unknown subtree is silently rewritten to its canonical form, so the re-encode no longer matches the input and the whole record or manifest is rejected as non-canonical. What genuinely survives a round trip is the subtree's *structure* — its entry order and any repeated keys included. Whatever a reader holds it in must be able to carry both: a representation that cannot hold two entries with the same key loses data outright at that point, the second overwriting the first with no later encoding choice able to recover it. An ordered list of key/value pairs can carry it; a `dict`, a `HashMap`/`BTreeMap` or any JSON-object-shaped type cannot. Retained input bytes can carry the structure too, but structure is only half the obligation: a byte-retaining reader reproduces its input unconditionally, so it accepts encoding-level non-canonicality that a normalising parse would have rejected for it, and it must therefore check crypto-design §6.2 rules 2, 3, 4 and 6 itself to stay conformant. See §4.2, which states both halves of the requirement for the manifest — reproduce the structure, *and* reject rules 2-4 and 6 violations — behaviourally, without mandating a data structure. A future version extending any of these maps MUST therefore emit its own subtrees in the crypto-design §6.2 deterministic profile like the rest of the body; a subtree that departs from it makes the file unreadable by earlier clients rather than being ignored by them.
 
 (Note: any change *requiring* re-signing — adding/removing a recipient, modifying records — will rewrite the block under the v1 client's signature, possibly downgrading any v2-only metadata. v2 features that need v1-survival must be designed to tolerate this.)
 
