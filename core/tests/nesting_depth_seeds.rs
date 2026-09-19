@@ -173,23 +173,69 @@ fn generate_nesting_depth_seeds() {
     }
 }
 
-/// A `depth`-level document: a one-entry map whose value holds `depth - 1`
-/// one-element arrays. It need not be a valid document of any kind.
-fn nested_document(depth: usize) -> Vec<u8> {
-    let mut body = ONE_ENTRY_MAP_AND_KEY.to_vec();
-    body.extend(std::iter::repeat_n(ARRAY_1, depth - 1));
-    body.push(UINT_0);
+const ARRAY_INDEFINITE: u8 = 0x9f;
+const MAP_1: u8 = 0xa1;
+const TAG_1: u8 = 0xc1;
+const BREAK: u8 = 0xff;
+
+/// The shapes a level can take. Rule 6 charges each alike, and an upgrade to
+/// the parser could change how it charges one shape while still charging
+/// arrays -- ciborium already exempts one tag shape (#666).
+#[derive(Clone, Copy, Debug)]
+enum Chain {
+    /// A one-entry map whose value holds `depth - 1` one-element arrays.
+    Arrays,
+    /// The same, with the last level a tag instead of an array.
+    TagLast,
+    /// A one-entry map whose value holds `depth - 1` indefinite arrays.
+    IndefiniteArrays,
+    /// `depth` one-entry maps, each the KEY of the one outside it.
+    MapKeys,
+}
+
+/// A `depth`-level document of `shape`. It need not be a valid document of
+/// any kind; a scalar at the bottom is not a level.
+fn nested_document(depth: usize, shape: Chain) -> Vec<u8> {
+    let mut body = Vec::new();
+    match shape {
+        Chain::Arrays | Chain::TagLast | Chain::IndefiniteArrays => {
+            body.extend(ONE_ENTRY_MAP_AND_KEY);
+            let (open, inner) = match shape {
+                Chain::IndefiniteArrays => (ARRAY_INDEFINITE, depth - 1),
+                Chain::TagLast => (ARRAY_1, depth - 2),
+                _ => (ARRAY_1, depth - 1),
+            };
+            body.extend(std::iter::repeat_n(open, inner));
+            if let Chain::TagLast = shape {
+                body.push(TAG_1);
+            }
+            body.push(UINT_0);
+            if let Chain::IndefiniteArrays = shape {
+                body.extend(std::iter::repeat_n(BREAK, inner));
+            }
+        }
+        Chain::MapKeys => {
+            body.extend(std::iter::repeat_n(MAP_1, depth));
+            body.extend(std::iter::repeat_n(UINT_0, depth + 1));
+        }
+    }
     body
 }
 
-/// `ciborium` 0.2.2's recursion limit IS crypto-design §6.2 rule 6 on every
-/// path that does not run the byte walk. An upgrade that moved it would move
-/// the spec's limit silently on four decode paths; this is what reds.
+/// crypto-design §6.2 rule 6 on every CBOR decode path, in every level shape.
+/// On the four paths that do not run the byte walk the limit IS `ciborium`
+/// 0.2.2's recursion limit, so an upgrade that moved it -- or stopped
+/// charging a tag or an indefinite container -- would move the spec's limit
+/// silently; this is what reds. On `record::decode` the walk answers before
+/// ciborium runs, so that row pins the walk, not ciborium.
 ///
 /// A depth-256 body must fail for any reason other than `RecursionLimit` (it
 /// is not a valid document), and a depth-257 body must fail with it.
+/// (ciborium charges no level for a bignum over a definite-length byte
+/// string of at most 16 bytes; that edge is #666's and is deliberately not a
+/// shape here.)
 #[test]
-fn ciborium_enforces_exactly_the_v1_limit_on_every_decode_path() {
+fn every_decode_path_enforces_exactly_the_v1_limit() {
     use secretary_core::identity::card::{CardError, ContactCard};
     use secretary_core::unlock::bundle::{BundleError, IdentityBundle};
     use secretary_core::vault::block::{decode_plaintext, BlockError};
@@ -226,17 +272,25 @@ fn ciborium_enforces_exactly_the_v1_limit_on_every_decode_path() {
         }),
     ];
     let limit_kind = Some(CborErrorKind::RecursionLimit);
+    let shapes = [
+        Chain::Arrays,
+        Chain::TagLast,
+        Chain::IndefiniteArrays,
+        Chain::MapKeys,
+    ];
     for (name, fault_of) in paths {
-        assert_ne!(
-            fault_of(&nested_document(V1_MAX_NESTING_DEPTH)).map(|f| f.kind),
-            limit_kind,
-            "{name} refuses depth {V1_MAX_NESTING_DEPTH}, which rule 6 allows"
-        );
-        assert_eq!(
-            fault_of(&nested_document(V1_MAX_NESTING_DEPTH + 1)).map(|f| f.kind),
-            limit_kind,
-            "{name} does not refuse depth {} with RecursionLimit",
-            V1_MAX_NESTING_DEPTH + 1
-        );
+        for shape in shapes {
+            assert_ne!(
+                fault_of(&nested_document(V1_MAX_NESTING_DEPTH, shape)).map(|f| f.kind),
+                limit_kind,
+                "{name} refuses a {shape:?} chain of depth {V1_MAX_NESTING_DEPTH}, which rule 6 allows"
+            );
+            assert_eq!(
+                fault_of(&nested_document(V1_MAX_NESTING_DEPTH + 1, shape)).map(|f| f.kind),
+                limit_kind,
+                "{name} does not refuse a {shape:?} chain of depth {} with RecursionLimit",
+                V1_MAX_NESTING_DEPTH + 1
+            );
+        }
     }
 }
