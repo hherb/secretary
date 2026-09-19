@@ -72,7 +72,7 @@ now agrees, and 10 committed seeds make CI compare both decoders on both rules.
 | `0ed2ae27` | 7 `nesting__` seeds + `nesting_depth_seeds.rs` + the ciborium path pin; NDL check 6; floors |
 | `d74e124a` | CLAUDE.md and ROADMAP |
 | `e2b96a15` | this baton + `NEXT_SESSION.md` retarget |
-| `053e22bd` … | the review fix wave; §(5b) lists its commits |
+| `053e22bd` … this commit | the review fix wave, plus a second re-review pass across `38427086` and this commit; §(5b) lists them |
 
 Seven of the ten commits before `d74e124a` carry a `Claude Sonnet 5` trailer
 (the model that wrote them). That is accurate attribution, and the squash
@@ -690,6 +690,41 @@ same commit.
 
 **Filed rather than fixed:** nothing new. The review's other minors were
 triaged SHIP (§(4b)).
+
+**A second re-review pass, over this section's own fix wave, found a further
+batch of residual minors — all stale quotes or imprecise wording, none
+Important.** Fixed across `38427086` and this commit. Every remaining
+verbatim quote of the two §4.2/§6.3.2 sentences `053e22bd` changed
+(`CLAUDE.md` at three more sites, `manifest_canonicality_cause.py`,
+`token.rs`'s group-C bullet) is now current, and the same grep turned up two
+the first pass's own scope didn't cover — `ROADMAP.md`'s #604 entry and
+`manifest_canonicality_kat.rs`'s corpus doc comment, both still quoting the
+pre-#667 wording outside Important 1's four listed sites.
+`manifest_decode.py`'s `ArraySortOrderViolation` docstring had the same
+stale rule count (five, now six). `vault-format.md`'s "a normalising parse
+must apply the limit as it builds the tree" (§4.3, FROZEN NORMATIVE text)
+was narrower than its own table-row-6 wording and than the record path's
+mechanism, so it is now "must apply the limit itself, in its parse or in a
+walk of its own" — nothing else in that paragraph moved. This section's own
+Important 2 (and `ROADMAP.md`'s #667 entry) named the 9-16-byte bignum case
+as `rule4_tag_or_float` without its second exception: a direct ciborium
+0.2.2 probe found that a 9-byte bignum whose leading byte is `0x00` still
+decodes to `Value::Integer`, not `Value::Tag`, so byte width alone was not
+sufficient. This section's own record-corpus bullet, above, said the 49
+moved `Io`/`Syntax`-to-`RecursionLimit` inputs were "not ciborium's" on the
+strength of the offset-field observation alone, which covers only the `Io`
+ones; it now gives the conclusive reason — `record::decode` runs
+`walk_first_item` before the ciborium parse, so ciborium never ran on those
+49 inputs at all — and keeps the offset observation as corroboration for
+the `Io` subset. `nesting_depth.py`'s census scoped its `__pycache__` filter
+to paths relative to `_CODEC_DIR` (it was reading the path's absolute
+parts) and reworded its LIMITS citation of `#510`, which is scoped to
+`scripts/payload_guard`, not this census. `manifest_decode.py`'s
+`py_decode_manifest` docstring now names rule 6 (enforced by
+`reject_excessive_nesting`, its first statement) alongside rules 2/3/4 as
+what an unknown subtree is checked for. No code behaviour changed except
+the census's path-scoping fix, which `conformance.py`'s own NDL PASS 5
+(8 censused) shows unaffected on this tree.
 
 **Verification after the fix wave** (the code changes are comments and one
 census line, so no mutation row moved; the census change's before → after

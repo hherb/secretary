@@ -720,9 +720,11 @@ now says **a default value is written by omission**. Load-bearing:
   moved**, and 49 inputs moved from an `Io`/`Syntax` fault to
   `RecursionLimit`, under the same token. Those 49 were the pre-#667 WALK's
   own faults, a truncation or bad head later in byte order than the 257th
-  level, not ciborium's:
-  ciborium never ran on them, and its `Io` always carries `offset: None`
-  (`classify_de`) where these carried `Some(..)`.
+  level, not ciborium's: `record::decode` runs `walk_first_item` BEFORE the
+  ciborium parse (`core/src/vault/record.rs`), so a fault the walk found was
+  always reported first -- ciborium never ran on them at all, which is the
+  conclusive reason. Its `Io` always carries `offset: None` (`classify_de`)
+  where these carried `Some(..)`, corroborating it for the `Io` inputs only.
 - **Python has ONE traversal and two entry points.** `codec/well_formed.py`'s
   `_walk(.., check_content)` is reached through `walk_body` (record) and
   `reject_excessive_nesting`. The latter is the first statement of the
