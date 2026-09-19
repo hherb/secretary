@@ -668,10 +668,10 @@ fn field_to_canonical(field: &RecordField) -> CanonicalMap<'_> {
 ///
 /// Validates:
 ///
-/// 1. The FIRST CBOR item in the bytes is well-formed and carries no tag or
-///    float, checked on the raw bytes before any parse (#641). Bytes after
-///    that item are not examined here; rule 8's re-encode comparison rejects
-///    them.
+/// 1. The FIRST CBOR item in the bytes is well-formed, nests no deeper than
+///    crypto-design §6.2 rule 6 allows, and carries no tag or float, checked
+///    on the raw bytes before any parse (#641, #667). Bytes after that item
+///    are not examined here; rule 8's re-encode comparison rejects them.
 /// 2. Top-level item is a map.
 /// 3. All map keys are text strings.
 /// 4. No floats anywhere in the tree (canonical CBOR rule).

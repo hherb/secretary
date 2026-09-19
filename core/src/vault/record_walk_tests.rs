@@ -12,7 +12,10 @@ use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 
-use crate::cbor::{from_secret_reader, walk_first_item, CborErrorKind, CborFault, SecretValueTree};
+use crate::cbor::{
+    from_secret_reader, walk_first_item, CborErrorKind, CborFault, SecretValueTree,
+    V1_MAX_NESTING_DEPTH,
+};
 use crate::vault::canonical::reject_floats_and_tags;
 use crate::vault::record::{
     decode, decode_value, encode, Record, RecordError, RecordField, RecordFieldValue,
@@ -52,6 +55,19 @@ const UTF8_CONTINUATION: u8 = 0xa9;
 /// Where the first chunk's head sits in that key, after the map and
 /// indefinite-string heads: the offset both pipelines report.
 const SPLIT_UTF8_CHUNK_AT: usize = 2;
+
+const ARRAY_1: u8 = 0x81;
+const ARRAY_2: u8 = 0x82;
+const TAG_1: u8 = 0xc1;
+/// The largest one-byte map head: a map of 23 entries.
+const MAP_SMALL_MAX: u8 = 0xb7;
+/// The one-byte head of an empty map; with `MAP_SMALL_MAX`, the range of
+/// one-byte map heads.
+const MAP_EMPTY: u8 = 0xa0;
+/// A one-letter forward-compat key, `"a"`. It is shorter than every v1 key, so
+/// canonical order puts it first and it can be spliced in right after the map
+/// head.
+const FIRST_KEY: [u8; 2] = [TEXT_1, ASCII_A];
 
 fn legacy_decode(bytes: &[u8]) -> Result<Record, RecordError> {
     let parsed = from_secret_reader(bytes).map_err(RecordError::CborDecode)?;
@@ -284,4 +300,78 @@ fn a_utf8_sequence_split_across_chunks_is_rejected_by_both() {
         decode(&split_utf8_key),
         Err(RecordError::CborDecode(fault)) if fault == same_fault
     ));
+}
+
+/// `levels` one-element arrays around a `0`.
+fn nested_arrays(levels: usize) -> Vec<u8> {
+    let mut body = vec![ARRAY_1; levels];
+    body.push(UINT_0);
+    body
+}
+
+/// `LOGIN_RECORD` with a first entry `"a"` holding `value`.
+fn login_with_first_entry(value: &[u8]) -> Vec<u8> {
+    let (&head, rest) = LOGIN_RECORD.split_first().expect("the seed is not empty");
+    assert!(
+        (MAP_EMPTY..MAP_SMALL_MAX).contains(&head),
+        "the seed must be a small map with room for one more entry"
+    );
+    let mut body = vec![head + 1];
+    body.extend(FIRST_KEY);
+    body.extend(value);
+    body.extend(rest);
+    body
+}
+
+/// crypto-design §6.2 rule 6, end to end: the record's own map is level 1, so
+/// an unknown value holding 255 arrays takes it to exactly the limit.
+#[test]
+fn a_record_nested_to_the_v1_limit_decodes() {
+    let body = login_with_first_entry(&nested_arrays(V1_MAX_NESTING_DEPTH - 1));
+    if let Err(e) = decode(&body) {
+        panic!("a record at the v1 nesting limit must decode: {e:?}");
+    }
+}
+
+/// One level past it, the WALK answers, not ciborium. The walk's fault carries
+/// the offset of the head that would open level 257, where ciborium's carries
+/// none, and that difference is what this test pins.
+#[test]
+fn a_record_one_level_past_the_limit_is_rejected_by_the_walk() {
+    let body = login_with_first_entry(&nested_arrays(V1_MAX_NESTING_DEPTH));
+    // The map head, the key, then the chain: its (V1_MAX_NESTING_DEPTH)-th
+    // array is level 257.
+    let level_257_at = 1 + FIRST_KEY.len() + V1_MAX_NESTING_DEPTH - 1;
+    let got = decode(&body);
+    assert!(
+        matches!(
+            got,
+            Err(RecordError::CborDecode(CborFault {
+                kind: CborErrorKind::RecursionLimit,
+                offset: Some(at),
+            })) if at == level_257_at
+        ),
+        "expected the walk's RecursionLimit at {level_257_at}, got {:?}",
+        got.err()
+    );
+}
+
+/// A tag early in the body is remembered by the walk, and excess depth later
+/// still outranks it: before #667 this record said `TagRejected`.
+#[test]
+fn excess_depth_outranks_an_earlier_tag_in_a_record() {
+    let mut value = vec![ARRAY_2, TAG_1, UINT_0];
+    value.extend(nested_arrays(V1_MAX_NESTING_DEPTH));
+    let got = decode(&login_with_first_entry(&value));
+    assert!(
+        matches!(
+            got,
+            Err(RecordError::CborDecode(CborFault {
+                kind: CborErrorKind::RecursionLimit,
+                ..
+            }))
+        ),
+        "expected RecursionLimit, got {:?}",
+        got.err()
+    );
 }
