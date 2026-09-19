@@ -410,7 +410,9 @@ are fixed, and a conformant reader MUST follow both:
    reader must first be able to determine the body's item boundaries, and one
    that cannot — a truncated head, a length that overruns the buffer, a text
    string that is not valid UTF-8, a major-7 value outside `false`/`true`/
-   `null` — reports that instead, whatever else the body also breaks. This is
+   `null`, a chain of arrays, maps and tags nested more than 256 deep
+   (crypto-design §6.2 rule 6) — reports that instead, whatever else the body
+   also breaks. This is
    not a further precedence rule so much as the precondition for applying
    either of these two: a reader that cannot parse the body cannot locate the
    tag it would otherwise report. Read "every rule below" as scoped to §6.2's
@@ -632,6 +634,8 @@ Recipients are listed in a stable order: ascending lexicographic by `recipient_f
   ]
 }
 ```
+
+**A default value is written by omission.** `tags`, `tombstone` and `tombstoned_at_ms` each have a default — the empty array, `false` and `0` — and the canonical encoding of a record whose value for one of them equals its default is the encoding that omits that key. A writer MUST omit `tags` when the record carries no label, `tombstone` when the record is live, and `tombstoned_at_ms` when the record has never been tombstoned. A reader MUST reject a record carrying any of the three present at its default value, as non-canonical. Every other value is written in full, and the three are independent: `tombstoned_at_ms` non-zero with `tombstone` absent is the resurrection shape crypto-design §11.3 describes, and is canonical. (One value, one encoding: crypto-design §6.2 admits exactly one byte string per record, and a present default would be a second spelling of the absent one.)
 
 #### 6.3.1 Standard `record_type` values and expected `fields`
 

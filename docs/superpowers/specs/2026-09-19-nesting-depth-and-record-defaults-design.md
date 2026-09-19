@@ -92,20 +92,25 @@ deterministic profile:
 > Every such byte string is also bound by one limit that is not part of RFC
 > 8949 §4.2.1's profile:
 >
-> 6. **Nesting depth is at most 256.** No item may sit more than 256 levels
->    deep, counting the outermost item of the byte string being decoded as
->    level 1 and each enclosing array, map or tag as one further level. Unlike
->    rules 1 and 5, this limit is **not** scoped to interpreted material: it
->    binds inside a forward-compat unknown subtree exactly as elsewhere,
->    because a reader must walk a subtree's structure before it can retain it.
->    Writers MUST NOT emit a deeper item, and readers MUST reject one. A tag is
->    counted although rule 4 forbids tags, so that a body breaking both rules
->    is reported the same way by every reader (vault-format §4.2's
+> 6. **Nesting depth is at most 256.** No chain of arrays, maps and tags,
+>    each held directly inside the one before it, may be longer than 256.
+>    The chain starts at the outermost item of the byte string being
+>    decoded, when that item is itself an array, map or tag. A scalar is
+>    not a level: an integer inside 256 nested arrays is within the limit,
+>    and a 257th array around it is not. Unlike rules 1 and 5, this limit
+>    is **not** scoped to interpreted material: it binds inside a
+>    forward-compat unknown subtree exactly as elsewhere, because a reader
+>    must walk a subtree's structure before it can retain it. Writers MUST
+>    NOT emit a longer chain, and readers MUST reject one. A tag is
+>    counted although rule 4 forbids tags, so that a body breaking both
+>    rules is reported the same way by every reader (vault-format §4.2's
 >    well-formedness precondition). This is a v1 profile bound, not a
->    canonical-form rule. The reference implementation's readers have enforced
->    exactly this limit since v1, so stating it narrows nothing a v1 reader
->    accepts. It also bounds the stack a parser needs on input taken from the
->    vault folder, which an attacker can write (§6 contact cards).
+>    canonical-form rule. The reference implementation's readers have
+>    enforced exactly this limit since v1, so stating it narrows nothing a
+>    v1 reader accepts, and it bounds the stack a parser needs on input
+>    taken from the attacker-writable vault folder (§6 contact cards).
+>    Depth is counted from the root of the byte string being decoded, so a
+>    record inside a block plaintext is measured from the block's root.
 
 Note on scope: depth is counted from the root of the byte string being
 decoded. A record inside a block plaintext is therefore measured from the
@@ -367,6 +372,13 @@ canonicality, and #670 is a different rule. **REG goes 33 → 35.**
 - **Not a proof of absence.** The #670 class was found by reading every
   encoder. The depth measurements cover the three CBOR replay targets at the
   depths in §1.1.
+- **Rule 6's writer half is not enforced by any encoder, in either
+  language.** No production path can emit a longer chain from decoded input:
+  a decoded subtree has already been limit-checked, and every re-emission
+  (block save, merge, repair, manifest re-sign) puts it back at the same depth
+  relative to the same root. An `UnknownValue` built in memory can still be
+  deeper, which is the #586/#600 writer-half shape. Filed as its own issue in
+  Task 8 rather than widening this slice into every encoder.
 
 ---
 
