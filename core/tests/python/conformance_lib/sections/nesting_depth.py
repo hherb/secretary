@@ -30,6 +30,9 @@ Checks, each reporting what it RAN:
      `codec/` is either a CBOR-document decoder in `_DECODERS` or named in
      `_NOT_CBOR_DOCUMENTS` with its reason.  A new decoder nobody classified
      fails -- "has no check to find" is its own search (#669).
+  6. SEED BINDING: the committed `nesting__` seeds, two-way against
+     `expected_nesting_seeds()`, each replayed with the verdict its depth
+     states -- accept at or under the limit, `NestingTooDeep` past it.
 
 LIMITS.  The census reads top-level `def py_decode_*` names in `codec/*.py`
 and nothing else: a decoder under another name, or one nested in a class, is
@@ -72,6 +75,7 @@ does the same for the file-level guard in `_discovered_decoders`.
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,9 +88,10 @@ from conformance_lib.codec.record import py_decode_record
 from conformance_lib.codec.scanner import NonCanonicalItem
 from conformance_lib.codec.trash_entry import py_decode_trash_entry
 from conformance_lib.codec.well_formed import reject_excessive_nesting
+from conformance_lib.diff_replay import replay_bytes
 from conformance_lib.sections.nesting_depth_bodies import (
-    ARRAY_2, INVALID_UTF8, TAG_1, TEXT_1, UINT_0, FUTURE_KEY,
-    document_nested_to, nested_value, with_top_level_entry,
+    ARRAY_2, INVALID_UTF8, TAG_1, TEXT_1, UINT_0, FUTURE_KEY, NESTING_SEED_PREFIX,
+    document_nested_to, expected_nesting_seeds, nested_value, with_top_level_entry,
 )
 
 _CODEC_DIR = Path(__file__).resolve().parent.parent / "codec"
@@ -312,6 +317,58 @@ def _precedence_issues() -> _CheckResult:
     return _CheckResult(issues, executed, passed, declared)
 
 
+_DEPTH_IN_NAME = re.compile(rf"^{NESTING_SEED_PREFIX}(?P<depth>\d+)_")
+
+
+def _seed_issues() -> _CheckResult:
+    """Check 6: the committed `nesting__` seeds, two-way against
+    `expected_nesting_seeds()`, each replayed with the verdict its depth
+    states.  `executed`/`passed` are counted per seed actually replayed, as
+    the other checks in this section do; a directory listing or file read
+    failure becomes an ISSUE line rather than a traceback (controller
+    ruling), and does not stop the other seeds or targets from being
+    checked."""
+    issues: list[str] = []
+    executed = 0
+    passed = 0
+    expected = expected_nesting_seeds()
+    declared = sum(len(names) for names in expected.values())
+    for target, want in expected.items():
+        directory = fixtures.fuzz_seed_dir(target)
+        try:
+            on_disk = {p.name for p in directory.iterdir() if p.name.startswith(NESTING_SEED_PREFIX)}
+        except OSError as exc:
+            issues.append(f"{target}: cannot list nesting seeds: {type(exc).__name__}: {exc}")
+            continue
+        issues += [f"{target}: committed seed {n} is not expected" for n in sorted(on_disk - want)]
+        issues += [f"{target}: expected seed {n} is not committed" for n in sorted(want - on_disk)]
+        for name in sorted(on_disk & want):
+            try:
+                data = (directory / name).read_bytes()
+            except OSError as exc:
+                issues.append(f"{target}/{name}: cannot read seed: {type(exc).__name__}: {exc}")
+                continue
+            match = _DEPTH_IN_NAME.match(name)
+            if match is None:
+                issues.append(f"{target}/{name}: cannot parse a depth from the seed name")
+                continue
+            executed += 1
+            depth = int(match["depth"])
+            verdict = replay_bytes(target, data).verdict
+            if depth <= V1_MAX_NESTING_DEPTH:
+                if verdict.get("status") != "accept":
+                    issues.append(f"{target}/{name}: expected accept, got {verdict}")
+                else:
+                    passed += 1
+            elif (verdict.get("status"), verdict.get("error_class"), verdict.get("rule")) != (
+                "reject", "NestingTooDeep", "malformed_cbor"
+            ):
+                issues.append(f"{target}/{name}: expected NestingTooDeep (malformed_cbor), got {verdict}")
+            else:
+                passed += 1
+    return _CheckResult(issues, executed, passed, declared)
+
+
 def _discovered_decoders() -> tuple[set[str], list[str], int, int]:
     """Top-level `py_decode_*` names under `codec/*.py`, plus any per-file
     read/parse failure as an ISSUE rather than a traceback (controller
@@ -375,13 +432,15 @@ def _run_checks() -> tuple[bool, list[str]]:
     tags = _tag_level_issues()
     order = _precedence_issues()
     census = _census_issues()
-    issues = boundary.issues + every.issues + tags.issues + order.issues + census.issues
+    seeds = _seed_issues()
+    issues = boundary.issues + every.issues + tags.issues + order.issues + census.issues + seeds.issues
     lines = [
         _pass_line("1", boundary, f"boundary cases across {len(_DECODERS)} CBOR decoders"),
         _pass_line("2", every, f"deep bodies refused with a verdict (depths {', '.join(map(str, _DEEP_DEPTHS))})"),
         _pass_line("3", tags, "tag-level cases"),
         _pass_line("4", order, "precedence and pass-silence cases"),
         _census_line(census),
+        _pass_line("6", seeds, "committed nesting seeds replay with the verdict their depth states"),
     ]
     lines.extend(f"  ISSUE: {issue}" for issue in issues)
     return (not issues, lines)

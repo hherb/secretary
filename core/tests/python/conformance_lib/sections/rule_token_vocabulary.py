@@ -108,8 +108,8 @@ _TOKENED_CLASSES: tuple[tuple[type, str], ...] = (
 # the observed set away, printing its size and asserting nothing about it, so
 # a Python side that collapsed every manifest rejection onto one token passed.
 # That is the `_HASH_SEEDS = ("0",)` shape recorded in CLAUDE.md: a figure
-# computed, printed, and never compared.  EIGHT of the seventeen tokens are
-# reachable from `core/fuzz/seeds/manifest_body/`; the other nine need bodies
+# computed, printed, and never compared.  NINE of the seventeen tokens are
+# reachable from `core/fuzz/seeds/manifest_body/`; the other eight need bodies
 # the corpus does not hold, which is why this is an equality against a named
 # set rather than a count.
 #
@@ -117,13 +117,17 @@ _TOKENED_CLASSES: tuple[tuple[type, str], ...] = (
 # first committed manifest bodies to reach a SCHEMA fault: `trash[].fingerprint`
 # and `trash[].purged_at_ms` were validated by nothing on the Python side, so
 # no corpus body had ever been rejected as a wrong type or an out-of-range
-# integer at all.  Growing this set is the deliberate edit this check's own
+# integer at all.  It was eight until #667's nesting seeds added
+# `malformed_cbor`: the first committed manifest bodies to reach a
+# well-formedness fault via the recursion-limit walk rather than a schema
+# fault.  Growing this set is the deliberate edit this check's own
 # failure message asks for -- the seeds and this line move together, which is
 # the point.
 _CORPUS_TOKENS = frozenset(
     {
         "array_sort_order",
         "integer_out_of_range",
+        "malformed_cbor",
         "non_canonical_unclassified",
         "repeated_array_value",
         "rule2_indefinite_length",

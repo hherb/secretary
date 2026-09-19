@@ -72,6 +72,7 @@ from conformance_lib.codec import cbor_faults, record_rules
 from conformance_lib.constants import VECTOR_CLOCK_ENTRY_LEN
 from conformance_lib.cursor import Cursor, ParseError
 from conformance_lib.diff_replay import replay_bytes
+from conformance_lib.sections.nesting_depth_bodies import NESTING_SEED_PREFIX
 from conformance_lib.wire import envelope_rules
 from conformance_lib.wire.block_file import parse_header
 
@@ -160,7 +161,11 @@ _BLOCK_FILE_CLASSES: dict[str, str] = {
 
 def _labelled_seeds(target: str) -> list[Path]:
     directory = fixtures.fuzz_seed_dir(target)
-    return sorted(p for p in directory.iterdir() if p.is_file() and LABEL_SEPARATOR in p.name)
+    # `nesting__` seeds belong to Section NDL and `nesting_depth_seeds.rs` (#667).
+    return sorted(
+        p for p in directory.iterdir()
+        if p.is_file() and LABEL_SEPARATOR in p.name and not p.name.startswith(NESTING_SEED_PREFIX)
+    )
 
 
 def _label_token(path: Path) -> str:

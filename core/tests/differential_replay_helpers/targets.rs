@@ -93,9 +93,10 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// and `block_file` (#641) every committed input both sides reject therefore
 /// reaches a strict comparison — but the floor is not that count. It also
 /// counts the committed ACCEPTING bases, which are compared on re-encoded
-/// bytes rather than tokens: 3 of `record`'s 37 (`api_key.cbor`,
-/// `login.cbor`, `secure_note.cbor`) and 1 of `block_file`'s 24
-/// (`golden.bin`), leaving 34 and 23 strict comparisons today. And the floor
+/// bytes rather than tokens: 4 of `record`'s 44 (`api_key.cbor`,
+/// `login.cbor`, `secure_note.cbor`, `nesting__256_unknown.bin`, #667) and 1
+/// of `block_file`'s 24 (`golden.bin`), leaving 40 and 23 strict comparisons
+/// today. And the floor
 /// is taken before any decode, so it holds that figure only while every
 /// labelled seed still rejects, which `rule_token_seeds` and Section RTS
 /// check and this floor does not. On `manifest_body` the gap is wider:
@@ -106,11 +107,11 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// assertion and the negative control all green. Tracked as #658.
 pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("vault_toml", 9),
-    ("record", 40),
+    ("record", 44),
     ("contact_card", 4),
     ("bundle_file", 1),
     ("manifest_file", 1),
-    ("manifest_body", 45),
+    ("manifest_body", 48),
     ("block_file", 24),
 ];
 
