@@ -395,6 +395,82 @@ def _trash_entry_issues() -> tuple[list[str], int]:
     return issues, len(_TRASH_ENTRY_CASES)
 
 
+def _trash_entry_shareable_tag_issues() -> list[str]:
+    """`codec/trash_entry.py` no longer hands a shareable-tag body to
+    `cbor2.loads` before checking rule 4 (#685).
+
+    `cbor2.loads` resolves CBOR tags 28 (shareable) and 29 (sharedref) into a
+    genuinely CYCLIC Python list and strips both tags on the way, so a body
+    carrying `tag28([tag29(0)])` under an unknown key made the recursive
+    `_reject_floats_and_tags_py` walk a cycle and raise `RecursionError` -- a
+    harness failure, not a verdict. Separately, tag 28 ALONE is stripped
+    before that walk ever sees it, so it was never reported as rule 4 at
+    all. `codec/manifest_decode.py` was immune to both: it never
+    `cbor2.loads`s the whole body, only scans byte spans and keeps unknown
+    subtrees raw.
+
+    No replay target reaches `codec/trash_entry.py` (see this section's
+    docstring), so this is the only pin for it, and "rejected somehow" is
+    not enough: it must be `NonCanonicalItem` naming rule 4 and the tag --
+    not a `RecursionError`, and not an `ENCODER_REFUSAL_PREFIX` writer-side
+    refusal answering for the reader (#600/#608's backstop direction).
+    """
+    import cbor2
+
+    from conformance_lib.codec.scanner import NonCanonicalItem
+    from conformance_lib.codec.trash_entry import py_decode_trash_entry
+
+    # A single-key map: an unknown key holding tag28([tag29(0)]). `walk_body`
+    # is a byte-level pass ahead of any interpretation, so this body need not
+    # be a valid TrashEntry otherwise -- the rule-4 fault must be found and
+    # reported before any required-field check ever runs.
+    body = (
+        bytes([0xA1])
+        + cbor2.dumps("zz_future", canonical=True)
+        + bytes([0xD8, 0x1C, 0x81, 0xD8, 0x1D, 0x00])
+    )
+
+    issues: list[str] = []
+    try:
+        py_decode_trash_entry(body)
+    except NonCanonicalItem as exc:
+        if exc.rule != 4:
+            issues.append(
+                f"trash_entry shareable-tag body: rejected as rule {exc.rule}, "
+                f"want rule 4 (a CBOR tag): {exc}"
+            )
+        if "tag" not in str(exc).lower():
+            issues.append(
+                f"trash_entry shareable-tag body: rejected as rule 4, but the "
+                f"message does not name a tag: {exc}"
+            )
+    except RecursionError as exc:
+        issues.append(
+            f"trash_entry shareable-tag body: raised RecursionError (#685) -- "
+            f"cbor2 resolved tags 28/29 into a cyclic value before rule 4 "
+            f"could see it; a harness failure, not a verdict: {exc}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        detail = str(exc)
+        if detail.startswith(ENCODER_REFUSAL_PREFIX):
+            issues.append(
+                f"trash_entry shareable-tag body: answered by the ENCODER "
+                f"({detail!r}); this check asserts the READER rejects it as "
+                f"rule 4"
+            )
+        else:
+            issues.append(
+                f"trash_entry shareable-tag body: raised {type(exc).__name__}, "
+                f"not a rule-4 NonCanonicalItem: {exc}"
+            )
+    else:
+        issues.append(
+            "trash_entry shareable-tag body: must be REJECTED as rule 4 (a "
+            "CBOR tag); it was ACCEPTED"
+        )
+    return issues
+
+
 # ---------------------------------------------------------------------------
 # Checks
 # ---------------------------------------------------------------------------
@@ -621,6 +697,7 @@ def section_value_type_discipline() -> tuple[bool, list[str]]:
     issues.extend(_control_issues())
     trash_issues, trash_checked = _trash_entry_issues()
     issues.extend(trash_issues)
+    issues.extend(_trash_entry_shareable_tag_issues())
     wire_issues, wire_checked = _wire_issues()
     issues.extend(wire_issues)
     issues.extend(sanctioned_module_issues())
@@ -646,6 +723,8 @@ def section_value_type_discipline() -> tuple[bool, list[str]]:
         f"control bodies accepted (the decoder discriminates)",
         f"PASS 2b: {trash_checked} codec/trash_entry.py position(s) rejected, "
         f"plus the all-valid control",
+        "PASS 2c: trash_entry shareable-tag body (tags 28/29) rejected as "
+        "rule 4, not RecursionError (#685)",
         f"PASS 3: {scanned_module_count()} codec/ modules scanned (floor "
         f"{MIN_SCANNED_CODEC_MODULES}), none writes "
         f"`isinstance(..., int)` outside integer_rules.py",

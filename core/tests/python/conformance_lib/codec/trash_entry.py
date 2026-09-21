@@ -14,7 +14,7 @@ from conformance_lib.canonical import encode_canonical_map
 from conformance_lib.codec.integer_rules import is_integer
 from conformance_lib.codec.record import _reject_floats_and_tags_py
 from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
-from conformance_lib.codec.well_formed import reject_excessive_nesting
+from conformance_lib.codec.well_formed import walk_body
 from conformance_lib.constants import BLOCK_UUID_LEN, DEVICE_UUID_LEN
 
 # ---------------------------------------------------------------------------
@@ -50,14 +50,28 @@ def py_decode_trash_entry(data: bytes) -> dict:
     """
     import cbor2
 
-    # crypto-design §6.2 rule 6 before cbor2 parses anything (#667).
-    reject_excessive_nesting(data, later_phases_scan_in_byte_order=False)
+    # `walk_body` reads the tag off the BYTES (#685), so `cbor2.loads` below
+    # can no longer build a cyclic value from tags 28/29 -- which is what
+    # made the recursive `_reject_floats_and_tags_py` raise `RecursionError`:
+    # `cbor2.loads` resolves tag 28 (shareable) and tag 29 (sharedref) into a
+    # genuinely cyclic Python list and strips both tags, so a shareable-tag
+    # body made that walk meet a cycle, and tag 28 alone was stripped before
+    # the walk ever saw it, so it was never reported as rule 4 at all. The
+    # `later_phases_scan_in_byte_order=False` argument is gone because
+    # `walk_body` always raises at a structural fault -- the same behaviour
+    # this caller asked `reject_excessive_nesting` for. `py_decode_manifest`
+    # was immune to both because it never `cbor2.loads`s the whole body; it
+    # scans byte spans and keeps unknown subtrees raw (#666).
+    walk_body(data)
 
     try:
         decoded = cbor2.loads(data)
     except cbor2.CBORDecodeError as e:
         raise ValueError(f"TrashEntry CBOR decode: {e}") from e
 
+    # Defence in depth: `walk_body` above has already rejected any tag or
+    # float in the whole body, tags 28/29 included, so `decoded` can no
+    # longer contain a cycle for this recursive walk to meet.
     _reject_floats_and_tags_py(decoded)
 
     if not isinstance(decoded, dict):
