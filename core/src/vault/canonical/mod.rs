@@ -142,6 +142,7 @@ mod dedupe;
 mod legacy;
 mod size;
 mod value;
+mod walk;
 
 pub use legacy::{canonical_sort_entries, encode_canonical_map, reject_floats_and_tags};
 
@@ -153,6 +154,7 @@ pub use legacy::{canonical_sort_entries, encode_canonical_map, reject_floats_and
 pub(crate) use dedupe::encode_map_allowing_duplicates;
 pub(crate) use size::{cbor_size_bound, HEAD_MAX};
 pub(crate) use value::to_canonical_vec;
+pub(crate) use walk::walk_first_item_checked;
 // `CanonicalMap`/`CanonicalValue` were re-exported `pub` (not `pub(crate)`)
 // through the end of the final whole-branch review of #547: `vault::
 // canonical_test_api` needed a `pub`-visibility chain all the way down to
