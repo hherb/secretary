@@ -161,45 +161,53 @@ condition in Step 5 does not fire.**
 
 **The eleven shapes against `block::decode_plaintext`**, using a minimal
 single-key block-plaintext map (`{"zz_future": <planted value>}`, Step 2's
-script) rather than the manifest's full accepting body, because `BlockError`
-has no `rule_token()` (no block target is token-compared in the differential
-replay), the table reports the error's `Display` plus the variant it comes
-from:
+script) rather than the manifest's full accepting body. The task-1 dispatch
+asserted "`BlockError` has no `rule_token()` (no block target is
+token-compared in the differential replay)" as the reason to report
+`Display` text instead of a token; that assertion was wrong on both halves
+and the first version of this section repeated it. `BlockError::rule_token()`
+**does** exist (`core/src/vault/rule_tokens/block.rs`) and `block_file`
+**is** token-compared in the differential replay — CLAUDE.md states this
+directly ("`manifest_body`, `block_file` and `record` are token-compared
+(#634, #641)"). The table below therefore reports the same `RuleToken` the
+manifest column does, converted to the lowercase spelling this document
+already uses for the shared token vocabulary; the raw `Display` text is
+kept as a second, non-diffable column for readability only:
 
-| Planted value | Manifest answer (§1) | Block answer today | Block variant |
-| --- | --- | --- | --- |
-| `00` (control) | accept | `missing required field in block plaintext: block_version` | `MissingField { field: "block_version" }` |
-| `f7` (`undefined`) | `non_canonical_unclassified` | `missing required field in block plaintext: block_version` | `MissingField { field: "block_version" }` |
-| `f8 15` (two-byte simple) | `non_canonical_unclassified` | `missing required field in block plaintext: block_version` | `MissingField { field: "block_version" }` |
-| `5f 5f 41 61 ff ff` (nested chunk) | `rule2_indefinite_length` | `missing required field in block plaintext: block_version` | `MissingField { field: "block_version" }` |
-| `61 ff` (invalid UTF-8) | `malformed_cbor` | `CBOR decode error: CBOR syntax error at byte offset 11` | `CborDecode(CborFault)` |
-| `c2 41 01` (bignum, fits 64 bits) | `non_canonical_unclassified` | `missing required field in block plaintext: block_version` | `MissingField { field: "block_version" }` |
-| `c2 49 01*9` (bignum, 9 bytes) | `rule4_tag_or_float` | `CBOR tags are not permitted in v1 block plaintext` | `TagRejected` |
-| `d8 1c 81 d8 1d 00` (tags 28/29) | `rule4_tag_or_float` | `CBOR tags are not permitted in v1 block plaintext` | `TagRejected` |
-| `82 c2 41 01 f7` (tag, then `undefined`) | `non_canonical_unclassified` | `missing required field in block plaintext: block_version` | `MissingField { field: "block_version" }` |
-| `82 f7 c2 41 01` (`undefined`, then tag) | `non_canonical_unclassified` | `missing required field in block plaintext: block_version` | `MissingField { field: "block_version" }` |
-| `82 f9 00 00 f7` (float, then `undefined`) | `rule4_tag_or_float` | `float values are not permitted in v1 block plaintext (in field <root>)` | `FloatRejected { field: "<root>" }` |
+| Planted value | Manifest token (§1) | Rust-block token | Same token as manifest? | Rust-block `Display` (today) |
+| --- | --- | --- | --- | --- |
+| `00` (control) | accept | accept | yes | — |
+| `f7` (`undefined`) | `non_canonical_unclassified` | `missing_field` | no | `missing required field in block plaintext: block_version` |
+| `f8 15` (two-byte simple) | `non_canonical_unclassified` | `missing_field` | no | `missing required field in block plaintext: block_version` |
+| `5f 5f 41 61 ff ff` (nested chunk) | `rule2_indefinite_length` | `missing_field` | no | `missing required field in block plaintext: block_version` |
+| `61 ff` (invalid UTF-8) | `malformed_cbor` | `malformed_cbor` | **yes** | `CBOR decode error: CBOR syntax error at byte offset 11` |
+| `c2 41 01` (bignum, fits 64 bits) | `non_canonical_unclassified` | `missing_field` | no | `missing required field in block plaintext: block_version` |
+| `c2 49 01*9` (bignum, 9 bytes) | `rule4_tag_or_float` | `rule4_tag_or_float` | **yes** | `CBOR tags are not permitted in v1 block plaintext` |
+| `d8 1c 81 d8 1d 00` (tags 28/29) | `rule4_tag_or_float` | `rule4_tag_or_float` | **yes** | `CBOR tags are not permitted in v1 block plaintext` |
+| `82 c2 41 01 f7` (tag, then `undefined`) | `non_canonical_unclassified` | `missing_field` | no | `missing required field in block plaintext: block_version` |
+| `82 f7 c2 41 01` (`undefined`, then tag) | `non_canonical_unclassified` | `missing_field` | no | `missing required field in block plaintext: block_version` |
+| `82 f9 00 00 f7` (float, then `undefined`) | `rule4_tag_or_float` | `rule4_tag_or_float` | **yes** | `float values are not permitted in v1 block plaintext (in field <root>)` |
 
-Seven of the eleven shapes report `MissingField { field: "block_version" }`
-on the block path today rather than anything related to the planted
-leniency — a consequence of the probe body's construction (Step 2's script,
-matching this design's own §1 note that the manifest bodies "are
-manifest-shaped and will fail block decode for an unrelated reason"): a
-minimal one-key map has no `block_version`, `block_uuid` or any other
-required field, so `block::decode_plaintext`'s required-field check fires
-before the value under `zz_future` is ever examined for canonicality. The
-four shapes that are **not** masked agree with the manifest column in
-substance: `invalid_utf8_text` fails the raw `ciborium` parse in both
-decoders before any required-field check can run (`CborDecode`/
-`malformed_cbor` are the same error class), and the three rule-4 shapes
-(`bignum_wide`, `shareable_cycle`, `float_then_undefined`) are already caught
-by block's own pre-existing tree-wide `reject_floats_and_tags` call — the
-same defence-in-depth call `decode_manifest` already has — which runs ahead
-of required-field parsing on both paths today, independently of this
+Seven of the eleven shapes report `missing_field` (`BlockError::MissingField
+{ field: "block_version" }`) on the block path today rather than anything
+related to the planted leniency — a consequence of the probe body's
+construction (Step 2's script, matching this design's own §1 note that the
+manifest bodies "are manifest-shaped and will fail block decode for an
+unrelated reason"): a minimal one-key map has no `block_version`,
+`block_uuid` or any other required field, so `block::decode_plaintext`'s
+required-field check fires before the value under `zz_future` is ever
+examined for canonicality. The four shapes that are **not** masked agree
+with the manifest column **exactly, token for token**: `invalid_utf8_text`
+fails the raw `ciborium` parse in both decoders before any required-field
+check can run (`malformed_cbor` both sides), and the three rule-4 shapes
+(`bignum_wide`, `shareable_cycle`, `float_then_undefined`) are already
+caught by block's own pre-existing tree-wide `reject_floats_and_tags` call
+— the same defence-in-depth call `decode_manifest` already has — which runs
+ahead of required-field parsing on both paths today, independently of this
 slice's walk. No block answer contradicts anything a reader would call
-"wrong"; the divergence is fully explained by the probe body shape, not by
-a decoder inconsistency, so it does not trigger the Step 5 STOP condition
-either.
+"wrong"; the divergence on the other seven is fully explained by the probe
+body shape, not by a decoder inconsistency, so it does not trigger the
+Step 5 STOP condition either.
 
 ---
 
