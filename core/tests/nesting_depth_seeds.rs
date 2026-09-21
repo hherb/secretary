@@ -177,6 +177,20 @@ const ARRAY_INDEFINITE: u8 = 0x9f;
 const MAP_1: u8 = 0xa1;
 const TAG_1: u8 = 0xc1;
 const BREAK: u8 = 0xff;
+/// Major 6, tag number 2: a positive bignum (RFC 8949 §3.4.3).
+const TAG_BIGNUM_POSITIVE: u8 = 0xc2;
+/// Major 2 (byte string), additional-info 1: a definite byte string of
+/// length 1. A bignum payload this narrow fits in 64 bits, so `ciborium`
+/// 0.2.2 folds the whole tag into an integer and charges it no nesting
+/// level at all (#666).
+const BYTES_1: u8 = 0x41;
+/// Major 2, additional-info 9: a definite byte string of length 9. Wide
+/// enough (9-16 bytes) that `ciborium` 0.2.2 keeps it a `Value::Tag`
+/// instead of folding it -- but a kept tag is still charged no level by
+/// ciborium's own recursion counting, only by the byte walk.
+const BYTES_9: u8 = 0x49;
+/// The bignum payload byte, repeated for both widths.
+const BIGNUM_PAYLOAD_BYTE: u8 = 0x01;
 
 /// The shapes a level can take. Rule 6 charges each alike, and an upgrade to
 /// the parser could change how it charges one shape while still charging
@@ -191,6 +205,14 @@ enum Chain {
     IndefiniteArrays,
     /// `depth` one-entry maps, each the KEY of the one outside it.
     MapKeys,
+    /// The same shape as `TagLast`, but the last level is a positive bignum
+    /// tag over a 1-byte string -- the width `ciborium` 0.2.2 folds into an
+    /// integer, so its own recursion count charges the tag no level (#666).
+    BignumNarrowLast,
+    /// The same, over a 9-byte string -- wide enough that `ciborium` keeps
+    /// it a `Value::Tag` rather than folding it, but its recursion count
+    /// still charges the tag no level either way.
+    BignumWideLast,
 }
 
 /// A `depth`-level document of `shape`. It need not be a valid document of
@@ -198,18 +220,37 @@ enum Chain {
 fn nested_document(depth: usize, shape: Chain) -> Vec<u8> {
     let mut body = Vec::new();
     match shape {
-        Chain::Arrays | Chain::TagLast | Chain::IndefiniteArrays => {
+        Chain::Arrays
+        | Chain::TagLast
+        | Chain::IndefiniteArrays
+        | Chain::BignumNarrowLast
+        | Chain::BignumWideLast => {
             body.extend(ONE_ENTRY_MAP_AND_KEY);
             let (open, inner) = match shape {
                 Chain::IndefiniteArrays => (ARRAY_INDEFINITE, depth - 1),
-                Chain::TagLast => (ARRAY_1, depth - 2),
+                Chain::TagLast | Chain::BignumNarrowLast | Chain::BignumWideLast => {
+                    (ARRAY_1, depth - 2)
+                }
                 _ => (ARRAY_1, depth - 1),
             };
             body.extend(std::iter::repeat_n(open, inner));
-            if let Chain::TagLast = shape {
-                body.push(TAG_1);
+            match shape {
+                Chain::TagLast => {
+                    body.push(TAG_1);
+                    body.push(UINT_0);
+                }
+                Chain::BignumNarrowLast => {
+                    body.push(TAG_BIGNUM_POSITIVE);
+                    body.push(BYTES_1);
+                    body.push(BIGNUM_PAYLOAD_BYTE);
+                }
+                Chain::BignumWideLast => {
+                    body.push(TAG_BIGNUM_POSITIVE);
+                    body.push(BYTES_9);
+                    body.extend(std::iter::repeat_n(BIGNUM_PAYLOAD_BYTE, 9));
+                }
+                _ => body.push(UINT_0),
             }
-            body.push(UINT_0);
             if let Chain::IndefiniteArrays = shape {
                 body.extend(std::iter::repeat_n(BREAK, inner));
             }
@@ -223,17 +264,26 @@ fn nested_document(depth: usize, shape: Chain) -> Vec<u8> {
 }
 
 /// crypto-design §6.2 rule 6 on every CBOR decode path, in every level shape.
-/// On the four paths that do not run the byte walk the limit IS `ciborium`
-/// 0.2.2's recursion limit, so an upgrade that moved it -- or stopped
-/// charging a tag or an indefinite container -- would move the spec's limit
-/// silently; this is what reds. On `record::decode` the walk answers before
-/// ciborium runs, so that row pins the walk, not ciborium.
+///
+/// **Only two of the five paths still pin `ciborium` 0.2.2's own recursion
+/// limit**: `ContactCard::from_canonical_cbor` and
+/// `IdentityBundle::from_canonical_cbor`. An upgrade that moved ciborium's
+/// limit -- or stopped charging a tag or an indefinite container -- would
+/// move the spec's limit silently on THOSE TWO, and that is what reds here.
+/// The other three -- `decode_manifest`, `block::decode_plaintext` and
+/// `record::decode` -- now run the byte walk (`cbor::well_formed`) ahead of
+/// ciborium, so they pin the walk's own limit, which answers before ciborium
+/// ever sees the body. **This NARROWS what this test proves about
+/// ciborium**: a silent ciborium-limit move used to be caught by four paths
+/// here and is now caught by two -- do not read the five-row loop below as
+/// unchanged ciborium coverage.
 ///
 /// A depth-256 body must fail for any reason other than `RecursionLimit` (it
 /// is not a valid document), and a depth-257 body must fail with it.
 /// (ciborium charges no level for a bignum over a definite-length byte
-/// string of at most 16 bytes; that edge is #666's and is deliberately not a
-/// shape here.)
+/// string of at most 16 bytes; that edge is #666's, scoped to the three walk
+/// paths in `the_walk_paths_charge_a_level_for_a_short_bignum` below, since
+/// the two ciborium-backed paths do not refuse it for depth at all.)
 #[test]
 fn every_decode_path_enforces_exactly_the_v1_limit() {
     use secretary_core::identity::card::{CardError, ContactCard};
@@ -288,6 +338,55 @@ fn every_decode_path_enforces_exactly_the_v1_limit() {
             assert_eq!(
                 fault_of(&nested_document(V1_MAX_NESTING_DEPTH + 1, shape)).map(|f| f.kind),
                 limit_kind,
+                "{name} does not refuse a {shape:?} chain of depth {} with RecursionLimit",
+                V1_MAX_NESTING_DEPTH + 1
+            );
+        }
+    }
+}
+
+/// ciborium charges NO nesting level for a bignum tag over a definite-length
+/// byte string of at most 16 bytes, so before #666 a document whose 257th
+/// level was one slipped past the limit on every path that relied on
+/// ciborium: the narrow form (value fits 64 bits) was folded to an integer
+/// and reported by the re-encode, the wide form stayed a `Value::Tag` and
+/// was reported as rule 4. Both are depth faults, and the byte walk charges
+/// a level for a tag like any other container.
+///
+/// Scoped to the three WALK paths on purpose. `ContactCard` and
+/// `IdentityBundle` still rely on ciborium and still do NOT refuse these
+/// bodies for depth; that is #641's and #677's, not a gap this test hides.
+#[test]
+fn the_walk_paths_charge_a_level_for_a_short_bignum() {
+    use secretary_core::vault::block::{decode_plaintext, BlockError};
+    use secretary_core::vault::manifest::{decode_manifest, ManifestError};
+    use secretary_core::vault::record::{decode, RecordError};
+
+    type FaultOf = fn(&[u8]) -> Option<CborFault>;
+    let paths: [(&str, FaultOf); 3] = [
+        ("decode_manifest", |b| match decode_manifest(b) {
+            Err(ManifestError::CborDecode(f)) => Some(f),
+            _ => None,
+        }),
+        ("block::decode_plaintext", |b| match decode_plaintext(b) {
+            Err(BlockError::CborDecode(f)) => Some(f),
+            _ => None,
+        }),
+        ("record::decode", |b| match decode(b) {
+            Err(RecordError::CborDecode(f)) => Some(f),
+            _ => None,
+        }),
+    ];
+    for (name, fault_of) in paths {
+        for shape in [Chain::BignumNarrowLast, Chain::BignumWideLast] {
+            assert_ne!(
+                fault_of(&nested_document(V1_MAX_NESTING_DEPTH, shape)).map(|f| f.kind),
+                Some(CborErrorKind::RecursionLimit),
+                "{name} refuses a {shape:?} chain of depth {V1_MAX_NESTING_DEPTH}, which rule 6 allows"
+            );
+            assert_eq!(
+                fault_of(&nested_document(V1_MAX_NESTING_DEPTH + 1, shape)).map(|f| f.kind),
+                Some(CborErrorKind::RecursionLimit),
                 "{name} does not refuse a {shape:?} chain of depth {} with RecursionLimit",
                 V1_MAX_NESTING_DEPTH + 1
             );
