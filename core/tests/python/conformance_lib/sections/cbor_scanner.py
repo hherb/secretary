@@ -15,6 +15,7 @@ from conformance_lib.codec.scanner import (
     _scan_map_entries,
     reject_floats_and_tags,
 )
+from conformance_lib.codec.well_formed import walk_body
 
 def section_cbor_scanner_units() -> tuple[bool, list[str]]:
     """Unit coverage for the span-recording CBOR scanner (§4.2 support).
@@ -236,9 +237,48 @@ def section_cbor_scanner_units() -> tuple[bool, list[str]]:
         except ValueError as e:
             issues.append(f"{label} must be ACCEPTED, got: {e}")
 
+    # --- walk_body PARKS a rule-4 fault behind a later well-formedness
+    # --- fault. `docs/vault-format.md` §4.2 makes well-formedness the
+    # --- precondition for both report orderings, so a body that is not
+    # --- well-formed is reported as that "whatever else the body also
+    # --- breaks" -- including a tag or float EARLIER in byte order. This is
+    # --- a property of this implementation's traversal, asserted locally
+    # --- rather than through a corpus row, because a corpus row would claim
+    # --- it of every conformant reader (#618's review drew that line).
+    parked = 0
+    for label, raw in [
+        ("tag then undefined", bytes([0x82, 0xC2, 0x41, 0x01, 0xF7])),
+        ("float then undefined", bytes([0x82, 0xF9, 0x00, 0x00, 0xF7])),
+        ("tag then bad chunk", bytes([0x82, 0xC2, 0x41, 0x01, 0x5F, 0x5F, 0x41, 0x61, 0xFF, 0xFF])),
+    ]:
+        try:
+            walk_body(raw)
+        except MalformedCbor:
+            parked += 1
+        except NonCanonicalItem as e:
+            issues.append(f"walk_body {label}: reported rule {e.rule} where §4.2 requires the well-formedness fault")
+        else:
+            issues.append(f"walk_body {label}: accepted a body that is not well-formed")
+
+    # --- and it still reports rule 4 when the body IS well-formed, so the
+    # --- check above cannot pass by rejecting everything.
+    rule4_seen = 0
+    for label, raw in [
+        ("tag alone", bytes([0xC2, 0x41, 0x01])),
+        ("float alone", bytes([0xF9, 0x00, 0x00])),
+    ]:
+        try:
+            walk_body(raw)
+        except NonCanonicalItem:
+            rule4_seen += 1
+        except MalformedCbor as e:
+            issues.append(f"walk_body {label}: reported {e} where rule 4 is the only fault")
+        else:
+            issues.append(f"walk_body {label}: accepted a rule-4 body")
+
     if issues:
         return False, issues
-    return True, ["PASS  CBOR scanner unit coverage"]
+    return True, [f"PASS  CBOR scanner unit coverage ({parked} parked, {rule4_seen} rule-4)"]
 
 
 # `_check_no_duplicate_keys` (a `pass`-bodied no-op asserting that the
