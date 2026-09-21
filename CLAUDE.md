@@ -393,23 +393,41 @@ Practical consequence: when a Rust change alters observable byte format or merge
 was 6849 lines; it is now 156, over a **78**-file package whose largest module is
 `sections/value_type_discipline.py` at **761** lines, ahead of
 `sections/value_type_structure.py` at 507 — both past the 500-line split
-threshold (#683) — then `sections/nesting_depth.py` at 491,
-`sections/manifest_canonicality_cause.py` at 486, `codec/scanner.py` at 479,
-then `codec/manifest_decode.py` at 474. `nesting_depth.py` went 457 -> 446
+threshold (#683) — then `sections/nesting_depth.py` and
+`sections/manifest_canonicality_cause.py`, TIED at **491** each (do not
+order an exact tie; see the correction below), then `codec/scanner.py` at
+479, then `codec/manifest_decode.py` at 474. `nesting_depth.py` went 457 -> 446
 in the slice's first fix wave and 446 -> 451 -> 472 after it, the last step in
 the PR #684 review's fix round, which moved it from sixth to fifth. The 458 and
 446 this line carried were measured at the docs commit and grown by a LATER
 commit (`38427086`) -- this paragraph's own warning, restated one slice on.
-**It happened again, in the very next slice.** The well-formedness-walk
-branch's own final review fix wave grew `value_type_discipline.py` 658 -> 761,
-`manifest_decode.py` 460 -> 474, and `nesting_depth.py` 472 -> 491 — the last
-of those enough to overtake both `manifest_canonicality_cause.py` (486,
-unchanged) and `codec/scanner.py` (479, unchanged), moving it from fifth to
-THIRD. None of those three commits touched the file count, which is still
-78. The docs commit these figures were last written against (`db6b1f5b`,
-#684) did not re-measure after this slice's own fix wave landed on top of
-it — this paragraph's "re-measure at the MERGE" instruction, missed at the
-very next opportunity to follow it.
+**It happened again, in the very next slice — twice over, in two different
+commits of the same fix wave.** The well-formedness-walk branch's own final
+review fix wave grew `value_type_discipline.py` 658 -> 761 and
+`manifest_decode.py` 460 -> 474, and grew `nesting_depth.py` 472 -> 491 —
+enough on its own to erase the five-line gap under `manifest_canonicality_cause.py`
+(486 at the time), moving it from fifth to a TIE for third rather than past
+it. `codec/scanner.py` (479, unchanged) stayed fourth-or-fifth either way.
+None of those commits touched the file count, which is still 78. The docs
+commit these figures were last written against (`db6b1f5b`, #684) did not
+re-measure after this slice's own fix wave landed on top of it — this
+paragraph's "re-measure at the MERGE" instruction, missed at the very next
+opportunity to follow it.
+
+**Then the commit written to fix that drift committed a second copy of it,
+inside the same fix wave.** That commit's own prose correction to
+`sections/manifest_canonicality_cause.py` (three stale mentions of
+`reject_floats_and_tags` naming it the manifest path's rule-4 pre-pass, when
+`walk_body` had already taken that role) was itself +8/-3 lines, growing the
+file 486 -> 491 in the course of fixing an unrelated finding — an exact TIE
+with `nesting_depth.py`, not the five-line trailing gap that same commit's
+CLAUDE.md edit still reported, because the figures above were written
+*before* that file's own edit landed and never re-measured after. This is
+the NEIGHBOURING-NUMBER COPY this file names a few sections down (`#679`
+review, `scanner.py` 476 taken from the wrong sentence) restated as a
+same-commit, same-file case: measuring a file, then editing that same file
+later in the same commit, without a second `wc -l` before writing the
+figure down.
 Re-measured at #667/#670 (75 -> 78 files: `sections/nesting_depth.py`,
 `sections/nesting_depth_bodies.py`, `sections/record_defaults.py`), which grew
 `manifest_decode.py` 450 -> 460 (the depth pass is its first statement) and
