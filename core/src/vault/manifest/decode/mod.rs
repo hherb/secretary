@@ -104,6 +104,21 @@ use super::{
 /// its indefinite-length and non-shortest-form encodings do not (and, as
 /// of item 12, are rejected outright).
 pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
+    // Byte-level well-formedness, then crypto-design §6.2 rule 4, BEFORE
+    // ciborium (#666) — the same pre-pass `record::decode` has run since
+    // #641. ciborium reads `undefined` and the two-byte simple forms as
+    // ordinary simple values, folds a bignum that fits 64 bits into an
+    // integer and accepts nested indefinite chunks, so without this the
+    // re-encode comparison below reported those bodies under a DIFFERENT
+    // rule than `conformance.py` did — three of them in the `malformed_cbor`
+    // class the differential replay never tolerates.
+    //
+    // It also gives `docs/vault-format.md` §4.2's well-formedness
+    // precondition its precedence: a body that is not well-formed is
+    // reported as that, whatever else it also breaks. The `?` discards the
+    // returned end offset; trailing bytes are judged by the re-encode
+    // comparison below, as they always have been.
+    crate::vault::canonical::walk_first_item_checked(bytes, ManifestError::CborDecode)?;
     // `from_secret_reader`, not `from_reader` (#561): the parser stages
     // every payload through a 4 KiB scratch buffer, and this input's
     // payloads include every `block_name` — user-visible plaintext inside
@@ -127,7 +142,10 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
     let parsed = SecretValueTree::new(parsed);
 
     // Walk the tree once up front to enforce no-float / no-tag everywhere
-    // (including inside forward-compat unknown values).
+    // (including inside forward-compat unknown values). Since #666 the byte
+    // walk above answers first for every tag and float ciborium would still
+    // represent; this stays as defence in depth, exactly as `record.rs`
+    // words the same relationship for its own tree-wide call.
     reject_floats_and_tags(parsed.as_value(), "<root>")?;
 
     let Value::Map(entries) = parsed.as_value() else {
