@@ -40,7 +40,11 @@ const WALK_ROOT_HINT: &str = "<root>";
 /// EOF check.
 ///
 /// A well-formedness fault anywhere outranks a rule-4 fault anywhere —
-/// `docs/vault-format.md` §4.2's precondition. That precedence is
+/// `docs/vault-format.md` §4.2's precondition. §4.2 requires this ordering
+/// of the manifest body; for this function's other two callers,
+/// `record::decode` and `block::decode_plaintext`, §6.1/§6.3 fix no report
+/// order at all, so the same ordering there is parity with the manifest
+/// path rather than a spec obligation, pending #668. That precedence is
 /// [`walk_first_item`]'s, not this function's; this function only routes.
 pub(crate) fn walk_first_item_checked<E>(
     bytes: &[u8],
@@ -104,9 +108,14 @@ mod tests {
         }
     }
 
-    /// A well-formedness fault LATER in the body outranks a rule-4 fault
-    /// EARLIER in it. This is `vault-format.md` §4.2's precondition, and it
-    /// is the one property a caller cannot restore for itself.
+    /// This function has no ordering logic of its own — it is a pure router
+    /// onto the caller's error type — so this only demonstrates that it
+    /// forwards whichever fault `walk_first_item` returned, here a
+    /// well-formedness fault LATER in the body rather than the rule-4 fault
+    /// EARLIER in it. `walk_first_item` is where that precedence actually
+    /// lives (`docs/vault-format.md` §4.2, for the manifest body; parity
+    /// pending #668 for this function's other two callers); it is pinned
+    /// end to end for `record::decode` by `record_walk_tests.rs`.
     #[test]
     fn a_later_malformed_fault_outranks_an_earlier_tag() {
         // 82 c2 41 01 f7 = [bignum, undefined]

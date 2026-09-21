@@ -391,15 +391,25 @@ Practical consequence: when a Rust change alters observable byte format or merge
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
 was 6849 lines; it is now 156, over a **78**-file package whose largest module is
-`sections/value_type_discipline.py` at **658** lines, ahead of
+`sections/value_type_discipline.py` at **761** lines, ahead of
 `sections/value_type_structure.py` at 507 — both past the 500-line split
-threshold (#683) — then `sections/manifest_canonicality_cause.py` at 486,
-`codec/scanner.py` at 479, then `sections/nesting_depth.py` (new in #667) at
-472 and `codec/manifest_decode.py` at 460. `nesting_depth.py` went 457 -> 446
+threshold (#683) — then `sections/nesting_depth.py` at 491,
+`sections/manifest_canonicality_cause.py` at 486, `codec/scanner.py` at 479,
+then `codec/manifest_decode.py` at 474. `nesting_depth.py` went 457 -> 446
 in the slice's first fix wave and 446 -> 451 -> 472 after it, the last step in
 the PR #684 review's fix round, which moved it from sixth to fifth. The 458 and
 446 this line carried were measured at the docs commit and grown by a LATER
 commit (`38427086`) -- this paragraph's own warning, restated one slice on.
+**It happened again, in the very next slice.** The well-formedness-walk
+branch's own final review fix wave grew `value_type_discipline.py` 658 -> 761,
+`manifest_decode.py` 460 -> 474, and `nesting_depth.py` 472 -> 491 — the last
+of those enough to overtake both `manifest_canonicality_cause.py` (486,
+unchanged) and `codec/scanner.py` (479, unchanged), moving it from fifth to
+THIRD. None of those three commits touched the file count, which is still
+78. The docs commit these figures were last written against (`db6b1f5b`,
+#684) did not re-measure after this slice's own fix wave landed on top of
+it — this paragraph's "re-measure at the MERGE" instruction, missed at the
+very next opportunity to follow it.
 Re-measured at #667/#670 (75 -> 78 files: `sections/nesting_depth.py`,
 `sections/nesting_depth_bodies.py`, `sections/record_defaults.py`), which grew
 `manifest_decode.py` 450 -> 460 (the depth pass is its first statement) and

@@ -3,8 +3,10 @@
 #590 gave `ManifestError::NonCanonicalEncoding` a `NonCanonicalCause`, and
 `manifest_canonicality_kat_replays` asserted one for each of the SIX
 rejecting rows that reach the §4.3 step-4 re-encode.  (Six, not nine: the
-three `rule4_float` rows are caught earlier by `reject_floats_and_tags`
-and deliberately get no cause.)  That assertion lived only in Rust, and
+three `rule4_float` rows are caught earlier by `decode_manifest`'s own
+pre-pass -- `reject_floats_and_tags` on the Rust side, `walk_body`'s rule-4
+pass on this reader's, since #666 -- and deliberately get no cause.)  That
+assertion lived only in Rust, and
 the label-suffix -> cause mapping lived in one Rust test function, so a
 clean-room reader had nothing to agree with -- even though #590's stated
 audience *is* the clean-room implementer.  #604
@@ -21,12 +23,15 @@ Those used to be the sharpest case of the sentence above: Rust caught them in
 `reject_floats_and_tags`, a whole-body walk, while this reader caught them
 per-value in `_check_canonical_item`.  §4.2's precedence paragraph then
 required a byte-retaining reader to run its own whole-body rule-4 walk BEFORE
-interpreting any key, so `py_decode_manifest` gained one -- and for these
-three rows the two mechanisms are now the same.  That is the spec's doing, not
-a regression, but it costs this section a detection it used to have:
-deleting `_check_canonical_item`'s rule-4 arm reds Sections CS and MCC at
-#618's merge-base and only CS here, because the pre-pass answers first.
-Section CS's unit cases are now the SOLE pin for that arm on the manifest
+interpreting any key, so `py_decode_manifest` gained one -- a direct call to
+`reject_floats_and_tags`, later folded into `walk_body`'s own whole-body pass
+by #666 (which reuses the same `_reject_rule4_head` logic, so nothing about
+the rule itself changed) -- and for these three rows the two mechanisms are
+now the same.  That is the spec's doing, not a regression, but it costs this
+section a detection it used to have: deleting `_check_canonical_item`'s
+rule-4 arm reds Sections CS and MCC at #618's merge-base and only CS today,
+because `walk_body`'s pre-pass answers first.  Section CS's unit cases are
+now the SOLE pin for `_check_canonical_item`'s rule-4 arm on the manifest
 path.  A future edit that weakens CS takes this cover with it, and this
 paragraph is the only place that says so.
 """

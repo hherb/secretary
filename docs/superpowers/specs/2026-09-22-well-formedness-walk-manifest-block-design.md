@@ -435,10 +435,13 @@ established.
 
 ## 6. Python sections
 
-No new conformance section. Section **RTV**'s corpus-token set equality and
-Section **RTS**'s label binding already cover the new seeds by construction,
-and Section **NDL**'s check 6 covers the two `nesting__` rows. What each needs
-is re-measurement, not new code:
+No new conformance section. Section **RTV**'s corpus-token set equality already covers the new
+`wellformed__*` seeds by construction, and Section **NDL**'s check 6 covers
+the two `nesting__` rows. Section **RTS** does NOT: its `SEEDED_TARGETS` /
+`_TARGETS` own `block_file` and `record` only, so it never scans
+`manifest_body/` at all — the new `wellformed__*` seeds' label binding is
+`core/tests/well_formed_seeds_helpers`'s own two-way census, a new module,
+not RTS. What each needs is re-measurement, not new code:
 
 - RTV's `_CORPUS_TOKENS` — the new seeds reach `malformed_cbor` and
   `rule4_tag_or_float`, both already in the set, so the expectation is that it

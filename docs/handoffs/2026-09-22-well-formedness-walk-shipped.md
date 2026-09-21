@@ -55,6 +55,11 @@ unknown key in the committed accepting `manifest_body` base):
     byte-identical. Found in this slice's Task 7 review. Sequenced against
     #683 (which names byte-identical Section VT output as its own
     acceptance criterion).
+  - [#688](https://github.com/hherb/secretary/issues/688):
+    `core/src/vault/block.rs` is 3320 lines, past the 500-line split
+    threshold — same class as #686, found in the final whole-branch review
+    after this slice's own Task 6 (block-plaintext walk wiring) added test
+    lines to it without fixing the pre-existing size.
 
 ---
 
@@ -114,11 +119,14 @@ under an unknown key `zz_future` (length-first canonical position):
 
 **After this slice, every row agrees strictly, and the `82 f9 00 00 f7` row
 is conformant on both sides** (`malformed_cbor`/`malformed_cbor`). Seven of
-the eleven rows became committed `wellformed__*` seeds (the control and the
-three already-agreeing rows — 9-byte bignum, the tags-28/29 shape, and the
-`undefined`-then-tag ordering, whose walk finds the leading `undefined`
-immediately and never needs the parking machinery — needed no seed, since
-they were already correct or are exercised elsewhere).
+the eleven rows became committed `wellformed__*` seeds. The other four needed
+no seed: the control; the two already-agreeing rows — 9-byte bignum and the
+tags-28/29 shape — which were already correct; and the `undefined`-then-tag
+ordering (**not** one of the already-agreeing rows — it was tolerated before
+this slice, same as its `tag`-then-`undefined` counterpart — but its walk
+finds the leading `undefined` immediately and never needs the parking
+machinery, so it exercises the same code path `wellformed__undefined`
+already seeds).
 
 The full 47-seed baseline (`.superpowers/sdd/.../baseline-{rust,py}.txt`,
 git-ignored, archived in design spec §1.1) showed **0 of 47 pre-existing
@@ -231,6 +239,15 @@ set (§1a/1b) plus the golden vault — a residual the design spec states
 outright rather than papering over ("a few dozen hand-built bodies where
 `record`'s is thousands of fuzzer-found ones").
 
+**CI replays the COMMITTED corpus only.** The symlinked-runtime-corpus run
+above is this session's own by-hand exercise, done and then removed; `main`'s
+`rust-test` job never symlinks `core/fuzz/corpus/` in and runs
+`differential_replay_full_corpus` against the 140 committed inputs alone
+(`core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`) — the standing
+convention CLAUDE.md's differential-replay section states for every other
+slice, restated here because this section's own numbers could otherwise read
+as what CI checks.
+
 ---
 
 ## (4) The rest of the gate set
@@ -304,6 +321,12 @@ find them unexplained.
     line (or a replacement) is derived from `_control_issues()`'s actual
     execution, with a control proving deleting the call moves the output.
     Coordinate with #683's split.
+  - **[#688](https://github.com/hherb/secretary/issues/688)**:
+    `core/src/vault/block.rs` split (3320 lines, mixing production code
+    with an inline `#[cfg(test)] mod tests`). Acceptance: same shape as
+    #686 — behaviour-preserving move, test name set diffed against a
+    measured baseline, `cargo test --release --workspace` unchanged in
+    count.
 - **Standing:** #668 (report-order spec text for §6.1/§6.3), #646
   (narrowing the per-token tolerance), #612 (`manifest_uniqueness_kat.rs`
   past 500 lines), #657 (nothing pins the CI replay step stays wired),
@@ -332,6 +355,18 @@ find them unexplained.
   split (`non_canonical_unclassified`/`rule4_tag_or_float` vs Python's
   uniform `malformed_cbor`) — never in scope for #666, and `contact_card`'s
   eventual token comparison (#641) must put depth first when it lands.
+- **A stale-artifact measurement trap, caught and worth recording so it is
+  not re-discovered the hard way.** The final whole-branch reviewer's FIRST
+  run of the depth-limit comparison reported the limit behaving as 255 and
+  showed a spurious acceptance change — it did not reproduce, and is an
+  instance of the stale-artifact trap CLAUDE.md already documents for
+  mutation testing (a probe binary built against an old `cargo` fingerprint
+  answering with the PREVIOUS tree's behaviour). It was trusted only after
+  HEAD reproduced byte-identically across two forced rebuilds
+  (`touch core/src/lib.rs` before each `cargo build --release`). Anyone
+  re-running that comparison must force the lib rebuild the same way, and a
+  single anomalous reading should be re-run — never believed — before it is
+  cited as evidence.
 
 ---
 
