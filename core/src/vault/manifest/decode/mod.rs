@@ -106,12 +106,13 @@ use super::{
 pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
     // Byte-level well-formedness, then crypto-design §6.2 rule 4, BEFORE
     // ciborium (#666) — the same pre-pass `record::decode` has run since
-    // #641. ciborium reads `undefined` and the two-byte simple forms as
-    // ordinary simple values, folds a bignum that fits 64 bits into an
-    // integer and accepts nested indefinite chunks, so without this the
-    // re-encode comparison below reported those bodies under a DIFFERENT
-    // rule than `conformance.py` did — three of them in the `malformed_cbor`
-    // class the differential replay never tolerates.
+    // #641. ciborium reads `undefined` as `null` and the two-byte simple
+    // forms as false/true/null/undefined (see `cbor/well_formed.rs`'s
+    // module doc), folds a bignum that fits 64 bits into an integer and
+    // accepts nested indefinite chunks, so without this the re-encode
+    // comparison below reported those bodies under a DIFFERENT rule than
+    // `conformance.py` did — three of them in the `malformed_cbor` class
+    // the differential replay never tolerates.
     //
     // It also gives `docs/vault-format.md` §4.2's well-formedness
     // precondition its precedence: a body that is not well-formed is

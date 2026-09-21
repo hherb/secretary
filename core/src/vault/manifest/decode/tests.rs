@@ -1325,9 +1325,14 @@ fn manifest_with_unknown_value(planted: &[u8]) -> Vec<u8> {
 
 /// crypto-design §6.2's profile and §4.2's precondition: a body that is not
 /// well-formed CBOR is reported AS THAT, before any key is interpreted.
-/// Before #666 ciborium read `undefined` as `null` and these bodies were
+/// Before #666 ciborium accepted `undefined`, the two-byte simple form and a
+/// nested indefinite chunk as well-formed, so those three bodies were
 /// reported by the re-encode comparison instead — a different rule, and one
-/// `conformance.py` never agreed with.
+/// `conformance.py` never agreed with (`decode/mod.rs`'s own call-site
+/// comment names the same three). The fourth row, invalid UTF-8, is not one
+/// of them: `ciborium` has always rejected it as `malformed_cbor`, so that
+/// row is a pre-existing regression pin, kept alongside the other three
+/// because it exercises the same splice helper and the same match arm.
 #[test]
 fn a_body_that_is_not_well_formed_is_reported_as_malformed_cbor() {
     for (label, planted) in [
@@ -1353,7 +1358,7 @@ fn a_body_that_is_not_well_formed_is_reported_as_malformed_cbor() {
 fn a_narrow_bignum_is_reported_as_a_rule_4_tag() {
     let body = manifest_with_unknown_value(&[0xc2, 0x41, 0x01]);
     match decode_manifest(&body) {
-        Err(ManifestError::Canonical(_)) => {}
+        Err(ManifestError::Canonical(CanonicalError::TagRejected { .. })) => {}
         other => panic!("expected Canonical(TagRejected), got {other:?}"),
     }
 }
