@@ -179,16 +179,25 @@ const TAG_1: u8 = 0xc1;
 const BREAK: u8 = 0xff;
 /// Major 6, tag number 2: a positive bignum (RFC 8949 §3.4.3).
 const TAG_BIGNUM_POSITIVE: u8 = 0xc2;
-/// Major 2 (byte string), additional-info 1: a definite byte string of
-/// length 1. A bignum payload this narrow fits in 64 bits, so `ciborium`
+/// Major 2 (byte string) with additional-info 0: the base a definite
+/// byte-string head of a given length is derived from below, so a head can
+/// never disagree with the payload length actually written after it.
+const MAJOR_BYTES_BASE: u8 = 0x40;
+/// The narrow bignum payload width: it fits in 64 bits, so `ciborium`
 /// 0.2.2 folds the whole tag into an integer and charges it no nesting
 /// level at all (#666).
-const BYTES_1: u8 = 0x41;
-/// Major 2, additional-info 9: a definite byte string of length 9. Wide
-/// enough (9-16 bytes) that `ciborium` 0.2.2 keeps it a `Value::Tag`
-/// instead of folding it -- but a kept tag is still charged no level by
-/// ciborium's own recursion counting, only by the byte walk.
-const BYTES_9: u8 = 0x49;
+const BIGNUM_NARROW_PAYLOAD_LEN: usize = 1;
+/// The wide bignum payload width: one byte past the eight that fit a
+/// `u64`, so `ciborium` 0.2.2 keeps it a `Value::Tag` instead of folding it
+/// -- but a kept tag is still charged no level by ciborium's own recursion
+/// counting, only by the byte walk.
+const BIGNUM_WIDE_PAYLOAD_LEN: usize = 9;
+/// Major 2, additional-info [`BIGNUM_NARROW_PAYLOAD_LEN`]: a definite byte
+/// string of that length.
+const BYTES_1: u8 = MAJOR_BYTES_BASE | BIGNUM_NARROW_PAYLOAD_LEN as u8;
+/// Major 2, additional-info [`BIGNUM_WIDE_PAYLOAD_LEN`]: a definite byte
+/// string of that length.
+const BYTES_9: u8 = MAJOR_BYTES_BASE | BIGNUM_WIDE_PAYLOAD_LEN as u8;
 /// The bignum payload byte, repeated for both widths.
 const BIGNUM_PAYLOAD_BYTE: u8 = 0x01;
 
@@ -242,12 +251,18 @@ fn nested_document(depth: usize, shape: Chain) -> Vec<u8> {
                 Chain::BignumNarrowLast => {
                     body.push(TAG_BIGNUM_POSITIVE);
                     body.push(BYTES_1);
-                    body.push(BIGNUM_PAYLOAD_BYTE);
+                    body.extend(std::iter::repeat_n(
+                        BIGNUM_PAYLOAD_BYTE,
+                        BIGNUM_NARROW_PAYLOAD_LEN,
+                    ));
                 }
                 Chain::BignumWideLast => {
                     body.push(TAG_BIGNUM_POSITIVE);
                     body.push(BYTES_9);
-                    body.extend(std::iter::repeat_n(BIGNUM_PAYLOAD_BYTE, 9));
+                    body.extend(std::iter::repeat_n(
+                        BIGNUM_PAYLOAD_BYTE,
+                        BIGNUM_WIDE_PAYLOAD_LEN,
+                    ));
                 }
                 _ => body.push(UINT_0),
             }
