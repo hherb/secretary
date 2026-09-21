@@ -70,5 +70,14 @@ def expected_nesting_seeds() -> dict[str, frozenset[str]]:
         "record": names(
             f"{limit}_unknown", f"{past}_unknown", f"{past}_known_tags", f"{FAR_PAST_THE_LIMIT}_unknown"
         ),
-        "manifest_body": names(f"{limit}_unknown", f"{past}_unknown", f"{FAR_PAST_THE_LIMIT}_unknown"),
+        "manifest_body": names(
+            f"{limit}_unknown",
+            f"{past}_unknown",
+            f"{FAR_PAST_THE_LIMIT}_unknown",
+            # #666: the short-bignum depth edge, at both widths ciborium
+            # takes a different path for (`nesting_depth_seeds_helpers`'s
+            # `DeepestLevel`).
+            f"{past}_unknown_bignum_narrow",
+            f"{past}_unknown_bignum_wide",
+        ),
     }
