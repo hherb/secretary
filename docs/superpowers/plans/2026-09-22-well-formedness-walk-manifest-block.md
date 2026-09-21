@@ -854,6 +854,14 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Modify: `core/tests/python/conformance_lib/codec/manifest_decode.py`
 - Modify: `core/tests/python/conformance_lib/sections/cbor_scanner.py`
+- Modify: `core/tests/python/conformance_lib/sections/nesting_depth.py` — this
+  file is missing from the list above as originally written; the edit was
+  necessary and was verified correct in the Task 6 review. NDL check 4 had
+  hard-asserted the PRE-fix asymmetry (that `py_decode_manifest`'s depth
+  pass and its rule-4 walk were two separate calls, in a specific order) as
+  a deliberate property, and once `walk_body` replaced both with one call
+  that assertion had to move with it or it would have reported a false
+  divergence against the code it was written to describe.
 
 **Interfaces:**
 - Consumes: `walk_body` from `conformance_lib.codec.well_formed`.
@@ -1136,7 +1144,12 @@ pub const SEED_PREFIX: &str = "wellformed__";
 
 - [ ] **Step 3: Write the tests**
 
-`core/tests/well_formed_seeds.rs` holds four tests plus the `#[ignore]`d generator:
+`core/tests/well_formed_seeds.rs` holds five tests plus the `#[ignore]`d
+generator — this said "four" while the code block below it defines five
+(`the_case_table_holds_every_expected_row`, `every_row_plants_distinct_bytes`,
+`the_base_and_a_benign_splice_are_both_accepted`,
+`every_committed_seed_matches_its_row`, `the_prefix_census_is_two_way`),
+which is what shipped:
 
 ```rust
 #[test]
