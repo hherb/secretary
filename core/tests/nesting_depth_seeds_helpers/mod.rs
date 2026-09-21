@@ -47,16 +47,32 @@ const SEED_EXTENSION: &str = "bin";
 /// `DeepestLevel` is a seed-TABLE dimension whose file names are a committed
 /// contract. Sharing one constant across the two would make this table's
 /// seed-generation code reach up into its own caller's private items -- the
-/// wrong dependency direction for a helpers module -- for a saving of four
-/// one-line constants. `ARRAY_1` / `UINT_0` above are already duplicated the
-/// same way for the same reason.
+/// wrong dependency direction for a helpers module -- for a saving of a
+/// handful of one-line constants. `ARRAY_1` / `UINT_0` above are already
+/// duplicated the same way for the same reason. Both sides now DERIVE their
+/// byte-string heads the same way (mirroring `nesting_depth_seeds.rs`'s
+/// `MAJOR_BYTES_BASE` derivation), so a width change on either side is a
+/// one-constant edit rather than two coupled hand-edits.
 const BIGNUM_TAG: u8 = 0xc2;
-/// Major 2 (byte string), length 1.
-const BIGNUM_BYTES_1: u8 = 0x41;
-/// Major 2, length 9 — one byte past the 8 that fit in a `u64`, which is what
-/// makes `ciborium` keep a `Value::Tag` instead of folding it to an integer.
-const BIGNUM_BYTES_9: u8 = 0x49;
+/// Major 2 (byte string) with additional-info 0: the base a definite
+/// byte-string head of a given length is derived from below, so a head can
+/// never disagree with the payload length actually written after it.
+const BIGNUM_BYTES_BASE: u8 = 0x40;
+/// The narrow bignum payload width: it fits in 64 bits, so `ciborium`
+/// folds the whole tag into an integer and charges it no nesting level at
+/// all (#666).
+const BIGNUM_NARROW_LEN: usize = 1;
+/// The wide bignum payload width: one byte past the eight that fit a `u64`,
+/// so `ciborium` keeps it a `Value::Tag` instead of folding it -- but a kept
+/// tag is still charged no level by ciborium's own recursion counting, only
+/// by the byte walk.
 const BIGNUM_WIDE_LEN: usize = 9;
+/// Major 2, additional-info [`BIGNUM_NARROW_LEN`]: a definite byte string of
+/// that length.
+const BIGNUM_BYTES_1: u8 = BIGNUM_BYTES_BASE | BIGNUM_NARROW_LEN as u8;
+/// Major 2, additional-info [`BIGNUM_WIDE_LEN`]: a definite byte string of
+/// that length.
+const BIGNUM_BYTES_9: u8 = BIGNUM_BYTES_BASE | BIGNUM_WIDE_LEN as u8;
 /// The bignum payload byte, repeated for both widths.
 const BIGNUM_PAYLOAD_BYTE: u8 = 0x01;
 
@@ -100,7 +116,11 @@ impl DeepestLevel {
     fn closing_bytes(self) -> Vec<u8> {
         match self {
             DeepestLevel::Array => vec![ARRAY_1, UINT_0],
-            DeepestLevel::BignumNarrow => vec![BIGNUM_TAG, BIGNUM_BYTES_1, BIGNUM_PAYLOAD_BYTE],
+            DeepestLevel::BignumNarrow => {
+                let mut v = vec![BIGNUM_TAG, BIGNUM_BYTES_1];
+                v.extend(std::iter::repeat_n(BIGNUM_PAYLOAD_BYTE, BIGNUM_NARROW_LEN));
+                v
+            }
             DeepestLevel::BignumWide => {
                 let mut v = vec![BIGNUM_TAG, BIGNUM_BYTES_9];
                 v.extend(std::iter::repeat_n(BIGNUM_PAYLOAD_BYTE, BIGNUM_WIDE_LEN));
