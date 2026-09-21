@@ -79,6 +79,128 @@ the branch and records both. A token that moves on an existing seed is a STOP:
 it means the walk is rejecting something a corpus row asserts is rejected
 otherwise, and the design is revisited before any seed is regenerated.
 
+### 1.1 Baseline measured on the branch
+
+Measured on this branch, commit `bf63cc39` base, via the temporary
+`#[ignore]`d probe `core/tests/zz_baseline_probe.rs` (Rust) and
+`conformance_lib.diff_replay.replay_bytes` (Python), deleted / left
+unmodified respectively before this task's commit. Raw output archived
+under the git-ignored `.superpowers/sdd/2026-09-22-well-formedness-walk-manifest-block/`
+workspace as `baseline-rust.txt`, `baseline-py.txt` and `baseline-block.txt`
+(the eleven block bodies themselves are under `block_bodies/`, kept for
+Task 4).
+
+**All 47 committed `manifest_body` seeds, both languages, today:**
+
+| Seed | Rust token | Python status | Python rule | Agree? |
+| --- | --- | --- | --- | --- |
+| `arraysort__block1_recipients` | `ArraySortOrder` | reject | `array_sort_order` | yes |
+| `arraysort__block1_vector_clock_summary` | `ArraySortOrder` | reject | `array_sort_order` | yes |
+| `arraysort__block_recipients` | `ArraySortOrder` | reject | `array_sort_order` | yes |
+| `arraysort__block_vector_clock_summary` | `ArraySortOrder` | reject | `array_sort_order` | yes |
+| `arraysort__blocks` | `ArraySortOrder` | reject | `array_sort_order` | yes |
+| `arraysort__trash` | `ArraySortOrder` | reject | `array_sort_order` | yes |
+| `arraysort__vector_clock` | `ArraySortOrder` | reject | `array_sort_order` | yes |
+| `block__control_array` | ACCEPT | accept | — | yes |
+| `block__control_canonical` | ACCEPT | accept | — | yes |
+| `block__rule1_key_order` | ACCEPT | accept | — | yes |
+| `block__rule2_indefinite_map` | `Rule2IndefiniteLength` | reject | `rule2_indefinite_length` | yes |
+| `block__rule3_non_shortest_int` | `Rule3NonShortestForm` | reject | `rule3_non_shortest_form` | yes |
+| `block__rule4_float` | `Rule4TagOrFloat` | reject | `rule4_tag_or_float` | yes |
+| `block__rule5_duplicate_key` | ACCEPT | accept | — | yes |
+| `keyorder__block` | `NonCanonicalUnclassified` | reject | `non_canonical_unclassified` | yes |
+| `keyorder__kdf_params` | `NonCanonicalUnclassified` | reject | `non_canonical_unclassified` | yes |
+| `keyorder__top` | `NonCanonicalUnclassified` | reject | `non_canonical_unclassified` | yes |
+| `keyorder__trash` | `NonCanonicalUnclassified` | reject | `non_canonical_unclassified` | yes |
+| `nesting__2048_unknown` | `MalformedCbor` | reject | `malformed_cbor` | yes |
+| `nesting__256_unknown` | ACCEPT | accept | — | yes |
+| `nesting__257_unknown` | `MalformedCbor` | reject | `malformed_cbor` | yes |
+| `top__control_array` | ACCEPT | accept | — | yes |
+| `top__control_canonical` | ACCEPT | accept | — | yes |
+| `top__rule1_key_order` | ACCEPT | accept | — | yes |
+| `top__rule2_indefinite_map` | `Rule2IndefiniteLength` | reject | `rule2_indefinite_length` | yes |
+| `top__rule3_non_shortest_int` | `Rule3NonShortestForm` | reject | `rule3_non_shortest_form` | yes |
+| `top__rule4_float` | `Rule4TagOrFloat` | reject | `rule4_tag_or_float` | yes |
+| `top__rule5_duplicate_key` | ACCEPT | accept | — | yes |
+| `trash__control_array` | ACCEPT | accept | — | yes |
+| `trash__control_canonical` | ACCEPT | accept | — | yes |
+| `trash__rule1_key_order` | ACCEPT | accept | — | yes |
+| `trash__rule2_indefinite_map` | `Rule2IndefiniteLength` | reject | `rule2_indefinite_length` | yes |
+| `trash__rule3_non_shortest_int` | `Rule3NonShortestForm` | reject | `rule3_non_shortest_form` | yes |
+| `trash__rule4_float` | `Rule4TagOrFloat` | reject | `rule4_tag_or_float` | yes |
+| `trash__rule5_duplicate_key` | ACCEPT | accept | — | yes |
+| `uniq__blocks__duplicate_block_uuid` | `RepeatedArrayValue` | reject | `repeated_array_value` | yes |
+| `uniq__control__all_distinct` | ACCEPT | accept | — | yes |
+| `uniq__recipients__duplicate_contact_uuid` | ACCEPT | accept | — | yes |
+| `uniq__trash__duplicate_block_uuid` | `RepeatedArrayValue` | reject | `repeated_array_value` | yes |
+| `uniq__vector_clock__duplicate_device_uuid` | `RepeatedArrayValue` | reject | `repeated_array_value` | yes |
+| `uniq__vector_clock_summary__duplicate_device_uuid` | `RepeatedArrayValue` | reject | `repeated_array_value` | yes |
+| `valuetype__trash_fingerprint_bool` | `WrongType` | reject | `wrong_type` | yes |
+| `valuetype__trash_fingerprint_short` | `WrongType` | reject | `wrong_type` | yes |
+| `valuetype__trash_fingerprint_text` | `WrongType` | reject | `wrong_type` | yes |
+| `valuetype__trash_purged_bool` | `WrongType` | reject | `wrong_type` | yes |
+| `valuetype__trash_purged_negative` | `IntegerOutOfRange` | reject | `integer_out_of_range` | yes |
+| `valuetype__trash_purged_text` | `WrongType` | reject | `wrong_type` | yes |
+
+Every one of the 47 rows agrees **strictly** — token-for-token, not merely
+under §4.2's phase-dependent tolerance — between the two languages today.
+(21 of the 47 tokens are themselves in the phase-dependent-tolerant set
+`{array_sort_order, rule2_indefinite_length, rule3_non_shortest_form,
+non_canonical_unclassified}` — the 7 `arraysort__*` plus the 4 `keyorder__*`
+plus the 3 `rule2` and 3 `rule3` rows at each of the `block`/`top`/`trash`
+levels — but every one of those 21 also happens to land on the *same*
+token in both languages today, so the tolerance is not doing any work in
+this baseline.) `block__`/`top__`/`trash__rule1_key_order` and
+`*_rule5_duplicate_key` correctly ACCEPT at all three levels, matching
+crypto-design §6.2 rules 1 and 5 being scoped to material the reader
+interprets (unenforced inside the manifest's forward-compat `unknown`
+subtree); `uniq__recipients__duplicate_contact_uuid` correctly ACCEPTs as
+the documented `recipients` exception to the repeated-array-value rule. No
+seed's Rust token is inconsistent with what its name asserts — **the STOP
+condition in Step 5 does not fire.**
+
+**The eleven shapes against `block::decode_plaintext`**, using a minimal
+single-key block-plaintext map (`{"zz_future": <planted value>}`, Step 2's
+script) rather than the manifest's full accepting body, because `BlockError`
+has no `rule_token()` (no block target is token-compared in the differential
+replay), the table reports the error's `Display` plus the variant it comes
+from:
+
+| Planted value | Manifest answer (§1) | Block answer today | Block variant |
+| --- | --- | --- | --- |
+| `00` (control) | accept | `missing required field in block plaintext: block_version` | `MissingField { field: "block_version" }` |
+| `f7` (`undefined`) | `non_canonical_unclassified` | `missing required field in block plaintext: block_version` | `MissingField { field: "block_version" }` |
+| `f8 15` (two-byte simple) | `non_canonical_unclassified` | `missing required field in block plaintext: block_version` | `MissingField { field: "block_version" }` |
+| `5f 5f 41 61 ff ff` (nested chunk) | `rule2_indefinite_length` | `missing required field in block plaintext: block_version` | `MissingField { field: "block_version" }` |
+| `61 ff` (invalid UTF-8) | `malformed_cbor` | `CBOR decode error: CBOR syntax error at byte offset 11` | `CborDecode(CborFault)` |
+| `c2 41 01` (bignum, fits 64 bits) | `non_canonical_unclassified` | `missing required field in block plaintext: block_version` | `MissingField { field: "block_version" }` |
+| `c2 49 01*9` (bignum, 9 bytes) | `rule4_tag_or_float` | `CBOR tags are not permitted in v1 block plaintext` | `TagRejected` |
+| `d8 1c 81 d8 1d 00` (tags 28/29) | `rule4_tag_or_float` | `CBOR tags are not permitted in v1 block plaintext` | `TagRejected` |
+| `82 c2 41 01 f7` (tag, then `undefined`) | `non_canonical_unclassified` | `missing required field in block plaintext: block_version` | `MissingField { field: "block_version" }` |
+| `82 f7 c2 41 01` (`undefined`, then tag) | `non_canonical_unclassified` | `missing required field in block plaintext: block_version` | `MissingField { field: "block_version" }` |
+| `82 f9 00 00 f7` (float, then `undefined`) | `rule4_tag_or_float` | `float values are not permitted in v1 block plaintext (in field <root>)` | `FloatRejected { field: "<root>" }` |
+
+Seven of the eleven shapes report `MissingField { field: "block_version" }`
+on the block path today rather than anything related to the planted
+leniency — a consequence of the probe body's construction (Step 2's script,
+matching this design's own §1 note that the manifest bodies "are
+manifest-shaped and will fail block decode for an unrelated reason"): a
+minimal one-key map has no `block_version`, `block_uuid` or any other
+required field, so `block::decode_plaintext`'s required-field check fires
+before the value under `zz_future` is ever examined for canonicality. The
+four shapes that are **not** masked agree with the manifest column in
+substance: `invalid_utf8_text` fails the raw `ciborium` parse in both
+decoders before any required-field check can run (`CborDecode`/
+`malformed_cbor` are the same error class), and the three rule-4 shapes
+(`bignum_wide`, `shareable_cycle`, `float_then_undefined`) are already caught
+by block's own pre-existing tree-wide `reject_floats_and_tags` call — the
+same defence-in-depth call `decode_manifest` already has — which runs ahead
+of required-field parsing on both paths today, independently of this
+slice's walk. No block answer contradicts anything a reader would call
+"wrong"; the divergence is fully explained by the probe body shape, not by
+a decoder inconsistency, so it does not trigger the Step 5 STOP condition
+either.
+
 ---
 
 ## 2. Decisions
