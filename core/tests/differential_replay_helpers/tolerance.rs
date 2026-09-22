@@ -20,8 +20,8 @@ use super::targets::PHASE_DEPENDENT_TOLERANCE_TARGETS;
 ///
 /// **Derived from, and strictly BROADER than, those paragraphs — it is not
 /// them.** A per-token predicate tolerates every pair its token appears in,
-/// so with 4 of the 17 tokens phase-dependent this tolerates **54 of the 136
-/// unequal pairs** on `manifest_body` (58 have a phase-dependent member; the
+/// so with 4 of the 18 tokens phase-dependent this tolerates **58 of the 153
+/// unequal pairs** on `manifest_body` (62 have a phase-dependent member; the
 /// `malformed_cbor` exception below withholds four), of which §4.2 frees a
 /// strict subset. FOUR groups are
 /// tolerated with no §4.2 licence at all, and on the committed corpus the
@@ -60,7 +60,7 @@ use super::targets::PHASE_DEPENDENT_TOLERANCE_TARGETS;
 /// a body's item boundaries "reports that instead, whatever else the body
 /// also breaks". So a pair naming `malformed_cbor` against a phase-dependent
 /// token has no §4.2 licence, and withholding it manufactures no false
-/// disagreement. It is why `manifest_body`'s breadth is **54**, not the 58
+/// disagreement. It is why `manifest_body`'s breadth is **58**, not the 62
 /// pairs that have a phase-dependent member. Rust's `malformed_cbor` also
 /// covers the recursion limit, and since #667 that IS a well-formedness
 /// fault: crypto-design §6.2 rule 6, listed among §4.2's preconditions, and

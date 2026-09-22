@@ -73,10 +73,20 @@ pub enum RuleToken {
     /// A required key is absent (§4.2 manifest body; §6.3 record or block
     /// plaintext).
     MissingField,
-    /// A field's CBOR major type, or a byte string's length, is not what §4.2
-    /// (the manifest body) or §6.3 (a block's plaintext, or a record alone or
-    /// inside it) requires — including a body that is not a map, and a
-    /// non-text map key.
+    /// A map key the schema does not define, on a decoder that has no
+    /// forward-compat `unknown` bag to put it in (#641).
+    ///
+    /// Today's sole producer is `CardError::UnknownField`: the §6 contact
+    /// card rejects every unrecognised key outright, where the manifest body,
+    /// the record and a block's plaintext all retain one. Distinct from
+    /// [`Self::WrongType`] because both implementations name the two apart —
+    /// a non-text key is a wrong type, a well-typed key that is not in the
+    /// schema is this.
+    UnknownField,
+    /// A field's CBOR major type, or a byte string's or text string's length,
+    /// is not what §4.2 (the manifest body), §6 (a contact card) or §6.3 (a
+    /// block's plaintext, or a record alone or inside it) requires —
+    /// including a body that is not a map, and a non-text map key.
     WrongType,
     /// An integer field is outside the width §4.2 or §6.3 gives it.
     IntegerOutOfRange,
@@ -133,6 +143,7 @@ impl RuleToken {
         RuleToken::RepeatedArrayValue,
         RuleToken::DuplicateMapKey,
         RuleToken::MissingField,
+        RuleToken::UnknownField,
         RuleToken::WrongType,
         RuleToken::IntegerOutOfRange,
         RuleToken::UnsupportedVersion,
@@ -156,6 +167,7 @@ impl RuleToken {
             RuleToken::RepeatedArrayValue => "repeated_array_value",
             RuleToken::DuplicateMapKey => "duplicate_map_key",
             RuleToken::MissingField => "missing_field",
+            RuleToken::UnknownField => "unknown_field",
             RuleToken::WrongType => "wrong_type",
             RuleToken::IntegerOutOfRange => "integer_out_of_range",
             RuleToken::UnsupportedVersion => "unsupported_version",
@@ -205,13 +217,16 @@ impl RuleToken {
     /// On that target, marking a TOKEN phase-dependent tolerates EVERY pair
     /// that token appears in, so the tolerated set is far wider than the set
     /// §4.2 frees, and the honest way to state it is a count rather than a
-    /// short list of exceptions. Four of the seventeen tokens are
-    /// phase-dependent, so 58 of the 136 unequal token pairs have at least
-    /// one phase-dependent member, and **54 are tolerated**: the harness
+    /// short list of exceptions. Four of the eighteen tokens are
+    /// phase-dependent, so 62 of the 153 unequal token pairs have at least
+    /// one phase-dependent member, and **58 are tolerated**: the harness
     /// withholds the four that pair one with [`Self::MalformedCbor`], because
     /// §4.2 makes well-formedness the precondition for both of its orderings
     /// rather than a rule inside them (PR #673 review). §4.2 licenses a
-    /// strict subset of those 54.
+    /// strict subset of those 58. (#641's [`Self::UnknownField`] joined the
+    /// non-phase-dependent majority and moved these two counts up from 58/54
+    /// — a new non-phase-dependent token always adds four tolerated pairs,
+    /// one per phase-dependent token it now pairs against.)
     ///
     /// **What that costs on the committed corpus, measured rather than
     /// argued.** All four [`NonCanonicalCause`] outcomes map to
@@ -307,6 +322,7 @@ impl RuleToken {
             | RuleToken::RepeatedArrayValue
             | RuleToken::DuplicateMapKey
             | RuleToken::MissingField
+            | RuleToken::UnknownField
             | RuleToken::WrongType
             | RuleToken::IntegerOutOfRange
             | RuleToken::UnsupportedVersion

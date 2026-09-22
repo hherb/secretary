@@ -42,6 +42,7 @@ fn all_lists_every_variant() {
             | RuleToken::RepeatedArrayValue
             | RuleToken::DuplicateMapKey
             | RuleToken::MissingField
+            | RuleToken::UnknownField
             | RuleToken::WrongType
             | RuleToken::IntegerOutOfRange
             | RuleToken::UnsupportedVersion
@@ -53,7 +54,7 @@ fn all_lists_every_variant() {
             | RuleToken::InternalError => (),
         };
     }
-    assert_eq!(RuleToken::ALL.len(), 17);
+    assert_eq!(RuleToken::ALL.len(), 18);
 }
 
 /// Exactly the four rules vault-format §4.2 declares unordered are
@@ -83,6 +84,22 @@ fn phase_dependent_set_matches_the_spec() {
 #[test]
 fn rule4_is_ordered_not_phase_dependent() {
     assert!(!RuleToken::Rule4TagOrFloat.is_phase_dependent());
+}
+
+/// The card is the only decoder in the tree that rejects an unrecognised key
+/// outright — the manifest, record and block plaintext all carry
+/// forward-compat `unknown` bags — so this token has exactly one producer
+/// today (#641).
+///
+/// It is NOT folded onto `WrongType`: `conformance.py`'s card decoder names
+/// an unknown key exactly, and the full-corpus measurement found 39 inputs
+/// where Rust said "non-string map key" and Python said "unknown field".
+/// Collapsing the two would have scored those as agreement.
+#[test]
+fn unknown_field_is_its_own_token_and_is_not_phase_dependent() {
+    assert_eq!(RuleToken::UnknownField.as_str(), "unknown_field");
+    assert!(!RuleToken::UnknownField.is_phase_dependent());
+    assert!(RuleToken::ALL.contains(&RuleToken::UnknownField));
 }
 
 /// The committed fixture both languages read must agree with this enum, in
@@ -146,6 +163,7 @@ fn each_variant_spells_itself_the_same_way_forever() {
         (RuleToken::RepeatedArrayValue, "repeated_array_value"),
         (RuleToken::DuplicateMapKey, "duplicate_map_key"),
         (RuleToken::MissingField, "missing_field"),
+        (RuleToken::UnknownField, "unknown_field"),
         (RuleToken::WrongType, "wrong_type"),
         (RuleToken::IntegerOutOfRange, "integer_out_of_range"),
         (RuleToken::UnsupportedVersion, "unsupported_version"),
