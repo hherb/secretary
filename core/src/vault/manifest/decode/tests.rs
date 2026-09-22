@@ -1309,9 +1309,16 @@ fn manifest_with_unknown_value(planted: &[u8]) -> Vec<u8> {
     };
 
     let head = base[0];
+    // 0xb6, not 0xb7: at 23 entries (0xb7) `head + 1` is 0xb8, which is the
+    // ONE-BYTE-COUNT map head, not a 24-entry small map — the spliced body
+    // would be silently mis-parsed. Latent today (the fixture has 9 entries)
+    // and `the_same_splice_with_a_benign_value_is_accepted` would catch it,
+    // but the guard should not be the thing that admits the bug (PR #689
+    // review).
     assert!(
-        (0xa0..=0xb7).contains(&head),
-        "the fixture's top-level map must have a one-byte head; got {head:#04x}"
+        (0xa0..=0xb6).contains(&head),
+        "the fixture's top-level map must have a one-byte head with room for \
+         one more entry; got {head:#04x}"
     );
 
     let mut out = Vec::with_capacity(base.len() + UNKNOWN_KEY.len() + planted.len());
@@ -1358,7 +1365,15 @@ fn a_body_that_is_not_well_formed_is_reported_as_malformed_cbor() {
 fn a_narrow_bignum_is_reported_as_a_rule_4_tag() {
     let body = manifest_with_unknown_value(&[0xc2, 0x41, 0x01]);
     match decode_manifest(&body) {
-        Err(ManifestError::Canonical(CanonicalError::TagRejected { .. })) => {}
+        // The `field` hint is asserted, not ignored: `walk.rs`'s
+        // `WALK_ROOT_HINT` claims "wiring this walk in front of
+        // `reject_floats_and_tags` does not move the reported message", and
+        // this is the only observable site that can hold it to that — the
+        // record and block enums both discard the field on their Tag arm
+        // (PR #689 review).
+        Err(ManifestError::Canonical(CanonicalError::TagRejected { field })) => {
+            assert_eq!(field, "<root>", "the walk must pass the same hint");
+        }
         other => panic!("expected Canonical(TagRejected), got {other:?}"),
     }
 }

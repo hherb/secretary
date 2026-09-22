@@ -16,9 +16,14 @@
 //!
 //! **What each caller still supplies.** Only its own `CborDecode`
 //! constructor. The rule-4 arms go through the caller's
-//! `From<CanonicalError>`, which every vault-body error enum already has and
-//! which already maps these two variants — so this function introduces no
-//! new mapping for a future variant to disagree with.
+//! `From<CanonicalError>`, which each of this function's THREE callers
+//! already has and which already maps these two variants — so this function
+//! introduces no new mapping for a future variant to disagree with. Say
+//! "these three callers", not "every vault-body error enum" (PR #689
+//! review): `BundleError` and `CardError` convert through the free functions
+//! `canonical_error_to_bundle_error` / `canonical_error_to_card_error` and
+//! implement no such `From`, so neither would satisfy the `E:
+//! From<CanonicalError>` bound without one being added first.
 
 use crate::cbor::{walk_first_item, CborFault, WalkFault};
 
@@ -38,6 +43,16 @@ const WALK_ROOT_HINT: &str = "<root>";
 /// bytes are judged by the §4.3 step-4 re-encode comparison, where
 /// `record::decode` has always judged them, because `ciborium` performs no
 /// EOF check.
+///
+/// **The rule-4 arms DROP the walk's byte offset, deliberately.**
+/// `WalkFault::{Tag, Float}` each carry one, and the `Malformed` arm keeps
+/// its `CborFault::offset`, so the asymmetry is worth stating rather than
+/// leaving to be rediscovered (PR #689 review). `CanonicalError::{TagRejected,
+/// FloatRejected}` carry a `&'static str` hint and no position, and widening
+/// them is an API change on a v1-frozen error enum reached from four other
+/// callers. The practical cost is on the manifest path: a narrow bignum used
+/// to be reported as `NonCanonicalEncoding { cause, at }` with a byte offset
+/// and is now `Canonical(TagRejected { field: "<root>" })` with none.
 ///
 /// A well-formedness fault anywhere outranks a rule-4 fault anywhere —
 /// `docs/vault-format.md` §4.2's precondition. §4.2 requires this ordering
@@ -68,6 +83,17 @@ where
 
 #[cfg(test)]
 mod tests {
+    //! These exercise the router through `RecordError`, a type that lives
+    //! ABOVE this module in the layering its own doc argues for. That is
+    //! deliberate rather than an oversight (PR #689 review raised it): the
+    //! property under test is "the caller's `From<CanonicalError>` maps these
+    //! two variants where the caller expects", and a synthetic test-only
+    //! error implementing the trait would prove that of the synthetic type
+    //! only. `RecordError` is the caller whose private
+    //! `walk_fault_to_record_error` this function replaced, so it is the one
+    //! whose behaviour must be shown unchanged. `#[cfg(test)]`-only, so no
+    //! production dependency runs in this direction.
+
     use super::*;
     use crate::cbor::CborErrorKind;
     use crate::vault::record::RecordError;

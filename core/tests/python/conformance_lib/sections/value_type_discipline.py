@@ -56,7 +56,7 @@ rule and its LIMITS block sit in one file and cannot drift from a summary.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from conformance_lib import fixtures
 from conformance_lib.codec.manifest_encode import ENCODER_REFUSAL_PREFIX
@@ -452,9 +452,13 @@ def _trash_entry_shareable_tag_issues() -> tuple[list[str], int]:
     issues: list[str] = []
     checked = 0
     for label, build in _SHAREABLE_TAG_BODIES:
-        checked += 1
-        body = build()
+        # `build()` inside the `try`, and `checked` incremented only once a
+        # body exists: a raise from the builder used to escape this helper,
+        # the section driver and `main()` with no `FAIL:` line at all — #682's
+        # shape — while the count had already moved (PR #689 review).
         try:
+            body = build()
+            checked += 1
             py_decode_trash_entry(body)
         except NonCanonicalItem as exc:
             if exc.rule != 4:
@@ -706,53 +710,122 @@ def _control_issues() -> list[str]:
     return issues
 
 
-def section_value_type_discipline() -> tuple[bool, list[str]]:
-    issues: list[str] = []
+class _Check(NamedTuple):
+    """One check this section runs.
 
+    `run` returns `(issues, count)`; `count` is `None` for a check whose PASS
+    line reports no number, and otherwise must be at least `minimum`.
+
+    The section driver iterates `_CHECKS` rather than calling each helper by
+    hand, so a helper whose result is never consumed is UNREPRESENTABLE.
+    Before the PR #689 review the driver did call them by hand, one
+    `issues.extend(...)` per helper, and deleting a single one of those lines
+    left the section GREEN while its PASS line still printed the positive
+    claim it had stopped checking -- measured, exit 0, on a tree carrying the
+    verbatim #685 defect. That mattered most for
+    `_trash_entry_shareable_tag_issues`, whose own docstring records that it
+    is the ONLY pin for `codec/trash_entry.py` (no Rust twin, no committed
+    seed, no replay target), so one deleted line retired the whole cover for
+    #685. #687 filed the class; this table closes it.
+
+    `minimum` is the second half of the same lesson: a count DERIVED from
+    execution still says nothing if the table it iterates is empty, the
+    fail-open `MIN_SCANNED_CODEC_MODULES` already closes for check 3
+    (CLAUDE.md records "the rule PASSED printing `0 codec/ modules
+    scanned`"). Measured before this fix: emptying `_SHAREABLE_TAG_BODIES`
+    printed `PASS 2c: 0 ... rejected as rule 4` and returned ok=True. Each
+    `minimum` is an ABSOLUTE constant, never `len()` of the table it guards --
+    such a floor is emptied along with it.
+    """
+
+    label: str
+    run: Callable[[], tuple[list[str], int | None]]
+    minimum: int = 0
+
+
+def _uncounted(fn: Callable[[], list[str]]) -> Callable[[], tuple[list[str], None]]:
+    """Adapt a plain `() -> issues` helper to the table's `(issues, count)` shape."""
+    return lambda: (fn(), None)
+
+
+def _optional_key_issues() -> tuple[list[str], int]:
+    """`optional_key_issues` bound to this section's own case table.
+
+    DERIVED from the cases that actually run, and SCOPED to the map each one
+    was planted in. A flat set of bare key names is many-to-one and credited a
+    case in one map to an optional key in another (#679 review).
+    """
+    case_keys = frozenset((c.scope(), c.key()) for c in DIVERGENCE_CASES)
+    return optional_key_issues(case_keys=case_keys, direct_keys=TRASH_ENTRY_DIRECT_KEYS)
+
+
+#: Every check, in the order their PASS lines are printed. A row deleted here
+#: is caught by [`EXPECTED_CHECK_COUNT`]; a row added without a PASS line is
+#: caught by the same count.
+_CHECKS: tuple[_Check, ...] = (
+    _Check("rejection", _uncounted(_rejection_issues)),
+    _Check("plant_integrity", _uncounted(_plant_integrity_issues)),
+    _Check("control", _uncounted(_control_issues)),
+    _Check("trash_entry", _trash_entry_issues, minimum=3),
+    _Check("trash_shareable_tag", _trash_entry_shareable_tag_issues, minimum=1),
+    _Check("wire", _wire_issues, minimum=8),
+    _Check("sanctioned_module", _uncounted(sanctioned_module_issues)),
+    _Check("scan_floor", _uncounted(scan_floor_issues)),
+    _Check("optional_key", _optional_key_issues, minimum=EXPECTED_OPTIONAL_KEY_COUNT),
+    _Check("dispatch_totality", _uncounted(dispatch_totality_issues)),
+)
+
+#: How many rows `_CHECKS` holds. Pinned separately because a row and its PASS
+#: line deleted together are invisible to the table itself -- the same reason
+#: `EXPECTED_CASE_COUNT` is pinned beside `DIVERGENCE_CASES`.
+EXPECTED_CHECK_COUNT = 10
+
+
+def section_value_type_discipline() -> tuple[bool, list[str]]:
+    if len(_CHECKS) != EXPECTED_CHECK_COUNT:
+        # Return at once rather than falling through: the PASS lines below
+        # index `counts` by label, so a missing row would raise a `KeyError`
+        # out of `main()` with no `FAIL:` line at all (#682's shape).
+        return False, [
+            f"  ISSUE: EXPECTED_CHECK_COUNT is {EXPECTED_CHECK_COUNT}, "
+            f"_CHECKS holds {len(_CHECKS)}"
+        ]
+
+    issues: list[str] = []
     if len(DIVERGENCE_CASES) != EXPECTED_CASE_COUNT:
         issues.append(
             f"EXPECTED_CASE_COUNT is {EXPECTED_CASE_COUNT}, the table holds "
             f"{len(DIVERGENCE_CASES)}"
         )
 
-    issues.extend(_rejection_issues())
-    issues.extend(_plant_integrity_issues())
-    issues.extend(_control_issues())
-    trash_issues, trash_checked = _trash_entry_issues()
-    issues.extend(trash_issues)
-    tag_issues, tag_checked = _trash_entry_shareable_tag_issues()
-    issues.extend(tag_issues)
-    wire_issues, wire_checked = _wire_issues()
-    issues.extend(wire_issues)
-    issues.extend(sanctioned_module_issues())
-    issues.extend(scan_floor_issues())
-
-    # DERIVED from the cases that actually run, and SCOPED to the map each one
-    # was planted in. A flat set of bare key names is many-to-one and credited
-    # a case in one map to an optional key in another (#679 review).
-    case_keys = frozenset((c.scope(), c.key()) for c in DIVERGENCE_CASES)
-    census_issues, optional_total = optional_key_issues(
-        case_keys=case_keys, direct_keys=TRASH_ENTRY_DIRECT_KEYS
-    )
-    issues.extend(census_issues)
-    issues.extend(dispatch_totality_issues())
+    counts: dict[str, int | None] = {}
+    for check in _CHECKS:
+        check_issues, count = check.run()
+        issues.extend(check_issues)
+        counts[check.label] = count
+        if count is not None and count < check.minimum:
+            issues.append(
+                f"check {check.label!r} ran {count} case(s), floor is {check.minimum} "
+                f"-- a count derived from execution still proves nothing if the "
+                f"table it iterates was emptied"
+            )
 
     lines = [
         f"PASS 1: {len(DIVERGENCE_CASES)} measured acceptance divergences, each rejected",
         f"PASS 1a/1b: every committed base re-encodes byte-identically and all "
         f"{len(DIVERGENCE_CASES)} plants are distinct",
-        f"PASS 1c: {wire_checked} wire/ integer position(s) reject a bool "
+        f"PASS 1c: {counts['wire']} wire/ integer position(s) reject a bool "
         f"(wire/vault_toml 6, wire/card 2)",
         f"PASS 2: {len({(c.target, c.position) for c in DIVERGENCE_CASES})} "
         f"control bodies accepted (the decoder discriminates)",
-        f"PASS 2b: {trash_checked} codec/trash_entry.py position(s) rejected, "
+        f"PASS 2b: {counts['trash_entry']} codec/trash_entry.py position(s) rejected, "
         f"plus the all-valid control",
-        f"PASS 2c: {tag_checked} trash_entry shareable-tag body(ies) "
+        f"PASS 2c: {counts['trash_shareable_tag']} trash_entry shareable-tag body(ies) "
         f"rejected as rule 4, not RecursionError (#685)",
         f"PASS 3: {scanned_module_count()} codec/ modules scanned (floor "
         f"{MIN_SCANNED_CODEC_MODULES}), none writes "
         f"`isinstance(..., int)` outside integer_rules.py",
-        f"PASS 4: {optional_total} optional key(s) across {len(KEY_SET_PAIRS)} paired "
+        f"PASS 4: {counts['optional_key']} optional key(s) across {len(KEY_SET_PAIRS)} paired "
         f"key sets, each covered (expected {EXPECTED_OPTIONAL_KEY_COUNT})",
         "PASS 4b: record.py's wire-order dispatches have an arm for every declared key",
     ]

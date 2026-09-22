@@ -4,8 +4,8 @@ Branch `feature/well-formedness-walk-manifest-block`, worktree
 `.worktrees/wellformed-walk`, base `bf63cc39` (`main`).
 
 **STATUS: implementation, docs, mutation evidence and the full gate set are
-done. Push and PR remain — the controller runs the whole-branch review
-first.**
+done. PR [#689](https://github.com/hherb/secretary/pull/689) is OPEN and
+green on all 26 CI contexts; its review round is folded in below.**
 
 **The headline:** #641 added `cbor::well_formed::walk_first_item` — a
 byte-level CBOR well-formedness walk that runs BEFORE ciborium's own parse —
@@ -89,7 +89,7 @@ time regardless; a slice can land underneath a long session.
 | `fcd2a78f` | Python: `py_decode_manifest` reports the well-formedness fault first (one `walk_body` call replaces two separate passes) |
 | `579aa2c9` | Python: `py_decode_trash_entry` walks bytes before `cbor2` resolves shareable tags (#685) |
 | `94f9f560` | Section VT's `PASS 2c` count derived from execution, not hardcoded (review fix) |
-| `ce7183ec` | 7 `wellformed__*` committed `manifest_body` seeds |
+| `ce7183ec` | 7 `wellformed__*` committed `manifest_body` seeds (an 8th, `indef_text_split_utf8`, added in the PR #689 review) |
 | `125ee680` | 2 more seeds: the short-bignum depth edge at both widths |
 | `f35adc6d` | fix: derive the bignum byte-string heads in the seed helper too (review fix) |
 
@@ -120,7 +120,8 @@ under an unknown key `zz_future` (length-first canonical position):
 **After this slice, every row agrees strictly, and the `82 f9 00 00 f7` row
 is conformant on both sides** (`malformed_cbor`/`malformed_cbor`). Seven of
 the eleven rows became committed `wellformed__*` seeds. The other four needed
-no seed: the control; the two already-agreeing rows — 9-byte bignum and the
+no seed: the control; and, of the FIVE rows the table above marks agreeing,
+the two whose agreement needs no fixture — 9-byte bignum and the
 tags-28/29 shape — which were already correct; and the `undefined`-then-tag
 ordering (**not** one of the already-agreeing rows — it was tolerated before
 this slice, same as its `tag`-then-`undefined` counterpart — but its walk
@@ -150,7 +151,7 @@ bodies rejected, 41 carrying a vocabulary token, 9 distinct tokens" —
 drivers discovered, 35 registered" — **unmoved**, because Section CS grew
 by one check rather than becoming a new section.
 
-Committed replay corpus: **131 → 140** (9 new `manifest_body` seeds: 7
+Committed replay corpus: **131 → 141** (10 new `manifest_body` seeds: 8
 `wellformed__*`, 2 `nesting__257_unknown_bignum_{narrow,wide}`).
 `manifest_body`'s STRICT token-comparison count (pairs no phase-dependent
 tolerance can excuse): **15 → 24 of 57**, all nine new seeds reaching it,
@@ -188,7 +189,7 @@ re-run, per the controller's instruction to cover only what those did not:
 
 | # | Mutation | Gate | Outcome | Reds |
 |---|---|---|---|---|
-| WF1 | The shared helper's `Malformed` arm redirected onto its rule-4 arm — every well-formedness fault through `walk_first_item_checked` misreports as `rule4_tag_or_float` | `cargo test --release --locked -p secretary-core --lib canonical::walk` | RED_AS_EXPECTED | `a_malformed_body_reaches_the_callers_cbor_decode_arm`, `a_later_malformed_fault_outranks_an_earlier_tag` |
+| WF1 | The shared helper's `Malformed` arm redirected onto its rule-4 arm — every well-formedness fault through `walk_first_item_checked` misreports as `rule4_tag_or_float` | `cargo test --release --locked -p secretary-core --lib canonical::walk` | RED_AS_EXPECTED | `a_malformed_body_reaches_the_callers_cbor_decode_arm`, `a_later_malformed_fault_outranks_an_earlier_tag` (**a FILTERED gate: `canonical::walk` reports that module's answer, not the blast radius. The mutated helper is on the record, manifest AND block paths, so the real red set is larger — the PR #689 review flagged this as the `--lib`-filter trap CLAUDE.md records by name for #587. It under-reports, so no false green; re-measure on the whole `--lib` target before quoting the count.**) |
 | WF2 | Python's `_walk` tag-arm rule-4 fault raised eagerly instead of parked | `uv run core/tests/python/conformance.py` | RED_AS_EXPECTED | `CBOR scanner unit coverage` (Section CS) |
 | WF3 | The v1 depth limit (`V1_MAX_NESTING_DEPTH`) lowered 256 → 255 | `cargo test --release --locked -p secretary-core --test nesting_depth_seeds` | RED_AS_EXPECTED | `every_decode_path_enforces_exactly_the_v1_limit`, `nesting_depth_seeds_are_committed_and_label_bound` |
 

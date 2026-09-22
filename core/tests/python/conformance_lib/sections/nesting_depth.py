@@ -34,12 +34,15 @@ Checks, each reporting what it RAN:
      (regression pin for #666: before it, `py_decode_manifest` ran a
      content-blind PASS here that could not see the fault, so depth won on
      the manifest and not on the record -- an asymmetry that is gone now).
-     `reject_excessive_nesting` itself is unchanged and still the first
-     statement of the card and trash-entry decoders, so its own silence
-     contract -- a truncated body with no depth problem makes it RETURN,
-     leaving the fault to a later phase -- is pinned directly, alongside the
-     control that `py_decode_manifest` still reports `MalformedCbor` on that
-     same truncated body (via `walk_body` now, not via that pass).  And the
+     `reject_excessive_nesting` is now the first statement of the CARD decoder
+     alone -- #666 moved the manifest and the trash entry onto `walk_body` --
+     and its `later_phases_scan_in_byte_order` flag is gone with them, so its
+     contract is pinned directly in the one direction that survives: a
+     structural fault RAISES. (The flag's `True` arm swallowed it; #666 left
+     that arm with no production caller and the PR #689 review retired it
+     rather than leave a fail-open defended only by this check.) Alongside it,
+     the control that `py_decode_manifest` still reports `MalformedCbor` on
+     that same truncated body -- via `walk_body` now, not via that pass.  And the
      converse, on the two cbor2-backed decoders: a stray break ahead of a
      deep chain is `MalformedCbor` from the pass itself, since cbor2 accepts
      that break and would parse on (PR #684 review: the encoder, failing on
@@ -319,20 +322,48 @@ def _precedence_issues() -> _CheckResult:
         issues.append(err)
         return _CheckResult(issues, executed, passed, declared)
     truncated = manifest_base[:-1]
+    # `reject_excessive_nesting` RAISES a structural fault, unconditionally.
+    # It used to take a `later_phases_scan_in_byte_order` flag and this control
+    # drove the `True` arm, which SWALLOWED the fault -- an arm #666 left with
+    # no production caller (the manifest and the trash entry moved to
+    # `walk_body`; the card, its one remaining caller, passed `False`). The
+    # flag is gone, so this control now pins the surviving contract in the
+    # direction the card actually depends on (PR #689 review).
     try:
-        reject_excessive_nesting(truncated, later_phases_scan_in_byte_order=True)
-    except Exception as exc:  # noqa: BLE001 -- any raise breaks the pass's silence
-        executed += 1
-        issues.append(f"reject_excessive_nesting raised {type(exc).__name__} on a truncated body with no depth fault")
-    else:
+        reject_excessive_nesting(truncated)
+    except MalformedCbor:
         executed += 1
         passed += 1
+    except Exception as exc:  # noqa: BLE001
+        executed += 1
+        issues.append(
+            f"reject_excessive_nesting raised {type(exc).__name__} on a truncated body, "
+            f"expected {MalformedCbor.__name__}"
+        )
+    else:
+        executed += 1
+        issues.append(
+            "reject_excessive_nesting ACCEPTED a truncated body; it must raise a "
+            "structural fault, since its one caller's next phase (cbor2.loads) is "
+            "not a byte-order well-formedness check"
+        )
     got = _outcome(_MANIFEST.decode, truncated)
     executed += 1
     if got != MalformedCbor.__name__:
         issues.append(f"py_decode_manifest on a truncated body gave {got}, expected {MalformedCbor.__name__}")
     else:
         passed += 1
+    if executed != declared:
+        # A shortfall used to surface ONLY inside the PASS line's own text, so
+        # deleting a case row left the section GREEN printing
+        # "7/7 ... of 8 declared" — and the single row pinning #666's Python
+        # change is one of those rows (PR #689 review). `_pass_line`'s
+        # docstring claimed the shortfall was surfaced "in the line itself and
+        # not only as an ISSUE", implying an ISSUE too; there was none.
+        issues.append(
+            f"PASS 4 executed {executed} of {declared} declared case(s) — a row was "
+            f"dropped, or a guard skipped one"
+        )
     return _CheckResult(issues, executed, passed, declared)
 
 

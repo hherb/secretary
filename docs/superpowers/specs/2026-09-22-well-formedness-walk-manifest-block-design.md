@@ -27,7 +27,10 @@ report order is still parity rather than spec is `record` and block plaintext
 A throwaway probe wrote eleven `manifest_body` bodies to a scratch directory:
 the committed accepting base `manifest_body/uniq__control__all_distinct.bin`
 with one entry `("zz_future", <value>)` spliced in at its canonical position
-(length-first, so *between* `suite_id` and `vault_uuid` — appending it instead
+(length-first, so immediately after `suite_id` (8 bytes) and immediately
+BEFORE `kdf_params` — the FIRST of the two 10-byte keys, not `vault_uuid`;
+this loose phrasing reached the shipped test source and the PR #689 review
+corrected it there — appending it instead
 makes the body non-canonical, which the control row caught). The Rust column
 is `decode_manifest(..).rule_token()` run from a temporary `#[ignore]`d test in
 this worktree, deleted before the first commit. The Python column is

@@ -29,8 +29,9 @@ ITERATIVE on purpose, and bounded by crypto-design §6.2 rule 6 (#667).
 explicit stack, and the stack is the depth count: a head that would open level
 257 raises `NestingTooDeep` at once, like every well-formedness fault, so no
 recursive phase after it ever sees more than 256 levels.  `reject_excessive_nesting`
-is the same traversal with the content checks off, for the decoders that have
-no `walk_body` of their own.
+is the same traversal with the content checks off, for the ONE decoder that has
+no `walk_body` of its own -- `codec/card.py`, since #666 moved the manifest and
+the trash entry onto `walk_body`.
 
 SCOPE.  The first item only.  Trailing bytes are the caller's to judge, and
 `py_decode_record` judges them LAST, where `record::decode` meets them: its
@@ -175,37 +176,37 @@ def walk_body(buf: bytes, pos: int = 0) -> int:
     return _walk(buf, pos, check_content=True)
 
 
-def reject_excessive_nesting(buf: bytes, *, later_phases_scan_in_byte_order: bool) -> None:
+def reject_excessive_nesting(buf: bytes) -> None:
     """crypto-design §6.2 rule 6 over a whole document, and nothing else (#667).
 
-    The first statement of every `codec/` decoder that has no `walk_body` of its
-    own (the manifest, the contact card, the trash entry), so a document nested
-    past the limit is refused before any RECURSIVE phase runs -- which is what
-    turned a 995-level manifest into a `RecursionError` harness failure.
+    The first statement of `codec/card.py` -- the ONE `codec/` decoder with no
+    `walk_body` of its own -- so a document nested past the limit is refused
+    before any RECURSIVE phase runs, which is what turned a 995-level manifest
+    into a `RecursionError` harness failure.
 
     It walks item boundaries only.  It reports no content-level fault (invalid
     UTF-8, a disallowed simple value, a tag or float as rule 4), since none of
-    those moves a boundary; a tag still counts as a level.
+    those moves a boundary; a tag still counts as a level.  A STRUCTURAL fault
+    it cannot walk past -- a truncated head, an overrun, a bad chunk, a stray
+    break -- is RAISED, unconditionally.
 
-    At a STRUCTURAL fault it cannot walk past -- a truncated head, an overrun, a
-    bad chunk, a stray break -- what it does depends on the caller, which must
-    say, because the answer is a property of the caller's later phases:
+    **It used to take a `later_phases_scan_in_byte_order` flag whose `True` arm
+    SWALLOWED such a fault** and left it to a later byte-order phase to re-find.
+    #667 gave it to the manifest, the contact card and the trash entry; #666
+    then moved the manifest and the trash entry onto `walk_body`, leaving the
+    card -- which passed `False` -- as the only caller, so the swallowing arm
+    had no production caller at all and was reachable only from the section
+    that tested it.  A documented fail-open defended solely by its own test is
+    how the next decoder gets wired onto it on the strength of a caller list
+    that no longer holds, so the flag is gone (PR #689 review).  Restoring it
+    needs a caller whose later phases really do scan in byte order, and the
+    argument written down at that caller.
 
-      * `later_phases_scan_in_byte_order=True` (the manifest, whose later phases
-        are `scanner._scan_item`): it returns, leaving the fault to those phases
-        to report as they always have.  They scan in byte order and raise at
-        the same byte, so none of them can nest past 256 levels first.
-      * `later_phases_scan_in_byte_order=False` (the contact card and the trash
-        entry, whose next phase is `cbor2.loads`): it raises the fault.  cbor2
-        is NOT a byte-order well-formedness check -- it accepts a stray break
-        inside a definite array, returning a sentinel object -- so a body with
-        a break ahead of a 300-level chain used to pass this pass silently and
-        be rejected by the ENCODER failing on that sentinel (PR #684 review).
+    The reason the surviving behaviour is RAISE and not return: the card's next
+    phase is `cbor2.loads`, which is NOT a byte-order well-formedness check --
+    it accepts a stray break inside a definite array, returning a sentinel
+    object -- so a body with a break ahead of a 300-level chain would otherwise
+    pass silently and be rejected by the ENCODER failing on that sentinel
+    (PR #684 review).
     """
-    try:
-        _walk(buf, 0, check_content=False)
-    except NestingTooDeep:
-        raise
-    except MalformedCbor:
-        if not later_phases_scan_in_byte_order:
-            raise
+    _walk(buf, 0, check_content=False)

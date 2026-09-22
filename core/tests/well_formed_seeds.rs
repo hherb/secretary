@@ -6,6 +6,18 @@
 //! The Python half of the binding is `conformance_lib`'s `codec/well_formed.py`
 //! plus its token vocabulary; the cross-language comparison itself runs
 //! through `differential_replay.rs`, not this file.
+//!
+//! **Not every row is a #666 divergence, and the table does not distinguish
+//! them, so it is said here.** Five rows (`undefined`, `two_byte_simple`,
+//! `nested_indefinite_chunk`, `bignum_narrow`, and the two `_then_malformed`
+//! precedence rows) pin behaviour #666 CHANGED on the Rust side. One,
+//! `indef_text_split_utf8`, pins a divergence #666 closed on the PYTHON side
+//! without claiming it (found in the PR #689 review; see its byte constant's
+//! doc). And one, `invalid_utf8`, is a PRE-EXISTING regression pin rather
+//! than a divergence at all — `ciborium` has always rejected invalid UTF-8
+//! as `malformed_cbor`, so that row passed before #666 too. It is kept
+//! because it exercises the same splice helper and the same match arm as its
+//! four neighbours, not because it measured anything.
 
 mod well_formed_seeds_helpers;
 
@@ -42,8 +54,8 @@ fn every_row_plants_distinct_bytes() {
 }
 
 /// The base still ACCEPTS, and the splice with a benign value still
-/// accepts. Without this the seven rows could all be rejecting because the
-/// splice itself is malformed rather than because of what they plant.
+/// accepts. Without this every row could be rejecting because the splice
+/// itself is malformed rather than because of what it plants.
 #[test]
 fn the_base_and_a_benign_splice_are_both_accepted() {
     assert!(
@@ -58,7 +70,10 @@ fn the_base_and_a_benign_splice_are_both_accepted() {
     assert!(
         decode_manifest(&body_for(&benign)).is_ok(),
         "the splice itself must be canonical: zz_future is 9 bytes, so RFC 8949 \
-         §4.2.1 length-first order puts it between suite_id and vault_uuid"
+         §4.2.1 length-first order puts it immediately after suite_id (8) and \
+         immediately BEFORE kdf_params — the first of the two 10-byte keys, \
+         not vault_uuid; see well_formed_seeds_helpers's module doc, which \
+         records that targeting vault_uuid is the mistake this test catches"
     );
 }
 
@@ -76,13 +91,22 @@ fn every_committed_seed_matches_its_row() {
             body_for(&case),
             "{name}: committed bytes differ from the row's body. {REGENERATE}"
         );
+        // `RuleToken::as_str()`, not a normalised `{:?}` rendering. Its own
+        // doc calls it "the wire spelling, shared with `conformance.py`
+        // through `core/tests/data/rule_token_vocabulary.json`", so it is the
+        // single source this corpus must agree with; comparing the `Debug`
+        // derive instead was a SECOND spelling of that rule, and the
+        // lowercase-and-strip-underscores normalisation it needed also
+        // accepted `"RULE4_TAG_OR_FLOAT"` and would have kept passing if
+        // `Debug` ever diverged from `as_str` (PR #689 review). The sibling
+        // generator `rule_token_seeds.rs` has always compared the token
+        // exactly.
         let got = match decode_manifest(&on_disk) {
             Ok(_) => panic!("{name}: accepted, its row expects token {}", case.token),
-            Err(e) => format!("{:?}", e.rule_token()),
+            Err(e) => e.rule_token().as_str(),
         };
         assert_eq!(
-            got.to_lowercase().replace('_', ""),
-            case.token.replace('_', ""),
+            got, case.token,
             "{name}: decoder said {got}, its row says {}",
             case.token
         );
@@ -121,11 +145,10 @@ fn generate_well_formed_seeds() {
         let bytes = body_for(&case);
         let got = match decode_manifest(&bytes) {
             Ok(_) => panic!("{name}: accepted; its row expects token {}", case.token),
-            Err(e) => format!("{:?}", e.rule_token()),
+            Err(e) => e.rule_token().as_str(),
         };
         assert_eq!(
-            got.to_lowercase().replace('_', ""),
-            case.token.replace('_', ""),
+            got, case.token,
             "{name}: decoder said {got}, its row says {}",
             case.token
         );

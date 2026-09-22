@@ -378,24 +378,54 @@ fn the_walk_paths_charge_a_level_for_a_short_bignum() {
     use secretary_core::vault::record::{decode, RecordError};
 
     type FaultOf = fn(&[u8]) -> Option<CborFault>;
-    let paths: [(&str, FaultOf); 3] = [
-        ("decode_manifest", |b| match decode_manifest(b) {
-            Err(ManifestError::CborDecode(f)) => Some(f),
-            _ => None,
-        }),
-        ("block::decode_plaintext", |b| match decode_plaintext(b) {
-            Err(BlockError::CborDecode(f)) => Some(f),
-            _ => None,
-        }),
-        ("record::decode", |b| match decode(b) {
-            Err(RecordError::CborDecode(f)) => Some(f),
-            _ => None,
-        }),
+    /// Whether the path rejected AT ALL, for any reason. Needed separately
+    /// because `FaultOf` collapses `Ok(_)` and a non-`CborDecode` error onto
+    /// the same `None` — see the assertion below.
+    type Rejects = fn(&[u8]) -> bool;
+    let paths: [(&str, FaultOf, Rejects); 3] = [
+        (
+            "decode_manifest",
+            |b| match decode_manifest(b) {
+                Err(ManifestError::CborDecode(f)) => Some(f),
+                _ => None,
+            },
+            |b| decode_manifest(b).is_err(),
+        ),
+        (
+            "block::decode_plaintext",
+            |b| match decode_plaintext(b) {
+                Err(BlockError::CborDecode(f)) => Some(f),
+                _ => None,
+            },
+            |b| decode_plaintext(b).is_err(),
+        ),
+        (
+            "record::decode",
+            |b| match decode(b) {
+                Err(RecordError::CborDecode(f)) => Some(f),
+                _ => None,
+            },
+            |b| decode(b).is_err(),
+        ),
     ];
-    for (name, fault_of) in paths {
+    for (name, fault_of, rejects) in paths {
         for shape in [Chain::BignumNarrowLast, Chain::BignumWideLast] {
+            // `fault_of` maps BOTH `Ok(_)` and any non-`CborDecode` error to
+            // `None`, so `assert_ne!(.., Some(RecursionLimit))` alone was
+            // satisfied by a decoder that ACCEPTED the depth-256 body — it
+            // asserts "not refused FOR DEPTH", never "refused" (PR #689
+            // review). These bodies are not valid documents of any kind, so
+            // require a rejection first and only then that the reason is not
+            // depth. Its sibling `every_decode_path_enforces_exactly_the_v1_limit`
+            // already makes the same two-part assertion.
+            let at_limit = nested_document(V1_MAX_NESTING_DEPTH, shape);
+            assert!(
+                rejects(&at_limit),
+                "{name} ACCEPTS a {shape:?} chain of depth {V1_MAX_NESTING_DEPTH}; \
+                 it is not a valid document and must be rejected for some other reason"
+            );
             assert_ne!(
-                fault_of(&nested_document(V1_MAX_NESTING_DEPTH, shape)).map(|f| f.kind),
+                fault_of(&at_limit).map(|f| f.kind),
                 Some(CborErrorKind::RecursionLimit),
                 "{name} refuses a {shape:?} chain of depth {V1_MAX_NESTING_DEPTH}, which rule 6 allows"
             );

@@ -113,7 +113,7 @@ pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("contact_card", 4),
     ("bundle_file", 1),
     ("manifest_file", 1),
-    ("manifest_body", 57),
+    ("manifest_body", 58),
     ("block_file", 24),
 ];
 

@@ -21,7 +21,8 @@
 //! `rule_token_seeds.rs`'s `SEEDED_TARGETS`.** That file's census owns EVERY
 //! labelled file (one containing `__`) in a seeded target's directory —
 //! see its own module doc — so adding `manifest_body` there would make it
-//! claim all 47 pre-existing `manifest_body` seeds (`arraysort__`,
+//! claim every labelled `manifest_body` seed — all 57 of them today, and
+//! the count moves with every generator that writes there (`arraysort__`,
 //! `keyorder__`, `uniq__`, `valuetype__`, `top__`, `block__`, `trash__`,
 //! `nesting__`), none of which its table declares. That is exactly the trap
 //! `nesting_depth_seeds_helpers`'s by-name prefix exclusion already
@@ -52,7 +53,7 @@ pub use prefix::SEED_PREFIX;
 
 /// How many rows the table holds; a row and its seed deleted together are
 /// invisible to the two-way census, so the count is pinned separately.
-pub const EXPECTED_CASE_COUNT: usize = 7;
+pub const EXPECTED_CASE_COUNT: usize = 8;
 
 /// A key no v1 document defines, so it lands in the manifest's forward-compat
 /// `unknown` bag. 9 bytes — see the module doc for why that length is
@@ -151,6 +152,37 @@ const NESTED_INDEFINITE_CHUNK: [u8; 6] = [
 /// A one-byte text string whose payload is not valid UTF-8.
 const INVALID_UTF8_TEXT: [u8; 2] = [DEFINITE_TEXT_LEN1_HEAD, INVALID_UTF8_BYTE];
 
+/// Major 3 (text string), additional-info 31: opens an indefinite-length
+/// text string, whose chunks RFC 8949 §3.2.3 requires to each be a
+/// DEFINITE-length text string.
+const INDEFINITE_TEXT_STRING_HEAD: u8 = 0x7f;
+
+/// The two bytes of U+00E9 (`é`) in UTF-8, split one per chunk below. Each
+/// byte is a valid UTF-8 *sequence fragment* and neither is a valid sequence
+/// on its own, which is the whole point of the row.
+const UTF8_E_ACUTE: [u8; 2] = [0xc3, 0xa9];
+
+/// An indefinite-length TEXT string whose two definite chunks split one
+/// UTF-8 sequence between them. Each chunk must be valid UTF-8 on its own
+/// (RFC 8949 §3.2.3 and `ciborium`, measured), so this is malformed.
+///
+/// This row exists because it is the one divergence #666 closed WITHOUT
+/// claiming it. `_check_canonical_item` raises rule 2 on the indefinite head
+/// as its first statement, so before #666 the Python reader never reached
+/// its own UTF-8 check here and answered `rule2_indefinite_length`, while
+/// `decode_manifest` has always answered `malformed_cbor` (ciborium rejects
+/// at parse). A pair naming `malformed_cbor` is never tolerated, so this was
+/// a live differential disagreement that survived only because no committed
+/// or corpus input reached it. Found in the PR #689 review.
+const INDEFINITE_TEXT_SPLIT_UTF8: [u8; 6] = [
+    INDEFINITE_TEXT_STRING_HEAD,
+    DEFINITE_TEXT_LEN1_HEAD,
+    UTF8_E_ACUTE[0],
+    DEFINITE_TEXT_LEN1_HEAD,
+    UTF8_E_ACUTE[1],
+    BREAK_CODE,
+];
+
 /// A positive bignum tag over a 1-byte string: well-formed, but a tag, so
 /// crypto-design §6.2 rule 4 rejects it. Narrow enough (fits 64 bits) that
 /// `ciborium`'s `Value` reader folds it to an integer and never sees it as a
@@ -199,7 +231,7 @@ pub struct WellFormedCase {
     pub token: &'static str,
 }
 
-/// The seven rows. See the module doc for the byte-sequence derivations and
+/// The eight rows. See the module doc for the byte-sequence derivations and
 /// for why the two `_then_malformed` rows are the ones that matter most:
 /// they are the only cross-language pin on the walk's PARKING behaviour (a
 /// rule-4 fault seen first is held, not reported, until well-formedness of
@@ -224,6 +256,11 @@ pub fn all_cases() -> Vec<WellFormedCase> {
         WellFormedCase {
             label: "invalid_utf8",
             planted: &INVALID_UTF8_TEXT,
+            token: "malformed_cbor",
+        },
+        WellFormedCase {
+            label: "indef_text_split_utf8",
+            planted: &INDEFINITE_TEXT_SPLIT_UTF8,
             token: "malformed_cbor",
         },
         WellFormedCase {
@@ -302,8 +339,12 @@ fn small_definite_map(entries: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
 /// `base()` with `zz_future: <planted>` inserted at RFC 8949 §4.2.1's
 /// canonical position — see the module doc for why that position is between
 /// `suite_id` and `kdf_params`, measured rather than assumed. `planted` is
-/// spliced in raw, so it can (and for six of the seven rows, does) fail to
-/// be a well-formed CBOR item on its own.
+/// spliced in raw, so it need not be a well-formed CBOR item on its own.
+/// Deliberately not stated as a count of rows: `bignum_narrow` is valid CBOR
+/// (it is a rule-4 row, not a well-formedness row), and `undefined` IS
+/// well-formed by RFC 8949 — it is excluded by `docs/vault-format.md` §4.2's
+/// precondition list instead, the distinction this module's own byte
+/// constants are careful to draw.
 pub fn body_for(case: &WellFormedCase) -> Vec<u8> {
     let key = encode(&Value::Text(FUTURE_KEY.to_owned()));
     let mut out = entries(&base());

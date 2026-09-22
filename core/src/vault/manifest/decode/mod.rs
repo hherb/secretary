@@ -147,6 +147,13 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestError> {
     // walk above answers first for every tag and float ciborium would still
     // represent; this stays as defence in depth, exactly as `record.rs`
     // words the same relationship for its own tree-wide call.
+    //
+    // **It is therefore PERMANENTLY VACUOUS here, and no test can tell it
+    // from deletion** (PR #689 review). Kept because it is the layer that
+    // would answer if the walk were ever removed or narrowed — but do not
+    // read a green suite as evidence this call does anything. The Python
+    // side records the same loss explicitly, in
+    // `sections/manifest_canonicality_cause.py`'s docstring.
     reject_floats_and_tags(parsed.as_value(), "<root>")?;
 
     let Value::Map(entries) = parsed.as_value() else {

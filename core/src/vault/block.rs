@@ -1101,6 +1101,13 @@ pub fn decode_plaintext(bytes: &[u8]) -> Result<BlockPlaintext, BlockError> {
     // still represent; this stays as defence in depth, exactly as
     // `record.rs` and `decode_manifest` word the same relationship for
     // their own tree-wide calls.
+    //
+    // **It is therefore PERMANENTLY VACUOUS on this path, and no test can
+    // tell it from deletion** (PR #689 review). A tag or float in the bytes
+    // is caught by the walk, and `from_secret_reader` cannot synthesise one
+    // that was not there. Kept deliberately — it is the layer that would
+    // answer if the walk were ever removed or narrowed — but do not read a
+    // green suite as evidence this call does anything.
     reject_floats_and_tags(parsed.as_value(), "<root>")?;
 
     let Value::Map(entries) = parsed.as_value() else {
@@ -3263,6 +3270,13 @@ mod tests {
         body
     }
 
+    /// The first three rows are shapes `ciborium` ACCEPTS, so before #666 they
+    /// reached the parsed-tree checks and were reported under a later rule.
+    /// The fourth, invalid UTF-8, is NOT one of them — `ciborium` has always
+    /// rejected it as `malformed_cbor`, so that row is a pre-existing
+    /// regression pin rather than something #666 changed. Its manifest twin
+    /// says the same; without the note a reader counts four discriminating
+    /// rows where there are three.
     #[test]
     fn a_block_plaintext_that_is_not_well_formed_is_reported_as_malformed_cbor() {
         for (label, planted) in [
@@ -3308,13 +3322,21 @@ mod tests {
     /// The control. A benign value makes the SAME body fail on a missing
     /// required block field, NOT on CBOR structure — which is what shows the
     /// tests above are exercising the walk rather than the schema.
+    ///
+    /// It names the EXACT variant rather than accepting any non-`CborDecode`
+    /// error (PR #689 review). `Err(_)` was satisfied by a decoder that
+    /// answered `TagRejected` for every body, which would also have satisfied
+    /// `a_narrow_bignum_in_a_block_plaintext_is_reported_as_a_rule_4_tag` —
+    /// so the pair proved nothing together. The manifest twin asserts full
+    /// acceptance, which is stronger still; this splice cannot decode (it
+    /// carries no required field), so naming the first missing field is the
+    /// strongest control available here.
     #[test]
     fn the_same_block_splice_with_a_benign_value_fails_on_schema_not_structure() {
         let body = block_plaintext_with_unknown_value(&[0x00]);
         match decode_plaintext(&body) {
-            Err(BlockError::CborDecode(_)) => panic!("a benign body must not be a CBOR fault"),
-            Err(_) => {}
-            Ok(_) => panic!("a body with no required fields must not decode"),
+            Err(BlockError::MissingField { .. }) => {}
+            other => panic!("expected MissingField on a benign splice, got {other:?}"),
         }
     }
 }

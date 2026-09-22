@@ -157,10 +157,34 @@ def py_decode_manifest(data: bytes) -> dict:
     # mirror of `decode_manifest`'s own call, which sits between the parse and
     # `parse_manifest_map` for the same reason).
     #
-    # What `walk_body` adds beyond those two -- UTF-8 validation and the
-    # major-7 simple-value restriction -- changes nothing observable here:
-    # `_scan_item` (reached from `_check_canonical_item` in the entry loop
-    # below) already performs both. What DOES change is precedence: `walk_body`
+    # What `walk_body` adds beyond those two is UTF-8 validation and the
+    # major-7 simple-value restriction, and that is NOT observation-free --
+    # do not write it as "changes nothing observable", which an earlier draft
+    # of this comment did while also naming the wrong function. The checks
+    # live in `_check_canonical_item` (`codec/scanner.py`), reached per value
+    # from the entry loop below; `_scan_item` is structure-only and performs
+    # NEITHER. And `_check_canonical_item` raises rule 2 on an
+    # indefinite-length head as its FIRST statement, so inside an indefinite
+    # container it never reaches either check. Three classes therefore move,
+    # measured against this file's pre-#666 form with a clean control (a
+    # well-formed indefinite array still reports rule 2 on both):
+    #
+    #   9f f7 ff              indefinite array holding `undefined`
+    #   9f f8 15 ff           indefinite array holding a two-byte simple
+    #   7f 61 c3 61 a9 ff     indefinite text, a UTF-8 sequence split at a
+    #                         chunk boundary
+    #
+    # all three: `rule2_indefinite_length` -> `malformed_cbor`. That is a FIX,
+    # not a regression -- `decode_manifest` answers `malformed_cbor` for all
+    # three (ciborium rejects each at parse), so each was a live
+    # cross-language divergence in the never-tolerated `malformed_cbor` class,
+    # surviving only because no committed or corpus input reached one. The
+    # third is pinned by the committed seed
+    # `manifest_body/wellformed__indef_text_split_utf8.bin`; the first two are
+    # the definite-length `wellformed__undefined` / `wellformed__two_byte_simple`
+    # rows' indefinite twins, reported identically.
+    #
+    # What ALSO changes is precedence: `walk_body`
     # PARKS a well-formedness fault it meets ahead of a tag or float and
     # raises it only once the whole item has proven well-formed, so a body
     # that is not well-formed CBOR is reported as that -- `MalformedCbor` --
