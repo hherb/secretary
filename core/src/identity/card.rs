@@ -127,6 +127,28 @@ pub enum CardError {
     #[error("malformed contact card: {0}")]
     Malformed(&'static str),
 
+    /// A float appeared anywhere in the card body. crypto-design §6.2
+    /// rule 4, which §6.2's opening sentence binds the §6 self-signed
+    /// message and §6.1 fingerprint input by.
+    ///
+    /// Its own variant rather than a [`Self::Malformed`] literal because
+    /// `rule_token()` must name rule 4 where `conformance.py` names it
+    /// (#641). `field` is a `&'static str` hint from
+    /// `CanonicalError::FloatRejected`, never card content.
+    #[error("float values are not permitted in canonical CBOR (in field {field})")]
+    FloatRejected {
+        /// A fixed structural hint, e.g. `"<root>"`.
+        field: &'static str,
+    },
+
+    /// A CBOR tag appeared anywhere in the card body — §6.2 rule 4.
+    ///
+    /// Fieldless, mirroring [`crate::vault::record::RecordError::TagRejected`]:
+    /// `CanonicalError::TagRejected`'s hint is dropped because no caller
+    /// distinguishes tag positions and the token does not either.
+    #[error("CBOR tags are not permitted in canonical CBOR")]
+    TagRejected,
+
     /// A required §6 field was absent. `field` is the spec CBOR key name, a
     /// compile-time constant.
     #[error("missing required card field: {field}")]
@@ -608,9 +630,7 @@ fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, CardError> {
 fn canonical_error_to_card_error(e: CanonicalError) -> CardError {
     match e {
         CanonicalError::CborEncode(fault) => CardError::CborEncode(fault),
-        CanonicalError::FloatRejected { .. } => {
-            CardError::Malformed("float values are not permitted in canonical CBOR")
-        }
+        CanonicalError::FloatRejected { field } => CardError::FloatRejected { field },
         // #586/#602: the value handed in repeats a CBOR map key, which
         // would encode to an ambiguous body — one two conformant readers
         // may resolve differently while both accepting the §8 signature.
@@ -622,9 +642,7 @@ fn canonical_error_to_card_error(e: CanonicalError) -> CardError {
         CanonicalError::DuplicateKey { .. } => {
             CardError::Malformed("duplicate CBOR map key in canonical encoding")
         }
-        CanonicalError::TagRejected { .. } => {
-            CardError::Malformed("CBOR tags are not permitted in canonical CBOR")
-        }
+        CanonicalError::TagRejected { .. } => CardError::TagRejected,
         // Post-hoc tripwire for a future `ciborium::Value` variant the size
         // bound in `crate::vault::canonical` cannot name — see
         // `CanonicalError::CapacityBoundExceeded`. `actual`/`bound` are
@@ -635,6 +653,17 @@ fn canonical_error_to_card_error(e: CanonicalError) -> CardError {
         CanonicalError::CapacityBoundExceeded { .. } => {
             CardError::Malformed("canonical CBOR encode exceeded its reserved size bound")
         }
+    }
+}
+
+/// Required by [`crate::vault::canonical::walk_first_item_checked`], whose
+/// bound is `E: From<CanonicalError>` (#641).
+///
+/// Delegates rather than re-deciding: the mapping stays written in exactly one
+/// place, which is the property `canonical_error_to_card_error` exists for.
+impl From<CanonicalError> for CardError {
+    fn from(e: CanonicalError) -> Self {
+        canonical_error_to_card_error(e)
     }
 }
 
@@ -1148,6 +1177,26 @@ mod tests {
             }
             other => panic!("expected Malformed, got {other:?}"),
         }
+    }
+
+    /// The rule-4 arms are their own variants, not folded onto `Malformed`.
+    ///
+    /// Until #641 both folded onto `CardError::Malformed(&'static str)`, which is
+    /// fine while nothing reads the distinction and wrong the moment a rule token
+    /// does: rule 4 would report as `wrong_type` against a `conformance.py` side
+    /// that names it exactly, manufacturing a divergence out of a mapping choice.
+    #[test]
+    fn canonical_rule_four_errors_keep_their_own_card_variants() {
+        let float = CardError::from(CanonicalError::FloatRejected { field: "<root>" });
+        assert!(
+            matches!(float, CardError::FloatRejected { field: "<root>" }),
+            "expected FloatRejected, got {float:?}"
+        );
+        let tag = CardError::from(CanonicalError::TagRejected { field: "<root>" });
+        assert!(
+            matches!(tag, CardError::TagRejected),
+            "expected TagRejected, got {tag:?}"
+        );
     }
 
     // -----------------------------------------------------------------
