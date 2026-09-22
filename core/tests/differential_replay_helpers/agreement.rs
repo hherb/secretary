@@ -126,7 +126,9 @@ mod tests {
     use super::*;
 
     const COMPARED: &str = "manifest_body";
-    const UNCOMPARED: &str = "contact_card";
+    // `contact_card` moved into `TOKEN_COMPARED_TARGETS` (#641/#691); any
+    // target that stays loose and is not the crash-only target works here.
+    const UNCOMPARED: &str = "bundle_file";
 
     fn rust_ok(bytes: &[u8]) -> Result<SecretBytes, RustRejection> {
         Ok(SecretBytes::new(bytes.to_vec()))
