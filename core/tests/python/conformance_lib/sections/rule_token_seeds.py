@@ -1,6 +1,6 @@
 """Section RTS -- every committed single-fault seed for a token-compared
-`block_file` or `record` target is rejected with the rule its file name
-says, in this package as in Rust (#641).
+`block_file`, `record` or `contact_card` target is rejected with the rule
+its file name says, in this package as in Rust (#641, task 10).
 
 WHAT THIS PINS.  `core/tests/rule_token_seeds.rs` generates one seed per
 `(token, shape)` row, binds each committed file's BYTES to its row, and
@@ -23,14 +23,26 @@ subclass that forgot `token =` would otherwise inherit its base's coarse token
 silently, and a class the table omits would never be identity-checked (PR
 #673 review).
 
-WHY A CLASS PER `block_file` SEED (check 2).  One token covers several
-envelope checks: nine `container_malformed` seeds span seven `BlockError`
-variants.  With one class for all of them, deleting the `sig_ed_len` check
-let the parse fail a few bytes later as a truncation carrying the same token,
-and this section stayed green (PR #673 review, measured).  Each `block_file`
+WHY A CLASS PER `block_file` AND `contact_card` SEED (check 2).  One token
+covers several checks: nine `block_file` `container_malformed` seeds span
+seven `BlockError` variants, and `card_rules.py`'s own docstring names the
+same shape for the card -- `wrong_type` is carried by BOTH `CardWrongType`
+and `CardDisplayNameTooLong`, and `malformed_cbor` by BOTH
+`cbor_faults.MalformedCbor` and `cbor_faults.NestingTooDeep` (plus
+`scanner.NonCanonicalItem` for `rule4_tag_or_float`, which the CARD and
+`record` and `block_file` all route rule 4 through).  With one class for
+all of them, deleting the `sig_ed_len` check let the parse fail a few bytes
+later as a truncation carrying the same token, and this section stayed
+green (PR #673 review, measured); the identical shape on the card side was
+found in the fix round 1 review, measured the same way: repointing
+`codec/card.py`'s `raise CardDisplayNameTooLong(...)` at `CardWrongType` --
+deleting crypto-design §6's 4096-byte `display_name` bound as a NAMED check
+-- left `uv run core/tests/python/conformance.py` and the gated differential
+replay both green, because the TOKEN (`wrong_type`) is unchanged even
+though the specific check is gone.  Each `block_file` and `contact_card`
 seed's Python class is therefore required by name, default-deny, as
-`rule_token_seeds.rs` requires its Rust variant.  The `record` classes map one
-to one onto their tokens, so a class name there would add nothing.
+`rule_token_seeds.rs` requires its Rust variant.  The `record` classes map
+one to one onto their tokens, so a class name there would add nothing.
 
 WHY DISTINCT BYTES (check 2).  A label is bound to its bytes only on the Rust
 side, by regeneration.  This side read the file name alone, and three
@@ -42,39 +54,27 @@ WHY FLOORS (check 3) AND AN EXPECTED TOKEN SET (check 4).  An emptied
 directory satisfies check 2 vacuously, and a directory whose seeds were all
 relabelled onto one token satisfies checks 2 and 3.
 
-CHECK 5 IS PARITY, NOT SPEC.  Ten two-fault bodies -- nine `record`, one
-`block_file` -- are built in this section and never committed, because
-vault-format §6.1 and §6.3 fix no report order and a committed cross-language
-row must not pin one (#618's lesson; #668).  The `record` rows pin the phase
-order `py_decode_record` shares with `record::decode` by design -- walk, map,
-per-key checks in wire order, missing keys, canonical form last -- and the
-`block_file` row pins that a table is judged at its FIRST adjacent pair that
-is not strictly ascending, as `block.rs` does.  So a drift in Python's order
-reds here rather than only in a local full-corpus replay.  Every committed
-seed plants ONE fault, so the CI replay cannot see an order drift at all; this
-check is what does.  Nine rows each name the drift they catch; the tenth is
-a regression pin that the pre-#641 order also passed.  The two field-level
-`record` rows came from the PR #673 review, which found the order pinned at
-the top level only.  Rust's side of the
-`record` parity is pinned by `core/src/vault/record_order_tests.rs`, one
-`#[test]` per row, each asserting the exact `RecordError` and its
-single-fault controls.
+CHECK 5 IS PARITY, NOT SPEC, and lives in its own module,
+`rule_token_seeds_ordering.py` (fix round 1: split out once this file's own
+growth pushed it past the project's 500-line threshold).  It builds
+two-fault bodies for `record`, `block_file` and `contact_card`, never
+committed, because vault-format §6.1/§6.3 and crypto-design §6 fix no report
+order and a committed cross-language row must not pin one (#618's lesson;
+#668).  Read that module's docstring and `_card_ordering_cases`'s for the
+per-target detail; `section_rule_token_seeds` below just calls it.
 """
 
 from __future__ import annotations
-
-import os
 
 from pathlib import Path
 
 from conformance_lib import fixtures, rejection
 from conformance_lib.codec import card_rules, cbor_faults, record_rules
-from conformance_lib.constants import VECTOR_CLOCK_ENTRY_LEN
-from conformance_lib.cursor import Cursor, ParseError
+from conformance_lib.cursor import ParseError
 from conformance_lib.diff_replay import replay_bytes
 from conformance_lib.sections.nesting_depth_bodies import NESTING_SEED_PREFIX
+from conformance_lib.sections.rule_token_seeds_ordering import ordering_issues
 from conformance_lib.wire import envelope_rules
-from conformance_lib.wire.block_file import parse_header
 
 # Mirrors `rule_token_seeds_helpers::LABEL_SEPARATOR`.
 LABEL_SEPARATOR = "__"
@@ -113,13 +113,20 @@ _TARGETS: dict[str, tuple[int, frozenset[str]]] = {
     # earlier draft of this table carried -- `CardError` has no
     # `rule_token()` arm reaching `integer_out_of_range`; every `Malformed(_)`
     # arm, including a negative `created_at`, collapses to `wrong_type`
-    # (`core/src/vault/rule_tokens/card.rs`'s exhaustive match). 21 is the
-    # LABELLED count this section's table plants; the directory also holds
-    # the two `valuetype__` seeds above plus the two accepting bases
-    # (`with_sigs.cbor`, `pre_sig.cbor` -- the latter rejects but is not
-    # `__`-labelled), for 25 files on disk (`MIN_CORPUS_INPUTS`'s floor).
+    # (`core/src/vault/rule_tokens/card.rs`'s exhaustive match).
+    #
+    # 17, not 21 (fix round 1, IMPORTANT 1): `undefined`, `depth_257`,
+    # `float` and `bignum_narrow` moved to Section RTS check 5
+    # (`rule_token_seeds_ordering._card_ordering_cases`) once each was found
+    # to also carry a competing, order-dependent verdict the card's own
+    # schema cannot isolate a single-fault control for -- see that module's
+    # docstring. 17 is the LABELLED count this section's table plants; the
+    # directory also holds the two `valuetype__` seeds above plus the two
+    # accepting bases (`with_sigs.cbor`, `pre_sig.cbor` -- the latter rejects
+    # but is not `__`-labelled), for 21 files on disk (`MIN_CORPUS_INPUTS`'s
+    # floor).
     "contact_card": (
-        21,
+        17,
         frozenset(
             {
                 "malformed_cbor",
@@ -196,6 +203,48 @@ _BLOCK_FILE_CLASSES: dict[str, str] = {
     "repeated_array_value__recipients_first_pair_of_three": "EnvelopeRepeatedValue",
 }
 
+# Check 2 (CRITICAL, fix round 1): the Python class every `contact_card`
+# seed must be rejected with, keyed by file stem -- the same default-deny
+# discipline `_BLOCK_FILE_CLASSES` gives `block_file`, and for the identical
+# reason: `wrong_type` is carried by both `CardWrongType` and
+# `CardDisplayNameTooLong`, `malformed_cbor` by both `cbor_faults.MalformedCbor`
+# and `cbor_faults.NestingTooDeep`, and `rule4_tag_or_float` entirely by
+# `scanner.NonCanonicalItem` (a token check alone cannot tell those apart).
+# Before this table, no `contact_card` seed had its Python class checked at
+# all -- `_seed_issues`'s class branch fired only `elif target ==
+# "block_file"`. Measured cost: repointing `codec/card.py`'s
+# `raise CardDisplayNameTooLong(...)` at `CardWrongType` -- deleting
+# crypto-design §6's 4096-byte `display_name` bound as a named check --
+# left BOTH blocking CI gates (`clean-room conformance`, the gated
+# differential replay) green.
+_CONTACT_CARD_CLASSES: dict[str, str] = {
+    "malformed_cbor__two_byte_simple": "MalformedCbor",
+    "malformed_cbor__nested_indefinite_chunk": "MalformedCbor",
+    "malformed_cbor__truncated": "MalformedCbor",
+    "rule4_tag_or_float__bignum_wide": "NonCanonicalItem",
+    "wrong_type__not_a_map": "CardWrongType",
+    "wrong_type__non_text_key": "CardWrongType",
+    "wrong_type__created_at_text": "CardWrongType",
+    "wrong_type__x25519_pk_short": "CardWrongType",
+    "wrong_type__display_name_over_cap": "CardDisplayNameTooLong",
+    "wrong_type__card_version_text": "CardWrongType",
+    "wrong_type__created_at_negative": "CardWrongType",
+    "missing_field__no_x25519_pk": "CardMissingField",
+    "duplicate_map_key__repeated_created_at": "CardDuplicateKey",
+    "unknown_field__extra_key": "CardUnknownField",
+    "unsupported_version__card_version_two": "CardUnsupportedVersion",
+    "non_canonical_unclassified__trailing_bytes": "CardNonCanonical",
+    "non_canonical_unclassified__non_shortest_created_at": "CardNonCanonical",
+}
+
+# Check 2's per-target class table, keyed by target name (fix round 1): one
+# lookup instead of an `elif target == ...` per target, so a third
+# class-checked target is one dict entry, not a new branch.
+_SEED_CLASSES: dict[str, dict[str, str]] = {
+    "block_file": _BLOCK_FILE_CLASSES,
+    "contact_card": _CONTACT_CARD_CLASSES,
+}
+
 
 def _labelled_seeds(target: str) -> list[Path]:
     directory = fixtures.fuzz_seed_dir(target)
@@ -244,6 +293,7 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
         return [f"{target}: cannot list seeds: {type(exc).__name__}: {exc}"], f"{target}: unlisted"
     issues = []
     by_bytes: dict[bytes, str] = {}
+    class_table = _SEED_CLASSES.get(target)
     for path in seeds:
         want = _label_token(path)
         try:
@@ -261,10 +311,12 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
                 f"{target}/{path.name}: Python named {verdict.get('rule')!r}, the file name says "
                 f"{want!r} ({verdict.get('error_class')}: {verdict.get('detail')})"
             )
-        elif target == "block_file":
-            want_class = _BLOCK_FILE_CLASSES.get(path.stem)
+        elif class_table is not None:
+            want_class = class_table.get(path.stem)
             if want_class is None:
-                issues.append(f"{target}/{path.name}: no expected class; add the seed to _BLOCK_FILE_CLASSES")
+                issues.append(
+                    f"{target}/{path.name}: no expected class; add the seed to _SEED_CLASSES[{target!r}]"
+                )
             elif verdict.get("error_class") != want_class:
                 issues.append(
                     f"{target}/{path.name}: Python raised {verdict.get('error_class')}, the seed "
@@ -280,225 +332,6 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
     return issues, f"{target}: {len(seeds)} labelled seeds covering {len(named)} tokens"
 
 
-# Check 5 -- LOCAL parity-order assertions for `record`, `block_file` and
-# `contact_card`.  Two-fault bodies built here, never committed: vault-format
-# §6.1, §6.3 and §6 state no report order, and a committed cross-language row
-# must not pin one (#618, #668).  They pin the order `py_decode_record`
-# shares with `record::decode`, the first-out-of-place-pair rule the block
-# envelope reader shares with `block.rs`, and -- since task 10 -- the order
-# `py_decode_contact_card` shares with `card.rs::from_canonical_cbor`, by
-# design.  Rust's side of the `contact_card` parity is pinned by
-# `core/src/identity/card_order_tests.rs`, the same shape as
-# `record_order_tests.rs`: one `#[test]` per row, each asserting the exact
-# `CardError` and its single-fault controls.
-#
-# A two-fault body pins an order only if its two faults, each ALONE, name
-# DIFFERENT tokens, and a drifted order actually reaches the other one first.
-# Each row therefore names the drift it catches, and every named drift was
-# measured to move that row's token (single-fault controls, plus the drifted
-# decoder run on the body).  A row naming `None` is a regression pin only: its
-# body was measured to report the same token under the pre-#641 order, because
-# the entry scan meets a truncated key before any key type is read.
-_FLOAT16_ZERO = bytes([0xF9, 0x00, 0x00])
-_ARRAY_1_HEAD = bytes([0x81])
-_MAP_1_HEAD = bytes([0xA1])
-_MAP_2_HEAD = bytes([0xA2])
-_TAG_1_HEAD = bytes([0xC1])
-# An unsigned integer 1, in a map-key position where only text is allowed.
-_UINT_1 = bytes([0x01])
-# RFC 8949 §3.3 simple value 23: well-formed nowhere in this format.
-_UNDEFINED = bytes([0xF7])
-# A text head declaring 3 bytes, followed by 1.
-_TRUNCATED_TEXT = bytes([0x63, 0xFF])
-_TRAILING_BYTE = bytes([0x00])
-_UUID_LEN = record_rules.RECORD_UUID_LEN
-# The committed accepting base the `block_file` case is spliced into.
-_BLOCK_BASE = "golden.bin"
-# §6.1: the vector-clock entry count is a big-endian u16.
-_U16_LEN = 2
-# Leading id bytes that compare strictly, whatever the rest of the id holds.
-_LOW_LEAD = 0x00
-_HIGH_LEAD = 0xFF
-# How many parity-order cases each builder declares; asserted in `_ordering_issues`.
-_ORDERING_CASES = {"record": 9, "block_file": 1, "contact_card": 3}
-
-_OrderingCase = tuple[str, bytes, str, "str | None"]
-
-
-def _block_file_ordering_cases() -> tuple[_OrderingCase, ...]:
-    """One two-fault `block_file` body: a vector clock `[high, low, low]`.
-
-    Its first adjacent pair is out of order and its second is a repeat, each
-    of which alone names a different token (the committed
-    `array_sort_order__vector_clock` and `repeated_array_value__vector_clock`
-    seeds are exactly those single faults).  §6.1 fixes no order between the
-    two (#668), so this is parity only: both implementations report the FIRST
-    adjacent pair that is not strictly ascending, as `block.rs`'s `match cmp`
-    over `windows(2)` does, and a reader that scans the whole table for a
-    repeat before judging order names `repeated_array_value` instead
-    (measured).
-    """
-    base = (fixtures.fuzz_seed_dir("block_file") / _BLOCK_BASE).read_bytes()
-    header, after = parse_header(Cursor(buf=base, pos=0))
-    entries_at = after.pos - len(header.vector_clock) * VECTOR_CLOCK_ENTRY_LEN
-    count_at = entries_at - _U16_LEN
-    entry = base[entries_at:entries_at + VECTOR_CLOCK_ENTRY_LEN]
-    table = [bytes([lead]) + entry[1:] for lead in (_HIGH_LEAD, _LOW_LEAD, _LOW_LEAD)]
-    body = base[:count_at] + len(table).to_bytes(_U16_LEN, "big") + b"".join(table) + base[after.pos:]
-    return (
-        ("a vector clock out of order at its first pair and repeated at its second",
-         body, "array_sort_order", "every pair checked for a repeat before any for order"),
-    )
-
-
-def _record_ordering_cases() -> tuple[_OrderingCase, ...]:
-    """`(label, body, token the shared order names, the drift it catches)`."""
-    import cbor2
-
-    base = {
-        "record_uuid": os.urandom(_UUID_LEN),
-        "record_type": "t",
-        "fields": {},
-        "created_at_ms": 0,
-        "last_mod_ms": 0,
-    }
-    no_last_mod = {k: v for k, v in base.items() if k != "last_mod_ms"}
-    device_uuid = os.urandom(_UUID_LEN)
-    return (
-        ("a wrong type beside a missing key",
-         cbor2.dumps({**no_last_mod, "record_uuid": "text"}, canonical=True), "wrong_type",
-         "missing required keys checked before each value"),
-        ("a repeated key whose second copy is a float",
-         _MAP_2_HEAD + cbor2.dumps("record_type") + cbor2.dumps("t")
-         + cbor2.dumps("record_type") + _FLOAT16_ZERO, "rule4_tag_or_float",
-         "no whole-body rule-4 walk before interpretation"),
-        ("a truncated key behind a non-text key",
-         _MAP_2_HEAD + cbor2.dumps(1) + cbor2.dumps(0) + _TRUNCATED_TEXT, "malformed_cbor",
-         None),
-        ("a schema fault followed by trailing bytes",
-         cbor2.dumps(no_last_mod, canonical=True) + _TRAILING_BYTE, "missing_field",
-         "trailing bytes judged before the schema"),
-        ("a non-map top-level item holding a malformed item",
-         _ARRAY_1_HEAD + _UNDEFINED, "malformed_cbor",
-         "the top-level map head read before the walk"),
-        ("a non-text key whose value is malformed",
-         _MAP_1_HEAD + _UINT_1 + _UNDEFINED, "malformed_cbor",
-         "key types read before the walk"),
-        ("a tag wrapping an otherwise valid record map",
-         _TAG_1_HEAD + cbor2.dumps(base, canonical=True), "rule4_tag_or_float",
-         "the top-level map head read before the walk"),
-        ("a field missing a key beside a wrong-typed field value",
-         cbor2.dumps({**base, "fields": {"f": {"last_mod": "text", "device_uuid": device_uuid}}},
-                     canonical=True), "wrong_type",
-         "a field's missing keys checked before its values"),
-        ("a fault inside a field before a later top-level wrong type",
-         cbor2.dumps({**base, "record_uuid": "text",
-                      "fields": {"f": {"last_mod": 0, "device_uuid": device_uuid}}}, canonical=True),
-         "missing_field", "the fields map decoded after the top-level entries"),
-    )
-
-
-def _card_ordering_cases() -> tuple[_OrderingCase, ...]:
-    """`(label, body, token the shared order names, the drift it catches)`.
-
-    Task 10 (controller ruling, pre-flight CONFLICT-2): three two-fault card
-    bodies, mirroring `card.rs::from_canonical_cbor`'s own three-part
-    precedence -- the `card_version != 1` comparison deferred until after
-    the whole entry loop, a repeated key's SECOND copy checked for its own
-    type before the duplicate is reported, and trailing bytes judged only by
-    the final canonical-form re-encode, after every entry fault. None is
-    committed: crypto-design §6 fixes no report order between them (#618's
-    lesson, restated for the card).
-    """
-    import cbor2
-
-    from conformance_lib.codec.scanner import _scan_map_entries
-
-    def field(n: int) -> bytes:
-        return os.urandom(n)
-
-    base = {
-        "card_version": 1,
-        "contact_uuid": field(16),
-        "display_name": "n",
-        "x25519_pk": field(32),
-        "ml_kem_768_pk": field(1184),
-        "ed25519_pk": field(32),
-        "ml_dsa_65_pk": field(1952),
-        "created_at": 0,
-        "self_sig_ed": field(64),
-        "self_sig_pq": field(3309),
-    }
-
-    def canonical(d: dict) -> bytes:
-        return cbor2.dumps(d, canonical=True)
-
-    def with_created_at_repeated(second_value: bytes) -> bytes:
-        """`base`, canonical, with `created_at`'s entry repeated right after
-        itself -- the only way to plant a repeat, since a Python `dict`
-        cannot hold one. The second copy's VALUE bytes are `second_value`,
-        so callers control whether it is well-typed or not."""
-        body = canonical(base)
-        entries, _ = _scan_map_entries(body, 0)
-        want = cbor2.dumps("created_at")
-        at = next(i for i, ((ks, ke), _) in enumerate(entries) if body[ks:ke] == want)
-        (ks, ke), (_vs, ve) = entries[at]
-        out = bytearray(body[:ve])
-        out += body[ks:ke]
-        out += second_value
-        out += body[ve:]
-        out[0] += 1  # one-byte map head: bump the entry count by one
-        return bytes(out)
-
-    return (
-        ("a wrong type beside a card_version the §6 value check has not yet run",
-         canonical({**base, "display_name": 5, "card_version": 2}), "wrong_type",
-         "card_version's value comparison runs once, after the whole entry loop"),
-        ("a repeated key whose second copy is wrong-typed",
-         with_created_at_repeated(cbor2.dumps("bad")), "wrong_type",
-         "the second copy's own value is checked before the duplicate is reported"),
-        ("a wrong-typed field beside trailing bytes",
-         canonical({**base, "created_at": "bad"}) + _TRAILING_BYTE, "wrong_type",
-         "trailing bytes are judged only by the final canonical-form re-encode"),
-    )
-
-
-def _ordering_issues() -> tuple[list[str], str]:
-    builders = (
-        ("record", _record_ordering_cases),
-        ("block_file", _block_file_ordering_cases),
-        ("contact_card", _card_ordering_cases),
-    )
-    issues: list[str] = []
-    tallies = []
-    for target, build in builders:
-        try:
-            cases = build()
-        except (OSError, ParseError) as exc:
-            issues.append(f"{target} order: cannot build the cases: {type(exc).__name__}: {exc}")
-            tallies.append(f"0/{_ORDERING_CASES[target]} {target}")
-            continue
-        if len(cases) != _ORDERING_CASES[target]:
-            # An issue, not a raise: `main()` has no per-section catch, so a
-            # raise here would skip every later section, REG included, with no
-            # `FAIL:` line (PR #673 review).
-            issues.append(
-                f"_ORDERING_CASES[{target!r}] is {_ORDERING_CASES[target]}, the table holds {len(cases)}"
-            )
-        failed = 0
-        for label, body, want, drift in cases:
-            verdict = replay_bytes(target, body).verdict
-            if verdict.get("status") != "reject" or verdict.get("rule") != want:
-                failed += 1
-                caught = f" -- the drift this row catches: {drift}" if drift else ""
-                issues.append(
-                    f"{target} order: {label} must report {want!r}, got {verdict.get('status')} "
-                    f"{verdict.get('rule')!r} ({verdict.get('error_class')}: {verdict.get('detail')}){caught}"
-                )
-        tallies.append(f"{len(cases) - failed}/{len(cases)} {target}")
-    return issues, " and ".join(tallies)
-
-
 def section_rule_token_seeds() -> tuple[bool, list[str]]:
     issues = _identity_issues()
     lines = [f"PASS 1: {len(_TOKENED_CLASSES)} typed classes carry exactly their expected token"]
@@ -506,7 +339,7 @@ def section_rule_token_seeds() -> tuple[bool, list[str]]:
         target_issues, summary = _seed_issues(target, floor, want_tokens)
         issues.extend(target_issues)
         lines.append(f"PASS 2-4: {summary}, each rejected with its file name's token")
-    order_issues, tally = _ordering_issues()
+    order_issues, tally = ordering_issues()
     issues.extend(order_issues)
     lines.append(f"PASS 5: {tally} parity-order cases")
     for issue in issues:

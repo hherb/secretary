@@ -3,7 +3,7 @@
 //! [`ContactCard::from_canonical_cbor`]'s phase order.
 //!
 //! **Parity, not spec.** crypto-design §6 fixes no report order between
-//! these three precedence claims (#618's lesson, restated for the card).
+//! these seven precedence claims (#618's lesson, restated for the card).
 //! These bodies pin the order `from_canonical_cbor` shares with
 //! `py_decode_contact_card`: the byte walk, the top-level map, each entry's
 //! key type / unknown-key / value check in wire order, the deferred
@@ -14,7 +14,26 @@
 //!
 //! **Each test proves its body discriminates.** A two-fault body pins an
 //! order only if its faults, each alone, name DIFFERENT errors. Every test
-//! therefore asserts both single-fault controls beside the two-fault body.
+//! therefore asserts a single-fault control beside the two-fault body.
+//!
+//! **The last four rows (fix round 1) have only ONE control, not two, and
+//! that is structural rather than an oversight.** `undefined`,
+//! `depth_257`, `float` and `bignum_narrow` were committed single-fault
+//! seeds until this round found each also carries a competing,
+//! order-dependent verdict — but the card has **no** forward-compat
+//! `unknown` bag, so a simple-value / depth / rule-4 fault can only ever be
+//! planted inside a KNOWN field's value, where a per-field type check
+//! always also applies. There is therefore no way to build a standalone
+//! body that reaches the walk's own verdict (`malformed_cbor` or
+//! `rule4_tag_or_float`) with nothing else to compete against it — every
+//! one of this file's other single-fault `#[test]`s and every committed
+//! `malformed_cbor`/`rule4_tag_or_float` seed already IS that attempt, for
+//! every shape where it is possible (`two_byte_simple`,
+//! `nested_indefinite_chunk`, `bignum_wide` stay committed precisely
+//! because, measured directly, each is malformed at the raw parse layer
+//! with no competing reading to order against). Each of the four rows
+//! below therefore asserts the two-fault body against the walk-first
+//! verdict, and ONE control demonstrating the competing verdict alone.
 //!
 //! Bodies are built from the committed `with_sigs.cbor` seed by value
 //! surgery, or from minimal hand-built maps; none needs key material of its
@@ -87,6 +106,61 @@ fn decode(bytes: &[u8]) -> Result<ContactCard, CardError> {
     ContactCard::from_canonical_cbor(bytes)
 }
 
+// ---------------------------------------------------------------------------
+// Raw-byte splicing, needed only below: `ciborium::Value` has no constructor
+// for RFC 8949's simple value 23 (`undefined`) or for a non-shortest-form
+// integer head — its serializer always emits shortest form. Mirrors
+// `rule_token_seeds_helpers::contact_card`'s own raw splice helpers.
+// ---------------------------------------------------------------------------
+
+type RawEntry = (Vec<u8>, Vec<u8>);
+
+fn raw_entries(bytes: &[u8]) -> Vec<RawEntry> {
+    match ciborium::de::from_reader(bytes).expect("a seed map parses") {
+        Value::Map(pairs) => pairs.iter().map(|(k, v)| (encode(k), encode(v))).collect(),
+        other => panic!("not a map: {other:?}"),
+    }
+}
+
+fn raw_map(entries: &[RawEntry]) -> Vec<u8> {
+    assert!(
+        entries.len() < 24,
+        "stays under a one-byte map head's 24-entry limit"
+    );
+    let mut out = vec![0xa0 | u8::try_from(entries.len()).expect("checked above")];
+    for (k, v) in entries {
+        out.extend_from_slice(k);
+        out.extend_from_slice(v);
+    }
+    out
+}
+
+fn raw_with_value(entries: &[RawEntry], key: &str, value: Vec<u8>) -> Vec<RawEntry> {
+    let wanted = encode(&text(key));
+    entries
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                if *k == wanted {
+                    value.clone()
+                } else {
+                    v.clone()
+                },
+            )
+        })
+        .collect()
+}
+
+/// `levels` nested one-element arrays wrapping the integer `0`.
+fn nested_array(levels: usize) -> Value {
+    let mut v = Value::Integer(0.into());
+    for _ in 0..levels {
+        v = Value::Array(vec![v]);
+    }
+    v
+}
+
 #[test]
 fn a_wrong_type_beside_a_card_version_the_value_check_has_not_run_reports_the_wrong_type() {
     // `card_version` sorts BEFORE `display_name` in canonical key order, so
@@ -132,7 +206,10 @@ fn a_repeated_key_whose_second_copy_is_wrong_typed_reports_the_wrong_type() {
         Value::Integer(0.into()),
     );
     let second_wrong_type = with_key_repeated(with_sigs_entries(), KEY_CREATED_AT, text("bad"));
-    let minimal_wrong_type = vec![(text(KEY_CREATED_AT), text("bad"))];
+    // Fix round 1 (MINOR 5): reuse the same clean, single-fault wrong-type
+    // control the next test builds, rather than a one-entry map that ALSO
+    // carries nine missing required fields.
+    let wrong_type_alone = with_value(with_sigs_entries(), KEY_CREATED_AT, text("bad"));
 
     assert!(matches!(
         decode(&encode(&Value::Map(both_valid))),
@@ -141,7 +218,7 @@ fn a_repeated_key_whose_second_copy_is_wrong_typed_reports_the_wrong_type() {
         })
     ));
     assert!(matches!(
-        decode(&encode(&Value::Map(minimal_wrong_type))),
+        decode(&encode(&Value::Map(wrong_type_alone))),
         Err(CardError::Malformed(_))
     ));
     assert!(matches!(
@@ -165,4 +242,118 @@ fn a_wrong_typed_field_beside_trailing_bytes_reports_the_wrong_type() {
         Err(CardError::NonCanonicalCbor)
     ));
     assert!(matches!(decode(&both), Err(CardError::Malformed(_))));
+}
+
+/// Fix round 1 (IMPORTANT 1): moved off the committed corpus. `undefined`
+/// (`0xf7`) is well-formed nowhere in this format, so the walk rejects it —
+/// but `ciborium` itself parses it to `Value::Null` (measured), which is
+/// exactly what a per-field type check alone would then reject as
+/// `wrong_type`. See the module doc for why the walk's OWN verdict has no
+/// standalone control here.
+#[test]
+fn an_undefined_created_at_reports_malformed_cbor() {
+    let both = raw_map(&raw_with_value(
+        &raw_entries(WITH_SIGS),
+        KEY_CREATED_AT,
+        vec![0xF7],
+    ));
+    // `null` (well-formed; one of the walk's three sanctioned simple
+    // values) is still not an integer.
+    let wrong_type_alone = encode(&Value::Map(with_value(
+        with_sigs_entries(),
+        KEY_CREATED_AT,
+        Value::Null,
+    )));
+
+    assert!(matches!(
+        decode(&wrong_type_alone),
+        Err(CardError::Malformed(_))
+    ));
+    assert!(matches!(decode(&both), Err(CardError::CborDecode(_))));
+}
+
+/// Fix round 1 (IMPORTANT 1): moved off the committed corpus. 256 nested
+/// one-element arrays around `0` sit `created_at` at nesting level 257 —
+/// one past crypto-design §6.2 rule 6's limit, which the walk rejects — but
+/// `ciborium` itself parses arbitrarily deep arrays fine (measured to at
+/// least 257 levels), giving a `Value::Array` a per-field type check alone
+/// would then reject as `wrong_type`, whatever its depth.
+#[test]
+fn an_excessively_deep_created_at_reports_malformed_cbor() {
+    let both = encode(&Value::Map(with_value(
+        with_sigs_entries(),
+        KEY_CREATED_AT,
+        nested_array(256),
+    )));
+    // An empty array is well within the depth limit and still not an
+    // integer.
+    let wrong_type_alone = encode(&Value::Map(with_value(
+        with_sigs_entries(),
+        KEY_CREATED_AT,
+        Value::Array(vec![]),
+    )));
+
+    assert!(matches!(
+        decode(&wrong_type_alone),
+        Err(CardError::Malformed(_))
+    ));
+    assert!(matches!(decode(&both), Err(CardError::CborDecode(_))));
+}
+
+/// Fix round 1 (IMPORTANT 1): moved off the committed corpus. A float
+/// anywhere in the body is crypto-design §6.2 rule 4, which the walk
+/// rejects before interpretation — but `ciborium` parses a float16 fine
+/// (`Value::Float`), which a per-field type check alone would then reject
+/// as `wrong_type`.
+#[test]
+fn a_float_created_at_reports_rule_four() {
+    let both = encode(&Value::Map(with_value(
+        with_sigs_entries(),
+        KEY_CREATED_AT,
+        Value::Float(0.0),
+    )));
+    let wrong_type_alone = encode(&Value::Map(with_value(
+        with_sigs_entries(),
+        KEY_CREATED_AT,
+        Value::Null,
+    )));
+
+    assert!(matches!(
+        decode(&wrong_type_alone),
+        Err(CardError::Malformed(_))
+    ));
+    assert!(matches!(
+        decode(&both),
+        Err(CardError::FloatRejected { .. })
+    ));
+}
+
+/// Fix round 1 (IMPORTANT 1): moved off the committed corpus. A bignum tag
+/// over a definite byte string of 1 byte is also rule 4, which the walk
+/// rejects — but within that width `ciborium` folds it to a plain integer
+/// (measured), which passes every type check and is caught only by the
+/// final canonical-form re-encode, the same way a non-shortest-form integer
+/// is.
+#[test]
+fn a_narrow_bignum_created_at_reports_rule_four() {
+    let both = encode(&Value::Map(with_value(
+        with_sigs_entries(),
+        KEY_CREATED_AT,
+        Value::Tag(2, Box::new(Value::Bytes(vec![1]))),
+    )));
+    // Non-shortest form: still parses to the plain integer 5, passing every
+    // type check, and caught only by the final re-encode comparison.
+    // `ciborium::Value`'s serializer always emits shortest form, so this
+    // needs a raw splice rather than a `Value` literal.
+    let non_canonical_alone = raw_map(&raw_with_value(
+        &raw_entries(WITH_SIGS),
+        KEY_CREATED_AT,
+        vec![0x18, 0x05],
+    ));
+
+    assert!(matches!(
+        decode(&non_canonical_alone),
+        Err(CardError::NonCanonicalCbor)
+    ));
+    assert!(matches!(decode(&both), Err(CardError::TagRejected)));
 }

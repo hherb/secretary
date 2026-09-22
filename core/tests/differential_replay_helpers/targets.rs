@@ -108,12 +108,16 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// on re-encoded bytes rather than tokens: 4 of `record`'s 44
 /// (`api_key.cbor`, `login.cbor`, `secure_note.cbor`,
 /// `nesting__256_unknown.bin`, #667), 1 of `block_file`'s 24 (`golden.bin`),
-/// and 1 of `contact_card`'s 25 (`with_sigs.cbor` — `pre_sig.cbor` rejects,
-/// `MissingField`, so it counts on the strict side), leaving 40, 23 and 24
-/// strict comparisons today (task 10 raised `contact_card` from 4 to 25:
-/// 21 generated single-fault seeds, all reaching a strict comparison, since
-/// none of the eight tokens `contact_card` produces is phase-dependent). And
-/// the floor
+/// and 1 of `contact_card`'s 21 (`with_sigs.cbor` — `pre_sig.cbor` rejects,
+/// `MissingField`, so it counts on the strict side), leaving 40, 23 and 20
+/// strict comparisons today (task 10 raised `contact_card` from 4 to 21: 17
+/// generated single-fault seeds — 21 generated, four moved to a LOCAL
+/// parity-order check rather than committed, since each measurably carries a
+/// second, order-dependent fault crypto-design §6 does not rank against the
+/// well-formedness walk (fix round 1; see
+/// `rule_token_seeds_helpers::contact_card`'s module doc and Section RTS's
+/// `_card_ordering_cases`) — all reaching a strict comparison, since none of
+/// the eight tokens `contact_card` produces is phase-dependent). And the floor
 /// is taken before any decode, so it holds that figure only while every
 /// `rule_token_seeds` seed still rejects, which that generator and Section
 /// RTS check and this floor does not. (The `nesting__` seeds are labelled
@@ -127,7 +131,7 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("vault_toml", 9),
     ("record", 44),
-    ("contact_card", 25),
+    ("contact_card", 21),
     ("bundle_file", 1),
     ("manifest_file", 1),
     ("manifest_body", 58),
