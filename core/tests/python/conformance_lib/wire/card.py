@@ -15,6 +15,15 @@ from conformance_lib.constants import TAG_CARD_SIG
 from conformance_lib.cursor import ParseError
 from conformance_lib.derivations import card_fingerprint, hybrid_verify
 
+# crypto-design §6's `display_name` bound. This reader is a separate §8
+# parse+verify path from `codec/card.py`'s strict `--diff-replay` decoder
+# (which carries its own copy, `codec.card.MAX_DISPLAY_NAME_BYTES`), but a
+# §6 MUST binds every conformant card reader, this one included -- "wire/ is
+# a different reader" was already rejected once as an excuse for the same
+# gap on `display_name` (#669, fixed in the #679 review) and is not
+# available here either.
+_MAX_DISPLAY_NAME_BYTES = 4096
+
 # ---------------------------------------------------------------------------
 # §2.5 Contact-card parse + verify
 # ---------------------------------------------------------------------------
@@ -61,6 +70,20 @@ def parse_and_verify_card(card_bytes: bytes) -> dict[str, Any]:
         raise ParseError(f"card_version {decoded['card_version']!r}")
     if not is_integer(decoded["created_at"]) or decoded["created_at"] < 0:
         raise ParseError(f"created_at {decoded['created_at']!r}")
+    # crypto-design §6: display_name is a tstr bounded at
+    # `_MAX_DISPLAY_NAME_BYTES`. Neither check existed on this path before
+    # (#691, final whole-branch review, I7): `cbor2` alone would happily
+    # decode any text-string length or hand back a non-`str` value for a
+    # malformed `display_name`, so a golden vault carrying either was
+    # accepted by a §8 card reader inside the one script that exists to
+    # prove docs/ alone is sufficient to decrypt it.
+    display_name = decoded["display_name"]
+    if not isinstance(display_name, str):
+        raise ParseError(f"display_name is not a text string: {display_name!r}")
+    if len(display_name.encode("utf-8")) > _MAX_DISPLAY_NAME_BYTES:
+        raise ParseError(
+            f"display_name exceeds the {_MAX_DISPLAY_NAME_BYTES}-byte bound"
+        )
 
     # Recompute the canonical bytes that the self-signature commits to
     # (§6 -- everything except the two self_sig_* fields).

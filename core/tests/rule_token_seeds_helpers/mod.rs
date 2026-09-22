@@ -1,21 +1,23 @@
-//! The committed single-fault seeds for the token-compared `record` and
-//! `block_file` replay targets (#641), and the ONE table the generator and the
-//! label-binding check both read.
+//! The committed single-fault seeds for the token-compared `record`,
+//! `block_file` (#641) and `contact_card` (#691, #694) replay targets, and
+//! the ONE table the generator and the label-binding check both read.
 //!
-//! **Why generated.** CI replays only committed inputs. Before #641 these two
-//! targets held four, all ACCEPTING, so a strict token comparison on them
-//! would have compared nothing in CI.
+//! **Why generated.** CI replays only committed inputs. Before #641 these
+//! two targets held four, all ACCEPTING, so a strict token comparison on
+//! them would have compared nothing in CI.
 //!
 //! **Why label-bound.** A corpus whose bytes are not bound to their labels
 //! can collapse silently (#614's review measured it). A seed's file name is
 //! DERIVED from its row, and the check regenerates every row and requires the
 //! committed bytes to match, so a label and its bytes cannot disagree.
 //!
-//! **Why each seed plants ONE fault.** `docs/vault-format.md` §6.1/§6.3 fix no
-//! report order, and a committed row must not pin an order the spec leaves
-//! open (#618's lesson). A planted fault can have a downstream consequence —
-//! an `undefined` value also fails the re-encode — but both implementations
-//! meet the planted fault first.
+//! **Why each seed plants ONE fault.** `docs/vault-format.md` §6.1/§6.3 fix
+//! no report order for `record`/`block_file`, and `docs/crypto-design.md` §6
+//! fixes none for `contact_card` either (#618's lesson, restated for the
+//! card); a committed row must not pin an order the spec leaves open. A
+//! planted fault can have a downstream consequence — an `undefined` value
+//! also fails the re-encode — but both implementations meet the planted
+//! fault first.
 
 use std::path::PathBuf;
 

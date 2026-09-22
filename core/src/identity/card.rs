@@ -858,9 +858,17 @@ mod tests {
         );
     }
 
-    /// The walk answers before `ciborium`, so §6.2 rule 6's limit on this path is
-    /// the walk's and not `ciborium`'s. 256 levels inside the card map is the
-    /// card map plus 255 arrays; 257 is one more.
+    /// The walk answers before `ciborium` runs at all, but this row alone does
+    /// NOT prove the limit is the walk's rather than `ciborium`'s: `ciborium`
+    /// 0.2.2 has its own built-in recursion limit, numerically 256, the same
+    /// value as the v1 spec limit the walk enforces, so a 257-level body is
+    /// rejected by `ciborium`'s own parse independently of whether the walk
+    /// runs first (#695 — found by disabling the walk's call and observing
+    /// this row does not red). 256 levels inside the card map is the card map
+    /// plus 255 arrays; 257 is one more. What genuinely distinguishes the walk
+    /// from `ciborium`'s coincidentally-equal limit is
+    /// `every_decode_path_enforces_exactly_the_v1_limit`
+    /// (`core/tests/nesting_depth_seeds.rs`).
     #[test]
     fn the_walk_enforces_the_v1_nesting_limit_on_the_card_path() {
         let at_limit = card_bytes_with_created_at(&{

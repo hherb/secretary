@@ -67,9 +67,11 @@ class UncheckedKnownKey(RuntimeError):
     """A caller passed a key these checks have no arm for -- a bug in this
     package, never a verdict on the input.
 
-    Raised by the fall-through of `check_record_value` and `check_field_value`,
-    so a key added to `RECORD_KNOWN_KEYS` or `RECORD_FIELD_KNOWN_KEYS` without
-    an arm here fails loudly instead of passing its value unchecked.  A
+    Raised by the fall-through of `check_record_value` and `check_field_value`
+    here, and of `codec/card.py`'s `check_card_value` (#691), so a key added
+    to `RECORD_KNOWN_KEYS`, `RECORD_FIELD_KNOWN_KEYS` or `KNOWN_CARD_KEYS`
+    without an arm in its own checker fails loudly instead of passing its
+    value unchecked.  A
     `RuntimeError` deliberately: it is absent from
     `conformance_lib.rejection`'s verdict allowlist, so the differential
     replay scores it as a harness failure rather than as a rejection.

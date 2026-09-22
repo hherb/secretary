@@ -29,7 +29,7 @@ sites that DID get a typed class -- non-text key at `:148`/`:244` and
 missing required field at `:163`/`:269`, two per entry-map parser), and
 `codec/manifest_encode.py` (3), which is imported at `manifest_decode.py:17`
 and CALLED for the §4.3 step-4 re-encode, so its refusals are on the decode
-path even though it is an encoder.  FOUR of the seventeen vocabulary rows
+path even though it is an encoder.  FOUR of the eighteen vocabulary rows
 have no Python producer at all (`malformed_cbor` gained one in #641):
 `encoder_refusal`, `aead_failure`, `signature_invalid` and `internal_error`
 -- the last three because `py_decode_manifest_file` is a wire parse that
@@ -62,12 +62,12 @@ from conformance_lib.rejection import _REJECTION_EXCEPTIONS
 # The expected token is written out here rather than read off the class,
 # because until #645's review check 1 asked only whether the token was
 # somewhere IN the vocabulary.  Membership is satisfied by any of the
-# seventeen, so `MissingRequiredField.token = "wrong_type"` -- a plausible
+# eighteen, so `MissingRequiredField.token = "wrong_type"` -- a plausible
 # copy-paste, since `NonTextMapKey` and `WrongFieldType` legitimately DO
 # share `"wrong_type"` -- passed check 1, passed check 3, passed every Rust
 # test, and was caught only by `differential_replay.rs`, which at the time ran
 # in no CI workflow.  A `test.yml` step runs it as of #647, but it compares
-# tokens only on its token-compared targets (three since #641, one of them
+# tokens only on its token-compared targets (four since #641, one of them
 # `manifest_body`) and only for the inputs committed there; identity is what
 # makes this section a pin.
 #
@@ -108,7 +108,7 @@ _TOKENED_CLASSES: tuple[tuple[type, str], ...] = (
 # the observed set away, printing its size and asserting nothing about it, so
 # a Python side that collapsed every manifest rejection onto one token passed.
 # That is the `_HASH_SEEDS = ("0",)` shape recorded in CLAUDE.md: a figure
-# computed, printed, and never compared.  NINE of the seventeen tokens are
+# computed, printed, and never compared.  NINE of the eighteen tokens are
 # reachable from `core/fuzz/seeds/manifest_body/`; the other eight need bodies
 # the corpus does not hold, which is why this is an equality against a named
 # set rather than a count.
@@ -217,8 +217,8 @@ def section_rule_token_vocabulary() -> tuple[bool, list[str]]:
     #
     # Note what this set is and is not.  It is the set of tokens whose ORDER
     # §4.2 leaves free.  It is NOT a statement that `tokens_agree` tolerates
-    # only pairs §4.2 frees: that predicate is per-token, so it tolerates 54
-    # of the 136 unequal pairs on `manifest_body` (the 58 with a
+    # only pairs §4.2 frees: that predicate is per-token, so it tolerates 58
+    # of the 153 unequal pairs on `manifest_body` (the 62 with a
     # phase-dependent member, less the four pairing one with `malformed_cbor`),
     # four groups of which §4.2 does not license.
     # `RuleToken::is_phase_dependent`'s LIMITS block enumerates them and #646

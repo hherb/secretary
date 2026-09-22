@@ -277,12 +277,12 @@ def _reject_rule4_head(major: int, ai: int, off: int) -> None:
 
     ONE implementation, with three callers: `reject_floats_and_tags`'s
     whole-body walk, `_check_canonical_item`'s per-value check, and (#641)
-    `well_formed._rule4_at`, which the record path's `walk_body` uses to
-    remember the first tag or float. They apply the rule at different times
-    and for different reasons, but it is the same rule, and hand-copies of it
-    are how they drift -- the more so now that a walk runs first on both the
-    manifest and the record path and would mask a divergence in the
-    per-value copy.
+    `well_formed._rule4_at`, which `walk_body` uses to remember the first tag
+    or float. They apply the rule at different times and for different
+    reasons, but it is the same rule, and hand-copies of it are how they
+    drift -- the more so now that a walk runs first on FOUR paths (manifest,
+    record, trash entry (#666) and contact card (#691)) and would mask a
+    divergence in the per-value copy on every one of them.
     """
     if major == 6:
         raise NonCanonicalItem(4, f"CBOR tag at offset {off}")

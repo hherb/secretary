@@ -92,20 +92,27 @@ def replay_bytes(target: str, data: bytes) -> Replay:
     nested subtree, a `cbor2` API break, a missing input file. The Rust
     caller (`core/tests/differential_replay.rs`) scored reject-vs-reject as
     AGREEMENT unconditionally until #634, and 32 of the 47 committed
-    `manifest_body` seeds are Rust-reject rows (20 canonicality, 4
-    uniqueness, 6 value-type and 2 nesting-depth rejects) -- so an internal
+    `manifest_body` seeds were Rust-reject rows at that time (20 canonicality,
+    4 uniqueness, 6 value-type and 2 nesting-depth rejects) -- so an internal
     bug in this script became a green differential test on exactly the inputs
     whose decode paths are most interesting.  #634 narrowed that arm to a
-    token comparison for `manifest_body`, and #641 extended it to `record`
-    and `block_file`, which does not retire this split: the other four
-    targets (`vault_toml`, `contact_card`, `bundle_file`, `manifest_file`)
-    are still scored on the fact of rejection alone, and even for
-    `manifest_body` a phase-dependent token tolerates whatever the other side
-    said (17 of those 32).  Both figures moved with the corpus and were
-    re-measured at #667; they were 13 of 27 when this paragraph was written,
-    and 24 of 38 until #669. Only the exception types the decoders raise DELIBERATELY
-    to signal a wire-format violation are verdicts; everything else is a
-    harness failure and must be surfaced, not scored.
+    token comparison for `manifest_body`, #641 extended it to `record` and
+    `block_file`, and this slice (#691) extended it to `contact_card`, which
+    does not retire this split: the other three targets (`vault_toml`,
+    `bundle_file`, `manifest_file`) are still scored on the fact of rejection
+    alone, and even for `manifest_body` a phase-dependent token tolerates
+    whatever the other side said. Both figures moved with the corpus and have
+    been re-measured repeatedly rather than trusted from the last time this
+    paragraph was edited: 13 of 27 when this paragraph was first written, 17
+    of 32 at #634 (this is where the stale "17 of those 32" wording came
+    from), 24 of 38 until #669, and -- re-measured for this fix by a
+    `diff_replay.replay_bytes` sweep of every `core/fuzz/seeds/manifest_body/`
+    input against `RuleToken::is_phase_dependent` -- 17 of the current 42
+    rejecting seeds are tolerated now, leaving 25 that reach a real
+    comparison. RE-MEASURE before citing any of these; do not copy the
+    trailing figure forward either. Only the exception types the decoders
+    raise DELIBERATELY to signal a wire-format violation are verdicts;
+    everything else is a harness failure and must be surfaced, not scored.
     """
     try:
         if target == _CRASH_ONLY_TARGET:

@@ -274,10 +274,14 @@ fn an_undefined_created_at_reports_malformed_cbor() {
 
 /// Fix round 1 (IMPORTANT 1): moved off the committed corpus. 256 nested
 /// one-element arrays around `0` sit `created_at` at nesting level 257 —
-/// one past crypto-design §6.2 rule 6's limit, which the walk rejects — but
-/// `ciborium` itself parses arbitrarily deep arrays fine (measured to at
-/// least 257 levels), giving a `Value::Array` a per-field type check alone
-/// would then reject as `wrong_type`, whatever its depth.
+/// one past crypto-design §6.2 rule 6's limit, which the walk rejects. **This
+/// row alone does not prove the walk is what rejects it**: `ciborium` 0.2.2
+/// has its own built-in recursion limit, numerically 256, so a 257-level
+/// body is rejected by `ciborium`'s own parse whether or not the walk runs
+/// first (#695) — measured by disabling the walk's call, which does not red
+/// this test. An earlier version of this comment claimed the opposite,
+/// that `ciborium` "parses arbitrarily deep arrays fine (measured to at
+/// least 257 levels)"; that measurement was never taken and is false.
 #[test]
 fn an_excessively_deep_created_at_reports_malformed_cbor() {
     let both = encode(&Value::Map(with_value(

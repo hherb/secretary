@@ -2,8 +2,11 @@
 `contact_card` target.
 
 This decoder has no `unknown` bag at all -- it rejects every unrecognised
-key outright -- so its duplicate-key protection comes from its own
-re-encode-and-compare rather than from span-list checks.
+key outright -- so its duplicate-key protection comes from a span-list scan
+over the map entries (see `_scan_map_entries` / the "WHY SPANS AND NOT A
+`cbor2` DICT" comment below), not from the re-encode-and-compare: a `cbor2`
+dict destroys repeats before this decoder ever sees them, so it cannot see a
+duplicate key at all through that route.
 """
 
 from __future__ import annotations
@@ -115,7 +118,7 @@ def py_decode_contact_card(data: bytes) -> dict:
 
     Validates:
     - Top-level item is a CBOR map with text-string keys.
-    - No unknown keys (card.rs returns CborDecode error on unknown fields).
+    - No unknown keys (card.rs returns UnknownField error on unknown fields).
     - Required fields: card_version (uint == 1), contact_uuid (16-byte bstr),
       display_name (tstr), x25519_pk (32-byte bstr), ml_kem_768_pk (1184-byte bstr),
       ed25519_pk (32-byte bstr), ml_dsa_65_pk (1952-byte bstr), created_at (uint),

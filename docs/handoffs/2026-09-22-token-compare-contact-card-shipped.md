@@ -111,7 +111,8 @@ handoff's own commit is a 19th, on top.
 - **Token-compared targets: 3 → 4** (`TOKEN_COMPARED_TARGETS`,
   `core/tests/differential_replay_helpers/targets.rs`) — `record`,
   `manifest_body`, `block_file`, `contact_card`. `NOT_TOKEN_COMPARED_TARGETS`
-  = `vault_toml`, `bundle_file`, `manifest_file` (unchanged, 3).
+  = `vault_toml`, `bundle_file`, `manifest_file` (4 → 3: `contact_card` moved
+  out of this list into the one above).
   `contact_card` is **not** in `PHASE_DEPENDENT_TOLERANCE_TARGETS` — §4.2's
   licence is manifest-body-specific and has no §6 analogue, so every
   compared `contact_card` pair is strictly equal.
@@ -168,13 +169,35 @@ design doc's pre-implementation sketch:
 | C3 | Python's non-text-key check deleted from the entry loop | `differential_replay_full_corpus` (seed `wrong_type__non_text_key.bin`) | RED_AS_EXPECTED |
 | C4 | Python's `card_version` type/value split collapsed back into one inline check | `uv run core/tests/python/conformance.py` (Section RTS check 5) | RED_AS_EXPECTED |
 | C5 | Python's `display_name` cap check deleted | `differential_replay_full_corpus` (seed `wrong_type__display_name_over_cap.bin`) | RED_AS_EXPECTED |
-| C6 | `contact_card` removed from `TOKEN_COMPARED_TARGETS` (negative control) | full `differential_replay` binary | RED_AS_EXPECTED |
+| C6 | `contact_card` removed from `TOKEN_COMPARED_TARGETS`, left unclassified | full `differential_replay` binary | RED_AS_EXPECTED (via `every_target_is_classified`) |
 
 Harness exit code **0**. `git status --short` empty before and after —
 every mutated file restored. C4 is worth noting: it is the only row no
 committed corpus input can reach (crypto-design §6 fixes no order between a
 wrong-value `card_version` and a later wrong-typed field), so Section RTS's
 own local ordering case is the *only* gate that can see it.
+
+**C6 does not test what its earlier "negative control" label implied, and
+that mislabelling is this branch's most important finding (final
+whole-branch review, I6) — say so plainly rather than soften it.** The row's
+own `expect_red` names `every_target_is_classified`, a PARTITION check: it
+requires `TOKEN_COMPARED_TARGETS` and `NOT_TOKEN_COMPARED_TARGETS` to cover
+`TARGETS` exactly, and it fires because C6's edit *deletes* `contact_card`
+from `TOKEN_COMPARED_TARGETS` without adding it anywhere else, leaving it
+unclassified. That is not the edit a future author loosening the comparison
+would actually make. Reproduced for this fix wave: moving `contact_card`
+from `TOKEN_COMPARED_TARGETS` into `NOT_TOKEN_COMPARED_TARGETS` — a
+complete, well-formed reclassification, still fully partitioning `TARGETS`
+— leaves the entire `differential_replay` binary GREEN, 46/46, exit 0,
+still logging `contact_card: 21 of 21 input(s) compared`. So **nothing in
+this branch pins `contact_card`'s membership in the strict-comparison set**;
+a future edit that silently downgrades it to loose (fact-of-rejection-only)
+comparison passes every gate here. What DOES still hold, so the risk is
+sized rather than inflated: Section RTS and
+`rule_token_seeds_are_committed_and_label_bound` independently pin each
+side's rule token per committed seed in CI, so a downgrade would not make a
+wrong token invisible everywhere — only the cross-language AGREEMENT
+comparison on `contact_card` would go unpinned.
 
 ---
 
@@ -310,21 +333,49 @@ authoritative record. The load-bearing ones, condensed:
 
 ## (7) Open decisions and risks
 
-- **The four order-sensitive card behaviours are pinned by in-crate and
+- **Nothing pins `contact_card`'s membership in the strict-comparison set —
+  the branch's primary residual, found in the final whole-branch review
+  (I6), and the mutation table's C6 row must not be read as covering it.**
+  See "(2) Mutation evidence", C6, for the full reproduction: moving
+  `contact_card` from `TOKEN_COMPARED_TARGETS` into
+  `NOT_TOKEN_COMPARED_TARGETS` is a complete, well-formed edit that still
+  partitions `TARGETS` exactly, and it leaves the whole `differential_replay`
+  binary green. The only gate that ever reds on a `TOKEN_COMPARED_TARGETS`
+  edit for `contact_card` is `every_target_is_classified`, which proves
+  classification completeness, not comparison strictness. Sized against what
+  still holds: Section RTS and `rule_token_seeds_are_committed_and_label_bound`
+  independently pin each side's rule token per committed seed in CI, so this
+  is a gap in the AGREEMENT comparison specifically, not a silent loss of all
+  token coverage. No issue currently tracks closing it.
+- **All seven order-sensitive card behaviours are pinned by in-crate and
   in-section tests, NOT by CI's cross-language replay — state this
-  plainly, it is the second real residual.** `card_version` deferral,
-  duplicate-vs-value precedence, trailing-bytes-vs-entry-fault precedence,
-  and a fourth shape are asserted by Section RTS check 5
-  (`sections/rule_token_seeds_ordering.py`) and a Rust twin
-  (`core/src/identity/card_order_tests.rs`), never by a committed
-  cross-language corpus row. This is structural, not a shortcut: the card
-  has no forward-compat `unknown` bag (`CardError::UnknownField` rejects
-  every unrecognised key outright), so there is nowhere to plant an
-  isolated single-fault depth or rule-4 body the way the manifest body and
-  record can — every candidate body for these four shapes is inherently
-  two-fault, and #618 says a cross-language row must not pin an order the
-  spec leaves open. `record` and `block_file` already accept this exact
-  posture for their own check-5 cases; this is not a new exception.
+  plainly, it is the second real residual.** Measured:
+  `_ORDERING_CASES["contact_card"] == 7`
+  (`sections/rule_token_seeds_ordering.py`) and `card_order_tests.rs` has
+  seven `#[test]`s, not four — an earlier ledger entry carried "four", from
+  before fix round 1 folded a fourth shape (`created_at_negative`) into a
+  committed seed and added three MORE two-fault ordering cases on top of
+  it; nobody re-counted after. The three original shapes (task 10) mirror
+  `card.rs::from_canonical_cbor`'s own precedence — the `card_version != 1`
+  comparison deferred until after the whole entry loop, a repeated key's
+  SECOND copy checked for its own type before the duplicate is reported,
+  and trailing bytes judged only by the final canonical-form re-encode,
+  after every entry fault. The four added in fix round 1 each pin a
+  competing, order-dependent verdict on a value that also fails a per-field
+  type check: an undefined `created_at`, an excessively deep `created_at`,
+  a float `created_at`, and a narrow-bignum `created_at` — each reports
+  `wrong_type` or `non_canonical_unclassified` rather than the walk's own
+  verdict, because the card's per-field type check runs first. None of the
+  seven is committed: crypto-design §6 fixes no report order between them
+  (#618's lesson, restated for the card). This is structural, not a
+  shortcut: the card has no forward-compat `unknown` bag
+  (`CardError::UnknownField` rejects every unrecognised key outright), so
+  there is nowhere to plant an isolated single-fault depth or rule-4 body
+  the way the manifest body and record can — every candidate body for
+  these seven shapes is inherently two-fault, and #618 says a
+  cross-language row must not pin an order the spec leaves open. `record`
+  and `block_file` already accept this exact posture for their own check-5
+  cases; this is not a new exception.
 - **Committed-corpus vs full-corpus, restated because it bears repeating
   for a number this easy to misquote:** 158 committed, 6,415 full local
   (this session's own measurement). CI checks the 158 only.

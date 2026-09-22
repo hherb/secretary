@@ -16,7 +16,7 @@ of `differential_replay.rs`.
 WHY IDENTITY TOO (check 1).  Label binding reaches only the classes some seed
 exercises.  Section RTV's check 1 records why the expected token is written
 out rather than read off the class: membership in the vocabulary is
-satisfied by any of the seventeen.  Check 1 also DISCOVERS every verdict
+satisfied by any of the eighteen.  Check 1 also DISCOVERS every verdict
 class `cbor_faults`, `record_rules` and `envelope_rules` define, and requires
 each to declare `token` in its own body and to appear in the table: a new
 subclass that forgot `token =` would otherwise inherit its base's coarse token

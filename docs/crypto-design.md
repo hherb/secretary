@@ -286,13 +286,14 @@ A card whose signatures don't both verify is rejected on import.
 
 **`display_name` is at most 4096 bytes of UTF-8.** Writers MUST NOT emit a
 longer one and readers MUST reject one. This is a v1 profile bound, not a
-canonical-form rule: it bounds the memory a reader commits to attacker-supplied
-variable-length text taken from the attacker-writable vault folder, before any
-signature over that text can be checked. The reference implementation has
-enforced exactly this limit since v1, on parse and on both encode paths, so
-stating it narrows nothing a v1 reader accepts and forbids nothing a v1 writer
-emits. A reader reports it distinguishably from a fixed-size field arriving at
-the wrong length, because the two have different remediations.
+canonical-form rule: it bounds what a reader RETAINS from attacker-supplied
+variable-length text taken from the attacker-writable vault folder. It does
+not bound peak memory during parse — a general-purpose CBOR parse allocates
+the string before this cap is ever consulted — only how long the decoded
+value is allowed to live afterward, including across the signature check
+that follows. The reference implementation has enforced exactly this limit
+since v1, on parse and on both encode paths, so stating it narrows nothing a
+v1 reader accepts and forbids nothing a v1 writer emits.
 
 ### 6.1 Card fingerprint
 

@@ -176,8 +176,8 @@ Each defense in §3 must correspond to either a specific test or a specific desi
 - **Display-name DoS cap on parse + encode + signed_bytes** → normative in
   [crypto-design.md](crypto-design.md) §6; `core/src/identity/card.rs` tests
   `from_canonical_cbor_rejects_oversize_display_name`,
-  `_accepts_display_name_at_cap`, `to_canonical_cbor_rejects_oversize_display_name`,
-  `_accepts_display_name_at_cap`, `signed_bytes_rejects_oversize_display_name`
+  `from_canonical_cbor_accepts_display_name_at_cap`, `to_canonical_cbor_rejects_oversize_display_name`,
+  `to_canonical_cbor_accepts_display_name_at_cap`, `signed_bytes_rejects_oversize_display_name`
   (cap enforced symmetrically; PR #11).
 - **Argon2id v1 floor enforcement (creation-time)** → `core/src/unlock/mod.rs::create_vault_rejects_sub_floor_argon2_params` (unit) + `core/tests/create_vault.rs` (integration, `WeakKdfParams` via `create_vault`). The open path is *not* floor-gated; a downgraded `vault.toml` is instead defeated by (a) `core/tests/unlock.rs::open_with_password_downgraded_kdf_params_fails` (different KEK → AEAD fail) and (b) `core/tests/open_vault_neg.rs::open_vault_kdf_params_mismatch_rejected` (signed-manifest `[kdf]` cross-check).
 - **Vector-clock rollback rejection** → `core/tests/open_vault.rs::open_vault_rollback_rejected` plus `_skipped_when_local_clock_none`.
