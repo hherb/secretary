@@ -27,7 +27,7 @@ use secretary_core::vault::record::{self, RecordError};
 pub const SEEDED_TARGETS: &[&str] = &["manifest_body", "record"];
 /// How many rows the table holds; a row and its seed deleted together are
 /// invisible to the two-way census, so the count is pinned separately.
-pub const EXPECTED_CASE_COUNT: usize = 7;
+pub const EXPECTED_CASE_COUNT: usize = 9;
 /// Past Python's default recursion limit (~1,000), so a recursive reader
 /// would fail there with `RecursionError` instead of returning a verdict.
 const FAR_PAST_THE_LIMIT: usize = 2048;
@@ -40,6 +40,42 @@ const MAP_SMALL_BASE: u8 = 0xa0;
 const SMALL_COUNT_MAX: usize = 23;
 const SEED_EXTENSION: &str = "bin";
 
+/// Tag 2, the unsigned-bignum tag (RFC 8949 §3.4.3). A duplicate of
+/// `nesting_depth_seeds.rs`'s `TAG_BIGNUM_POSITIVE`, deliberately: that file's
+/// `Chain` enum builds a document for an in-process assertion
+/// (`the_walk_paths_charge_a_level_for_a_short_bignum`), this module's
+/// `DeepestLevel` is a seed-TABLE dimension whose file names are a committed
+/// contract. Sharing one constant across the two would make this table's
+/// seed-generation code reach up into its own caller's private items -- the
+/// wrong dependency direction for a helpers module -- for a saving of a
+/// handful of one-line constants. `ARRAY_1` / `UINT_0` above are already
+/// duplicated the same way for the same reason. Both sides now DERIVE their
+/// byte-string heads the same way (mirroring `nesting_depth_seeds.rs`'s
+/// `MAJOR_BYTES_BASE` derivation), so a width change on either side is a
+/// one-constant edit rather than two coupled hand-edits.
+const BIGNUM_TAG: u8 = 0xc2;
+/// Major 2 (byte string) with additional-info 0: the base a definite
+/// byte-string head of a given length is derived from below, so a head can
+/// never disagree with the payload length actually written after it.
+const BIGNUM_BYTES_BASE: u8 = 0x40;
+/// The narrow bignum payload width: it fits in 64 bits, so `ciborium`
+/// folds the whole tag into an integer and charges it no nesting level at
+/// all (#666).
+const BIGNUM_NARROW_LEN: usize = 1;
+/// The wide bignum payload width: one byte past the eight that fit a `u64`,
+/// so `ciborium` keeps it a `Value::Tag` instead of folding it -- but a kept
+/// tag is still charged no level by ciborium's own recursion counting, only
+/// by the byte walk.
+const BIGNUM_WIDE_LEN: usize = 9;
+/// Major 2, additional-info [`BIGNUM_NARROW_LEN`]: a definite byte string of
+/// that length.
+const BIGNUM_BYTES_1: u8 = BIGNUM_BYTES_BASE | BIGNUM_NARROW_LEN as u8;
+/// Major 2, additional-info [`BIGNUM_WIDE_LEN`]: a definite byte string of
+/// that length.
+const BIGNUM_BYTES_9: u8 = BIGNUM_BYTES_BASE | BIGNUM_WIDE_LEN as u8;
+/// The bignum payload byte, repeated for both widths.
+const BIGNUM_PAYLOAD_BYTE: u8 = 0x01;
+
 /// Where the deep value is planted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Placement {
@@ -47,6 +83,51 @@ pub enum Placement {
     Unknown,
     /// Under `tags`, a known key whose value would otherwise be a type error.
     KnownTags,
+}
+
+/// What sits at the deepest level of the chain.
+///
+/// `Array` is every pre-#666 row. The two bignum variants exist because
+/// `ciborium` charges NO level for a bignum tag over a definite-length byte
+/// string of at most 16 bytes, and takes a DIFFERENT path for each width: a
+/// value that fits 64 bits is folded to an integer, a 9-16-byte one stays a
+/// `Value::Tag`. The byte walk charges a level for both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeepestLevel {
+    Array,
+    BignumNarrow,
+    BignumWide,
+}
+
+impl DeepestLevel {
+    /// The EMPTY string for `Array`, so every pre-existing seed keeps its
+    /// name byte for byte. A renamed seed would show as a delete plus an add
+    /// and lose its history.
+    fn label_suffix(self) -> &'static str {
+        match self {
+            DeepestLevel::Array => "",
+            DeepestLevel::BignumNarrow => "_bignum_narrow",
+            DeepestLevel::BignumWide => "_bignum_wide",
+        }
+    }
+
+    /// The bytes that close the chain: one more array level, or a bignum tag
+    /// over a byte string of the stated width.
+    fn closing_bytes(self) -> Vec<u8> {
+        match self {
+            DeepestLevel::Array => vec![ARRAY_1, UINT_0],
+            DeepestLevel::BignumNarrow => {
+                let mut v = vec![BIGNUM_TAG, BIGNUM_BYTES_1];
+                v.extend(std::iter::repeat_n(BIGNUM_PAYLOAD_BYTE, BIGNUM_NARROW_LEN));
+                v
+            }
+            DeepestLevel::BignumWide => {
+                let mut v = vec![BIGNUM_TAG, BIGNUM_BYTES_9];
+                v.extend(std::iter::repeat_n(BIGNUM_PAYLOAD_BYTE, BIGNUM_WIDE_LEN));
+                v
+            }
+        }
+    }
 }
 
 impl Placement {
@@ -87,6 +168,7 @@ pub struct NestingCase {
     pub target: &'static str,
     pub depth: usize,
     pub placement: Placement,
+    pub deepest: DeepestLevel,
 }
 
 impl NestingCase {
@@ -102,9 +184,10 @@ impl NestingCase {
 
     pub fn file_name(&self) -> String {
         format!(
-            "{SEED_PREFIX}{}_{}.{SEED_EXTENSION}",
+            "{SEED_PREFIX}{}_{}{}.{SEED_EXTENSION}",
             self.depth,
-            self.placement.label()
+            self.placement.label(),
+            self.deepest.label_suffix()
         )
     }
 
@@ -113,29 +196,57 @@ impl NestingCase {
     }
 
     pub fn bytes(&self) -> Vec<u8> {
-        with_top_level_entry(
-            &base(self.target),
-            self.placement.key(),
-            nested_value(self.depth - 1),
-        )
+        // `Array` takes the untouched pre-#666 path byte for byte, so the
+        // seven existing seeds cannot shift by a single byte. The two bignum
+        // variants replace only the LAST array level with a bignum tag over
+        // a byte string of the stated width.
+        let value = match self.deepest {
+            DeepestLevel::Array => nested_value(self.depth - 1),
+            DeepestLevel::BignumNarrow | DeepestLevel::BignumWide => {
+                let mut v = vec![ARRAY_1; self.depth - 2];
+                v.extend(self.deepest.closing_bytes());
+                v
+            }
+        };
+        with_top_level_entry(&base(self.target), self.placement.key(), value)
     }
 }
 
 pub fn all_cases() -> Vec<NestingCase> {
+    use DeepestLevel::{Array, BignumNarrow, BignumWide};
     use Placement::{KnownTags, Unknown};
-    let row = |target, depth, placement| NestingCase {
+    let row = |target, depth, placement, deepest| NestingCase {
         target,
         depth,
         placement,
+        deepest,
     };
     vec![
-        row("record", V1_MAX_NESTING_DEPTH, Unknown),
-        row("record", V1_MAX_NESTING_DEPTH + 1, Unknown),
-        row("record", V1_MAX_NESTING_DEPTH + 1, KnownTags),
-        row("record", FAR_PAST_THE_LIMIT, Unknown),
-        row("manifest_body", V1_MAX_NESTING_DEPTH, Unknown),
-        row("manifest_body", V1_MAX_NESTING_DEPTH + 1, Unknown),
-        row("manifest_body", FAR_PAST_THE_LIMIT, Unknown),
+        row("record", V1_MAX_NESTING_DEPTH, Unknown, Array),
+        row("record", V1_MAX_NESTING_DEPTH + 1, Unknown, Array),
+        row("record", V1_MAX_NESTING_DEPTH + 1, KnownTags, Array),
+        row("record", FAR_PAST_THE_LIMIT, Unknown, Array),
+        row("manifest_body", V1_MAX_NESTING_DEPTH, Unknown, Array),
+        row("manifest_body", V1_MAX_NESTING_DEPTH + 1, Unknown, Array),
+        row("manifest_body", FAR_PAST_THE_LIMIT, Unknown, Array),
+        // #666: the short-bignum depth edge, at both widths ciborium takes a
+        // different path for (a narrow one folds to an integer, a wide one
+        // stays a `Value::Tag`). `manifest_body` only, per the task 9 brief --
+        // that target alone is enough to pin the edge cross-language, since
+        // the byte walk that makes this a depth fault charges a tag a level
+        // identically on every walked decode path.
+        row(
+            "manifest_body",
+            V1_MAX_NESTING_DEPTH + 1,
+            Unknown,
+            BignumNarrow,
+        ),
+        row(
+            "manifest_body",
+            V1_MAX_NESTING_DEPTH + 1,
+            Unknown,
+            BignumWide,
+        ),
     ]
 }
 

@@ -1,1 +1,1 @@
-docs/handoffs/2026-09-19-nesting-depth-and-record-defaults-shipped.md
+docs/handoffs/2026-09-22-well-formedness-walk-shipped.md

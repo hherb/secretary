@@ -112,8 +112,9 @@ cargo test --release --locked -p secretary-core \
 # isolation, which conformance Section DRS checks rather than assumes, over
 # the committed corpus only.
 #
-# CI replays the 131 committed inputs (no `corpus/` there): 107 until #669
-# added 14, 121 until #667/#670 added 10. Re-measure with
+# CI replays the 141 committed inputs (no `corpus/` there): 107 until #669
+# added 14, 121 until #667/#670 added 10, 131 until #666/#685 added 10.
+# Re-measure with
 # `ls core/fuzz/seeds/*/* core/tests/data/diff_regressions/*/* | grep -v gitkeep | wc -l`.
 # The 5.98 s test body
 # and 36 s step quoted in #656 measured the per-input spawn; re-measure before
@@ -124,6 +125,11 @@ cargo test --release --locked -p secretary-core \
 # #667 added 7 `nesting__` seeds (4 record, 3 manifest_body) from their own
 # generator; regenerate with
 # `cargo test --release --locked -p secretary-core --test nesting_depth_seeds -- --ignored generate_nesting_depth_seeds`.
+# #666 added 10 more manifest_body seeds: 8 `wellformed__*` from a new
+# generator (`core/tests/well_formed_seeds.rs`, regenerate with
+# `cargo test --release --locked -p secretary-core --test well_formed_seeds -- --ignored generate_well_formed_seeds`)
+# plus 2 more `nesting__257_unknown_bignum_{narrow,wide}` rows from the
+# nesting_depth_seeds generator above.
 #
 # `-p secretary-core` is not a way to avoid rebuilding the CLI and bridge
 # crates — `core`'s [dev-dependencies] pull in the bridge, which depends on
@@ -385,15 +391,57 @@ Practical consequence: when a Rust change alters observable byte format or merge
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
 was 6849 lines; it is now 156, over a **78**-file package whose largest module is
-`sections/value_type_discipline.py` at **658** lines, ahead of
-`sections/value_type_structure.py` at 507 — both past the 500-line split
-threshold (#683) — then `sections/manifest_canonicality_cause.py` at 486,
-`codec/scanner.py` at 479, then `sections/nesting_depth.py` (new in #667) at
-472 and `codec/manifest_decode.py` at 460. `nesting_depth.py` went 457 -> 446
+`sections/value_type_discipline.py` at **834** lines, then
+`sections/nesting_depth.py` at 522 and `sections/value_type_structure.py` at
+507 — **three** past the 500-line split threshold (#683) now, where the
+figures this replaced named two — then `codec/manifest_decode.py` at 498,
+`sections/manifest_canonicality_cause.py` at 491 and `codec/scanner.py` at
+479. **This is the THIRD consecutive slice in which a review round moved
+these numbers after the docs commit measured them**, which is what the rest
+of this paragraph is about; the PR #689 review grew
+`value_type_discipline.py` 761 -> 834 (the `_CHECKS` driver table; written
+down as 828 first, then corrected by the ONE further edit that moved a
+docstring inside its class — a fourth occurrence, inside the paragraph that
+narrates the first three),
+`nesting_depth.py` 491 -> 522 and `manifest_decode.py` 474 -> 498, breaking
+the exact 491 tie the previous sentence had just been rewritten to record
+and moving `nesting_depth.py` from a tie for third to second outright.
+`scanner.py` (479) and `manifest_canonicality_cause.py` (491) did not move a
+line and still changed rank. The file count is unchanged at 78. `nesting_depth.py` went 457 -> 446
 in the slice's first fix wave and 446 -> 451 -> 472 after it, the last step in
 the PR #684 review's fix round, which moved it from sixth to fifth. The 458 and
 446 this line carried were measured at the docs commit and grown by a LATER
 commit (`38427086`) -- this paragraph's own warning, restated one slice on.
+**It happened again, in the very next slice — twice over, in two different
+commits of the same fix wave.** The well-formedness-walk branch's own final
+review fix wave grew `value_type_discipline.py` 658 -> 761 and
+`manifest_decode.py` 460 -> 474, and grew `nesting_depth.py` 472 -> 491 —
+enough on its own to erase the five-line gap under `manifest_canonicality_cause.py`
+(486 at the time), moving it from fifth to a TIE for third rather than past
+it. `codec/scanner.py` (479, unchanged) stayed fourth-or-fifth either way.
+None of those commits touched the file count, which is still 78. The docs
+commit these figures were last written against (`db6b1f5b`, #684) did not
+re-measure after this slice's own fix wave landed on top of it — this
+paragraph's "re-measure at the MERGE" instruction, missed at the very next
+opportunity to follow it.
+
+**Then the commit written to fix that drift committed a second copy of it,
+inside the same fix wave.** That commit's own prose correction to
+`sections/manifest_canonicality_cause.py` (three stale mentions of
+`reject_floats_and_tags` naming it the manifest path's rule-4 pre-pass, when
+`walk_body` had already taken that role) was itself +13/-8 lines (net +5;
+the "+8/-3" written here first was the only unverified number in the
+paragraph about not writing down unverified numbers — `git log --numstat`
+gives the real pair, PR #689 review), growing the
+file 486 -> 491 in the course of fixing an unrelated finding — an exact TIE
+with `nesting_depth.py`, not the five-line trailing gap that same commit's
+CLAUDE.md edit still reported, because the figures above were written
+*before* that file's own edit landed and never re-measured after. This is
+the NEIGHBOURING-NUMBER COPY this file names a few sections down (`#679`
+review, `scanner.py` 476 taken from the wrong sentence) restated as a
+same-commit, same-file case: measuring a file, then editing that same file
+later in the same commit, without a second `wc -l` before writing the
+figure down.
 Re-measured at #667/#670 (75 -> 78 files: `sections/nesting_depth.py`,
 `sections/nesting_depth_bodies.py`, `sections/record_defaults.py`), which grew
 `manifest_decode.py` 450 -> 460 (the depth pass is its first statement) and
@@ -719,10 +767,14 @@ now says **a default value is written by omission**. Load-bearing:
   `block::decode_plaintext`, `ContactCard::from_canonical_cbor`,
   `IdentityBundle::from_canonical_cbor` and `record::decode` -- in four
   level shapes: plain arrays, a tag as the last level, indefinite arrays and
-  a map-key chain. Only the first four paths pin CIBORIUM; the record row
-  pins the walk, which answers before ciborium runs. So a ciborium upgrade
-  cannot move the spec's limit silently on those four, nor stop charging a
-  tag or an indefinite container. It was named
+  a map-key chain. **This said "only the first four paths pin CIBORIUM; the
+  record row pins the walk" until #666 wired the same walk into
+  `decode_manifest` and `block::decode_plaintext`.** Now only
+  `ContactCard::from_canonical_cbor` and `IdentityBundle::from_canonical_cbor`
+  pin ciborium's limit; `decode_manifest`, `block::decode_plaintext` and
+  `record::decode` all pin the walk, which answers before ciborium ever
+  runs. So a ciborium upgrade cannot move the spec's limit silently on
+  those two, nor stop charging a tag or an indefinite container. It was named
   `ciborium_enforces_exactly_the_v1_limit_on_every_decode_path` and built
   arrays only until the PR #684 review. Over the full
   local `record` corpus (7,495 inputs, base against branch) **0 verdicts
@@ -734,23 +786,33 @@ now says **a default value is written by omission**. Load-bearing:
   always reported first -- ciborium never ran on them at all, which is the
   conclusive reason. Its `Io` always carries `offset: None` (`classify_de`)
   where these carried `Some(..)`, corroborating it for the `Io` inputs only.
-- **Python has ONE traversal and two entry points.** `codec/well_formed.py`'s
-  `_walk(.., check_content)` is reached through `walk_body` (record) and
-  `reject_excessive_nesting`. The latter is the first statement of the
-  manifest, contact-card and trash-entry decoders. The pass is CONTENT-BLIND:
-  no UTF-8, simple-value or rule-4 fault, since none moves an item boundary.
-  What it does at a STRUCTURAL fault it cannot walk past (a truncation, a
-  bad chunk, a stray break) is the CALLER's to declare, through a required
-  `later_phases_scan_in_byte_order`. The manifest passes `True`: its later
-  phases are `_scan_item`, which meets the same fault at the same byte, so
-  the pass returns and stays silent. The card and trash entry pass `False`,
+- **Python has ONE traversal and two entry points, and #666 moved two of the
+  three content-blind callers onto the other one.** `codec/well_formed.py`'s
+  `_walk(.., check_content)` is reached through `walk_body` — the record
+  since #641, and since #666 the MANIFEST and the TRASH ENTRY too — and
+  through `reject_excessive_nesting`, whose only remaining caller is
+  `codec/card.py`. The latter pass is CONTENT-BLIND: no UTF-8, simple-value
+  or rule-4 fault, since none moves an item boundary; a tag still counts as
+  a level.
+  **Its `later_phases_scan_in_byte_order` flag is GONE (PR #689 review), and
+  why is the point.** It let the CALLER declare what should happen at a
+  structural fault the pass cannot walk past. The manifest passed `True` —
+  return silently, because its later phase `_scan_item` meets the same fault
+  at the same byte; the card and the trash entry passed `False` — raise,
   because their next phase is `cbor2.loads`, which is NOT a byte-order
-  well-formedness check: it accepts a bare break inside a definite array.
-  Until the PR #684 review the pass was silent for all three, so a break
-  ahead of a 300-level chain skipped rule 6 there and was rejected by the
-  ENCODER failing on cbor2's sentinel -- the #608 shape. One copy
-  of the traversal means one mutation reds both entry points. A second copy
-  would be the #618 shape.
+  well-formedness check (it accepts a bare break inside a definite array;
+  until the PR #684 review the pass was silent for all three, so a break
+  ahead of a 300-level chain skipped rule 6 and was rejected by the ENCODER
+  failing on cbor2's sentinel — the #608 shape). #666 then moved the
+  manifest and the trash entry to `walk_body`, leaving the `True` arm — the
+  one that SWALLOWS a well-formedness fault — with no production caller at
+  all, reachable only from the Section NDL check that tested it. A
+  documented fail-open defended solely by its own test is how the next
+  decoder gets wired onto it on the strength of a caller list that no longer
+  holds, so the flag was retired rather than re-documented; the pass now
+  raises unconditionally, which is what its one caller already asked for.
+  One copy of the traversal means one mutation reds both entry points. A
+  second copy would be the #618 shape.
 - **The absolute value 256 is pinned by the committed seeds, not by Section
   WF.** Mutation N3 (Python's limit 256 -> 257) reddened Section NDL through
   check 6, its only absolute check: it compares the committed `nesting__`
@@ -758,24 +820,34 @@ now says **a default value is written by omission**. Load-bearing:
   are built FROM the constant: they prove the check is relative to it and say
   nothing about its value. On the Rust side the path pin ties the constant to
   ciborium's actual limit (mutation N1).
-- **The manifest-path bignum edge is #666's, and Rust gives it two
-  answers.** ciborium charges no level for a bignum tag over a
-  DEFINITE-length byte string of at most 16
-  bytes. When the value fits 64 bits — every bignum of up to 8 bytes, plus a
-  wider one whose leading bytes are zero — it folds it to an integer, so a
-  manifest whose 257th level is one fails the re-encode as
-  `non_canonical_unclassified`. Otherwise, in the 9-16-byte range, positive
-  or negative, ciborium keeps a `Value::Tag`, and Rust answers
-  `rule4_tag_or_float` (`Canonical(TagRejected)`): a rule-4 report where
-  §4.2 now requires depth. Python answers `NestingTooDeep` (`malformed_cbor`)
-  at every width, and a pair naming `malformed_cbor` is never tolerated.
-  This said "`non_canonical_unclassified`" for every width up to 16 bytes
-  until the #667 review measured 9 bytes. (A 16-byte negative whose top bit
-  is set overflows ciborium's `i128`, a `Semantic` fault, so both sides say
-  `malformed_cbor`; from 17 bytes ciborium charges the level.) No input
-  reaches any of it, and the path pin's all-array bodies cannot see it.
-  Wiring the walk into `decode_manifest` closes it; #666's seeds need both
-  widths, because the two take different ciborium paths.
+- **The manifest-path bignum edge was #666's, and it is CLOSED, not open.**
+  This bullet used to describe a live divergence and end "wiring the walk
+  into `decode_manifest` closes it" — that wiring happened in this same
+  #666 slice, so read the rest of this bullet as history, not a residual.
+  Before the walk was wired in: ciborium charges no level for a bignum tag
+  over a DEFINITE-length byte string of at most 16 bytes. When the value
+  fit 64 bits — every bignum of up to 8 bytes, plus a wider one whose
+  leading bytes are zero — it folded to an integer, so a manifest whose
+  257th level was one failed the re-encode as `non_canonical_unclassified`.
+  Otherwise, in the 9-16-byte range, positive or negative, ciborium kept a
+  `Value::Tag`, and Rust answered `rule4_tag_or_float` (`Canonical(TagRejected)`)
+  where Python answered `NestingTooDeep` (`malformed_cbor`) at every width —
+  a pair naming `malformed_cbor` is never tolerated. (A 16-byte negative
+  whose top bit is set overflows ciborium's `i128`, a `Semantic` fault, so
+  both sides said `malformed_cbor` there; from 17 bytes ciborium charges the
+  level, so the divergence was bounded to the 1-16-byte range.) Now that
+  `decode_manifest`'s first statement is the byte-level walk, a bignum at
+  level 257 is refused as `RecursionLimit` (`malformed_cbor`) on BOTH sides,
+  at both widths, before ciborium or `cbor2` ever see the tag —
+  `the_walk_paths_charge_a_level_for_a_short_bignum`
+  (`core/tests/nesting_depth_seeds.rs`) pins it on all three walk paths
+  (`decode_manifest`, `block::decode_plaintext`, `record::decode`), and the
+  two committed seeds `nesting__257_unknown_bignum_narrow.bin` /
+  `nesting__257_unknown_bignum_wide.bin` pin it cross-language, because the
+  two widths took different ciborium paths and both needed a seed. The
+  ciborium-only paths (`ContactCard::from_canonical_cbor`,
+  `IdentityBundle::from_canonical_cbor`) still show the old split — they
+  were never in scope for this slice.
 - **The writer half is unenforced in both languages (#681).** No production
   path emits a 257-deep document from decoded input. An `UnknownValue` built
   in memory can, which is the #586/#600 writer-half shape.
@@ -846,6 +918,28 @@ find in a doc predates the split and is stale. **Watch for the near-miss:**
 `ffi/secretary-ffi-bridge/src/vault/manifest.rs` is a DIFFERENT file that
 still exists, and citations to it are valid — only ones resolving under
 `core/src/` are stale.
+
+**`decode_manifest`'s first statement is a byte-level well-formedness walk,
+since #666.** `crate::vault::canonical::walk_first_item_checked` — the one
+helper `record::decode` (#641) and `block::decode_plaintext` (#666) now also
+call — runs before `from_secret_reader` touches the bytes at all, ahead even
+of `reject_floats_and_tags`. It closes three cross-language divergences that
+were in the NEVER-tolerated `malformed_cbor` class (`undefined`, the
+two-byte simple form, a nested indefinite chunk) — plus, on the PYTHON side
+and unclaimed until the PR #689 review measured it, the same three shapes
+wrapped in an INDEFINITE container, where `_check_canonical_item` raises
+rule 2 on the indefinite head as its first statement and so never reached
+its own UTF-8 or simple-value check. The sharpest of those is an
+indefinite text string whose two chunks split one UTF-8 sequence: `ciborium`
+has always rejected it as `malformed_cbor`, this reader answered
+`rule2_indefinite_length`, and the pair is never tolerated. Committed as
+`manifest_body/wellformed__indef_text_split_utf8.bin`. It also gives
+`docs/vault-format.md` §4.2's well-formedness precondition its precedence on
+this path: a body that is not well-formed is reported as that, whatever
+else it also breaks — including a rule-4 tag or float earlier in byte order,
+which the walk PARKS rather than reporting eagerly (`core/src/cbor/well_formed.rs`).
+See "Nesting depth and record default omission" below for the bignum edge
+this closed on the manifest path specifically.
 
 **Duplicate-key and missing-field rejection is a TYPE invariant, not an
 idiom (#589).** RFC 8949 §5.4's no-repeated-key rule and §4.2's
@@ -1313,15 +1407,23 @@ survived it. Six things:
   agreement for `undefined` and nested-chunk manifest bodies. All four
   `NonCanonicalCause` outcomes map to phase-dependent tokens, so **every**
   `NonCanonicalEncoding` rejection Rust makes is scored as agreement whatever
-  Python said — measured on the committed corpus, that is **17 of the 32
+  Python said — measured on the committed corpus, that is **17 of the 42
   rejecting `manifest_body` seeds** (7 `arraysort__*`, 4 `keyorder__*`, 3
-  rule-2, 3 rule-3), leaving 15 that reach a real comparison. #669 added 6
+  rule-2, 3 rule-3), leaving 25 that reach a real comparison. #669 added 6
   `valuetype__trash_*` rows answering `wrong_type` / `integer_out_of_range`,
-  and #667 two `nesting__{257,2048}_unknown` rows answering `malformed_cbor`,
-  which is never tolerated. So the TOLERATED count has not moved while the
-  strict one went 7 -> 13 -> 15. These figures stood stale at "17 of 24,
-  leaving 7" for a whole slice, so re-measure rather than quoting (#679
-  review). #667 re-measured them per seed, with a scratch probe over
+  #667 two `nesting__{257,2048}_unknown` rows and #666 ten more (8
+  `wellformed__*`, 2 `nesting__257_unknown_bignum_*`), every one answering
+  `malformed_cbor` or `rule4_tag_or_float`, neither of which is ever
+  tolerated. So the TOLERATED count has not moved — it is still the same 17
+  `NonCanonicalEncoding` rows — while the strict one went
+  7 -> 13 -> 15 -> 25, and the DENOMINATOR moved 32 -> 42 with it.
+  **Both halves of that sentence have now gone stale twice**: at "17 of 24,
+  leaving 7" for a whole slice (#679 review), and again at "17 of 32, leaving
+  15" — which #666 left behind while updating the sibling bullet below to
+  "25 of 58" in the same commit, so the one file disagreed with itself
+  (PR #689 review). Re-measure rather than quoting; the recipe is a
+  `diff_replay.replay_bytes` sweep of `core/fuzz/seeds/manifest_body/`
+  bucketed by `RuleToken::is_phase_dependent`. #667 re-measured them per seed, with a scratch probe over
   `decode_manifest(..).rule_token()` and `diff_replay.replay_bytes`. FOUR groups are
   tolerated with no §4.2 licence, enumerated in
   `RuleToken::is_phase_dependent`'s own LIMITS block and tracked by **#646**:
@@ -1418,11 +1520,13 @@ survived it. Six things:
   because that is how the #647 gap itself survived three slices.
   **State the residual scope exactly, because the wider claim is the one
   someone will want to make.** CI replays the COMMITTED corpus only —
-  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **131** inputs today
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **141** inputs today
   (#641 added 57 generated single-fault seeds for `block_file` and `record`;
   #669 added 14 acceptance seeds for `contact_card`, `vault_toml` and
   `manifest_body`; #667 added 7 `nesting__` seeds for `record` and
-  `manifest_body`, and #670 3 `record` default-omission seeds).
+  `manifest_body`, and #670 3 `record` default-omission seeds; #666 added 10
+  more `manifest_body` seeds — 8 `wellformed__*` plus 2
+  `nesting__257_unknown_bignum_{narrow,wide}`).
   `core/fuzz/corpus/` is **gitignored**, so agreement on fuzz-DISCOVERED
   inputs is still proven only by whoever runs the fuzzer, and "the differential
   replay is in CI" must not be read as "the fuzz corpus is differentially
@@ -1432,11 +1536,19 @@ survived it. Six things:
   the one machine the floor protects: with `fuzz/corpus/` populated, a deleted
   seed still cleared the floor by tens of thousands (#656 review; measured —
   38 committed against 41 total now reds). What it still does NOT floor is how
-  many inputs reach a STRICT token comparison, which is 15 of 48 on
+  many inputs reach a STRICT token comparison, which was **15 of 48** on
   `manifest_body` because every `NonCanonicalEncoding` cause is
-  phase-dependent; #658. The other CI cover is
-  unchanged: `manifest/token/tests/` (the blocking `cargo test --workspace`)
-  and Section RTV (the blocking `clean-room conformance` job).
+  phase-dependent; #658. **#666's ten new `manifest_body` seeds all reach
+  it**, none excused: `RuleToken::is_phase_dependent` names `MalformedCbor`
+  and `Rule4TagOrFloat` — the only two tokens any of the ten seeds can
+  produce — `false`, so a mismatch on either is never tolerated. That is
+  **25 of 58** now, re-measured by a `diff_replay.replay_bytes` sweep over
+  the committed corpus rather than derived from `is_phase_dependent`'s match
+  arms plus a per-row token column, which is what the "24 of 57" this
+  replaces was (PR #689 review added the tenth seed,
+  `wellformed__indef_text_split_utf8`). The other CI cover is unchanged: `manifest/token/tests/` (the blocking `cargo test
+  --workspace`) and Section RTV (the blocking `clean-room conformance`
+  job).
 - **Token coverage is asymmetric between the two sides, and the Python half
   needed the identity check it did not have.** Rust pins all 35 variant→token
   mappings (`tests/mapping.rs`, a second independent declaration) plus 6

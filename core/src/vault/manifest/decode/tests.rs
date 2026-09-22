@@ -1255,3 +1255,154 @@ fn a_manifest_missing_any_required_key_names_that_key() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Byte-level well-formedness precondition (#666)
+// ---------------------------------------------------------------------------
+
+/// One canonical accepting manifest body with `("zz_future", planted)`
+/// spliced in at its canonical key position (length-first, RFC 8949
+/// §4.2.1), so the planted value reaches the decoder rather than a
+/// key-order rejection.
+fn manifest_with_unknown_value(planted: &[u8]) -> Vec<u8> {
+    // Major 3 (text), length 9, "zz_future" — a key no v1 manifest defines,
+    // so it lands in the forward-compat bag rather than a schema check.
+    const UNKNOWN_KEY: &[u8] = b"\x69zz_future";
+    // Major 3, length 10, "kdf_params". `minimal_manifest()`'s nine
+    // required keys sort (length-first, then bytewise, RFC 8949 §4.2.1) as
+    // trash(5), blocks(6), suite_id(8), kdf_params(10), vault_uuid(10),
+    // vector_clock(12), format_version(14), owner_user_uuid(15),
+    // manifest_version(16) — measured directly via `parse_to_value_map`
+    // over `encode_manifest(&minimal_manifest())`, not assumed from the
+    // key list alone. `zz_future` is 9 bytes, so it belongs immediately
+    // BEFORE the first length-10 key, which is `kdf_params`, not
+    // `vault_uuid` (the two are both length 10, and `kdf_params` sorts
+    // first bytewise: `k` = 0x6b < `v` = 0x76). Splicing before
+    // `vault_uuid` instead would land `zz_future` BETWEEN the two
+    // length-10 keys — decreasing length, hence non-canonical — and every
+    // test below would then reject for the wrong reason, which is what the
+    // control test catches.
+    const KDF_PARAMS_KEY: &[u8] = b"\x6akdf_params";
+
+    // Build a valid body with the module's own fixture builder and encode
+    // it, rather than reading a committed seed: this keeps the test
+    // independent of `core/fuzz/seeds/`, which a unit test should not reach
+    // into.
+    let base = encode_manifest(&minimal_manifest())
+        .expect("the fixture manifest encodes")
+        .expose()
+        .to_vec();
+
+    // Surgery, not re-encoding: `encode_manifest` would re-sort and
+    // re-canonicalise the planted value away, which is the whole point of
+    // what is being tested. Same reason `manifest_uniqueness_kat.rs` plants
+    // its repeats by surgery.
+    let at = {
+        let hits: Vec<usize> = base
+            .windows(KDF_PARAMS_KEY.len())
+            .enumerate()
+            .filter(|(_, w)| *w == KDF_PARAMS_KEY)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(hits.len(), 1, "the kdf_params key must occur exactly once");
+        hits[0]
+    };
+
+    let head = base[0];
+    // 0xb6, not 0xb7: at 23 entries (0xb7) `head + 1` is 0xb8, which is the
+    // ONE-BYTE-COUNT map head, not a 24-entry small map — the spliced body
+    // would be silently mis-parsed. Latent today (the fixture has 9 entries)
+    // and `the_same_splice_with_a_benign_value_is_accepted` would catch it,
+    // but the guard should not be the thing that admits the bug (PR #689
+    // review).
+    assert!(
+        (0xa0..=0xb6).contains(&head),
+        "the fixture's top-level map must have a one-byte head with room for \
+         one more entry; got {head:#04x}"
+    );
+
+    let mut out = Vec::with_capacity(base.len() + UNKNOWN_KEY.len() + planted.len());
+    out.push(head + 1); // one more entry
+    out.extend_from_slice(&base[1..at]);
+    out.extend_from_slice(UNKNOWN_KEY);
+    out.extend_from_slice(planted);
+    out.extend_from_slice(&base[at..]);
+    out
+}
+
+/// crypto-design §6.2's profile and §4.2's precondition: a body that is not
+/// well-formed CBOR is reported AS THAT, before any key is interpreted.
+/// Before #666 ciborium accepted `undefined`, the two-byte simple form and a
+/// nested indefinite chunk as well-formed, so those three bodies were
+/// reported by the re-encode comparison instead — a different rule, and one
+/// `conformance.py` never agreed with (`decode/mod.rs`'s own call-site
+/// comment names the same three). The fourth row, invalid UTF-8, is not one
+/// of them: `ciborium` has always rejected it as `malformed_cbor`, so that
+/// row is a pre-existing regression pin, kept alongside the other three
+/// because it exercises the same splice helper and the same match arm.
+#[test]
+fn a_body_that_is_not_well_formed_is_reported_as_malformed_cbor() {
+    for (label, planted) in [
+        ("undefined", &[0xf7u8][..]),
+        ("two-byte simple", &[0xf8, 0x15][..]),
+        (
+            "nested indefinite chunk",
+            &[0x5f, 0x5f, 0x41, 0x61, 0xff, 0xff][..],
+        ),
+        ("invalid UTF-8 text", &[0x61, 0xff][..]),
+    ] {
+        let body = manifest_with_unknown_value(planted);
+        match decode_manifest(&body) {
+            Err(ManifestError::CborDecode(_)) => {}
+            other => panic!("{label}: expected CborDecode, got {other:?}"),
+        }
+    }
+}
+
+/// A bignum whose value fits 64 bits is folded to an integer by ciborium, so
+/// the parsed-tree rule-4 walk never sees the tag. The byte walk does.
+#[test]
+fn a_narrow_bignum_is_reported_as_a_rule_4_tag() {
+    let body = manifest_with_unknown_value(&[0xc2, 0x41, 0x01]);
+    match decode_manifest(&body) {
+        // The `field` hint is asserted, not ignored: `walk.rs`'s
+        // `WALK_ROOT_HINT` claims "wiring this walk in front of
+        // `reject_floats_and_tags` does not move the reported message", and
+        // this is the only observable site that can hold it to that — the
+        // record and block enums both discard the field on their Tag arm
+        // (PR #689 review).
+        Err(ManifestError::Canonical(CanonicalError::TagRejected { field })) => {
+            assert_eq!(field, "<root>", "the walk must pass the same hint");
+        }
+        other => panic!("expected Canonical(TagRejected), got {other:?}"),
+    }
+}
+
+/// §4.2: the precondition outranks rule 4 whatever the byte order. Both
+/// bodies carry a rule-4 fault BEFORE the well-formedness fault, so a walk
+/// that reported the first fault it met would red exactly here.
+#[test]
+fn a_well_formedness_fault_outranks_an_earlier_rule_4_fault() {
+    for (label, planted) in [
+        ("tag then undefined", &[0x82u8, 0xc2, 0x41, 0x01, 0xf7][..]),
+        ("float then undefined", &[0x82, 0xf9, 0x00, 0x00, 0xf7][..]),
+    ] {
+        let body = manifest_with_unknown_value(planted);
+        match decode_manifest(&body) {
+            Err(ManifestError::CborDecode(_)) => {}
+            other => panic!("{label}: expected CborDecode, got {other:?}"),
+        }
+    }
+}
+
+/// The control: the same splice with a benign value still ACCEPTS. Without
+/// it the four tests above pass on a decoder that rejects every spliced
+/// body for an unrelated reason.
+#[test]
+fn the_same_splice_with_a_benign_value_is_accepted() {
+    let body = manifest_with_unknown_value(&[0x00]);
+    assert!(
+        decode_manifest(&body).is_ok(),
+        "the splice itself must be canonical"
+    );
+}

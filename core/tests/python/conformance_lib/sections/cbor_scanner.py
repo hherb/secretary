@@ -6,6 +6,8 @@ forward-compat `unknown` subtree path depends on.
 
 from __future__ import annotations
 
+import re
+
 from conformance_lib.codec.cbor_faults import MalformedCbor
 from conformance_lib.codec.scanner import (
     DuplicateMapKey,
@@ -15,6 +17,13 @@ from conformance_lib.codec.scanner import (
     _scan_map_entries,
     reject_floats_and_tags,
 )
+from conformance_lib.codec.well_formed import walk_body
+
+#: Absolute floors for Section CS's `walk_body` checks — deliberately NOT
+#: `len()` of the case tables they guard, which would be emptied with them.
+MIN_PARKING_CASES = 3
+MIN_RULE4_CONTROL_CASES = 2
+
 
 def section_cbor_scanner_units() -> tuple[bool, list[str]]:
     """Unit coverage for the span-recording CBOR scanner (§4.2 support).
@@ -236,9 +245,84 @@ def section_cbor_scanner_units() -> tuple[bool, list[str]]:
         except ValueError as e:
             issues.append(f"{label} must be ACCEPTED, got: {e}")
 
+    # --- walk_body PARKS a rule-4 fault behind a later well-formedness
+    # --- fault. `docs/vault-format.md` §4.2 makes well-formedness the
+    # --- precondition for both report orderings, so a body that is not
+    # --- well-formed is reported as that "whatever else the body also
+    # --- breaks" -- including a tag or float EARLIER in byte order. This is
+    # --- a property of this implementation's traversal, asserted locally
+    # --- rather than through a corpus row, because a corpus row would claim
+    # --- it of every conformant reader (#618's review drew that line).
+    # Each row carries the byte OFFSET of its well-formedness fault. Without
+    # it, `except MalformedCbor: parked += 1` credited ANY well-formedness
+    # rejection as proof of parking -- a walk broken so that it rejected the
+    # leading 0x82 array head would have satisfied all three rows (PR #689
+    # review; the same "a token-less row must not pass on any rejection"
+    # lesson #679 applied to Section VT).
+    _PARKING_CASES = (
+        ("tag then undefined", bytes([0x82, 0xC2, 0x41, 0x01, 0xF7]), 4),
+        ("float then undefined", bytes([0x82, 0xF9, 0x00, 0x00, 0xF7]), 4),
+        ("tag then bad chunk", bytes([0x82, 0xC2, 0x41, 0x01, 0x5F, 0x5F, 0x41, 0x61, 0xFF, 0xFF]), 5),
+    )
+    _RULE4_CASES = (
+        ("tag alone", bytes([0xC2, 0x41, 0x01])),
+        ("float alone", bytes([0xF9, 0x00, 0x00])),
+    )
+    parked = 0
+    for label, raw, want_offset in _PARKING_CASES:
+        try:
+            walk_body(raw)
+        except MalformedCbor as e:
+            # Anchored on the offset PHRASING, not a bare substring: the two
+            # message shapes are "... at offset 4 (ai=23)" and "... at 5", and
+            # a plain `str(4) in str(e)` matches the "4" in "RFC 8949" on
+            # every message this module emits.
+            if not re.search(rf"\bat (?:offset )?{want_offset}\b", str(e)):
+                issues.append(
+                    f"walk_body {label}: rejected as malformed but the message does not "
+                    f"name offset {want_offset} (the LATER fault this row parks behind): {e}"
+                )
+            else:
+                parked += 1
+        except NonCanonicalItem as e:
+            issues.append(f"walk_body {label}: reported rule {e.rule} where §4.2 requires the well-formedness fault")
+        else:
+            issues.append(f"walk_body {label}: accepted a body that is not well-formed")
+
+    # --- and it still reports rule 4 when the body IS well-formed, so the
+    # --- check above cannot pass by rejecting everything.
+    rule4_seen = 0
+    for label, raw in _RULE4_CASES:
+        try:
+            walk_body(raw)
+        except NonCanonicalItem:
+            rule4_seen += 1
+        except MalformedCbor as e:
+            issues.append(f"walk_body {label}: reported {e} where rule 4 is the only fault")
+        else:
+            issues.append(f"walk_body {label}: accepted a rule-4 body")
+
+    # --- FLOORS, and they are ABSOLUTE CONSTANTS rather than `len(...)` of the
+    # --- tables above. Both counters are derived from execution, which says
+    # --- nothing if the table they iterate was emptied -- and a floor written
+    # --- `parked != len(_PARKING_CASES)` is emptied along WITH it (0 != 0 is
+    # --- False). Measured: the `len()` form was written first and an emptied
+    # --- `_PARKING_CASES` still returned ok=True, printing "(0 parked, ...)".
+    # --- That is the very fail-open this floor exists to close, committed
+    # --- inside the fix for it -- the shape `MIN_SCANNED_CODEC_MODULES`
+    # --- already closes for Section VT check 3 (PR #689 review).
+    if parked != MIN_PARKING_CASES:
+        issues.append(
+            f"parking check ran {parked} case(s), floor is {MIN_PARKING_CASES}"
+        )
+    if rule4_seen != MIN_RULE4_CONTROL_CASES:
+        issues.append(
+            f"rule-4 control ran {rule4_seen} case(s), floor is {MIN_RULE4_CONTROL_CASES}"
+        )
+
     if issues:
         return False, issues
-    return True, ["PASS  CBOR scanner unit coverage"]
+    return True, [f"PASS  CBOR scanner unit coverage ({parked} parked, {rule4_seen} rule-4)"]
 
 
 # `_check_no_duplicate_keys` (a `pass`-bodied no-op asserting that the

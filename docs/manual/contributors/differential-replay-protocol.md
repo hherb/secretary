@@ -217,9 +217,11 @@ There are exactly three valid output shapes:
   that §4.2 does not license are written out in that method's own LIMITS
   block. Read "generally declares the order unspecified" above with that in
   mind — because all four `NonCanonicalCause` outcomes map to phase-dependent
-  tokens, **17 of the 32 rejecting `manifest_body` seeds never compare the
-  Python token at all** (measured at #667; it read "17 of the 24" from #634
-  until then). It is still not a list of tolerated pairs, because
+  tokens, **17 of the 42 rejecting `manifest_body` seeds never compare the
+  Python token at all** (the NUMERATOR has not moved since #634; the
+  denominator has, twice — "17 of the 24" from #634, re-measured to 32 at
+  #667 and to 42 at #666, whose ten new seeds every one reaches a strict
+  comparison. Re-measure the denominator, never quote it). It is still not a list of tolerated pairs, because
   such a list drifts from §4.2 silently; #646 tracks replacing it with a
   two-argument relation once §4.2 settles the two groups it leaves open.
 - An **unrecognised** token — one absent from the vocabulary — is never

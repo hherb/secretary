@@ -19,22 +19,34 @@ Checks, each reporting what it RAN:
   2. A VERDICT AT EVERY DEPTH: 257, 1,000 and 10,000 each raise NestingTooDeep,
      never `RecursionError` or an untokened exception.
   3. TAGS ARE LEVELS: a tag at level 257 is NestingTooDeep, not rule 4; the
-     same tag at level 256 is rule 4 (the control).  Run on `_RECORD` (the
-     iterative `walk_body`) and `_MANIFEST` (`reject_excessive_nesting`), the
-     two decoders with different mechanisms, selected by name.
-  4. DEPTH OUTRANKS A SHALLOW TAG, and the depth pass is content-blind.  A tag
-     earlier in byte order is only REMEMBERED by both mechanisms, so depth
-     wins on the record (walk) and the manifest (pass).  Invalid UTF-8 earlier
-     in byte order is a well-formedness fault the record WALK raises at once,
-     in byte order, exactly as its Rust twin does, so that case runs on the
-     manifest's content-blind pass only, which must still report the depth.
-     The control for the pass's silence: a truncated body with no depth
-     problem makes `reject_excessive_nesting` return, and the decoder reports
-     `MalformedCbor` exactly, as it always did.  Same `_RECORD`/`_MANIFEST`
-     naming as check 3.  And the converse, on the two cbor2-backed decoders:
-     a stray break ahead of a deep chain is `MalformedCbor` from the pass
-     itself, since cbor2 accepts that break and would parse on (PR #684
-     review: the encoder, failing on cbor2's sentinel, used to answer).
+     same tag at level 256 is rule 4 (the control).  Run on `_RECORD` and
+     `_MANIFEST` by name.  Both go through the iterative `walk_body` since
+     #666 (`py_decode_manifest` no longer has a `reject_excessive_nesting`
+     pass of its own), so this is no longer two mechanisms proving the same
+     thing -- it is one mechanism pinned at both its entry points, so a
+     future divergence between them still reds here rather than at neither.
+  4. DEPTH OUTRANKS A SHALLOW TAG.  A tag earlier in byte order is only
+     REMEMBERED by `walk_body`, so depth still wins over it -- on both
+     `_RECORD` and `_MANIFEST`.  Invalid UTF-8 earlier in byte order is a
+     well-formedness fault `walk_body` raises AT ONCE, in byte order, exactly
+     as its Rust twin does on every decode path -- so depth never gets a
+     chance to fire on EITHER decoder, which is why this case runs on both
+     (regression pin for #666: before it, `py_decode_manifest` ran a
+     content-blind PASS here that could not see the fault, so depth won on
+     the manifest and not on the record -- an asymmetry that is gone now).
+     `reject_excessive_nesting` is now the first statement of the CARD decoder
+     alone -- #666 moved the manifest and the trash entry onto `walk_body` --
+     and its `later_phases_scan_in_byte_order` flag is gone with them, so its
+     contract is pinned directly in the one direction that survives: a
+     structural fault RAISES. (The flag's `True` arm swallowed it; #666 left
+     that arm with no production caller and the PR #689 review retired it
+     rather than leave a fail-open defended only by this check.) Alongside it,
+     the control that `py_decode_manifest` still reports `MalformedCbor` on
+     that same truncated body -- via `walk_body` now, not via that pass.  And the
+     converse, on the two cbor2-backed decoders: a stray break ahead of a
+     deep chain is `MalformedCbor` from the pass itself, since cbor2 accepts
+     that break and would parse on (PR #684 review: the encoder, failing on
+     cbor2's sentinel, used to answer).
   5. CENSUS, both ways, default-deny: every top-level `py_decode_*` under
      `codec/` is either a CBOR-document decoder in `_DECODERS` or named in
      `_NOT_CBOR_DOCUMENTS` with its reason.  A new decoder nobody classified
@@ -129,11 +141,11 @@ def _trash_base() -> bytes:
     return cbor2.dumps(_TRASH_BASE, canonical=True)
 
 
-# Named bindings, not tuple positions.  Checks 3 and 4 cover TWO DIFFERENT
-# depth mechanisms -- `_RECORD` goes through the iterative `walk_body`,
-# `_MANIFEST` through the content-blind `reject_excessive_nesting` pass -- so
-# selecting them as `_DECODERS[0]`/`[1]` would let a reorder, or a decoder
-# inserted ahead of them, retarget both checks with nothing going red.
+# Named bindings, not tuple positions.  Checks 3 and 4 pin `_RECORD` and
+# `_MANIFEST` -- both go through the iterative `walk_body` since #666 -- by
+# NAME rather than by position, so selecting them as `_DECODERS[0]`/`[1]`
+# would let a reorder, or a decoder inserted ahead of them, retarget both
+# checks with nothing going red.
 _RECORD = _Decoder(py_decode_record, _seed("record", "login.cbor"), "accept")
 _MANIFEST = _Decoder(py_decode_manifest, _seed("manifest_body", "uniq__control__all_distinct.bin"), "accept")
 _CONTACT_CARD = _Decoder(py_decode_contact_card, _seed("contact_card", "with_sigs.cbor"), "ValueError")
@@ -267,20 +279,30 @@ def _precedence_issues() -> _CheckResult:
     issues: list[str] = []
     executed = 0
     passed = 0
-    declared = 7  # len(cases) + 2, fixed regardless of a guard firing below
+    declared = 8  # len(cases) + 2, fixed regardless of a guard firing below
     # A two-item array whose SECOND item is the chain: the first item sits
     # earlier in byte order, and the chain takes the document past the limit.
     deep = nested_value(V1_MAX_NESTING_DEPTH)
-    # (decoder, label, the shallow first item): a tag is only remembered, by
-    # the walk AND the pass; invalid UTF-8 is raised at once by the record walk
-    # (in byte order, as its Rust twin does), so it runs on the pass only.
-    # `_RECORD`/`_MANIFEST` by NAME -- same reasoning as `_tag_level_issues`.
+    # (decoder, label, the shallow first item): a tag is only REMEMBERED by
+    # `walk_body`, so depth still wins over a shallow tag earlier in byte
+    # order -- on both `_RECORD` and `_MANIFEST`, which have shared this one
+    # mechanism since #666 (`py_decode_manifest` adopted `walk_body`; it no
+    # longer has a content-blind pass of its own). Invalid UTF-8 earlier in
+    # byte order is a well-formedness fault `walk_body` raises AT ONCE, in
+    # byte order, exactly as the Rust twin does on every decode path -- so
+    # depth never gets a chance to fire on EITHER decoder now, which is why
+    # this case is run on both. Before #666 the manifest ran a content-blind
+    # PASS here (`reject_excessive_nesting`) that could not see the fault and
+    # let depth win; that asymmetry is gone, and this row is its regression
+    # pin. `_RECORD`/`_MANIFEST` by NAME -- same reasoning as
+    # `_tag_level_issues`.
     # A stray break is a structural fault the pass RAISES for the cbor2-backed
     # decoders, so there the break, earlier in byte order, is what is reported.
     cases = (
         (_RECORD, "a tag", bytes([ARRAY_2, TAG_1, UINT_0]), "too_deep"),
         (_MANIFEST, "a tag", bytes([ARRAY_2, TAG_1, UINT_0]), "too_deep"),
-        (_MANIFEST, "invalid utf-8", bytes([ARRAY_2, TEXT_1, INVALID_UTF8]), "too_deep"),
+        (_RECORD, "invalid utf-8", bytes([ARRAY_2, TEXT_1, INVALID_UTF8]), MalformedCbor.__name__),
+        (_MANIFEST, "invalid utf-8", bytes([ARRAY_2, TEXT_1, INVALID_UTF8]), MalformedCbor.__name__),
         (_CONTACT_CARD, "a stray break", bytes([ARRAY_2, BREAK]), MalformedCbor.__name__),
         (_TRASH_ENTRY, "a stray break", bytes([ARRAY_2, BREAK]), MalformedCbor.__name__),
     )
@@ -300,20 +322,48 @@ def _precedence_issues() -> _CheckResult:
         issues.append(err)
         return _CheckResult(issues, executed, passed, declared)
     truncated = manifest_base[:-1]
+    # `reject_excessive_nesting` RAISES a structural fault, unconditionally.
+    # It used to take a `later_phases_scan_in_byte_order` flag and this control
+    # drove the `True` arm, which SWALLOWED the fault -- an arm #666 left with
+    # no production caller (the manifest and the trash entry moved to
+    # `walk_body`; the card, its one remaining caller, passed `False`). The
+    # flag is gone, so this control now pins the surviving contract in the
+    # direction the card actually depends on (PR #689 review).
     try:
-        reject_excessive_nesting(truncated, later_phases_scan_in_byte_order=True)
-    except Exception as exc:  # noqa: BLE001 -- any raise breaks the pass's silence
-        executed += 1
-        issues.append(f"reject_excessive_nesting raised {type(exc).__name__} on a truncated body with no depth fault")
-    else:
+        reject_excessive_nesting(truncated)
+    except MalformedCbor:
         executed += 1
         passed += 1
+    except Exception as exc:  # noqa: BLE001
+        executed += 1
+        issues.append(
+            f"reject_excessive_nesting raised {type(exc).__name__} on a truncated body, "
+            f"expected {MalformedCbor.__name__}"
+        )
+    else:
+        executed += 1
+        issues.append(
+            "reject_excessive_nesting ACCEPTED a truncated body; it must raise a "
+            "structural fault, since its one caller's next phase (cbor2.loads) is "
+            "not a byte-order well-formedness check"
+        )
     got = _outcome(_MANIFEST.decode, truncated)
     executed += 1
     if got != MalformedCbor.__name__:
         issues.append(f"py_decode_manifest on a truncated body gave {got}, expected {MalformedCbor.__name__}")
     else:
         passed += 1
+    if executed != declared:
+        # A shortfall used to surface ONLY inside the PASS line's own text, so
+        # deleting a case row left the section GREEN printing
+        # "7/7 ... of 8 declared" — and the single row pinning #666's Python
+        # change is one of those rows (PR #689 review). `_pass_line`'s
+        # docstring claimed the shortfall was surfaced "in the line itself and
+        # not only as an ISSUE", implying an ISSUE too; there was none.
+        issues.append(
+            f"PASS 4 executed {executed} of {declared} declared case(s) — a row was "
+            f"dropped, or a guard skipped one"
+        )
     return _CheckResult(issues, executed, passed, declared)
 
 

@@ -71,7 +71,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ciborium::Value;
 
-use crate::cbor::{classify_ser, walk_first_item, CborFault, SecretValueTree, WalkFault};
+use crate::cbor::{classify_ser, CborFault, SecretValueTree};
 use crate::crypto::secret::{SecretBytes, SecretString};
 
 use super::canonical::{
@@ -692,8 +692,12 @@ pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
     // module doc names the rule each breaks. Every such input is
     // still rejected below, by the re-encode at the latest, so this changes
     // which error is reported, never whether a record is accepted —
-    // `record_walk_tests` checks that.
-    walk_first_item(bytes).map_err(walk_fault_to_record_error)?;
+    // `record_walk_tests` checks that. The projection onto `RecordError` now
+    // lives in `canonical::walk` (#666), shared with the manifest and block
+    // decoders; its rule-4 arms land on the same variants the deleted
+    // `walk_fault_to_record_error` named because `From<CanonicalError> for
+    // RecordError` (above) already maps them there.
+    crate::vault::canonical::walk_first_item_checked(bytes, RecordError::CborDecode)?;
     // `from_secret_reader`, not `from_reader` (#561): this input is
     // decrypted record field plaintext.
     let parsed: Value = crate::cbor::from_secret_reader(bytes).map_err(RecordError::CborDecode)?;
@@ -737,17 +741,10 @@ pub fn decode(bytes: &[u8]) -> Result<Record, RecordError> {
 // `reject_floats_and_tags` lives in [`crate::vault::canonical`]; see the
 // `From<CanonicalError> for RecordError` impl above for how its
 // `FloatRejected` / `TagRejected` errors map back to the record-layer
-// variants without changing the public surface.
-
-/// Map a byte-walk fault onto the variant this decoder has always reported
-/// for the same condition (#641): no new variant, no new message.
-fn walk_fault_to_record_error(fault: WalkFault) -> RecordError {
-    match fault {
-        WalkFault::Malformed(fault) => RecordError::CborDecode(fault),
-        WalkFault::Tag { .. } => RecordError::TagRejected,
-        WalkFault::Float { .. } => RecordError::FloatRejected { field: "<root>" },
-    }
-}
+// variants without changing the public surface. The byte-walk projection
+// (formerly this module's private `walk_fault_to_record_error`) now lives
+// in `canonical::walk::walk_first_item_checked`, which routes through the
+// same `From` impl — see `decode`'s call site above.
 
 /// Decode a record from an already-parsed CBOR value.
 ///

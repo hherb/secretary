@@ -33,9 +33,8 @@ from conformance_lib.codec.scanner import (
     _check_canonical_item,
     _decode_head,
     _scan_map_entries,
-    reject_floats_and_tags,
 )
-from conformance_lib.codec.well_formed import reject_excessive_nesting
+from conformance_lib.codec.well_formed import walk_body
 from conformance_lib.constants import FORMAT_VERSION, SUITE_ID
 
 class ArraySortOrderViolation(ValueError):
@@ -118,8 +117,8 @@ def py_decode_manifest(data: bytes) -> dict:
     - Known values are canonical per §6.2 rules 2 and 3.
     - Unknown subtrees -- at the top level AND inside each `blocks[i]` /
       `trash[i]` entry, per `BlockEntry`/`TrashEntry`'s OWN forward-compat
-      bag -- are checked for rules 2, 3, 4 and 6 only (depth via
-      `reject_excessive_nesting`, this function's first statement), and
+      bag -- are checked for rules 2, 3, 4 and 6 only (depth via `walk_body`,
+      this function's first statement), and
       their raw bytes are RETAINED so they can be re-emitted verbatim
       (rules 1 and 5 are unenforced there -- §4.2's table applies at every
       nesting level, not only the top one; #585 fix round 1, Finding 1).
@@ -146,19 +145,58 @@ def py_decode_manifest(data: bytes) -> dict:
     """
     import cbor2
 
-    # crypto-design §6.2 rule 6 FIRST (#667): `decode_manifest`'s ciborium parse
-    # enforces the same limit before it interprets anything, and vault-format
-    # §4.2 lists depth among the well-formedness preconditions, so it outranks
-    # rule 4.  It must also run before `reject_floats_and_tags` below, which
-    # recurses and would otherwise raise RecursionError on a deep body.
-    reject_excessive_nesting(data, later_phases_scan_in_byte_order=True)
-
-    # §6.2 rule 4 over the WHOLE body, BEFORE any key is interpreted --
-    # §4.2's precedence paragraph (#618), and a byte-for-byte mirror of
-    # `decode_manifest`'s own `reject_floats_and_tags` call, which sits
-    # between the parse and `parse_manifest_map` for the same reason.
+    # `walk_body` is a SUPERSET of the two passes it replaces (#666), and the
+    # superset relationship is exactly why this one call can stand in for
+    # both: it enforces crypto-design §6.2 rule 6 (what
+    # `reject_excessive_nesting` was here for -- depth outranks rule 4
+    # per §4.2's well-formedness precondition list, and running it first also
+    # stops the rule-4 walk below from recursing into a RecursionError on a
+    # deep body), and it raises §6.2 rule 4 for the first tag or float in the
+    # WHOLE body, BEFORE any key is interpreted (what `reject_floats_and_tags`
+    # was here for -- §4.2's precedence paragraph, #618, and a byte-for-byte
+    # mirror of `decode_manifest`'s own call, which sits between the parse and
+    # `parse_manifest_map` for the same reason).
     #
-    # It has to be a separate walk rather than the per-value
+    # What `walk_body` adds beyond those two is UTF-8 validation and the
+    # major-7 simple-value restriction, and that is NOT observation-free --
+    # do not write it as "changes nothing observable", which an earlier draft
+    # of this comment did while also naming the wrong function. The checks
+    # live in `_check_canonical_item` (`codec/scanner.py`), reached per value
+    # from the entry loop below; `_scan_item` is structure-only and performs
+    # NEITHER. And `_check_canonical_item` raises rule 2 on an
+    # indefinite-length head as its FIRST statement, so inside an indefinite
+    # container it never reaches either check. Three classes therefore move,
+    # measured against this file's pre-#666 form with a clean control (a
+    # well-formed indefinite array still reports rule 2 on both):
+    #
+    #   9f f7 ff              indefinite array holding `undefined`
+    #   9f f8 15 ff           indefinite array holding a two-byte simple
+    #   7f 61 c3 61 a9 ff     indefinite text, a UTF-8 sequence split at a
+    #                         chunk boundary
+    #
+    # all three: `rule2_indefinite_length` -> `malformed_cbor`. That is a FIX,
+    # not a regression -- `decode_manifest` answers `malformed_cbor` for all
+    # three (ciborium rejects each at parse), so each was a live
+    # cross-language divergence in the never-tolerated `malformed_cbor` class,
+    # surviving only because no committed or corpus input reached one. The
+    # third is pinned by the committed seed
+    # `manifest_body/wellformed__indef_text_split_utf8.bin`; the first two are
+    # the definite-length `wellformed__undefined` / `wellformed__two_byte_simple`
+    # rows' indefinite twins, reported identically.
+    #
+    # What ALSO changes is precedence: `walk_body`
+    # PARKS a well-formedness fault it meets ahead of a tag or float and
+    # raises it only once the whole item has proven well-formed, so a body
+    # that is not well-formed CBOR is reported as that -- `MalformedCbor` --
+    # even when a rule-4 fault sits earlier in byte order. `docs/vault-format.md`
+    # §4.2 makes well-formedness the precondition for BOTH of its fixed
+    # orderings ("a reader ... reports that instead, whatever else the body
+    # also breaks"), which the two separate passes did not give: each raised
+    # on the first fault ITS OWN pass could see, so a tag or float ahead of an
+    # `undefined` or a truncated chunk reported rule 4 where §4.2 requires the
+    # well-formedness fault. Section CS's parking checks pin this.
+    #
+    # It has to be a whole-body walk rather than only the per-value
     # `_check_canonical_item` calls below. Those run INSIDE the entry loop,
     # so for a repeated key they never reach the second copy: the duplicate
     # check raises first. That made this reader report the repeat where
@@ -168,7 +206,7 @@ def py_decode_manifest(data: bytes) -> dict:
     # agreed, because a nested float is inside the top-level VALUE that the
     # loop's `_check_canonical_item` recurses into before any nested parser
     # sees its own repeat.
-    reject_floats_and_tags(data)
+    walk_body(data)
 
     entries, end = _scan_map_entries(data, 0)
     if end != len(data):

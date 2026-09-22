@@ -1034,13 +1034,14 @@ fn plaintext_to_canonical(plaintext: &BlockPlaintext) -> CanonicalMap<'_> {
 ///
 /// Validates rules 1-6 and 8 below as [`super::record::decode`] validates
 /// the same properties, with two differences. Rule 7 is called out where it
-/// stops matching. And since #641 `record::decode` first walks its raw bytes
-/// for well-formedness and §6.2 rule 4 before ciborium parses them; this
-/// decoder does not, so ciborium's leniencies (`undefined` and the two-byte
-/// simple forms read as simple values, a bignum that fits 64 bits read as an
-/// integer, nested indefinite-length chunks) still reach the parsed-tree
-/// checks here, as they did on the record path
-/// before #641. Wiring the walk in here is #666.
+/// stops matching. Since #666 this decoder also runs the same byte-level
+/// well-formedness walk `record::decode` (#641) and `decode_manifest` (#666)
+/// run, before ciborium parses the body — see the pre-pass comment at the
+/// top of [`decode_plaintext`] for what that closes: without it, ciborium's
+/// leniencies (`undefined` and the two-byte simple forms read as simple
+/// values, a bignum that fits 64 bits read as an integer, nested
+/// indefinite-length chunks accepted) reached the parsed-tree checks here
+/// unreported, as they did on this path before #666.
 ///
 /// 1. Top-level item is a map.
 /// 2. All map keys are text strings.
@@ -1066,6 +1067,22 @@ fn plaintext_to_canonical(plaintext: &BlockPlaintext) -> CanonicalMap<'_> {
 /// (§6.4 step 9) is the *caller's* responsibility — see
 /// [`BlockError::BlockUuidMismatch`].
 pub fn decode_plaintext(bytes: &[u8]) -> Result<BlockPlaintext, BlockError> {
+    // Byte-level well-formedness, then crypto-design §6.2 rule 4, BEFORE
+    // ciborium (#666) — the same pre-pass `record::decode` and
+    // `decode_manifest` already run. Without it, ciborium's leniencies
+    // (`undefined` and the two-byte simple forms read as simple values, a
+    // bignum that fits 64 bits read as an integer, nested indefinite-length
+    // chunks accepted) reach the parsed-tree checks below unreported, as
+    // they did on this path before #666. The `?` discards the returned end
+    // offset; trailing bytes are judged by the re-encode comparison below,
+    // as they always have been.
+    //
+    // No differential-replay target reaches this decoder — `block_file`
+    // is the envelope, decoded by `decode_block_file` and never decrypted
+    // by the replay — so these unit tests are its only cover, unlike the
+    // manifest and record paths, which also have committed cross-language
+    // seeds.
+    crate::vault::canonical::walk_first_item_checked(bytes, BlockError::CborDecode)?;
     // `from_secret_reader`, not `from_reader` (#561): this input is the
     // entire decrypted block plaintext, including every record it holds.
     let parsed: Value = crate::cbor::from_secret_reader(bytes).map_err(BlockError::CborDecode)?;
@@ -1079,7 +1096,18 @@ pub fn decode_plaintext(bytes: &[u8]) -> Result<BlockPlaintext, BlockError> {
 
     // Walk the tree to enforce no-float / no-tag everywhere (including
     // forward-compat unknowns and inside record maps). Doing this once
-    // up front means the per-field decoders don't re-check.
+    // up front means the per-field decoders don't re-check. Since #666 the
+    // byte walk above answers first for every tag and float ciborium would
+    // still represent; this stays as defence in depth, exactly as
+    // `record.rs` and `decode_manifest` word the same relationship for
+    // their own tree-wide calls.
+    //
+    // **It is therefore PERMANENTLY VACUOUS on this path, and no test can
+    // tell it from deletion** (PR #689 review). A tag or float in the bytes
+    // is caught by the walk, and `from_secret_reader` cannot synthesise one
+    // that was not there. Kept deliberately — it is the layer that would
+    // answer if the walk were ever removed or narrowed — but do not read a
+    // green suite as evidence this call does anything.
     reject_floats_and_tags(parsed.as_value(), "<root>")?;
 
     let Value::Map(entries) = parsed.as_value() else {
@@ -3225,5 +3253,90 @@ mod tests {
         let mut rng = rand_core::OsRng;
         let plaintext = random_block_plaintext(&mut rng, 1);
         encode_plaintext(&plaintext).expect("non-colliding unknown keys must encode");
+    }
+
+    // -------------------------------------------------------------------
+    // decode_plaintext runs the well-formedness walk first (#666)
+    // -------------------------------------------------------------------
+
+    /// A block plaintext carrying one unknown key whose value is `planted`.
+    /// The walk runs before any key is interpreted, so the map needs no valid
+    /// block fields for these tests; the control below proves the SPLICE is
+    /// what the other tests exercise, not the missing fields.
+    fn block_plaintext_with_unknown_value(planted: &[u8]) -> Vec<u8> {
+        let mut body = vec![0xa1];
+        ciborium::ser::into_writer(&ciborium::Value::Text("zz_future".into()), &mut body).unwrap();
+        body.extend_from_slice(planted);
+        body
+    }
+
+    /// The first three rows are shapes `ciborium` ACCEPTS, so before #666 they
+    /// reached the parsed-tree checks and were reported under a later rule.
+    /// The fourth, invalid UTF-8, is NOT one of them — `ciborium` has always
+    /// rejected it as `malformed_cbor`, so that row is a pre-existing
+    /// regression pin rather than something #666 changed. Its manifest twin
+    /// says the same; without the note a reader counts four discriminating
+    /// rows where there are three.
+    #[test]
+    fn a_block_plaintext_that_is_not_well_formed_is_reported_as_malformed_cbor() {
+        for (label, planted) in [
+            ("undefined", &[0xf7u8][..]),
+            ("two-byte simple", &[0xf8, 0x15][..]),
+            (
+                "nested indefinite chunk",
+                &[0x5f, 0x5f, 0x41, 0x61, 0xff, 0xff][..],
+            ),
+            ("invalid UTF-8 text", &[0x61, 0xff][..]),
+        ] {
+            let body = block_plaintext_with_unknown_value(planted);
+            match decode_plaintext(&body) {
+                Err(BlockError::CborDecode(_)) => {}
+                other => panic!("{label}: expected CborDecode, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_narrow_bignum_in_a_block_plaintext_is_reported_as_a_rule_4_tag() {
+        let body = block_plaintext_with_unknown_value(&[0xc2, 0x41, 0x01]);
+        assert!(
+            matches!(decode_plaintext(&body), Err(BlockError::TagRejected)),
+            "expected TagRejected"
+        );
+    }
+
+    #[test]
+    fn a_block_plaintext_well_formedness_fault_outranks_an_earlier_rule_4_fault() {
+        for (label, planted) in [
+            ("tag then undefined", &[0x82u8, 0xc2, 0x41, 0x01, 0xf7][..]),
+            ("float then undefined", &[0x82, 0xf9, 0x00, 0x00, 0xf7][..]),
+        ] {
+            let body = block_plaintext_with_unknown_value(planted);
+            match decode_plaintext(&body) {
+                Err(BlockError::CborDecode(_)) => {}
+                other => panic!("{label}: expected CborDecode, got {other:?}"),
+            }
+        }
+    }
+
+    /// The control. A benign value makes the SAME body fail on a missing
+    /// required block field, NOT on CBOR structure — which is what shows the
+    /// tests above are exercising the walk rather than the schema.
+    ///
+    /// It names the EXACT variant rather than accepting any non-`CborDecode`
+    /// error (PR #689 review). `Err(_)` was satisfied by a decoder that
+    /// answered `TagRejected` for every body, which would also have satisfied
+    /// `a_narrow_bignum_in_a_block_plaintext_is_reported_as_a_rule_4_tag` —
+    /// so the pair proved nothing together. The manifest twin asserts full
+    /// acceptance, which is stronger still; this splice cannot decode (it
+    /// carries no required field), so naming the first missing field is the
+    /// strongest control available here.
+    #[test]
+    fn the_same_block_splice_with_a_benign_value_fails_on_schema_not_structure() {
+        let body = block_plaintext_with_unknown_value(&[0x00]);
+        match decode_plaintext(&body) {
+            Err(BlockError::MissingField { .. }) => {}
+            other => panic!("expected MissingField on a benign splice, got {other:?}"),
+        }
     }
 }

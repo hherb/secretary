@@ -13,7 +13,11 @@ The two orderings §4.2 fixes, and what each is worth:
    reader checked rule 4 per-value INSIDE its entry loop, so for a repeated
    key whose second copy was a float it reported the repeat and never looked
    at the float, while `decode_manifest` reported the float. Closed by
-   `reject_floats_and_tags`, which mirrors the Rust pre-pass of the same name.
+   `walk_body`, which now runs first on the manifest path and folds rule 4
+   into its own whole-body pass -- the role `reject_floats_and_tags` played
+   here before #666 superseded it; Section CS still exercises
+   `reject_floats_and_tags` directly (see below), and it shares its rule-4
+   logic (`_reject_rule4_head`) with `walk_body`'s pass.
 2. **A repeated map key** is reported without interpreting its second copy, so
    it outranks the type, range and version checks on that key's value. This
    reader already agreed, but only BY CONSTRUCTION -- `_validate_manifest_shape`
@@ -64,14 +68,16 @@ than by argument:
   encoder side.
 
 **Applying that rule to this section is not applying it to the tree** (#631's
-generalisation). `reject_floats_and_tags` runs on the manifest path ahead of
-the per-value `_check_canonical_item`, so for the three `*__rule4_float` rows
-of the CANONICALITY corpus it now answers where that per-value check used to.
-Measured: deleting `_check_canonical_item`'s rule-4 arm reds Sections CS and
-MCC at this branch's merge-base and only CS here. Nothing is unpinned
-tree-wide -- Section CS's unit cases are the pin, and MCC's own docstring
-records the changed mechanism -- but CS is now the SOLE pin for that arm on
-the manifest path, and a future edit that weakens CS takes it with them.
+generalisation). `walk_body` runs on the manifest path ahead of the per-value
+`_check_canonical_item`, so for the three `*__rule4_float` rows of the
+CANONICALITY corpus its whole-body rule-4 pass now answers where that
+per-value check used to. Measured: deleting `_check_canonical_item`'s rule-4
+arm (its call to `_reject_rule4_head`) reds Sections CS and MCC at this
+branch's merge-base and only CS here. Nothing is unpinned tree-wide -- Section
+CS's unit cases are the pin, and MCC's own docstring records the changed
+mechanism -- but CS is now the SOLE pin for `_check_canonical_item`'s rule-4
+arm on the manifest path, and a future edit that weakens CS takes it with
+them.
 """
 
 from __future__ import annotations
