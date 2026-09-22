@@ -27,12 +27,6 @@ class CardWrongType(ValueError):
     token = "wrong_type"
 
 
-class CardIntegerOutOfRange(ValueError):
-    """An integer that must be a u64 is negative or too wide."""
-
-    token = "integer_out_of_range"
-
-
 class CardDuplicateKey(ValueError):
     """The card map repeats a key (§6.2 rule 5)."""
 

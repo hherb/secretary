@@ -124,7 +124,6 @@ _TOKENED_CLASSES: tuple[tuple[type, str], ...] = (
     (record_rules.RecordMissingField, "missing_field"),
     (record_rules.RecordNonCanonical, "non_canonical_unclassified"),
     (card_rules.CardWrongType, "wrong_type"),
-    (card_rules.CardIntegerOutOfRange, "integer_out_of_range"),
     (card_rules.CardDuplicateKey, "duplicate_map_key"),
     (card_rules.CardMissingField, "missing_field"),
     (card_rules.CardUnknownField, "unknown_field"),

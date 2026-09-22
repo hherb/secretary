@@ -12,10 +12,11 @@ from typing import Any
 
 from conformance_lib.canonical import encode_canonical_map
 from conformance_lib.codec.card_rules import (
-    CardDisplayNameTooLong, CardDuplicateKey, CardIntegerOutOfRange,
+    CardDisplayNameTooLong, CardDuplicateKey,
     CardMissingField, CardNonCanonical, CardUnknownField, CardUnsupportedVersion,
     CardWrongType,
 )
+from conformance_lib.codec.cbor_faults import MalformedCbor
 from conformance_lib.codec.integer_rules import is_integer
 from conformance_lib.codec.record_rules import UncheckedKnownKey
 from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
@@ -52,8 +53,9 @@ def check_card_value(key: str, value: Any) -> None:
     Total over `KNOWN_CARD_KEYS`: the fall-through raises `UncheckedKnownKey`,
     a bug in this package and never a verdict, so a key added to the schema
     without a check here fails loudly (#641's M8).  A totality check over the
-    keys that exist proves nothing about that fall-through, so Section VT's
-    check 4b probes it with an UNDECLARED key too.
+    keys that exist proves nothing about that fall-through, and nothing in
+    this package currently probes it with an undeclared key -- Section VT's
+    check 4b is scoped to `record.py` only.
     """
     if key in _FIXED_BYTE_LENGTHS:
         want = _FIXED_BYTE_LENGTHS[key]
@@ -94,10 +96,16 @@ def check_card_value(key: str, value: Any) -> None:
         # `is_integer` excludes `bool`, which subclasses `int` (#669 M1).
         if not is_integer(value):
             raise CardWrongType(f"created_at must be uint, got {value!r}")
-        # `card.rs` says Malformed("integer outside u64 range") here, which is
-        # `integer_out_of_range` and NOT `wrong_type`. Also a split.
+        # `card.rs`'s `take_u64` says Malformed("integer outside u64 range")
+        # for a negative value -- and `CardError` has NO variant mapping to
+        # `integer_out_of_range` at all (`rule_tokens/card.rs`'s exhaustive
+        # match sends every `Malformed(_)` arm, this one included, to
+        # `RuleToken::WrongType`). A plain major-0 CBOR uint can never exceed
+        # u64::MAX (RFC 8949 caps its argument at 8 bytes), so a negative
+        # value -- major 1 -- is the only way this arm is reached, and it is
+        # `wrong_type`, same as the type fault above, not a distinct token.
         if value < 0:
-            raise CardIntegerOutOfRange(f"created_at must be non-negative, got {value!r}")
+            raise CardWrongType(f"created_at must be non-negative, got {value!r}")
         return
     raise UncheckedKnownKey(f"no value check for known card key {key!r}")
 
@@ -151,8 +159,19 @@ def py_decode_contact_card(data: bytes) -> dict:
     # while Rust reported the entry fault -- a live, measured divergence
     # (20 of the corpus's 88 pre-fix disagreements) that `contact_card`'s
     # strict (non-phase-dependent-tolerant) comparison does not excuse.
+    # `MalformedCbor` is itself a `ValueError` subclass carrying its own
+    # token ("malformed_cbor", never tolerated against anything) -- it must
+    # propagate UNCHANGED, not be re-tokened as `wrong_type` by the catch
+    # below, which exists for exactly one shape: a non-map top-level item.
+    # `_scan_map_entries` can also raise `MalformedCbor` itself (a truncated
+    # argument, a reserved additional-info, an unterminated indefinite map),
+    # and that path is latent only because `walk_body` above already rejects
+    # every such body first -- nothing asserts that overlap, so the catch is
+    # scoped rather than relied on to stay unreachable.
     try:
         entries, _ = _scan_map_entries(data, 0)
+    except MalformedCbor:
+        raise
     except ValueError as e:
         raise CardWrongType(str(e)) from e
 
@@ -166,8 +185,10 @@ def py_decode_contact_card(data: bytes) -> dict:
         if kmaj != 3:
             raise CardWrongType(f"contact_card map key at offset {ks} is not a text string")
         key = cbor2.loads(data[ks:ke])
-        if key in decoded:
-            raise CardDuplicateKey(f"contact_card repeats key {key!r}")
+        # UNKNOWN-key test precedes the value read, same as `card.rs`'s
+        # `match key.as_str() { .. _ => Err(UnknownField) }`: the wildcard
+        # arm returns without ever calling a `take_*` on the value, so an
+        # unknown key's value is never interpreted at all.
         if key not in KNOWN_CARD_KEYS:
             raise CardUnknownField(f"contact_card unknown field: {key!r}")
         value = cbor2.loads(data[vs:ve])
@@ -176,6 +197,17 @@ def py_decode_contact_card(data: bytes) -> dict:
         # order.  Checking presence first made a body carrying both faults
         # name a different rule in each language.
         check_card_value(key, value)
+        # DUPLICATE check runs AFTER the value check, not before -- the
+        # INVERSE of the manifest's `Once::set` precedence (CLAUDE.md's #589
+        # note), because the two decoders genuinely differ here. `card.rs`
+        # writes every arm as `set_once(&mut slot, take_u8(v)?, KEY)?`: the
+        # argument is evaluated (`take_u8(v)?`) BEFORE `set_once` ever tests
+        # `slot.is_some()`, so a repeated key whose SECOND copy fails its own
+        # type/length check reports that fault, not `DuplicateField`.
+        # Checking `key in decoded` before reading the value answered
+        # `duplicate_map_key` instead -- measured on all 10 keys.
+        if key in decoded:
+            raise CardDuplicateKey(f"contact_card repeats key {key!r}")
         decoded[key] = value
 
     # `card_version`'s presence, THEN its value, checked in that order,
