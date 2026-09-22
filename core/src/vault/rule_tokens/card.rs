@@ -20,11 +20,25 @@ impl CardError {
     /// `&'static str` literals covering a non-map body and a non-text key,
     /// which `RuleToken::WrongType`'s own doc names.
     ///
-    /// **Two arms are diagnostics, not coverage.** The `contact_card` replay
-    /// target calls `from_canonical_cbor`, which neither verifies signatures
-    /// nor encodes, so `SigVerifyFailed` and `CborEncode` are unreachable
-    /// from it — classified for completeness, as `BlockError`'s AEAD and
-    /// signature arms are.
+    /// **`SigVerifyFailed` is a diagnostic, not coverage.** The
+    /// `contact_card` replay target calls `from_canonical_cbor`, which does
+    /// not verify — nothing in it reaches [`crate::identity::card::ContactCard::verify_self`]
+    /// or [`crate::crypto::sig::verify`] — so this arm is classified for
+    /// completeness, as `BlockError`'s AEAD and signature arms are.
+    ///
+    /// **`CborEncode` is reachable, but not corpus-triggerable.**
+    /// `from_canonical_cbor` ends with its own re-encode-and-compare
+    /// canonicality check (`card.to_canonical_cbor()?`), and
+    /// `to_canonical_cbor` is exactly the path that can yield this variant,
+    /// via `canonical_error_to_card_error`'s `CanonicalError::CborEncode`
+    /// arm — unlike `SigVerifyFailed`, it genuinely can propagate out of the
+    /// function the replay calls. What makes it a diagnostic in practice is
+    /// narrower: reaching it needs a `ciborium::ser::into_writer` failure
+    /// serialising a shallow, well-typed `Value` tree into an in-memory
+    /// `Vec<u8>`, which no corpus input can provoke. `BlockError`'s own
+    /// `CborEncode` arm is the opposite case — `block_file`'s replay target
+    /// round-trips `decode_block_file` → `encode_block_file`, so there it
+    /// sits in the COMPARED bucket, not the diagnostics-only one.
     ///
     /// **Advisory, never a verdict.** Nothing in the crate consults it to
     /// decide acceptance.
