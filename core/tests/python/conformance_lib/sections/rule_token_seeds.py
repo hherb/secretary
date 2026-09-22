@@ -68,7 +68,7 @@ import os
 from pathlib import Path
 
 from conformance_lib import fixtures, rejection
-from conformance_lib.codec import cbor_faults, record_rules
+from conformance_lib.codec import card_rules, cbor_faults, record_rules
 from conformance_lib.constants import VECTOR_CLOCK_ENTRY_LEN
 from conformance_lib.cursor import Cursor, ParseError
 from conformance_lib.diff_replay import replay_bytes
@@ -123,11 +123,19 @@ _TOKENED_CLASSES: tuple[tuple[type, str], ...] = (
     (record_rules.RecordDuplicateKey, "duplicate_map_key"),
     (record_rules.RecordMissingField, "missing_field"),
     (record_rules.RecordNonCanonical, "non_canonical_unclassified"),
+    (card_rules.CardWrongType, "wrong_type"),
+    (card_rules.CardIntegerOutOfRange, "integer_out_of_range"),
+    (card_rules.CardDuplicateKey, "duplicate_map_key"),
+    (card_rules.CardMissingField, "missing_field"),
+    (card_rules.CardUnknownField, "unknown_field"),
+    (card_rules.CardUnsupportedVersion, "unsupported_version"),
+    (card_rules.CardNonCanonical, "non_canonical_unclassified"),
+    (card_rules.CardDisplayNameTooLong, "wrong_type"),
 )
 
 
 # The modules whose verdict classes check 1 discovers.
-_TOKENED_MODULES = (cbor_faults, record_rules, envelope_rules)
+_TOKENED_MODULES = (card_rules, cbor_faults, record_rules, envelope_rules)
 
 # Check 2: the Python class every `block_file` seed must be rejected with,
 # keyed by file stem.  Default-deny: a seed missing here is an issue.  A
