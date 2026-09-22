@@ -120,10 +120,22 @@ def _count_one_item(stack: list[_Frame]) -> None:
         top.mid_entry = not top.mid_entry
 
 
-def _walk(buf: bytes, pos: int, *, check_content: bool) -> int:
-    """The one traversal both entry points share: item boundaries, crypto-design
-    §6.2 rule 6 always, and -- when `check_content` -- UTF-8, simple values and
-    rule 4.  The depth check lives here once, so it cannot drift between them."""
+def _walk(buf: bytes, pos: int) -> int:
+    """The one traversal, reached through the one entry point `walk_body`:
+    item boundaries, crypto-design §6.2 rule 6, UTF-8, simple values and
+    rule 4.
+
+    The `check_content: bool` parameter this had until #698 is GONE, and the
+    reason is the one the deletion note at the bottom of this file gives for
+    `reject_excessive_nesting` itself.  `check_content=False` was the
+    CONTENT-BLIND mode that function used; #641/#666 moved every caller onto
+    `walk_body`, which always passes `True`, and the last test driving the
+    blind mode was removed in the same slice -- leaving a fully-functional
+    fail-open one keyword argument away, with no caller and no test.  That is
+    strictly worse than the state #689's ruling condemned, and the docstring
+    still advertised "both entry points" fifty lines above a comment reading
+    "One traversal, one entry point" (#698 review, I5).
+    """
     stack: list[_Frame] = []
     first_rule4: NonCanonicalItem | None = None
     started = False
@@ -139,7 +151,7 @@ def _walk(buf: bytes, pos: int, *, check_content: bool) -> int:
         if major in (MAJOR_UINT, MAJOR_NINT):
             pos += head
         elif major in (MAJOR_BYTES, MAJOR_TEXT):
-            pos = _string_end(buf, pos, major, arg, head, check_utf8=check_content)
+            pos = _string_end(buf, pos, major, arg, head, check_utf8=True)
         elif major in (MAJOR_ARRAY, MAJOR_MAP):
             require_room_for_another_level(len(stack), pos)
             is_map = major == MAJOR_MAP
@@ -148,18 +160,16 @@ def _walk(buf: bytes, pos: int, *, check_content: bool) -> int:
             pos += head
         elif major == MAJOR_TAG:
             require_room_for_another_level(len(stack), pos)
-            if check_content:
-                first_rule4 = first_rule4 or _rule4_at(major, ai, pos)
+            first_rule4 = first_rule4 or _rule4_at(major, ai, pos)
             stack.append(_Frame(definite_left=1))
             pos += head
         else:
             if ai == CBOR_AI_INDEFINITE:
                 raise MalformedCbor(f"unexpected break at offset {pos}")
-            if check_content:
-                rule4 = _rule4_at(major, ai, pos)
-                if rule4 is None:
-                    require_false_true_or_null(ai, pos)
-                first_rule4 = first_rule4 or rule4
+            rule4 = _rule4_at(major, ai, pos)
+            if rule4 is None:
+                require_false_true_or_null(ai, pos)
+            first_rule4 = first_rule4 or rule4
             pos += head
 
 
@@ -170,7 +180,7 @@ def walk_body(buf: bytes, pos: int = 0) -> int:
     `NestingTooDeep`, a subclass, for a level past crypto-design §6.2 rule 6,
     at once -- else `NonCanonicalItem` (rule 4) for the first tag or float.
     """
-    return _walk(buf, pos, check_content=True)
+    return _walk(buf, pos)
 
 
 # `reject_excessive_nesting` was deleted in #641.  It was a CONTENT-BLIND
@@ -183,4 +193,7 @@ def walk_body(buf: bytes, pos: int = 0) -> int:
 # `later_phases_scan_in_byte_order` flag was retired because "a documented
 # fail-open defended solely by its own test is how the next decoder gets wired
 # onto it on the strength of a caller list that no longer holds".  With zero
-# callers the whole function is that hazard.  One traversal, one entry point.
+# callers the whole function is that hazard.  One traversal, one entry point
+# -- literally, since #698 also removed `_walk`'s `check_content` parameter,
+# which had kept the content-blind BEHAVIOUR alive with no caller and no
+# test after the wrapper was gone.

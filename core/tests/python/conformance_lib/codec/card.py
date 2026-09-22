@@ -19,8 +19,8 @@ from conformance_lib.codec.card_rules import (
     CardMissingField, CardNonCanonical, CardUnknownField, CardUnsupportedVersion,
     CardWrongType,
 )
-from conformance_lib.codec.cbor_faults import MalformedCbor
 from conformance_lib.codec.integer_rules import is_integer
+from conformance_lib.codec.manifest_rules import token_for
 from conformance_lib.codec.record_rules import UncheckedKnownKey
 from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
 from conformance_lib.codec.scanner import _decode_head, _scan_map_entries
@@ -31,8 +31,11 @@ from conformance_lib.codec.well_formed import walk_body
 # constant, so a third spelling is a third thing to keep in step.
 MAX_DISPLAY_NAME_BYTES = 4096
 
-# §6 fixed-size fields, in bytes.
-_FIXED_BYTE_LENGTHS = {
+# §6 fixed-size fields, in bytes. Public because `wire/card.py` -- the §8
+# parse+verify path -- reads the same table: a §6 MUST binds every conformant
+# card reader, and a second copy of these widths is a second thing to keep in
+# step (#698 review, C1).
+FIXED_BYTE_LENGTHS = {
     "contact_uuid": 16,
     "x25519_pk": 32,
     "ml_kem_768_pk": 1184,
@@ -42,11 +45,16 @@ _FIXED_BYTE_LENGTHS = {
     "self_sig_pq": 3309,
 }
 
-KNOWN_CARD_KEYS = {
+# `frozenset`, as `codec/record.py`'s equivalents are: these are module-level
+# and importable (Section VT reads them through `KeySetPair`), and a plain
+# `set` under two names is one mutation away from silently changing both
+# (#698 review). The alias is deliberate and correct -- all 10 §6 keys are
+# required -- which is exactly why the object must be immutable.
+KNOWN_CARD_KEYS = frozenset({
     "card_version", "contact_uuid", "display_name", "x25519_pk",
     "ml_kem_768_pk", "ed25519_pk", "ml_dsa_65_pk", "created_at",
     "self_sig_ed", "self_sig_pq",
-}
+})
 REQUIRED_CARD_FIELDS = KNOWN_CARD_KEYS  # all 10 are required
 
 
@@ -60,8 +68,8 @@ def check_card_value(key: str, value: Any) -> None:
     this package currently probes it with an undeclared key -- Section VT's
     check 4b is scoped to `record.py` only.
     """
-    if key in _FIXED_BYTE_LENGTHS:
-        want = _FIXED_BYTE_LENGTHS[key]
+    if key in FIXED_BYTE_LENGTHS:
+        want = FIXED_BYTE_LENGTHS[key]
         if not isinstance(value, bytes) or len(value) != want:
             raise CardWrongType(f"{key} must be {want}-byte bstr")
         return
@@ -173,9 +181,23 @@ def py_decode_contact_card(data: bytes) -> dict:
     # scoped rather than relied on to stay unreachable.
     try:
         entries, _ = _scan_map_entries(data, 0)
-    except MalformedCbor:
-        raise
     except ValueError as e:
+        # DEFAULT-DENY on the token, not on one named class (#698 review, I6).
+        # This was `except MalformedCbor: raise` followed by the re-token
+        # below, which named one of the THREE tokened `ValueError` subclasses
+        # `codec/scanner.py` defines: `NonCanonicalItem` (rule 2/3/4) and
+        # `DuplicateMapKey` carry their own tokens too and would have been
+        # relabelled `wrong_type`. Latent -- `_scan_item`/`_decode_head` raise
+        # only `MalformedCbor` today -- but `_scan_item` already takes a
+        # `visit` callback for exactly the kind of check that would make it
+        # live, and on a strictly-compared target a relabelled token is either
+        # a false disagreement between two correct readers or, worse, a
+        # coincidental agreement masking a real one. Anything that already
+        # names a rule propagates unchanged; only an UNTOKENED ValueError is
+        # re-tokened, which is the one shape this catch exists for: a non-map
+        # top-level item.
+        if token_for(e) is not None:
+            raise
         raise CardWrongType(str(e)) from e
 
     decoded: dict[str, Any] = {}

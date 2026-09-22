@@ -7,7 +7,7 @@ use crate::vault::manifest::RuleToken;
 
 /// `CardError`'s variant count. A new variant is a compile error in the
 /// exhaustive match below first, and a failure of this count second.
-const CARD_ERROR_VARIANTS: usize = 13;
+const CARD_ERROR_VARIANTS: usize = 15;
 
 fn fault(kind: CborErrorKind) -> CborFault {
     CborFault { kind, offset: None }
@@ -15,6 +15,17 @@ fn fault(kind: CborErrorKind) -> CborFault {
 
 fn every_variant_and_its_token() -> Vec<(CardError, RuleToken)> {
     vec![
+        (
+            CardError::CanonicalDuplicateKey { index: 2 },
+            RuleToken::DuplicateMapKey,
+        ),
+        (
+            CardError::CanonicalSizeBoundExceeded {
+                actual: 42,
+                bound: 17,
+            },
+            RuleToken::InternalError,
+        ),
         (
             CardError::CborEncode(fault(CborErrorKind::Serialization)),
             RuleToken::InternalError,
@@ -92,7 +103,7 @@ fn every_card_error_variant_carries_its_declared_token() {
         assert_eq!(err.rule_token(), *want, "variant {err:?}");
     }
 
-    // Exhaustive: a fourteenth variant is a COMPILE error here.
+    // Exhaustive: a sixteenth variant is a COMPILE error here.
     for (err, _) in &rows {
         match err {
             CardError::CborEncode(_)
@@ -107,7 +118,9 @@ fn every_card_error_variant_carries_its_declared_token() {
             | CardError::DisplayNameTooLong
             | CardError::FloatRejected { .. }
             | CardError::TagRejected
-            | CardError::SigVerifyFailed(_) => (),
+            | CardError::SigVerifyFailed(_)
+            | CardError::CanonicalDuplicateKey { .. }
+            | CardError::CanonicalSizeBoundExceeded { .. } => (),
         }
     }
 

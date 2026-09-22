@@ -149,6 +149,43 @@ pub enum CardError {
     #[error("CBOR tags are not permitted in canonical CBOR")]
     TagRejected,
 
+    /// The canonical encoder was handed a value repeating a CBOR map key,
+    /// which would encode to an **ambiguous** body — one two conformant
+    /// readers may resolve differently while both accepting the §8
+    /// signature (#586/#602).
+    ///
+    /// A dedicated variant, mirroring
+    /// [`crate::vault::record::RecordError::CanonicalDuplicateKey`], rather
+    /// than the `Malformed` catch-all it used to fold into. Both are now
+    /// read cross-language as a RULE NAME by the differential replay, and
+    /// `Malformed` maps to `wrong_type` — so an encoder-side duplicate key
+    /// was reported to `conformance.py` as a wire-format type fault (#698
+    /// review). `index` is the duplicate's ordinal in canonical sort order
+    /// within its own map, certified data-free by
+    /// `CanonicalError::DuplicateKey`; the key itself is never carried.
+    #[error("canonical CBOR encode rejected a duplicate map key at entry {index}")]
+    CanonicalDuplicateKey {
+        /// The duplicate's ordinal in canonical sort order within its map.
+        index: usize,
+    },
+
+    /// The canonical encoder exceeded its reserved size bound — a post-hoc
+    /// tripwire for a future `ciborium::Value` variant the bound cannot
+    /// name, not a routine error path.
+    ///
+    /// Mirrors
+    /// [`crate::vault::record::RecordError::CanonicalSizeBoundExceeded`].
+    /// Separated from `Malformed` for the same reason as the variant above:
+    /// an INTERNAL failure reported to a cross-language harness as a
+    /// wire-format `wrong_type` verdict is a category error.
+    #[error("canonical CBOR encode exceeded its reserved size bound ({actual} > {bound})")]
+    CanonicalSizeBoundExceeded {
+        /// The size the encoder actually needed.
+        actual: usize,
+        /// The bound it had reserved.
+        bound: usize,
+    },
+
     /// A required §6 field was absent. `field` is the spec CBOR key name, a
     /// compile-time constant.
     #[error("missing required card field: {field}")]
@@ -191,8 +228,16 @@ pub enum CardError {
     #[error("invalid card version (expected {CARD_VERSION_V1})")]
     InvalidVersion,
 
-    /// A fixed-size field arrived with an unexpected length, or a required
-    /// field was missing, duplicated, or had the wrong CBOR type.
+    /// A fixed-size field arrived with an unexpected length.
+    ///
+    /// LENGTH ONLY. Every raise site is a width check
+    /// (`take_fixed_bytes::<N>`, `take_u8`'s range), which is what makes
+    /// [`crate::vault::manifest::RuleToken::WrongType`] the right token for
+    /// it. This doc also claimed the variant covered "a required field was
+    /// missing, duplicated, or had the wrong CBOR type" — three domains
+    /// belonging to [`CardError::MissingField`], [`CardError::DuplicateField`]
+    /// and [`CardError::Malformed`], none of which raises this (#698
+    /// review). The claim predated the token mapping and contradicted it.
     #[error("invalid field length")]
     InvalidFieldLength,
 
@@ -656,9 +701,7 @@ fn canonical_error_to_card_error(e: CanonicalError) -> CardError {
         // literals — a shape constraint of that variant, NOT a #474
         // plaintext concern: `CanonicalError::DuplicateKey`'s own doc
         // certifies `index` as data-free by construction.
-        CanonicalError::DuplicateKey { .. } => {
-            CardError::Malformed("duplicate CBOR map key in canonical encoding")
-        }
+        CanonicalError::DuplicateKey { index } => CardError::CanonicalDuplicateKey { index },
         CanonicalError::TagRejected { .. } => CardError::TagRejected,
         // Post-hoc tripwire for a future `ciborium::Value` variant the size
         // bound in `crate::vault::canonical` cannot name — see
@@ -667,8 +710,8 @@ fn canonical_error_to_card_error(e: CanonicalError) -> CardError {
         // only carries `&'static str` by design (a closed set of literals,
         // never runtime content), and this arm is not expected to fire on
         // any input this crate constructs today.
-        CanonicalError::CapacityBoundExceeded { .. } => {
-            CardError::Malformed("canonical CBOR encode exceeded its reserved size bound")
+        CanonicalError::CapacityBoundExceeded { actual, bound } => {
+            CardError::CanonicalSizeBoundExceeded { actual, bound }
         }
     }
 }
@@ -867,8 +910,18 @@ mod tests {
     /// this row does not red). 256 levels inside the card map is the card map
     /// plus 255 arrays; 257 is one more. What genuinely distinguishes the walk
     /// from `ciborium`'s coincidentally-equal limit is
-    /// `every_decode_path_enforces_exactly_the_v1_limit`
-    /// (`core/tests/nesting_depth_seeds.rs`).
+    /// `the_walk_paths_charge_a_level_for_a_short_bignum`
+    /// (`core/tests/nesting_depth_seeds.rs`), whose `paths` array gained this
+    /// decoder in #698: a bignum tag over a definite byte string of at most
+    /// 16 bytes is the one shape `ciborium` charges NO level for, so it is
+    /// the only shape whose verdict moves when the walk is removed.
+    ///
+    /// This doc named `every_decode_path_enforces_exactly_the_v1_limit`
+    /// until #698's review measured it. That test charges a level for every
+    /// shape it builds on every path, so `ciborium` satisfies its card row
+    /// unaided — it could not have distinguished the two, and before the
+    /// bignum test was extended, NOTHING in the tree pinned rule 6 on this
+    /// path (#695).
     #[test]
     fn the_walk_enforces_the_v1_nesting_limit_on_the_card_path() {
         let at_limit = card_bytes_with_created_at(&{
@@ -1094,6 +1147,67 @@ mod tests {
         );
     }
 
+    /// The cap is enforced AT THE PARSE LAYER, not merely by the
+    /// encode-side backstop — #697, and the reason the test above cannot
+    /// show it.
+    ///
+    /// `from_canonical_cbor` ends with its own `to_canonical_cbor()`
+    /// re-encode, and that path carries a second copy of the same check.
+    /// Delete the parse-layer check and the body is STILL rejected, with
+    /// the SAME `DisplayNameTooLong` variant, one phase later — so the
+    /// variant cannot discriminate and neither can "was it rejected".
+    /// `docs/threat-model.md` cites these tests as the evidence for
+    /// crypto-design §6's parse-layer bound, so a non-discriminating test
+    /// is a citation to nothing.
+    ///
+    /// PHASE is the discriminator. This body carries the oversize
+    /// `display_name` AND a wrong-typed `ml_kem_768_pk`, which sorts AFTER
+    /// `display_name` in canonical key order (12 bytes then 13). With the
+    /// parse-layer check present the cap fires at `display_name`'s own
+    /// entry, before the later key is ever read. Remove it and the parse
+    /// continues, meets the wrong-typed key, and reports THAT instead —
+    /// the re-encode is never reached. Verified by execution in both
+    /// directions.
+    #[test]
+    fn the_display_name_cap_fires_at_the_parse_layer_not_the_re_encode() {
+        let card = fixture_card("placeholder", 1_714_060_800_000, 0x55, 0x66);
+        let oversize = "x".repeat(MAX_DISPLAY_NAME_BYTES + 1);
+        let mut entries = Vec::new();
+        card.push_pre_sig_entries(&mut entries);
+        let mut entries: Vec<(Value, Value)> = entries
+            .into_iter()
+            .map(|(k, v)| {
+                let is = |name: &str| k == Value::Text(name.into());
+                if is(KEY_DISPLAY_NAME) {
+                    (k, Value::Text(oversize.clone()))
+                } else if is(KEY_ML_KEM_768_PK) {
+                    // Wrong TYPE, reported by the parse only if it gets there.
+                    (k, Value::Integer(7.into()))
+                } else {
+                    (k, v)
+                }
+            })
+            .collect();
+        entries.push((
+            Value::Text(KEY_SELF_SIG_ED.into()),
+            Value::Bytes(card.self_sig_ed.to_vec()),
+        ));
+        entries.push((
+            Value::Text(KEY_SELF_SIG_PQ.into()),
+            Value::Bytes(card.self_sig_pq.to_vec()),
+        ));
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut bytes).expect("encode");
+
+        let err = ContactCard::from_canonical_cbor(&bytes)
+            .expect_err("both faults are rejections; the question is WHICH");
+        assert!(
+            matches!(err, CardError::DisplayNameTooLong),
+            "the cap must be reported from the parse layer, ahead of the \
+             later-wire-order type fault; got {err:?}"
+        );
+    }
+
     /// Boundary: a `display_name` exactly at the cap must still decode.
     /// Pins the off-by-one behaviour of the comparison.
     #[test]
@@ -1313,13 +1427,10 @@ mod tests {
             bound: 17,
         };
         match canonical_error_to_card_error(err) {
-            CardError::Malformed(msg) => {
-                assert_eq!(
-                    msg,
-                    "canonical CBOR encode exceeded its reserved size bound"
-                );
+            CardError::CanonicalSizeBoundExceeded { actual, bound } => {
+                assert_eq!((actual, bound), (42, 17));
             }
-            other => panic!("expected Malformed, got {other:?}"),
+            other => panic!("expected CanonicalSizeBoundExceeded, got {other:?}"),
         }
     }
 
@@ -1328,16 +1439,14 @@ mod tests {
     /// encodes is a fixed `KEY_*` literal — so this constructs the
     /// `CanonicalError` directly, as the `CapacityBoundExceeded` test above
     /// does. `card_encode_path_rejects_a_duplicate_key` is the companion
-    /// that drives the real encoder and asserts this same message,
-    /// so the mapping is pinned from both ends.
+    /// that drives the real encoder and asserts this same variant and
+    /// ordinal, so the mapping is pinned from both ends.
     #[test]
     fn canonical_error_duplicate_key_maps_to_card_error() {
         let err = CanonicalError::DuplicateKey { index: 2 };
         match canonical_error_to_card_error(err) {
-            CardError::Malformed(msg) => {
-                assert_eq!(msg, "duplicate CBOR map key in canonical encoding");
-            }
-            other => panic!("expected Malformed, got {other:?}"),
+            CardError::CanonicalDuplicateKey { index } => assert_eq!(index, 2),
+            other => panic!("expected CanonicalDuplicateKey, got {other:?}"),
         }
     }
 
@@ -1395,10 +1504,14 @@ mod tests {
         ));
 
         match encode_map(&entries) {
-            Err(CardError::Malformed(msg)) => {
-                assert_eq!(msg, "duplicate CBOR map key in canonical encoding");
-            }
-            other => panic!("expected Malformed(duplicate ...), got {other:?}"),
+            // The ordinal is a REAL position, not the constant 1: the
+            // repeated `display_name` sorts to entry 6 in canonical order
+            // (length-then-bytes over the eight pre-sig keys). #627 found
+            // this assertion vacuous across the crate while every fixture
+            // put its duplicate at sorted position 0, so a non-1 ordinal is
+            // the point of asserting it here.
+            Err(CardError::CanonicalDuplicateKey { index }) => assert_eq!(index, 6),
+            other => panic!("expected CanonicalDuplicateKey, got {other:?}"),
         }
     }
 

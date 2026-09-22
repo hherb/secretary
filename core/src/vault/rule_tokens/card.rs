@@ -17,8 +17,18 @@ impl CardError {
     /// [`CardError::InvalidFieldLength`] share [`RuleToken::WrongType`]:
     /// both are length bounds, and a token may only draw distinctions that
     /// carry evidence. [`CardError::Malformed`] carries a closed set of
-    /// `&'static str` literals covering a non-map body and a non-text key,
-    /// which `RuleToken::WrongType`'s own doc names.
+    /// `&'static str` literals, INCLUDING a non-map body and a non-text key
+    /// — the two `RuleToken::WrongType`'s own doc names. That list is not
+    /// exhaustive and this doc read as though it were (#698 review): the
+    /// variant carries nine literals, all of them genuine wire type or
+    /// range faults. The two that were NOT — the canonical encoder's
+    /// duplicate-key and size-bound arms — are no longer `Malformed` at
+    /// all, but [`CardError::CanonicalDuplicateKey`] and
+    /// [`CardError::CanonicalSizeBoundExceeded`], mapped below to
+    /// `DuplicateMapKey` and `InternalError` as `RecordError`'s twins are.
+    /// Folding an INTERNAL encoder failure into a wire-format `wrong_type`
+    /// verdict is a category error once a cross-language harness reads the
+    /// token as a rule name.
     ///
     /// **`SigVerifyFailed` is a diagnostic, not coverage.** The
     /// `contact_card` replay target calls `from_canonical_cbor`, which does
@@ -49,13 +59,21 @@ impl CardError {
             | CardError::InvalidFieldLength
             | CardError::DisplayNameTooLong => RuleToken::WrongType,
             CardError::MissingField { .. } => RuleToken::MissingField,
-            CardError::DuplicateField { .. } => RuleToken::DuplicateMapKey,
+            // The encoder-side twin takes the rule it names, exactly as
+            // `RecordError::CanonicalDuplicateKey` and
+            // `ManifestError::Canonical`'s `DuplicateKey` arm do. Both were
+            // folded into `Malformed` -> `WrongType` until #698's review.
+            CardError::DuplicateField { .. } | CardError::CanonicalDuplicateKey { .. } => {
+                RuleToken::DuplicateMapKey
+            }
             CardError::UnknownField { .. } => RuleToken::UnknownField,
             CardError::NonCanonicalCbor => RuleToken::NonCanonicalUnclassified,
             CardError::InvalidVersion => RuleToken::UnsupportedVersion,
             CardError::FloatRejected { .. } | CardError::TagRejected => RuleToken::Rule4TagOrFloat,
             CardError::SigVerifyFailed(_) => RuleToken::SignatureInvalid,
-            CardError::CborEncode(_) => RuleToken::InternalError,
+            CardError::CborEncode(_) | CardError::CanonicalSizeBoundExceeded { .. } => {
+                RuleToken::InternalError
+            }
         }
     }
 }
