@@ -173,7 +173,12 @@ Each defense in §3 must correspond to either a specific test or a specific desi
 - **AEAD inside the signed range** → `core/tests/vault.rs::corruption_recipient_fingerprint_in_table_sig_fails_decrypt` plus `corruption_author_fingerprint_rejected_at_check`.
 - **format_version rejection (block + manifest)** → `core/tests/vault.rs::corruption_format_version_rejected` for the block path; manifest-level enforcement is at `core/src/vault/manifest/decode/mod.rs:375-376` (body sentinel) plus `core/src/vault/manifest/header.rs:111-112` (42-byte header), and is exercised by every full-vault-open test. (This citation read `core/src/vault/manifest.rs:701-702` until #564 split that file into a directory module. It was correct when written in 2026-05-02's `e4b3d9c9` and had already drifted onto an unrelated function before the split — a line-number citation in `docs/` that `spec_test_name_freshness.py` cannot see, because that script checks test *names*.)
 - **suite_id rejection (v1-only)** → `core/tests/vault.rs::corruption_suite_id_rejected`. (Mixed-suite-IDs are explicitly *not* a v1 feature; see §3.5.)
-- **Display-name DoS cap on parse + encode + signed_bytes** → `core/src/identity/card.rs` tests `from_canonical_cbor_rejects_oversize_display_name`, `_accepts_display_name_at_cap`, `to_canonical_cbor_rejects_oversize_display_name`, `_accepts_display_name_at_cap`, `signed_bytes_rejects_oversize_display_name` (cap enforced symmetrically; PR #11).
+- **Display-name DoS cap on parse + encode + signed_bytes** → normative in
+  [crypto-design.md](crypto-design.md) §6; `core/src/identity/card.rs` tests
+  `from_canonical_cbor_rejects_oversize_display_name`,
+  `_accepts_display_name_at_cap`, `to_canonical_cbor_rejects_oversize_display_name`,
+  `_accepts_display_name_at_cap`, `signed_bytes_rejects_oversize_display_name`
+  (cap enforced symmetrically; PR #11).
 - **Argon2id v1 floor enforcement (creation-time)** → `core/src/unlock/mod.rs::create_vault_rejects_sub_floor_argon2_params` (unit) + `core/tests/create_vault.rs` (integration, `WeakKdfParams` via `create_vault`). The open path is *not* floor-gated; a downgraded `vault.toml` is instead defeated by (a) `core/tests/unlock.rs::open_with_password_downgraded_kdf_params_fails` (different KEK → AEAD fail) and (b) `core/tests/open_vault_neg.rs::open_vault_kdf_params_mismatch_rejected` (signed-manifest `[kdf]` cross-check).
 - **Vector-clock rollback rejection** → `core/tests/open_vault.rs::open_vault_rollback_rejected` plus `_skipped_when_local_clock_none`.
 - **§4.3 step 5/6 cross-checks at open (`vault_uuid`, `kdf_params`)** → `core/tests/open_vault.rs::open_vault_*` integration tests for the full open path.
