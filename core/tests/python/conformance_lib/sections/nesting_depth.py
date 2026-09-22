@@ -21,9 +21,7 @@ Checks, each reporting what it RAN:
   3. TAGS ARE LEVELS: a tag at level 257 is NestingTooDeep, not rule 4; the
      same tag at level 256 is rule 4 (the control).  Run on `_RECORD` and
      `_MANIFEST` by name.  Both go through the iterative `walk_body` since
-     #666 (`py_decode_manifest` no longer has a `reject_excessive_nesting`
-     pass of its own), so this is no longer two mechanisms proving the same
-     thing -- it is one mechanism pinned at both its entry points, so a
+     #666, so this is one mechanism pinned at both its entry points, and a
      future divergence between them still reds here rather than at neither.
   4. DEPTH OUTRANKS A SHALLOW TAG.  A tag earlier in byte order is only
      REMEMBERED by `walk_body`, so depth still wins over it -- on both
@@ -34,19 +32,13 @@ Checks, each reporting what it RAN:
      (regression pin for #666: before it, `py_decode_manifest` ran a
      content-blind PASS here that could not see the fault, so depth won on
      the manifest and not on the record -- an asymmetry that is gone now).
-     `reject_excessive_nesting` is now the first statement of the CARD decoder
-     alone -- #666 moved the manifest and the trash entry onto `walk_body` --
-     and its `later_phases_scan_in_byte_order` flag is gone with them, so its
-     contract is pinned directly in the one direction that survives: a
-     structural fault RAISES. (The flag's `True` arm swallowed it; #666 left
-     that arm with no production caller and the PR #689 review retired it
-     rather than leave a fail-open defended only by this check.) Alongside it,
-     the control that `py_decode_manifest` still reports `MalformedCbor` on
-     that same truncated body -- via `walk_body` now, not via that pass.  And the
-     converse, on the two cbor2-backed decoders: a stray break ahead of a
-     deep chain is `MalformedCbor` from the pass itself, since cbor2 accepts
-     that break and would parse on (PR #684 review: the encoder, failing on
-     cbor2's sentinel, used to answer).
+     Alongside it, a control that `py_decode_manifest` reports `MalformedCbor`
+     on a truncated body -- via `walk_body`, the manifest's only
+     well-formedness pass since #666.  And the converse, on the two
+     cbor2-backed decoders: a stray break ahead of a deep chain is
+     `MalformedCbor` from the pass itself, since cbor2 accepts that break and
+     would parse on (PR #684 review: the encoder, failing on cbor2's
+     sentinel, used to answer).
   5. CENSUS, both ways, default-deny: every top-level `py_decode_*` under
      `codec/` is either a CBOR-document decoder in `_DECODERS` or named in
      `_NOT_CBOR_DOCUMENTS` with its reason.  A new decoder nobody classified
@@ -98,7 +90,6 @@ from conformance_lib.codec.manifest_decode import py_decode_manifest
 from conformance_lib.codec.record import py_decode_record
 from conformance_lib.codec.scanner import NonCanonicalItem
 from conformance_lib.codec.trash_entry import py_decode_trash_entry
-from conformance_lib.codec.well_formed import reject_excessive_nesting
 from conformance_lib.diff_replay import replay_bytes
 from conformance_lib.sections.nesting_depth_bodies import (
     ARRAY_2, BREAK, INVALID_UTF8, TAG_1, TEXT_1, UINT_0, FUTURE_KEY, NESTING_SEED_PREFIX,
@@ -110,7 +101,7 @@ _CODEC_DIR = Path(__file__).resolve().parent.parent / "codec"
 # directory and would pass having read nothing (#669's MIN_SCANNED_CODEC_MODULES lesson).
 _MIN_DISCOVERED_DECODERS = 8
 # Identifiers only a CBOR-document decoder's own body has cause to name.
-_CBOR_ENTRY_NAMES = frozenset({"cbor2", "walk_body", "reject_excessive_nesting", "_scan_item"})
+_CBOR_ENTRY_NAMES = frozenset({"cbor2", "walk_body", "_scan_item"})
 _DEEP_DEPTHS = (V1_MAX_NESTING_DEPTH + 1, 1_000, 10_000)
 # The trash-entry base Section VT's check 2b uses: every key valid.
 _TRASH_BASE = {
@@ -279,7 +270,7 @@ def _precedence_issues() -> _CheckResult:
     issues: list[str] = []
     executed = 0
     passed = 0
-    declared = 8  # len(cases) + 2, fixed regardless of a guard firing below
+    declared = 7  # len(cases) + 1, fixed regardless of a guard firing below
     # A two-item array whose SECOND item is the chain: the first item sits
     # earlier in byte order, and the chain takes the document past the limit.
     deep = nested_value(V1_MAX_NESTING_DEPTH)
@@ -322,31 +313,9 @@ def _precedence_issues() -> _CheckResult:
         issues.append(err)
         return _CheckResult(issues, executed, passed, declared)
     truncated = manifest_base[:-1]
-    # `reject_excessive_nesting` RAISES a structural fault, unconditionally.
-    # It used to take a `later_phases_scan_in_byte_order` flag and this control
-    # drove the `True` arm, which SWALLOWED the fault -- an arm #666 left with
-    # no production caller (the manifest and the trash entry moved to
-    # `walk_body`; the card, its one remaining caller, passed `False`). The
-    # flag is gone, so this control now pins the surviving contract in the
-    # direction the card actually depends on (PR #689 review).
-    try:
-        reject_excessive_nesting(truncated)
-    except MalformedCbor:
-        executed += 1
-        passed += 1
-    except Exception as exc:  # noqa: BLE001
-        executed += 1
-        issues.append(
-            f"reject_excessive_nesting raised {type(exc).__name__} on a truncated body, "
-            f"expected {MalformedCbor.__name__}"
-        )
-    else:
-        executed += 1
-        issues.append(
-            "reject_excessive_nesting ACCEPTED a truncated body; it must raise a "
-            "structural fault, since its one caller's next phase (cbor2.loads) is "
-            "not a byte-order well-formedness check"
-        )
+    # A control that `py_decode_manifest` reports `MalformedCbor` on a
+    # truncated body -- via `walk_body`, the manifest's only well-formedness
+    # pass since #666.
     got = _outcome(_MANIFEST.decode, truncated)
     executed += 1
     if got != MalformedCbor.__name__:
