@@ -79,6 +79,13 @@ from conformance_lib.wire.block_file import parse_header
 # Mirrors `rule_token_seeds_helpers::LABEL_SEPARATOR`.
 LABEL_SEPARATOR = "__"
 
+# `contact_card/` also holds two `valuetype__` seeds from #669's OLDER
+# acceptance-divergence generator (`valuetype__card_version.bin`,
+# `valuetype__created_at.bin`) -- a different table this section does not
+# own.  Excluded the same way `NESTING_SEED_PREFIX` is, mirroring
+# `rule_token_seeds.rs`'s `CONTACT_CARD_FOREIGN_PREFIX`.
+_CONTACT_CARD_FOREIGN_PREFIX = "valuetype__"
+
 # Per target: the minimum number of committed labelled seeds, and the exact
 # set of tokens those seeds must name between them.
 _TARGETS: dict[str, tuple[int, frozenset[str]]] = {
@@ -98,6 +105,30 @@ _TARGETS: dict[str, tuple[int, frozenset[str]]] = {
                 "integer_out_of_range",
                 "missing_field",
                 "duplicate_map_key",
+                "non_canonical_unclassified",
+            }
+        ),
+    ),
+    # Ruling (controller, task 10 pre-flight): EIGHT tokens, not the nine an
+    # earlier draft of this table carried -- `CardError` has no
+    # `rule_token()` arm reaching `integer_out_of_range`; every `Malformed(_)`
+    # arm, including a negative `created_at`, collapses to `wrong_type`
+    # (`core/src/vault/rule_tokens/card.rs`'s exhaustive match). 21 is the
+    # LABELLED count this section's table plants; the directory also holds
+    # the two `valuetype__` seeds above plus the two accepting bases
+    # (`with_sigs.cbor`, `pre_sig.cbor` -- the latter rejects but is not
+    # `__`-labelled), for 25 files on disk (`MIN_CORPUS_INPUTS`'s floor).
+    "contact_card": (
+        21,
+        frozenset(
+            {
+                "malformed_cbor",
+                "rule4_tag_or_float",
+                "wrong_type",
+                "missing_field",
+                "duplicate_map_key",
+                "unknown_field",
+                "unsupported_version",
                 "non_canonical_unclassified",
             }
         ),
@@ -169,9 +200,14 @@ _BLOCK_FILE_CLASSES: dict[str, str] = {
 def _labelled_seeds(target: str) -> list[Path]:
     directory = fixtures.fuzz_seed_dir(target)
     # `nesting__` seeds belong to Section NDL and `nesting_depth_seeds.rs` (#667).
+    # `valuetype__` seeds under `contact_card/` belong to #669's older
+    # acceptance-divergence generator, a different table this section does
+    # not own.
     return sorted(
         p for p in directory.iterdir()
-        if p.is_file() and LABEL_SEPARATOR in p.name and not p.name.startswith(NESTING_SEED_PREFIX)
+        if p.is_file() and LABEL_SEPARATOR in p.name
+        and not p.name.startswith(NESTING_SEED_PREFIX)
+        and not (target == "contact_card" and p.name.startswith(_CONTACT_CARD_FOREIGN_PREFIX))
     )
 
 
@@ -244,12 +280,17 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
     return issues, f"{target}: {len(seeds)} labelled seeds covering {len(named)} tokens"
 
 
-# Check 5 -- LOCAL parity-order assertions for `record` and `block_file`.
-# Two-fault bodies built here, never committed: vault-format §6.1 and §6.3
-# state no report order, and a committed cross-language row must not pin one
-# (#618, #668).  They pin the order `py_decode_record` shares with
-# `record::decode`, and the first-out-of-place-pair rule the block envelope
-# reader shares with `block.rs`, by design.
+# Check 5 -- LOCAL parity-order assertions for `record`, `block_file` and
+# `contact_card`.  Two-fault bodies built here, never committed: vault-format
+# §6.1, §6.3 and §6 state no report order, and a committed cross-language row
+# must not pin one (#618, #668).  They pin the order `py_decode_record`
+# shares with `record::decode`, the first-out-of-place-pair rule the block
+# envelope reader shares with `block.rs`, and -- since task 10 -- the order
+# `py_decode_contact_card` shares with `card.rs::from_canonical_cbor`, by
+# design.  Rust's side of the `contact_card` parity is pinned by
+# `core/src/identity/card_order_tests.rs`, the same shape as
+# `record_order_tests.rs`: one `#[test]` per row, each asserting the exact
+# `CardError` and its single-fault controls.
 #
 # A two-fault body pins an order only if its two faults, each ALONE, name
 # DIFFERENT tokens, and a drifted order actually reaches the other one first.
@@ -279,7 +320,7 @@ _U16_LEN = 2
 _LOW_LEAD = 0x00
 _HIGH_LEAD = 0xFF
 # How many parity-order cases each builder declares; asserted in `_ordering_issues`.
-_ORDERING_CASES = {"record": 9, "block_file": 1}
+_ORDERING_CASES = {"record": 9, "block_file": 1, "contact_card": 3}
 
 _OrderingCase = tuple[str, bytes, str, "str | None"]
 
@@ -357,8 +398,77 @@ def _record_ordering_cases() -> tuple[_OrderingCase, ...]:
     )
 
 
+def _card_ordering_cases() -> tuple[_OrderingCase, ...]:
+    """`(label, body, token the shared order names, the drift it catches)`.
+
+    Task 10 (controller ruling, pre-flight CONFLICT-2): three two-fault card
+    bodies, mirroring `card.rs::from_canonical_cbor`'s own three-part
+    precedence -- the `card_version != 1` comparison deferred until after
+    the whole entry loop, a repeated key's SECOND copy checked for its own
+    type before the duplicate is reported, and trailing bytes judged only by
+    the final canonical-form re-encode, after every entry fault. None is
+    committed: crypto-design §6 fixes no report order between them (#618's
+    lesson, restated for the card).
+    """
+    import cbor2
+
+    from conformance_lib.codec.scanner import _scan_map_entries
+
+    def field(n: int) -> bytes:
+        return os.urandom(n)
+
+    base = {
+        "card_version": 1,
+        "contact_uuid": field(16),
+        "display_name": "n",
+        "x25519_pk": field(32),
+        "ml_kem_768_pk": field(1184),
+        "ed25519_pk": field(32),
+        "ml_dsa_65_pk": field(1952),
+        "created_at": 0,
+        "self_sig_ed": field(64),
+        "self_sig_pq": field(3309),
+    }
+
+    def canonical(d: dict) -> bytes:
+        return cbor2.dumps(d, canonical=True)
+
+    def with_created_at_repeated(second_value: bytes) -> bytes:
+        """`base`, canonical, with `created_at`'s entry repeated right after
+        itself -- the only way to plant a repeat, since a Python `dict`
+        cannot hold one. The second copy's VALUE bytes are `second_value`,
+        so callers control whether it is well-typed or not."""
+        body = canonical(base)
+        entries, _ = _scan_map_entries(body, 0)
+        want = cbor2.dumps("created_at")
+        at = next(i for i, ((ks, ke), _) in enumerate(entries) if body[ks:ke] == want)
+        (ks, ke), (_vs, ve) = entries[at]
+        out = bytearray(body[:ve])
+        out += body[ks:ke]
+        out += second_value
+        out += body[ve:]
+        out[0] += 1  # one-byte map head: bump the entry count by one
+        return bytes(out)
+
+    return (
+        ("a wrong type beside a card_version the §6 value check has not yet run",
+         canonical({**base, "display_name": 5, "card_version": 2}), "wrong_type",
+         "card_version's value comparison runs once, after the whole entry loop"),
+        ("a repeated key whose second copy is wrong-typed",
+         with_created_at_repeated(cbor2.dumps("bad")), "wrong_type",
+         "the second copy's own value is checked before the duplicate is reported"),
+        ("a wrong-typed field beside trailing bytes",
+         canonical({**base, "created_at": "bad"}) + _TRAILING_BYTE, "wrong_type",
+         "trailing bytes are judged only by the final canonical-form re-encode"),
+    )
+
+
 def _ordering_issues() -> tuple[list[str], str]:
-    builders = (("record", _record_ordering_cases), ("block_file", _block_file_ordering_cases))
+    builders = (
+        ("record", _record_ordering_cases),
+        ("block_file", _block_file_ordering_cases),
+        ("contact_card", _card_ordering_cases),
+    )
     issues: list[str] = []
     tallies = []
     for target, build in builders:

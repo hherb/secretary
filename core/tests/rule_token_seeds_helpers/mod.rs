@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use secretary_core::vault::manifest::RuleToken;
 
 pub mod block_file;
+pub mod contact_card;
 pub mod record;
 
 /// One committed seed.
@@ -92,6 +93,7 @@ pub fn base(target: &str) -> Vec<u8> {
     let name = match target {
         "block_file" => "golden.bin",
         "record" => "login.cbor",
+        "contact_card" => "with_sigs.cbor",
         other => panic!("no seed base for target {other}"),
     };
     let path = seed_dir(target).join(name);
@@ -107,6 +109,7 @@ pub fn base(target: &str) -> Vec<u8> {
 /// this target does not import, so a change to one arm must be mirrored in
 /// the other by hand.
 pub fn rust_rejection(target: &str, bytes: &[u8]) -> Option<RustRejection> {
+    use secretary_core::identity::card::ContactCard;
     use secretary_core::vault::{block, record};
     match target {
         "block_file" => block::decode_block_file(bytes)
@@ -118,6 +121,13 @@ pub fn rust_rejection(target: &str, bytes: &[u8]) -> Option<RustRejection> {
             }),
         "record" => record::decode(bytes)
             .and_then(|r| record::encode(&r))
+            .err()
+            .map(|e| RustRejection {
+                token: e.rule_token(),
+                variant: variant_name(&e),
+            }),
+        "contact_card" => ContactCard::from_canonical_cbor(bytes)
+            .and_then(|c| c.to_canonical_cbor())
             .err()
             .map(|e| RustRejection {
                 token: e.rule_token(),
@@ -140,5 +150,6 @@ fn variant_name(error: &impl std::fmt::Debug) -> String {
 pub fn all_cases() -> Vec<SeedCase> {
     let mut cases = block_file::cases();
     cases.extend(record::cases());
+    cases.extend(contact_card::cases());
     cases
 }

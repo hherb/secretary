@@ -19,6 +19,8 @@
 //! build-sequence step.
 
 pub mod card;
+#[cfg(test)]
+mod card_order_tests;
 pub mod fingerprint;
 
 mod bip39_wordlist;

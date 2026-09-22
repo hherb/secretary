@@ -1,6 +1,7 @@
-//! Committed single-fault seeds for the `record` and `block_file` replay
-//! targets (#641): the generator, and the check that binds every committed
-//! seed to its label. See `rule_token_seeds_helpers` for the table, and
+//! Committed single-fault seeds for the `record`, `block_file` (#641) and
+//! `contact_card` (task 10, #641/#691) replay targets: the generator, and
+//! the check that binds every committed seed to its label. See
+//! `rule_token_seeds_helpers` for the table, and
 //! `docs/superpowers/specs/2026-09-15-token-compare-record-block-design.md`
 //! §6.1.
 //!
@@ -17,7 +18,15 @@ use rule_token_seeds_helpers::{
 };
 
 /// The targets whose seed directories this table owns every labelled file in.
-const SEEDED_TARGETS: &[&str] = &["block_file", "record"];
+const SEEDED_TARGETS: &[&str] = &["block_file", "record", "contact_card"];
+
+/// `contact_card/` also holds two `valuetype__` seeds from #669's OLDER
+/// acceptance-divergence generator (`valuetype__card_version.bin`,
+/// `valuetype__created_at.bin`) — a different table, in a different file,
+/// that this one does not own. Excluded the same way `nesting__` is (see
+/// `nesting_depth_seed_prefix` above), through one constant per language
+/// (`_CONTACT_CARD_FOREIGN_PREFIX` on the Python side).
+const CONTACT_CARD_FOREIGN_PREFIX: &str = "valuetype__";
 
 /// How to regenerate, quoted in every failure that needs it.
 const REGENERATE: &str = "cargo test --release --locked -p secretary-core --test \
@@ -111,9 +120,13 @@ fn rule_token_seeds_are_committed_and_label_bound() {
                     .expect("seed file names are UTF-8")
             })
             // `nesting__` files belong to `nesting_depth_seeds.rs` (#667).
+            // `valuetype__` files under `contact_card/` belong to #669's
+            // older acceptance-divergence generator, a different table in a
+            // different file that this one does not own.
             .filter(|name| {
                 name.contains(LABEL_SEPARATOR)
                     && !name.starts_with(nesting_depth_seed_prefix::SEED_PREFIX)
+                    && !(*target == "contact_card" && name.starts_with(CONTACT_CARD_FOREIGN_PREFIX))
             })
             .collect();
         let declared: BTreeSet<String> = cases
