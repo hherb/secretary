@@ -13,7 +13,7 @@ from typing import Any
 from conformance_lib.canonical import encode_canonical_map
 from conformance_lib.codec.integer_rules import is_integer
 from conformance_lib.codec.required_keys import first_missing_key_in_sorted_order
-from conformance_lib.codec.well_formed import reject_excessive_nesting
+from conformance_lib.codec.well_formed import walk_body
 
 def py_decode_contact_card(data: bytes) -> dict:
     """Strict §6 contact card decoder matching card.rs::from_canonical_cbor.
@@ -33,8 +33,14 @@ def py_decode_contact_card(data: bytes) -> dict:
     """
     import cbor2
 
-    # crypto-design §6.2 rule 6 before cbor2 parses anything (#667).
-    reject_excessive_nesting(data)
+    # crypto-design §6.2 rules 4 and 6 before cbor2 parses anything, and
+    # `docs/vault-format.md` §4.2's well-formedness precondition ahead of both
+    # (#641, #691).  `walk_body`, not the content-BLIND `reject_excessive_nesting`
+    # this decoder used until #641: that pass reported no UTF-8, simple-value
+    # or rule-4 fault, so `cbor2` folded a bignum to an int and re-emitted it as
+    # a bignum, round-tripping the re-encode comparison and ACCEPTING a tag
+    # §6.2 rule 4 forbids.
+    walk_body(data)
 
     try:
         decoded = cbor2.loads(data)

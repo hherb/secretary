@@ -337,6 +337,19 @@ impl ContactCard {
     ///
     /// Does **not** verify signatures. Call [`Self::verify_self`] for that.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, CardError> {
+        // crypto-design §6.2's rules 4 and 6 and `docs/vault-format.md` §4.2's
+        // well-formedness precondition, before anything is parsed (#641, #691).
+        //
+        // `ciborium` reads `undefined` and the two-byte simple form as
+        // ordinary simple values, folds a bignum that fits 64 bits into an
+        // integer, and accepts a nested indefinite chunk — each rejected
+        // anyway, but under a later rule than `conformance.py` names. The
+        // same walk `record::decode` (#641), `decode_manifest` and
+        // `block::decode_plaintext` (#666) run. Its offset is discarded:
+        // trailing bytes are judged by the re-encode comparison below, where
+        // this decoder has always judged them.
+        crate::vault::canonical::walk_first_item_checked(bytes, CardError::CborDecode)?;
+
         // Deliberately plain `from_reader`, not `cbor::from_secret_reader`
         // (#561): a ContactCard holds `card_version`, `contact_uuid`,
         // `display_name`, four PUBLIC keys, `created_at_ms` and two
@@ -742,6 +755,143 @@ fn take_sized_bytes(v: Value, expected: usize) -> Result<Vec<u8>, CardError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cbor::{CborErrorKind, CborFault};
+
+    /// Build a card body with one known field's value replaced by raw bytes.
+    ///
+    /// The card schema has no forward-compat `unknown` bag, so a fault can only
+    /// be planted in a known field's value — unlike the manifest, where #666's
+    /// probe planted under an unknown key.
+    fn card_bytes_with_created_at(raw: &[u8]) -> Vec<u8> {
+        let card = fixture_card("probe", 1_714_060_800_000, 0x55, 0x66);
+        let base = card.to_canonical_cbor().expect("encode");
+        let needle = {
+            let mut v = vec![0x6a]; // text(10)
+            v.extend_from_slice(b"created_at");
+            v
+        };
+        let at = base
+            .windows(needle.len())
+            .position(|w| w == needle.as_slice())
+            .expect("created_at key present")
+            + needle.len();
+        // The value that follows is a u64; find its end by re-encoding the same
+        // integer the fixture used.
+        let old = {
+            let mut buf = Vec::new();
+            ciborium::ser::into_writer(
+                &ciborium::value::Value::Integer(1_714_060_800_000u64.into()),
+                &mut buf,
+            )
+            .expect("encode created_at");
+            buf
+        };
+        assert_eq!(
+            &base[at..at + old.len()],
+            old.as_slice(),
+            "value layout moved"
+        );
+        let mut out = base[..at].to_vec();
+        out.extend_from_slice(raw);
+        out.extend_from_slice(&base[at + old.len()..]);
+        out
+    }
+
+    /// A body that is not well-formed is reported as that, ahead of the shape
+    /// check — `docs/vault-format.md` §4.2's precondition, which §6.2 rule 6
+    /// cites and which `record::decode` and `decode_manifest` already honour.
+    ///
+    /// Before #641 `ciborium` parsed the whole item first and read `undefined`
+    /// and the two-byte simple form as ordinary simple values, so the card
+    /// answered `Malformed("expected unsigned integer")` where `conformance.py`
+    /// answered `malformed_cbor` — a pair that is never tolerated.
+    #[test]
+    fn a_malformed_body_outranks_the_shape_check() {
+        for (label, raw) in [
+            ("undefined", vec![0xf7]),
+            ("two-byte simple", vec![0xf8, 0x15]),
+            (
+                "nested indefinite chunk",
+                vec![0x7f, 0x7f, 0x61, 0x61, 0xff, 0xff],
+            ),
+        ] {
+            let bytes = card_bytes_with_created_at(&raw);
+            let err = ContactCard::from_canonical_cbor(&bytes)
+                .expect_err("a non-well-formed body must be rejected");
+            assert!(
+                matches!(err, CardError::CborDecode(_)),
+                "{label}: expected CborDecode, got {err:?}"
+            );
+        }
+    }
+
+    /// §6.2 rule 4, reported as rule 4 at BOTH bignum widths.
+    ///
+    /// The narrow one is the sharper row. `ciborium` folds a bignum that fits 64
+    /// bits into an integer, so before #641 it reached the re-encode comparison
+    /// and reported `NonCanonicalCbor`; `cbor2` folds it too, so BOTH said
+    /// "non-canonical" and neither named the tag. Agreement is not conformance.
+    #[test]
+    fn a_tag_anywhere_is_reported_as_rule_four() {
+        for (label, raw) in [
+            ("narrow bignum", vec![0xc2, 0x41, 0x01]),
+            ("wide bignum", vec![0xc2, 0x49, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+            ("shareable tag 28", vec![0xd8, 0x1c, 0x00]),
+        ] {
+            let bytes = card_bytes_with_created_at(&raw);
+            let err = ContactCard::from_canonical_cbor(&bytes).expect_err("a tag must be rejected");
+            assert!(
+                matches!(err, CardError::TagRejected),
+                "{label}: expected TagRejected, got {err:?}"
+            );
+        }
+    }
+
+    /// §6.2 rule 4's other half.
+    #[test]
+    fn a_float_anywhere_is_reported_as_rule_four() {
+        let bytes = card_bytes_with_created_at(&[0xf9, 0x00, 0x00]);
+        let err = ContactCard::from_canonical_cbor(&bytes).expect_err("a float must be rejected");
+        assert!(
+            matches!(err, CardError::FloatRejected { .. }),
+            "expected FloatRejected, got {err:?}"
+        );
+    }
+
+    /// The walk answers before `ciborium`, so §6.2 rule 6's limit on this path is
+    /// the walk's and not `ciborium`'s. 256 levels inside the card map is the
+    /// card map plus 255 arrays; 257 is one more.
+    #[test]
+    fn the_walk_enforces_the_v1_nesting_limit_on_the_card_path() {
+        let at_limit = card_bytes_with_created_at(&{
+            let mut v = vec![0x81; 255];
+            v.push(0x00);
+            v
+        });
+        let err = ContactCard::from_canonical_cbor(&at_limit)
+            .expect_err("a nested array is still the wrong type for created_at");
+        assert!(
+            !matches!(err, CardError::CborDecode(_)),
+            "256 levels must not be refused for DEPTH, got {err:?}"
+        );
+
+        let past_limit = card_bytes_with_created_at(&{
+            let mut v = vec![0x81; 256];
+            v.push(0x00);
+            v
+        });
+        let err = ContactCard::from_canonical_cbor(&past_limit).expect_err("257 levels");
+        assert!(
+            matches!(
+                err,
+                CardError::CborDecode(CborFault {
+                    kind: CborErrorKind::RecursionLimit,
+                    ..
+                })
+            ),
+            "expected RecursionLimit, got {err:?}"
+        );
+    }
 
     /// Build a card with a fully deterministic, hand-pinned shape: every pk
     /// field is filled with a single repeating byte (the pattern below) so
