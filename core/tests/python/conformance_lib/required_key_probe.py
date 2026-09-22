@@ -31,9 +31,15 @@ have been satisfied by a wrong table.
 
 Values here are structural placeholders, not cryptographic material -- but
 "placeholder" does not mean "any width will do", and the obvious wider claim is
-false. `py_decode_contact_card` reaches its own required-key check before its
-own value-shape checks, so a card's `x25519_pk` never has to be 32 bytes. It
-does NOT follow that nothing here is load-bearing: `py_decode_record` checks
+false. Until #641's phase-order rewrite, `py_decode_contact_card` reached its
+own required-key check before its own value-shape checks, so a card's
+`x25519_pk` never had to be 32 bytes -- that precondition is GONE: the card
+now checks each value the moment its key is read, in `from_canonical_cbor`'s
+own wire order, same as `py_decode_record` already did. So every §6 fixed-size
+field `_CARD_BODY` presents -- including `self_sig_ed` / `self_sig_pq`, which
+`_CARD_MISSING` omits by default but `restore` can add back -- must carry its
+real width, or the shape check on that OTHER field preempts the missing-key
+check this table exists to exercise. `py_decode_record` checks
 each value the moment its key is read, in `record::decode`'s order (#641), so a
 value a record case presents is type-checked before that map's required-key
 check. `_UUID` must therefore be a real 16 bytes -- narrowed to one byte,
@@ -110,8 +116,9 @@ def _decode_flat(decoder: Callable[[bytes], Any], body: dict[str, Any],
 
 _CARD_BODY: dict[str, Any] = {
     "card_version": 1, "contact_uuid": _UUID, "display_name": "d",
-    "x25519_pk": b"", "ml_kem_768_pk": b"", "ed25519_pk": b"",
-    "ml_dsa_65_pk": b"", "created_at": 0, "self_sig_ed": b"", "self_sig_pq": b"",
+    "x25519_pk": b"\x33" * 32, "ml_kem_768_pk": b"\x33" * 1184,
+    "ed25519_pk": b"\x33" * 32, "ml_dsa_65_pk": b"\x33" * 1952,
+    "created_at": 0, "self_sig_ed": b"\x33" * 64, "self_sig_pq": b"\x33" * 3309,
 }
 # The two keys #597's own reproduction input (`core/fuzz/seeds/contact_card/
 # pre_sig.cbor`) is missing -- that file is a card captured before signing.

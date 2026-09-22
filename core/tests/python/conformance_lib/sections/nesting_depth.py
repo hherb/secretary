@@ -14,8 +14,9 @@ check 3 already rules.
 
 Checks, each reporting what it RAN:
   1. BOUNDARY, per CBOR decoder: depth 256 gives the decoder's declared
-     outcome EXACTLY (accept, or the card's unknown-key `ValueError` -- so a
-     crash is never read as "not refused for depth"); 257 is NestingTooDeep.
+     outcome EXACTLY (accept, or the card's unknown-key `CardUnknownField`
+     -- so a crash is never read as "not refused for depth"); 257 is
+     NestingTooDeep.
   2. A VERDICT AT EVERY DEPTH: 257, 1,000 and 10,000 each raise NestingTooDeep,
      never `RecursionError` or an untokened exception.
   3. TAGS ARE LEVELS: a tag at level 257 is NestingTooDeep, not rule 4; the
@@ -139,7 +140,7 @@ def _trash_base() -> bytes:
 # checks with nothing going red.
 _RECORD = _Decoder(py_decode_record, _seed("record", "login.cbor"), "accept")
 _MANIFEST = _Decoder(py_decode_manifest, _seed("manifest_body", "uniq__control__all_distinct.bin"), "accept")
-_CONTACT_CARD = _Decoder(py_decode_contact_card, _seed("contact_card", "with_sigs.cbor"), "ValueError")
+_CONTACT_CARD = _Decoder(py_decode_contact_card, _seed("contact_card", "with_sigs.cbor"), "CardUnknownField")
 _TRASH_ENTRY = _Decoder(py_decode_trash_entry, _trash_base, "accept")
 
 _DECODERS: tuple[_Decoder, ...] = (_RECORD, _MANIFEST, _CONTACT_CARD, _TRASH_ENTRY)
