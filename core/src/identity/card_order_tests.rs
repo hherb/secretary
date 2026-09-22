@@ -28,12 +28,26 @@
 //! `rule4_tag_or_float`) with nothing else to compete against it — every
 //! one of this file's other single-fault `#[test]`s and every committed
 //! `malformed_cbor`/`rule4_tag_or_float` seed already IS that attempt, for
-//! every shape where it is possible (`two_byte_simple`,
-//! `nested_indefinite_chunk`, `bignum_wide` stay committed precisely
-//! because, measured directly, each is malformed at the raw parse layer
-//! with no competing reading to order against). Each of the four rows
-//! below therefore asserts the two-fault body against the walk-first
-//! verdict, and ONE control demonstrating the competing verdict alone.
+//! every shape where it is possible (`two_byte_simple` and
+//! `nested_indefinite_chunk` stay committed precisely because, measured
+//! directly, each is malformed at the raw parse layer with no competing
+//! reading to order against).
+//!
+//! `bignum_wide` is NOT in that set, and this doc said it was (#698 review).
+//! A bignum tag over a definite 9-byte string is well-formed CBOR: both
+//! parsers accept it, `ciborium` keeping a `Value::Tag` and `cbor2` folding
+//! it to an `int`. It has two competing readings and they DIFFER by
+//! language -- with the walk disabled Rust reaches `take_u64` and says
+//! `wrong_type`, Python re-encodes and says `non_canonical_unclassified`.
+//! It stays committed as a PARITY-ORDER row of the same class `record`'s
+//! three `rule4_tag_or_float__*` seeds already are, accepted under #668,
+//! not as a row without a competing reading. The sibling doc in
+//! `core/tests/rule_token_seeds_helpers/contact_card.rs` scopes the
+//! raw-parse-layer claim to two files and is the one that was right.
+//!
+//! Each of the four rows below therefore asserts the two-fault body against
+//! the walk-first verdict, and ONE control demonstrating the competing
+//! verdict alone.
 //!
 //! Bodies are built from the committed `with_sigs.cbor` seed by value
 //! surgery, or from minimal hand-built maps; none needs key material of its
@@ -52,6 +66,7 @@ const TRAILING_BYTE: u8 = 0x00;
 const KEY_CARD_VERSION: &str = "card_version";
 const KEY_DISPLAY_NAME: &str = "display_name";
 const KEY_CREATED_AT: &str = "created_at";
+const KEY_X25519_PK: &str = "x25519_pk";
 
 fn encode(value: &Value) -> Vec<u8> {
     let mut out = Vec::new();
@@ -195,6 +210,47 @@ fn a_wrong_type_beside_a_card_version_the_value_check_has_not_run_reports_the_wr
     assert!(matches!(
         decode(&encode(&Value::Map(both))),
         Err(CardError::Malformed(_))
+    ));
+}
+
+#[test]
+fn a_wrong_card_version_beside_a_missing_required_key_reports_the_version() {
+    // The OTHER branch of the deferral above: a missing key rather than a
+    // wrong-typed one. `parse_card_map` requires and compares
+    // `card_version` before it reports any missing field, so the version
+    // wins; Python defers its own comparison to the same position, ahead of
+    // `first_missing_key_in_sorted_order`. Reverse either side and the pair
+    // reads `unsupported_version` against `missing_field` — a live
+    // divergence on a strictly compared target, and until #698 the order
+    // was implemented in both languages and pinned in neither.
+    let missing_only: Vec<(Value, Value)> = with_sigs_entries()
+        .into_iter()
+        .filter(|e| !is_key(e, KEY_X25519_PK))
+        .collect();
+    let bad_version_only = with_value(
+        with_sigs_entries(),
+        KEY_CARD_VERSION,
+        Value::Integer(2.into()),
+    );
+    let both: Vec<(Value, Value)> = bad_version_only
+        .clone()
+        .into_iter()
+        .filter(|e| !is_key(e, KEY_X25519_PK))
+        .collect();
+
+    // Each control demonstrates its own verdict alone ...
+    assert!(matches!(
+        decode(&encode(&Value::Map(missing_only))),
+        Err(CardError::MissingField { .. })
+    ));
+    assert!(matches!(
+        decode(&encode(&Value::Map(bad_version_only))),
+        Err(CardError::InvalidVersion)
+    ));
+    // ... and the two-fault body reports the version, not the missing key.
+    assert!(matches!(
+        decode(&encode(&Value::Map(both))),
+        Err(CardError::InvalidVersion)
     ));
 }
 

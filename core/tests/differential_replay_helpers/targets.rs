@@ -45,6 +45,18 @@ pub const TARGETS: &[&str] = &[
 /// designs for the MANIFEST BODY specifically. There is no §6 analogue for a
 /// contact card, so every compared `contact_card` pair must be strictly
 /// equal.
+///
+/// UNPINNED RESIDUAL (#700). Membership of this list is asserted by nothing
+/// but `every_target_is_classified`, which only checks that the two lists
+/// PARTITION `TARGETS`. Moving `contact_card` (or any other row) into
+/// [`NOT_TOKEN_COMPARED_TARGETS`] is therefore a well-formed edit that still
+/// partitions and leaves the whole `differential_replay` binary green — the
+/// strict comparison this slice exists to add would simply stop happening.
+/// Section RTS and `rule_token_seeds_are_committed_and_label_bound` still pin
+/// each side's tokens in CI, so the tokens themselves cannot drift silently;
+/// what is unpinned is whether they are ever COMPARED. Recorded at the code
+/// rather than only in a session handoff, because a handoff is a session
+/// document and this is a standing property (#698 review).
 pub const TOKEN_COMPARED_TARGETS: &[&str] =
     &["record", "manifest_body", "block_file", "contact_card"];
 
@@ -116,8 +128,17 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// second, order-dependent fault crypto-design §6 does not rank against the
 /// well-formedness walk (fix round 1; see
 /// `rule_token_seeds_helpers::contact_card`'s module doc and Section RTS's
-/// `_card_ordering_cases`) — all reaching a strict comparison, since none of
-/// the eight tokens `contact_card` produces is phase-dependent). And the floor
+/// `_card_ordering_cases`) — all reaching a strict comparison, because
+/// `contact_card` is absent from `PHASE_DEPENDENT_TOLERANCE_TARGETS`, which
+/// is the whole reason and is a TARGET-level decision (see this file's
+/// `PHASE_DEPENDENT_TOLERANCE_TARGETS` doc above). This said "since none of
+/// the eight tokens `contact_card` produces is phase-dependent", which is
+/// false: `non_canonical_unclassified` IS phase-dependent and two committed
+/// seeds carry it (`non_canonical_unclassified__trailing_bytes`,
+/// `__non_shortest_created_at`). The conclusion held for a different reason,
+/// and as written it told a reader that adding `contact_card` to the
+/// tolerance list would be harmless — it would immediately excuse those two
+/// (#698 review). And the floor
 /// is taken before any decode, so it holds that figure only while every
 /// `rule_token_seeds` seed still rejects, which that generator and Section
 /// RTS check and this floor does not. (The `nesting__` seeds are labelled
@@ -131,7 +152,7 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("vault_toml", 9),
     ("record", 44),
-    ("contact_card", 21),
+    ("contact_card", 23),
     ("bundle_file", 1),
     ("manifest_file", 1),
     ("manifest_body", 58),

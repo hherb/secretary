@@ -41,8 +41,16 @@ deleting crypto-design §6's 4096-byte `display_name` bound as a NAMED check
 replay both green, because the TOKEN (`wrong_type`) is unchanged even
 though the specific check is gone.  Each `block_file` and `contact_card`
 seed's Python class is therefore required by name, default-deny, as
-`rule_token_seeds.rs` requires its Rust variant.  The `record` classes map
-one to one onto their tokens, so a class name there would add nothing.
+`rule_token_seeds.rs` requires its Rust variant.  The 37 LABELLED `record`
+seeds map one to one onto their tokens, so a class name there would add
+nothing -- measured, not assumed (#698 review, S4).  State that as a property
+of the CENSUS, not of the target: tree-wide, `malformed_cbor` is carried by
+two classes, `cbor_faults.MalformedCbor` and its subclass
+`cbor_faults.NestingTooDeep`, so `record` does have a collapse surface of the
+same shape.  It is out of reach here only because the `nesting__` seeds that
+produce `NestingTooDeep` are excluded from this census by prefix
+(`NESTING_SEED_PREFIX`).  Re-measure before widening the claim: the day a
+labelled `record` seed reaches a second class, `record` needs a table.
 
 WHY DISTINCT BYTES (check 2).  A label is bound to its bytes only on the Rust
 side, by regeneration.  This side read the file name alone, and three
@@ -126,7 +134,7 @@ _TARGETS: dict[str, tuple[int, frozenset[str]]] = {
     # but is not `__`-labelled), for 21 files on disk (`MIN_CORPUS_INPUTS`'s
     # floor).
     "contact_card": (
-        17,
+        19,
         frozenset(
             {
                 "malformed_cbor",
@@ -173,6 +181,12 @@ _TOKENED_CLASSES: tuple[tuple[type, str], ...] = (
 
 # The modules whose verdict classes check 1 discovers.
 _TOKENED_MODULES = (card_rules, cbor_faults, record_rules, envelope_rules)
+
+#: Floor on how many of those the discovery half actually scans. A count
+#: derived from execution still proves nothing if the tuple it iterates was
+#: emptied, so the floor is what makes the derived PASS-line figure load
+#: bearing (#698 review, S1).
+_MIN_TOKENED_MODULES = 4
 
 # Check 2: the Python class every `block_file` seed must be rejected with,
 # keyed by file stem.  Default-deny: a seed missing here is an issue.  A
@@ -228,6 +242,8 @@ _CONTACT_CARD_CLASSES: dict[str, str] = {
     "wrong_type__x25519_pk_short": "CardWrongType",
     "wrong_type__display_name_over_cap": "CardDisplayNameTooLong",
     "wrong_type__card_version_text": "CardWrongType",
+    "wrong_type__card_version_over_u8": "CardWrongType",
+    "wrong_type__card_version_negative": "CardWrongType",
     "wrong_type__created_at_negative": "CardWrongType",
     "missing_field__no_x25519_pk": "CardMissingField",
     "duplicate_map_key__repeated_created_at": "CardDuplicateKey",
@@ -240,9 +256,26 @@ _CONTACT_CARD_CLASSES: dict[str, str] = {
 # Check 2's per-target class table, keyed by target name (fix round 1): one
 # lookup instead of an `elif target == ...` per target, so a third
 # class-checked target is one dict entry, not a new branch.
+#
+# DEFAULT-DENY ACROSS TARGETS (#698 review, C2).  This was a bare
+# `_SEED_CLASSES.get(target)` whose `None` meant "skip every class assertion
+# for this target", so renaming or mistyping one key silently switched off all
+# 17 `contact_card` class checks AND `block_file`'s 23 -- restoring the exact
+# false green this table was added to close -- while the PASS line, which
+# reported seeds LISTED and never classes CHECKED, stayed byte-identical.  A
+# target may now be absent only by being declared absent, with its reason.
 _SEED_CLASSES: dict[str, dict[str, str]] = {
     "block_file": _BLOCK_FILE_CLASSES,
     "contact_card": _CONTACT_CARD_CLASSES,
+}
+
+# Targets deliberately without a class table, each with the reason it needs
+# none.  A target in neither mapping is a FAILURE, not a skip.
+_NO_CLASS_TABLE: dict[str, str] = {
+    "record": (
+        "its 37 labelled seeds map one to one onto their tokens (measured), "
+        "so a class name would restate the token check"
+    ),
 }
 
 
@@ -264,14 +297,26 @@ def _label_token(path: Path) -> str:
     return path.name.split(LABEL_SEPARATOR, 1)[0]
 
 
-def _identity_issues() -> list[str]:
+def _identity_issues() -> tuple[list[str], int, int]:
+    """Returns `(issues, classes_checked, modules_scanned)`.
+
+    Both counts are returned so the PASS line can report what RAN. It used
+    to print `len(_TOKENED_CLASSES)` -- a DECLARATION -- and the discovery
+    half (the `_TOKENED_MODULES` loop, which is what catches a new
+    `card_rules` class nobody listed) had no PASS line at all, so emptying
+    `_TOKENED_MODULES` produced byte-identical output (#698 review, S1).
+    """
     issues = []
+    classes_checked = 0
+    modules_scanned = 0
     for cls, want in _TOKENED_CLASSES:
+        classes_checked += 1
         got = cls.__dict__.get("token")
         if got != want:
             issues.append(f"{cls.__name__} declares token {got!r}, this section expects {want!r}")
     declared = {cls for cls, _ in _TOKENED_CLASSES}
     for module in _TOKENED_MODULES:
+        modules_scanned += 1
         for cls in vars(module).values():
             if not (
                 isinstance(cls, type)
@@ -283,7 +328,13 @@ def _identity_issues() -> list[str]:
                 issues.append(f"{module.__name__}.{cls.__name__} inherits its token instead of declaring one")
             if cls not in declared:
                 issues.append(f"{module.__name__}.{cls.__name__} is a verdict class this section does not list")
-    return issues
+    if modules_scanned < _MIN_TOKENED_MODULES:
+        issues.append(
+            f"only {modules_scanned} tokened module(s) scanned, floor is "
+            f"{_MIN_TOKENED_MODULES} -- an emptied _TOKENED_MODULES would "
+            f"otherwise discover nothing, silently"
+        )
+    return issues, classes_checked, modules_scanned
 
 
 def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[list[str], str]:
@@ -294,6 +345,13 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
     issues = []
     by_bytes: dict[bytes, str] = {}
     class_table = _SEED_CLASSES.get(target)
+    if class_table is None and target not in _NO_CLASS_TABLE:
+        issues.append(
+            f"{target}: no class table and no _NO_CLASS_TABLE reason -- add the "
+            f"target to one of them (a missing key silently skipped every class "
+            f"assertion before #698)"
+        )
+    classes_checked = 0
     for path in seeds:
         want = _label_token(path)
         try:
@@ -312,6 +370,7 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
                 f"{want!r} ({verdict.get('error_class')}: {verdict.get('detail')})"
             )
         elif class_table is not None:
+            classes_checked += 1
             want_class = class_table.get(path.stem)
             if want_class is None:
                 issues.append(
@@ -329,12 +388,25 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
         issues.append(
             f"{target}: the seeds name {sorted(named)}, this section expects {sorted(want_tokens)}"
         )
-    return issues, f"{target}: {len(seeds)} labelled seeds covering {len(named)} tokens"
+    # The summary reports classes CHECKED, not seeds listed: the figure a
+    # reader uses to notice the class half went missing has to move when it
+    # does (#698 review, C2).
+    if class_table is None:
+        class_note = f"no class table ({_NO_CLASS_TABLE.get(target, 'UNDECLARED')})"
+    else:
+        class_note = f"{classes_checked} classes checked"
+    return issues, (
+        f"{target}: {len(seeds)} labelled seeds covering {len(named)} tokens, "
+        f"{class_note}"
+    )
 
 
 def section_rule_token_seeds() -> tuple[bool, list[str]]:
-    issues = _identity_issues()
-    lines = [f"PASS 1: {len(_TOKENED_CLASSES)} typed classes carry exactly their expected token"]
+    issues, classes_checked, modules_scanned = _identity_issues()
+    lines = [
+        f"PASS 1: {classes_checked} typed classes carry exactly their expected "
+        f"token, discovered across {modules_scanned} tokened module(s)"
+    ]
     for target, (floor, want_tokens) in _TARGETS.items():
         target_issues, summary = _seed_issues(target, floor, want_tokens)
         issues.extend(target_issues)

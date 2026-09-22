@@ -86,10 +86,19 @@ fn rule4_is_ordered_not_phase_dependent() {
     assert!(!RuleToken::Rule4TagOrFloat.is_phase_dependent());
 }
 
-/// The card is the only decoder in the tree that rejects an unrecognised key
-/// outright — the manifest, record and block plaintext all carry
-/// forward-compat `unknown` bags — so this token has exactly one producer
-/// today (#641).
+/// This token has exactly one producer today (#641), and the reason is NOT
+/// that the card is the only decoder rejecting an unrecognised key outright
+/// — which is what this doc claimed until #698's review.
+/// `IdentityBundle::from_canonical_cbor` rejects them too
+/// (`BundleError::UnknownField { index }`, `core/src/unlock/bundle.rs`);
+/// the bundle is fully specified, so an unknown field signals suite drift.
+/// The manifest, record and block plaintext are the ones carrying
+/// forward-compat `unknown` bags.
+///
+/// The real reason is narrower and more fragile: `BundleError` has no
+/// `rule_token()` at all, because `bundle_file` is not token-compared. That
+/// property dissolves the day #641 tokenises it, where "no other decoder
+/// does this" would have stayed true and wrong.
 ///
 /// It is NOT folded onto `WrongType`: `conformance.py`'s card decoder names
 /// an unknown key exactly, and the full-corpus measurement found 39 inputs

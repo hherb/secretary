@@ -187,10 +187,12 @@ def scanned_module_count() -> int:
 #: unrecognised value as an issue rather than falling through (#679 review).
 COVERAGE_KINDS = frozenset({"cases", "direct", "dispatch", "none"})
 
-#: The one file `dispatch_totality_issues` probes. A `"dispatch"` row naming
-#: any other file is checked by NOTHING, so the census reports it rather than
-#: crediting it.
-DISPATCH_PROBED_FILE = "record.py"
+#: The files `dispatch_totality_issues` probes. A `"dispatch"` row naming any
+#: other file is checked by NOTHING, so the census reports it rather than
+#: crediting it. `card.py` joined `record.py` in #698, when
+#: `check_card_value` -- which shipped with the fall-through and without a
+#: probe for it -- was brought under the same check.
+DISPATCH_PROBED_FILES = frozenset({"record.py", "card.py"})
 
 
 class KeySetPair:
@@ -385,13 +387,14 @@ def optional_key_issues(
                         f"{pair.label()}: optional key {key!r} has no direct-decoder case"
                     )
             elif pair.coverage == "dispatch":
-                # Verified behaviourally by check 4b -- but 4b probes ONE file,
-                # so a dispatch row naming another is checked by nothing.
-                if pair.file != DISPATCH_PROBED_FILE:
+                # Verified behaviourally by check 4b -- but 4b probes a fixed
+                # SET of files, so a dispatch row naming another is checked by
+                # nothing.
+                if pair.file not in DISPATCH_PROBED_FILES:
                     issues.append(
                         f"{pair.label()}: coverage 'dispatch' but check 4b probes only "
-                        f"{DISPATCH_PROBED_FILE}, so optional key {key!r} is checked by "
-                        f"nothing. Add a probe or reclassify this row"
+                        f"{sorted(DISPATCH_PROBED_FILES)}, so optional key {key!r} is "
+                        f"checked by nothing. Add a probe or reclassify this row"
                     )
             else:  # pragma: no cover -- unreachable while KeySetPair validates
                 issues.append(
@@ -437,7 +440,16 @@ def dispatch_totality_issues() -> list[str]:
     Behavioural, so an aliased or restructured dispatch cannot evade it; it
     proves only that an arm EXISTS for each key, never that the arm checks the
     right property.
+
+    Since #698 it also covers `codec/card.py`'s `check_card_value`, the
+    SECOND producer of this pattern. That function shipped with the mechanism
+    and without the probe, and said so in its own docstring -- which is this
+    repo's own lesson about a totality check proving nothing about the
+    fall-through, restated one slice later in a new file. `card.py` reuses
+    `record_rules.UncheckedKnownKey`, so the same `RuntimeError` keeps it out
+    of the verdict allowlist.
     """
+    from conformance_lib.codec.card import KNOWN_CARD_KEYS, check_card_value
     from conformance_lib.codec.record_rules import (
         UncheckedKnownKey,
         check_field_value,
@@ -503,5 +515,36 @@ def dispatch_totality_issues() -> list[str]:
             f"record.py: {label} ACCEPTED an undeclared key without raising "
             f"UncheckedKnownKey -- the fall-through that makes a missing check "
             f"unrepresentable is gone, so a future known key would be accepted unchecked"
+        )
+
+    # `codec/card.py`'s `check_card_value`, same two halves (#698 review, I8).
+    for key in sorted(KNOWN_CARD_KEYS):
+        try:
+            check_card_value(key, probe)
+        except UncheckedKnownKey:
+            issues.append(
+                f"card.py: the dispatch has no arm for known key {key!r} "
+                f"(UncheckedKnownKey) -- its value would be accepted unchecked"
+            )
+            continue
+        except Exception:  # noqa: BLE001
+            continue
+        issues.append(
+            f"card.py: the arm for known key {key!r} ACCEPTED a probe that "
+            f"fails every type check -- the arm exists but checks nothing"
+        )
+    try:
+        check_card_value("vt_probe_undeclared_key", probe)
+    except UncheckedKnownKey:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        issues.append(
+            f"card.py: check_card_value answered an UNDECLARED key with "
+            f"{type(exc).__name__} instead of UncheckedKnownKey"
+        )
+    else:
+        issues.append(
+            "card.py: check_card_value ACCEPTED an undeclared key without raising "
+            "UncheckedKnownKey -- a future known key would be accepted unchecked"
         )
     return issues

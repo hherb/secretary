@@ -296,10 +296,12 @@ fn nested_document(depth: usize, shape: Chain) -> Vec<u8> {
 /// A depth-256 body must fail for any reason other than `RecursionLimit` (it
 /// is not a valid document), and a depth-257 body must fail with it.
 /// (ciborium charges no level for a bignum over a definite-length byte
-/// string of at most 16 bytes; that edge is #666's, scoped to the three walk
-/// paths in `the_walk_paths_charge_a_level_for_a_short_bignum` below, since
-/// the one remaining ciborium-backed path does not refuse it for depth at
-/// all.)
+/// string of at most 16 bytes; that edge is #666's, covered for all four
+/// walk paths in `the_walk_paths_charge_a_level_for_a_short_bignum` below,
+/// since the one remaining ciborium-backed path does not refuse it for depth
+/// at all. Note what THIS test does not do: every shape it builds is one
+/// ciborium charges a level for, so each row is satisfied by ciborium alone
+/// and none of them distinguishes the walk from it — see that test.)
 #[test]
 fn every_decode_path_enforces_exactly_the_v1_limit() {
     use secretary_core::identity::card::{CardError, ContactCard};
@@ -369,13 +371,18 @@ fn every_decode_path_enforces_exactly_the_v1_limit() {
 /// was reported as rule 4. Both are depth faults, and the byte walk charges
 /// a level for a tag like any other container.
 ///
-/// Scoped to the three WALK paths this test's `paths` array names, not to
-/// every walk path there now is: `ContactCard::from_canonical_cbor` also
-/// walks since #691, but this test was not extended to cover it. Only
-/// `IdentityBundle` still relies on ciborium and does NOT refuse these
+/// Covers all FOUR walk paths, `ContactCard::from_canonical_cbor` included
+/// since #698. The card row is what makes the card's rule-6 enforcement
+/// discriminating at all: its sibling
+/// `every_decode_path_enforces_exactly_the_v1_limit` tests only shapes
+/// ciborium also charges a level for, so ciborium satisfies that test's card
+/// row with the walk removed. A short bignum is the one shape where the walk
+/// and ciborium DIFFER, so only this test separates them (#698 review, I4).
+/// Only `IdentityBundle` still relies on ciborium and does NOT refuse these
 /// bodies for depth; that is #677's, not a gap this test hides.
 #[test]
 fn the_walk_paths_charge_a_level_for_a_short_bignum() {
+    use secretary_core::identity::card::{CardError, ContactCard};
     use secretary_core::vault::block::{decode_plaintext, BlockError};
     use secretary_core::vault::manifest::{decode_manifest, ManifestError};
     use secretary_core::vault::record::{decode, RecordError};
@@ -385,7 +392,7 @@ fn the_walk_paths_charge_a_level_for_a_short_bignum() {
     /// because `FaultOf` collapses `Ok(_)` and a non-`CborDecode` error onto
     /// the same `None` — see the assertion below.
     type Rejects = fn(&[u8]) -> bool;
-    let paths: [(&str, FaultOf, Rejects); 3] = [
+    let paths: [(&str, FaultOf, Rejects); 4] = [
         (
             "decode_manifest",
             |b| match decode_manifest(b) {
@@ -409,6 +416,14 @@ fn the_walk_paths_charge_a_level_for_a_short_bignum() {
                 _ => None,
             },
             |b| decode(b).is_err(),
+        ),
+        (
+            "ContactCard::from_canonical_cbor",
+            |b| match ContactCard::from_canonical_cbor(b) {
+                Err(CardError::CborDecode(f)) => Some(f),
+                _ => None,
+            },
+            |b| ContactCard::from_canonical_cbor(b).is_err(),
         ),
     ];
     for (name, fault_of, rejects) in paths {

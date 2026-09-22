@@ -41,6 +41,15 @@
 //! `ciborium` and `cbor2`), each is malformed at the raw parse layer
 //! regardless of which check runs first, so neither has a competing
 //! reading to order against.
+//!
+//! `bignum_wide` stays committed on a DIFFERENT footing, stated here
+//! because a sibling doc once folded it into the sentence above (#698
+//! review). It is well-formed CBOR -- `ciborium` keeps a `Value::Tag`,
+//! `cbor2` folds it to an `int` -- so it does have a competing reading, and
+//! a language-dependent one: with the walk disabled Rust says `wrong_type`
+//! and Python says `non_canonical_unclassified`. It is a parity-order row
+//! of the class `record`'s three `rule4_tag_or_float__*` seeds already
+//! belong to, accepted under #668, and is tracked by #699.
 
 use ciborium::Value;
 
@@ -138,8 +147,20 @@ fn value_of(entries: &[Entry], key: &str) -> Vec<u8> {
         .clone()
 }
 
+/// Panics on an unknown `key`, as `value_of` and `repeated_with` do.
+///
+/// Both this and `without` used to return the entries UNCHANGED for a key
+/// that is not there, so a typo'd key name silently produced the accepting
+/// base as a "seed" (#698 review, S4). `assert_rust_names_its_token` does
+/// catch that downstream, so this is defence in depth — but two of this
+/// file's four splice helpers already panicked, and an inconsistency of
+/// that kind is the sort that gets copied into the next one.
 fn with_value(entries: &[Entry], key: &str, value: Vec<u8>) -> Vec<Entry> {
     let wanted = text(key);
+    assert!(
+        entries.iter().any(|(k, _)| *k == wanted),
+        "seed base has no key {key}"
+    );
     entries
         .iter()
         .map(|(k, v)| {
@@ -155,8 +176,13 @@ fn with_value(entries: &[Entry], key: &str, value: Vec<u8>) -> Vec<Entry> {
         .collect()
 }
 
+/// Panics on an unknown `key` — see `with_value`'s note.
 fn without(entries: &[Entry], key: &str) -> Vec<Entry> {
     let wanted = text(key);
+    assert!(
+        entries.iter().any(|(k, _)| *k == wanted),
+        "seed base has no key {key}"
+    );
     entries
         .iter()
         .filter(|(k, _)| *k != wanted)
@@ -258,12 +284,39 @@ fn x25519_pk_short(base: &[u8]) -> Vec<u8> {
 }
 
 fn display_name_over_cap(base: &[u8]) -> Vec<u8> {
-    // crypto-design §6's cap is 4096 bytes; one byte over it.
-    plant_value(base, KEY_DISPLAY_NAME, text(&"a".repeat(4097)))
+    // crypto-design §6's cap is 4096 BYTES of UTF-8, not 4096 characters, and
+    // this plant plants exactly that distinction (#698 review, I7): 2049 two-
+    // byte characters is 4098 bytes but only 2049 `char`s, so a reader
+    // measuring length in characters ACCEPTS it while `card.rs`'s `s.len()`
+    // -- a byte length -- rejects it. The ASCII `"a".repeat(4097)` this
+    // replaces had chars == bytes, so it was satisfied by either reading and
+    // Python could have dropped its `.encode("utf-8")` with the whole suite
+    // green: an acceptance divergence of #669's class, on a strictly
+    // compared target.
+    plant_value(base, KEY_DISPLAY_NAME, text(&"é".repeat(2049)))
 }
 
 fn card_version_text(base: &[u8]) -> Vec<u8> {
     plant_value(base, KEY_CARD_VERSION, text("ok"))
+}
+
+/// `card_version` as a uint too wide for the `u8` the schema declares.
+///
+/// Both sides answer `wrong_type` -- Rust because `take_u8` rejects it as
+/// `Malformed`, Python because `check_card_value` range-checks before the
+/// version comparison. That RANGE CHECK was implemented in both languages
+/// and pinned by nothing (#698 review, I7): deleting Python's leaves a body
+/// answering `unsupported_version` against Rust's `wrong_type`, a live
+/// divergence on a strictly compared target, with the whole suite green.
+fn card_version_over_u8(base: &[u8]) -> Vec<u8> {
+    // 300 == 0x012C, a two-byte uint (major 0, additional info 25).
+    plant_value(base, KEY_CARD_VERSION, vec![0x19, 0x01, 0x2C])
+}
+
+/// `card_version` as a negative integer -- the other side of the same range
+/// check, and the only way to reach it from a major-1 head.
+fn card_version_negative(base: &[u8]) -> Vec<u8> {
+    plant_value(base, KEY_CARD_VERSION, vec![NEGATIVE_ONE])
 }
 
 fn created_at_negative(base: &[u8]) -> Vec<u8> {
@@ -380,6 +433,18 @@ pub(super) fn cases() -> Vec<SeedCase> {
             "card_version_text",
             "Malformed",
             card_version_text,
+        ),
+        case(
+            RuleToken::WrongType,
+            "card_version_over_u8",
+            "InvalidFieldLength",
+            card_version_over_u8,
+        ),
+        case(
+            RuleToken::WrongType,
+            "card_version_negative",
+            "Malformed",
+            card_version_negative,
         ),
         // Ruling (a): `CardError` has no `IntegerOutOfRange` token — every
         // `Malformed(_)` arm, this one included, maps to `WrongType`

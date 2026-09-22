@@ -109,7 +109,7 @@ _TOKENED_CLASSES: tuple[tuple[type, str], ...] = (
 # a Python side that collapsed every manifest rejection onto one token passed.
 # That is the `_HASH_SEEDS = ("0",)` shape recorded in CLAUDE.md: a figure
 # computed, printed, and never compared.  NINE of the eighteen tokens are
-# reachable from `core/fuzz/seeds/manifest_body/`; the other eight need bodies
+# reachable from `core/fuzz/seeds/manifest_body/`; the other NINE need bodies
 # the corpus does not hold, which is why this is an equality against a named
 # set rather than a count.
 #

@@ -70,7 +70,7 @@ _NON_SHORTEST_FIVE = bytes([0x18, 0x05])
 _BIGNUM_NARROW = bytes([0xC2, 0x41, 0x01])
 # How many parity-order cases each builder declares; asserted in
 # `ordering_issues`.
-_ORDERING_CASES = {"record": 9, "block_file": 1, "contact_card": 7}
+_ORDERING_CASES = {"record": 9, "block_file": 1, "contact_card": 8}
 
 _OrderingCase = tuple[str, bytes, str, "str | None"]
 
@@ -176,6 +176,22 @@ def _card_ordering_cases() -> tuple[_OrderingCase, ...]:
     verdict has no standalone control, because nothing in the §6 schema can
     isolate it from a competing type check the way `record`'s forward-compat
     bag lets record isolate an unknown-bag fault.
+
+    WHERE THAT CONTROL LIVES, since it is NOT in this file (#698 review,
+    S2). Each row below asserts only the two-fault body's token; nothing
+    here demonstrates the competing verdict alone, so read the rows as one
+    half of a two-sided property. The other half is:
+
+    * the Rust twin, `core/src/identity/card_order_tests.rs`, where every
+      `#[test]` asserts its controls AND the two-fault body; and
+    * for four of the rows, a committed single-fault seed that IS the
+      competing verdict -- `unsupported_version__card_version_two`,
+      `wrong_type__created_at_text`,
+      `non_canonical_unclassified__trailing_bytes` and
+      `non_canonical_unclassified__non_shortest_created_at`.
+
+    Naming them makes the linkage checkable; before this the docstring
+    claimed a control the file does not contain.
     """
     import cbor2
 
@@ -256,6 +272,20 @@ def _card_ordering_cases() -> tuple[_OrderingCase, ...]:
         ("a narrow bignum created_at",
          raw_with_created_at(_BIGNUM_NARROW), "rule4_tag_or_float",
          "the well-formedness walk's rule-4 check runs before the final canonical-form re-encode"),
+        # #698 review, I7/I2: the order BOTH decoders implement here was
+        # pinned by nothing. Row 1 above covers a wrong TYPE beside a
+        # deferred `card_version`; this covers a MISSING KEY beside one,
+        # which takes the other branch -- Rust answers `InvalidVersion`
+        # because `parse_card_map` requires and compares `card_version`
+        # before `first_missing_key_in_sorted_order` is ever consulted, and
+        # Python defers the comparison to the same post-loop position ahead
+        # of its own missing-key report. Reverse either and the pair reads
+        # `unsupported_version` against `missing_field`, a live divergence
+        # on a strictly compared target (measured both sides).
+        ("a wrong card_version beside a missing required key",
+         canonical({k: v for k, v in base.items() if k != "x25519_pk"} | {"card_version": 2}),
+         "unsupported_version",
+         "card_version's value comparison outranks the missing-key report"),
     )
 
 
