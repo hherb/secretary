@@ -284,6 +284,23 @@ The signed message for both `self_sig_ed` and `self_sig_pq` is:
 
 A card whose signatures don't both verify is rejected on import.
 
+**`display_name` is at most 4096 bytes of UTF-8.** Writers MUST NOT emit a
+longer one and readers MUST reject one. This is a v1 profile bound, not a
+canonical-form rule: it bounds what a reader RETAINS from attacker-supplied
+variable-length text taken from the attacker-writable vault folder. It does
+not bound peak memory during parse — a general-purpose CBOR parse allocates
+the string before this cap is ever consulted — only how long the decoded
+value is allowed to live afterward, including across the signature check
+that follows. The reference implementation has enforced exactly this limit
+since PR #11 (`20ebc053`), on parse and on both encode paths, so stating it
+narrows nothing the REFERENCE reader accepts and forbids nothing a v1 writer
+emits. It does bind a clean-room reader that had no such bound: this repo's
+own `conformance_lib/wire/card.py` accepted a longer `display_name` until the
+slice that wrote this paragraph, and had to gain the check in the same
+commit. That is the intended effect of stating the rule — a §6 MUST binds
+every conformant card reader — but it is a narrowing for readers built from
+`docs/` alone, and is recorded as one rather than claimed away.
+
 ### 6.1 Card fingerprint
 
 Fingerprints support OOB verification. The fingerprint is computed as:

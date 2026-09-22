@@ -29,10 +29,13 @@ core/tests/          — integration tests; tests/data/ holds KATs and fuzz regr
 core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (156 lines; the PEP
                                              723 header is the sole dependency declaration).
                                              `conformance.py:NNN` citations predating #593 are
-                                             stale — the verifier is now a 78-file package.
+                                             stale — the verifier is now an 80-file package.
                                              RE-MEASURE: `find core/tests/python/conformance_lib
                                              -name '*.py' | wc -l` — this line said 62 while the
-                                             paragraph below said 65 for a whole slice.
+                                             paragraph below said 65 for a whole slice, and said
+                                             78 through #641/#691's own merge until re-measured
+                                             here (that branch added `codec/card_rules.py` and
+                                             `sections/rule_token_seeds_ordering.py`, 78 -> 80).
 core/tests/python/conformance_lib/         — DIRECTORY module (#593), the verifier itself: no
                                              dependency on `secretary-core`; proves the spec is
                                              implementable from `docs/` alone. `wire/` parses to
@@ -112,8 +115,11 @@ cargo test --release --locked -p secretary-core \
 # isolation, which conformance Section DRS checks rather than assumes, over
 # the committed corpus only.
 #
-# CI replays the 141 committed inputs (no `corpus/` there): 107 until #669
-# added 14, 121 until #667/#670 added 10, 131 until #666/#685 added 10.
+# CI replays the 160 committed inputs (no `corpus/` there): 107 until #669
+# added 14, 121 until #667/#670 added 10, 131 until #666/#685 added 10,
+# 141 until #641/#691 added 17 committed contact_card seeds (four two-fault
+# rows were added and then moved to Section RTS check 5 inside the same
+# branch, so the net is +17, not +21).
 # Re-measure with
 # `ls core/fuzz/seeds/*/* core/tests/data/diff_regressions/*/* | grep -v gitkeep | wc -l`.
 # The 5.98 s test body
@@ -390,11 +396,17 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 156, over a **78**-file package whose largest module is
+was 6849 lines; it is now 156, over an **80**-file package (re-measured at
+#641/#691's merge; see the dated re-measurement entry below) whose largest module is
 `sections/value_type_discipline.py` at **834** lines, then
-`sections/nesting_depth.py` at 522 and `sections/value_type_structure.py` at
-507 — **three** past the 500-line split threshold (#683) now, where the
-figures this replaced named two — then `codec/manifest_decode.py` at 498,
+`sections/value_type_structure.py` at
+507 — **two** past the 500-line split threshold (#683) now, DOWN from three
+at the #689 merge-base, because #641/#691 shrank `sections/nesting_depth.py`
+30 net lines (522 -> 492) while deleting the now-callerless
+`reject_excessive_nesting` and its content-blind entry-point machinery —
+then `codec/manifest_decode.py` at 498, `sections/nesting_depth.py` at 492
+(a near-tie, one line above `manifest_canonicality_cause.py`, not the
+five-line gap the paragraph below still narrates as current), then
 `sections/manifest_canonicality_cause.py` at 491 and `codec/scanner.py` at
 479. **This is the THIRD consecutive slice in which a review round moved
 these numbers after the docs commit measured them**, which is what the rest
@@ -442,6 +454,36 @@ review, `scanner.py` 476 taken from the wrong sentence) restated as a
 same-commit, same-file case: measuring a file, then editing that same file
 later in the same commit, without a second `wc -l` before writing the
 figure down.
+Re-measured at #641/#691 (this slice's own merge, 78 -> 80 files:
+`codec/card_rules.py`, `sections/rule_token_seeds_ordering.py`), which
+touched `sections/nesting_depth.py` 522 -> 492 (net -30: +17/-47 across the
+slice, from deleting `reject_excessive_nesting`'s NDL check-4 sub-case and
+the callerless content-blind traversal it drove — see "Nesting depth and
+record default omission" below) and `sections/rule_token_seeds.py`
+397 -> 347 (net -50: the contact-card single-fault generator was added to
+it, and its card-specific ORDERING cases moved back OUT into the new
+`sections/rule_token_seeds_ordering.py`, a net shrink), and moved nothing
+else the top six holds a line count for. **The `codec/card.py` figure in
+this paragraph has now been wrong three times running, which is worth more
+than the figure.** It read "256, +121 net" at the docs commit while `wc -l`
+said 259; the #698 review corrected it to 276 and then grew the file again
+in the same review, to 281. Measuring a file and then editing that same
+file later in the same change, without a second `wc -l`, is the
+NEIGHBOURING-NUMBER COPY's sibling and the reason every figure here says
+RE-MEASURE. RE-MEASURED at the #698 review,
+which moved two more: `sections/value_type_structure.py` 507 -> 550 (check
+4b now probes `card.py` too) and `sections/rule_token_seeds.py` 347 -> 392
+(the default-deny class table). Current top six, measured:
+835 `value_type_discipline.py`, 550 `value_type_structure.py`,
+498 `codec/manifest_decode.py`, 492 `sections/nesting_depth.py`,
+491 `sections/manifest_canonicality_cause.py`, 479 `codec/scanner.py` —
+TWO past the 500-line threshold. The concrete effect on the ranking:
+`nesting_depth.py` fell out of the "past the 500-line threshold" set
+entirely (522 -> 492, now under 500) and dropped from second place to a
+near-tie for fourth/fifth against `manifest_canonicality_cause.py` (492 vs
+491, one line apart, where it previously led by 31). `codec/card.py` (135 ->
+281, +146 net) and `codec/well_formed.py` (212 -> 199, -13 net) also changed
+substantially but neither was ever in the top six and neither entered it.
 Re-measured at #667/#670 (75 -> 78 files: `sections/nesting_depth.py`,
 `sections/nesting_depth_bodies.py`, `sections/record_defaults.py`), which grew
 `manifest_decode.py` 450 -> 460 (the depth pass is its first statement) and
@@ -769,12 +811,16 @@ now says **a default value is written by omission**. Load-bearing:
   level shapes: plain arrays, a tag as the last level, indefinite arrays and
   a map-key chain. **This said "only the first four paths pin CIBORIUM; the
   record row pins the walk" until #666 wired the same walk into
-  `decode_manifest` and `block::decode_plaintext`.** Now only
+  `decode_manifest` and `block::decode_plaintext`, then said "only
   `ContactCard::from_canonical_cbor` and `IdentityBundle::from_canonical_cbor`
-  pin ciborium's limit; `decode_manifest`, `block::decode_plaintext` and
-  `record::decode` all pin the walk, which answers before ciborium ever
-  runs. So a ciborium upgrade cannot move the spec's limit silently on
-  those two, nor stop charging a tag or an indefinite container. It was named
+  pin ciborium's limit" until #641/#691 wired the card onto the same walk
+  too (`identity::card::from_canonical_cbor`'s
+  `walk_first_item_checked(bytes, CardError::CborDecode)?` call).** Now only
+  `IdentityBundle::from_canonical_cbor` pins ciborium's limit;
+  `decode_manifest`, `block::decode_plaintext`, `ContactCard::from_canonical_cbor`
+  and `record::decode` all pin the walk, which answers before ciborium ever
+  runs. So a ciborium upgrade cannot move the spec's limit silently on any
+  of those four, nor stop charging a tag or an indefinite container. It was named
   `ciborium_enforces_exactly_the_v1_limit_on_every_decode_path` and built
   arrays only until the PR #684 review. Over the full
   local `record` corpus (7,495 inputs, base against branch) **0 verdicts
@@ -786,14 +832,28 @@ now says **a default value is written by omission**. Load-bearing:
   always reported first -- ciborium never ran on them at all, which is the
   conclusive reason. Its `Io` always carries `offset: None` (`classify_de`)
   where these carried `Some(..)`, corroborating it for the `Io` inputs only.
-- **Python has ONE traversal and two entry points, and #666 moved two of the
-  three content-blind callers onto the other one.** `codec/well_formed.py`'s
-  `_walk(.., check_content)` is reached through `walk_body` — the record
+- **Python HAD one traversal and two entry points; since #641/#691 it has
+  ONE entry point, `walk_body`, and `reject_excessive_nesting` no longer
+  exists.** At #666, `codec/well_formed.py`'s
+  `_walk(.., check_content)` was reached through `walk_body` — the record
   since #641, and since #666 the MANIFEST and the TRASH ENTRY too — and
-  through `reject_excessive_nesting`, whose only remaining caller is
-  `codec/card.py`. The latter pass is CONTENT-BLIND: no UTF-8, simple-value
-  or rule-4 fault, since none moves an item boundary; a tag still counts as
-  a level.
+  through `reject_excessive_nesting`, whose only remaining caller was
+  `codec/card.py` (that pass was CONTENT-BLIND: no UTF-8, simple-value
+  or rule-4 fault, since none moves an item boundary; a tag still counted as
+  a level). #641/#691 wired `codec/card.py` onto `walk_body` too (the same
+  slice that wired `identity::card::from_canonical_cbor` onto the Rust
+  walk — see "Nesting depth and record default omission" above), which made
+  `reject_excessive_nesting` callerless; it was then deleted outright, along
+  with the now-pointless `later_phases_scan_in_byte_order` flag discussion
+  below (kept as history — the flag itself and the function it lived on are
+  both gone from the tree; `grep -rn reject_excessive_nesting
+  core/tests/python/conformance_lib` finds only comments narrating its
+  retirement). Section NDL's PASS 4 count moved 8/8 -> 7/7 with it (the
+  removed sub-case's property is now structurally unviolatable rather than
+  actively checked — `check_content` gates only content checks, never the
+  structural raises `walk_body` performs unconditionally — and remains
+  double-covered by the pre-existing manifest truncation control and the
+  contact-card "stray break" row).
   **Its `later_phases_scan_in_byte_order` flag is GONE (PR #689 review), and
   why is the point.** It let the CALLER declare what should happen at a
   structural fault the pass cannot walk past. The manifest passed `True` —
@@ -811,8 +871,13 @@ now says **a default value is written by omission**. Load-bearing:
   decoder gets wired onto it on the strength of a caller list that no longer
   holds, so the flag was retired rather than re-documented; the pass now
   raises unconditionally, which is what its one caller already asked for.
-  One copy of the traversal means one mutation reds both entry points. A
-  second copy would be the #618 shape.
+  One copy of the traversal means one mutation reds every caller. A
+  second copy would be the #618 shape. (This read "both entry points"
+  until #698 — a present-tense claim left standing forty lines below the
+  bullet recording that since #641/#691 there is ONE entry point,
+  `walk_body`. #698 also deleted `_walk`'s `check_content` parameter, so the
+  content-blind BEHAVIOUR the retired wrapper used is gone too, not merely
+  callerless.)
 - **The absolute value 256 is pinned by the committed seeds, not by Section
   WF.** Mutation N3 (Python's limit 256 -> 257) reddened Section NDL through
   check 6, its only absolute check: it compares the committed `nesting__`
@@ -844,10 +909,19 @@ now says **a default value is written by omission**. Load-bearing:
   (`decode_manifest`, `block::decode_plaintext`, `record::decode`), and the
   two committed seeds `nesting__257_unknown_bignum_narrow.bin` /
   `nesting__257_unknown_bignum_wide.bin` pin it cross-language, because the
-  two widths took different ciborium paths and both needed a seed. The
-  ciborium-only paths (`ContactCard::from_canonical_cbor`,
-  `IdentityBundle::from_canonical_cbor`) still show the old split — they
-  were never in scope for this slice.
+  two widths took different ciborium paths and both needed a seed. At #666's
+  merge, the two remaining ciborium-only paths (`ContactCard::from_canonical_cbor`,
+  `IdentityBundle::from_canonical_cbor`) still showed the old split — they
+  were never in scope for that slice. **`ContactCard::from_canonical_cbor` is
+  no longer a ciborium-only path (#641/#691)**: it now runs the same
+  byte-level walk ahead of ciborium (see the bullet above), so the general
+  257-level pin in `every_decode_path_enforces_exactly_the_v1_limit` covers
+  it on the walk side. `the_walk_paths_charge_a_level_for_a_short_bignum`
+  itself is still scoped to the three paths it had at #666
+  (`decode_manifest`, `block::decode_plaintext`, `record::decode`) — this
+  slice did not add the card to that specific short-bignum test, only to the
+  general limit test above. `IdentityBundle::from_canonical_cbor` is the
+  sole remaining ciborium-only path, on both tests.
 - **The writer half is unenforced in both languages (#681).** No production
   path emits a 257-deep document from decoded input. An `UnknownValue` built
   in memory can, which is the #586/#600 writer-half shape.
@@ -1379,8 +1453,10 @@ we standardize them". That is why #618's two live divergences and #621's third
 survived it. Six things:
 
 - **`ManifestError::rule_token()` (`manifest/token.rs`) is an EXHAUSTIVE match
-  over all 35 variants** onto a 17-token `RuleToken` vocabulary, so a new variant
-  cannot be added without classifying it — the compiler refuses. Verified by
+  over all 35 variants** onto an 18-token `RuleToken` vocabulary (17 until
+  #641 added `UnknownField` — a key not in the schema, on a decoder with no
+  forward-compat `unknown` bag; today's sole producer is `CardError::UnknownField`),
+  so a new variant cannot be added without classifying it — the compiler refuses. Verified by
   execution: planting an unclassified variant reds with `E0004`. It lives inside
   the crate because it must read `CanonicalError`'s variants to keep §6.2 rule 4
   apart from rule 5, and `vault::canonical` is `pub(crate)` so an integration
@@ -1398,10 +1474,23 @@ survived it. Six things:
   documents did, the fifth being the shared JSON fixture BOTH languages read.
   **State the breadth as a number, because the list-of-exceptions form has now
   been wrong twice.** A per-TOKEN predicate tolerates every pair its token
-  appears in, so with 4 of the 17 tokens phase-dependent it tolerates **54 of
-  the 136 unequal pairs**; §4.2 frees a strict subset. That is 58 pairs with a
-  phase-dependent member, less the four pairing one with `malformed_cbor`,
-  which is never tolerated: §4.2 makes well-formedness the precondition for
+  appears in, so with 4 of the 18 tokens phase-dependent it tolerates **58 of
+  the 153 unequal pairs**; §4.2 frees a strict subset. (This was 54 of 136
+  with 4 of 17 tokens phase-dependent before #641 added the 18th token,
+  `UnknownField` — C(18,2) = 153 unequal pairs, 62 with a phase-dependent
+  member, less the four pairing one with `malformed_cbor` below = 58; the new
+  token is not itself phase-dependent, and `PHASE_DEPENDENT_TOLERANCE_TARGETS`
+  still holds only `manifest_body`, so the four newly-tolerated
+  `UnknownField`-paired pairs are inert on the one target that could reach
+  them, since `manifest_body`'s Rust decoder has no arm producing
+  `unknown_field` — verified by grep, zero producers ON THAT PATH. Not
+  zero in `core/src`, which is how this read until #698's review:
+  `core/src/vault/rule_tokens/card.rs` produces it, which is the whole
+  point of the token. The scope is the manifest decoder, and an absolute
+  phrasing here is what later gets quoted without it.) The 58
+  figure is 62 pairs with a phase-dependent member, less the four pairing
+  one with `malformed_cbor`, which is never tolerated: §4.2 makes
+  well-formedness the precondition for
   both orderings. Withholding it came from the PR #673 review, which measured
   Python's newly tokened scanner raises turning a would-be harness failure into
   agreement for `undefined` and nested-chunk manifest bodies. All four
@@ -1448,14 +1537,44 @@ survived it. Six things:
   failure; an UNRECOGNISED one is an ordinary disagreement (`tokens_agree`
   returns `false`) — "unrecognised OR missing is a harness failure" is wrong
   about the first half, though both red the test.
-- **`manifest_body`, `block_file` and `record` are token-compared (#634, #641). `manifest_file` is BLOCKED, and the
+- **`manifest_body`, `block_file`, `record` and `contact_card` are token-compared
+  (#634, #641; `contact_card` closed by #641/#691). `manifest_file` is BLOCKED,
+  and the
   reason generalises: sharing an error enum is not sharing a granularity.**
   Measured on one file with `format_version = 0x0099`, Rust says
   `UnsupportedFormatVersion` (token `unsupported_version`) and Python says
   `ParseError` (token `container_malformed`). No mapping reconciles it —
   `header.rs` and the BODY sentinel check raise the same variant, so a per-variant
   token cannot tell the layers apart, and `ParseError` is one class shared by every
-  target's wire decoder (#640). `contact_card`, `bundle_file` and `vault_toml` remain #641. `record`
+  target's wire decoder (#640). `bundle_file` and `vault_toml` remain #641 —
+  see "Sub-project A" progress in ROADMAP.md for their per-target state.
+  `contact_card` needed the same treatment `record` did (below), one level
+  up: its own byte-level well-formedness walk wired into
+  `ContactCard::from_canonical_cbor` ahead of ciborium, and `codec/card.py`
+  rewritten onto that phase order, plus a vocabulary of its own
+  (`CardError::rule_token()`, `core/src/vault/rule_tokens/card.rs`) reusing
+  the shared `RuleToken` enum rather than inventing a second one. **Ten**
+  tokens, re-measured — `sed -n '/pub fn rule_token/,/^    }/p' | grep -o
+  'RuleToken::[A-Za-z0-9]*' | sort -u | wc -l`. This said "8-token", which
+  is how many the COMMITTED SEEDS span: a subtotal stated as a total, the
+  failure this file names by name, and ROADMAP.md had it right ("8 tokens
+  the committed seeds cover; `rule_token()` itself reaches ten") while this
+  line did not (#698 review).
+  Unlike `record`/`block_file`, the card has no forward-compat `unknown`
+  bag, so a single-fault DEPTH seed cannot be constructed there. **A
+  single-fault rule-4 seed can, and one is committed** —
+  `rule4_tag_or_float__bignum_wide.bin` — which this line denied while the
+  PR that wrote it generated exactly that file. The **four** precedence
+  shapes needing an unknown bag are the fix-round-1 `created_at` ones
+  (`undefined`, `depth_257`, `float`, `bignum_narrow`); the three this line
+  used to name instead (`card_version` deferral, duplicate-vs-value,
+  trailing-bytes-vs-entry-fault) are the task-10 shapes, which need no such
+  bag. All of them live as in-section parity checks (Section RTS check 5,
+  **8** `contact_card` cases since #698's review added the
+  card_version-vs-missing-key row) with a Rust twin
+  (`core/src/identity/card_order_tests.rs`), never as committed corpus rows — the #618 lesson: a cross-language row must not pin
+  an order `docs/` does not fix, and crypto-design §6 fixes no report order
+  for the card the way vault-format §4.2 does for the manifest body. `record`
   needed its Python decoder reordered into `record::decode`'s phase order and a byte-level
   well-formedness walk that runs before anything is interpreted, in both languages: in Rust
   in front of ciborium's parse (ciborium reads `undefined` and the two-byte simple forms as
@@ -1465,7 +1584,8 @@ survived it. Six things:
   reads, which never parse the body through `cbor2`. `block_file` needed no decoder
   reordering, only Python-side typing: its merged sort/repeat check split, and its
   `format_version`/`suite_id` raises typed `unsupported_version` where they had been plain
-  `ParseError`. Both have committed single-fault seeds, generated and label-bound by
+  `ParseError`. All three of `record`/`block_file`/`contact_card` have committed single-fault
+  seeds, generated and label-bound by
   `core/tests/rule_token_seeds.rs` and Section RTS, so CI makes a strict comparison per seed;
   the orders they rely on are PARITY, not spec (§6.1/§6.3 fix none; #668). The classification
   table must PARTITION `TARGETS`, so a new target cannot default into the loose
@@ -1520,13 +1640,18 @@ survived it. Six things:
   because that is how the #647 gap itself survived three slices.
   **State the residual scope exactly, because the wider claim is the one
   someone will want to make.** CI replays the COMMITTED corpus only —
-  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **141** inputs today
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **160** inputs today
   (#641 added 57 generated single-fault seeds for `block_file` and `record`;
   #669 added 14 acceptance seeds for `contact_card`, `vault_toml` and
   `manifest_body`; #667 added 7 `nesting__` seeds for `record` and
   `manifest_body`, and #670 3 `record` default-omission seeds; #666 added 10
   more `manifest_body` seeds — 8 `wellformed__*` plus 2
-  `nesting__257_unknown_bignum_{narrow,wide}`).
+  `nesting__257_unknown_bignum_{narrow,wide}`; #641/#691 added 17 committed
+  `contact_card` single-fault seeds across 8 tokens, bringing 141 to 158, then
+  two more `card_version` range seeds in #698's review for 160 —
+  a further four two-fault `contact_card` rows were built and then moved to
+  Section RTS check 5 rather than committed, per the #618 no-cross-language-
+  row-on-an-unspecified-order rule, so the net addition is 17, not 21).
   `core/fuzz/corpus/` is **gitignored**, so agreement on fuzz-DISCOVERED
   inputs is still proven only by whoever runs the fuzzer, and "the differential
   replay is in CI" must not be read as "the fuzz corpus is differentially

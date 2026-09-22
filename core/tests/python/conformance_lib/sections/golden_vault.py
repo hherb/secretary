@@ -201,4 +201,59 @@ def section2_golden_vault_001() -> tuple[bool, list[str]]:
             return False, lines
         lines.append(f"PASS  tamper-check: {label} (verify rejected as expected)")
 
+    # §6 SHAPE checks on the card reader itself (#698 review, C1).
+    #
+    # WHY THESE ASSERT ON THE MESSAGE. Planting a bad field changes the bytes
+    # the self-signature commits to, so `hybrid_verify` rejects the body
+    # whatever the shape checks do -- a case asserting only "rejected" passes
+    # with every check in `wire/card.py` reverted. That is the TOKEN-LESS row
+    # trap this repo records (#669/#679). Each row therefore requires the
+    # rejection to NAME the offending field AND requires it not to be the
+    # signature refusal, which is what makes the row discriminate.
+    #
+    # `contact_uuid`, `x25519_pk` and `ml_kem_768_pk` are the three §6 fields
+    # no other check on this path covers: they are not consumed by
+    # `hybrid_verify`, so before this the reader ACCEPTED a card `card.rs`
+    # rejects. The `display_name` rows pin the bound in BYTES, not characters
+    # -- a 2049-character 2-byte-per-char name is 4098 bytes, so a reader
+    # measuring `len(str)` accepts what `card.rs`'s `s.len()` rejects.
+    import cbor2
+
+    shape_cases = [
+        ("contact_uuid", b"\x00", "contact_uuid must be 16 bytes"),
+        ("contact_uuid", "not-bytes", "contact_uuid is not a byte string"),
+        ("x25519_pk", b"", "x25519_pk must be 32 bytes"),
+        ("ml_kem_768_pk", bytes(1183), "ml_kem_768_pk must be 1184 bytes"),
+        ("display_name", "\u00e9" * 2049, "display_name exceeds"),
+        ("display_name", 42, "display_name is not a text string"),
+    ]
+    for field, bad_value, want_fragment in shape_cases:
+        label = f"card {field} -> {want_fragment!r}"
+        mutated = dict(owner_card["decoded"])
+        mutated[field] = bad_value
+        try:
+            parse_and_verify_card(cbor2.dumps(mutated, canonical=True))
+        except ParseError as e:
+            detail = str(e)
+        else:
+            lines.append(f"FAIL  card-shape: {label} -- reader ACCEPTED it")
+            return False, lines
+        if want_fragment not in detail:
+            lines.append(
+                f"FAIL  card-shape: {label} -- rejected, but the message does"
+                f" not name the fault: {detail!r}"
+            )
+            return False, lines
+        if "self-signature" in detail:
+            lines.append(
+                f"FAIL  card-shape: {label} -- answered by the SIGNATURE, not"
+                f" by the §6 shape check: {detail!r}"
+            )
+            return False, lines
+        lines.append(f"PASS  card-shape: {label}")
+    lines.append(
+        f"PASS  card-shape: {len(shape_cases)} §6 shape faults each named by"
+        f" the reader, none answered by the signature"
+    )
+
     return True, lines

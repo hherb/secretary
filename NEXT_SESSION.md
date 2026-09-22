@@ -1,1 +1,1 @@
-docs/handoffs/2026-09-22-well-formedness-walk-shipped.md
+docs/handoffs/2026-09-22-token-compare-contact-card-shipped.md

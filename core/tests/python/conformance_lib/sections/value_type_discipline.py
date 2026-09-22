@@ -827,7 +827,8 @@ def section_value_type_discipline() -> tuple[bool, list[str]]:
         f"`isinstance(..., int)` outside integer_rules.py",
         f"PASS 4: {counts['optional_key']} optional key(s) across {len(KEY_SET_PAIRS)} paired "
         f"key sets, each covered (expected {EXPECTED_OPTIONAL_KEY_COUNT})",
-        "PASS 4b: record.py's wire-order dispatches have an arm for every declared key",
+        "PASS 4b: record.py's and card.py's wire-order dispatches have an arm for "
+        "every declared key, and each fall-through still fires on an undeclared one",
     ]
     for issue in issues:
         lines.append(f"  ISSUE: {issue}")

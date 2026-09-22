@@ -21,20 +21,44 @@ pub const TARGETS: &[&str] = &[
 /// Targets whose reject-vs-reject pairs are compared on WHICH rule each side
 /// named, not merely on the fact that both rejected (#634).
 ///
-/// Three: `manifest_body` (#634), `block_file` and `record` (#641).
-/// `block_file` needed no decoder reordering: both implementations walk the
-/// §6.1 layout in the same order. What changed is what Python's raises carry:
-/// #641 split its merged sort/repeat check and typed its version checks
-/// `unsupported_version`. `record` compares strictly too, since `conformance.py`'s record
-/// decoder reports in `record::decode`'s phase order and `record::decode`
-/// walks its bytes for well-formedness before ciborium. `contact_card`, `bundle_file` and
-/// `vault_toml` each still need their own taxonomy (#641); `manifest_file` is
+/// Four: `manifest_body` (#634), `block_file` and `record` (#641), and
+/// `contact_card` (#641/#691). `block_file` needed no decoder reordering:
+/// both implementations walk the §6.1 layout in the same order. What
+/// changed is what Python's raises carry: #641 split its merged sort/repeat
+/// check and typed its version checks `unsupported_version`. `record`
+/// compares strictly too, since `conformance.py`'s record decoder reports
+/// in `record::decode`'s phase order and `record::decode` walks its bytes
+/// for well-formedness before ciborium. `contact_card` needed a Rust
+/// taxonomy (`CardError::rule_token`, #641), a byte-level well-formedness
+/// walk ahead of `ciborium` in both languages (#641/#691), and the Python
+/// decoder reordered onto `from_canonical_cbor`'s phase order — the same
+/// three-part shape `record` needed one slice earlier. `bundle_file` and
+/// `vault_toml` still need their own taxonomy (#641); `manifest_file` is
 /// blocked for a different, measured reason (#640) —
 /// Rust's header raises `UnsupportedFormatVersion` where Python raises the
 /// same `ParseError` it raises for every envelope fault, and because that
 /// variant is shared with the BODY sentinel check no per-variant token can
 /// reconcile the two.
-pub const TOKEN_COMPARED_TARGETS: &[&str] = &["record", "manifest_body", "block_file"];
+///
+/// `contact_card` is deliberately NOT in [`PHASE_DEPENDENT_TOLERANCE_TARGETS`]:
+/// that licence is `docs/vault-format.md` §4.2's, admitting two reader
+/// designs for the MANIFEST BODY specifically. There is no §6 analogue for a
+/// contact card, so every compared `contact_card` pair must be strictly
+/// equal.
+///
+/// UNPINNED RESIDUAL (#700). Membership of this list is asserted by nothing
+/// but `every_target_is_classified`, which only checks that the two lists
+/// PARTITION `TARGETS`. Moving `contact_card` (or any other row) into
+/// [`NOT_TOKEN_COMPARED_TARGETS`] is therefore a well-formed edit that still
+/// partitions and leaves the whole `differential_replay` binary green — the
+/// strict comparison this slice exists to add would simply stop happening.
+/// Section RTS and `rule_token_seeds_are_committed_and_label_bound` still pin
+/// each side's tokens in CI, so the tokens themselves cannot drift silently;
+/// what is unpinned is whether they are ever COMPARED. Recorded at the code
+/// rather than only in a session handoff, because a handoff is a session
+/// document and this is a standing property (#698 review).
+pub const TOKEN_COMPARED_TARGETS: &[&str] =
+    &["record", "manifest_body", "block_file", "contact_card"];
 
 /// The rest, listed explicitly rather than by omission.
 ///
@@ -43,8 +67,7 @@ pub const TOKEN_COMPARED_TARGETS: &[&str] = &["record", "manifest_body", "block_
 /// the loose behaviour — the fail-open shape #595 found in
 /// `differential_replay.rs`'s own corpus discovery. `agreement::judge` reads
 /// it too, and reports a target in neither list as a harness failure.
-pub const NOT_TOKEN_COMPARED_TARGETS: &[&str] =
-    &["vault_toml", "contact_card", "bundle_file", "manifest_file"];
+pub const NOT_TOKEN_COMPARED_TARGETS: &[&str] = &["vault_toml", "bundle_file", "manifest_file"];
 
 /// The compared targets on which a phase-dependent token may stand against a
 /// different token and still count as agreement.
@@ -52,11 +75,12 @@ pub const NOT_TOKEN_COMPARED_TARGETS: &[&str] =
 /// **The licence is a SPEC SECTION's, not a token's.** `RuleToken::is_phase_dependent`
 /// is derived from `docs/vault-format.md` §4.2, which admits two manifest-body
 /// reader designs that detect §6.2 rules 1-3 and the array sort disciplines at
-/// different points. Nothing gives a §6.1 block-file envelope or a §6.3 record
-/// body that freedom, so on every other compared target only EQUAL tokens
-/// agree (#641). Applied globally, the per-token predicate would have scored
-/// `array_sort_order` against `container_malformed` on `block_file` as
-/// agreement — hiding exactly the Python sort/repeat split #641 adds.
+/// different points. Nothing gives a §6.1 block-file envelope, a §6.3 record
+/// body, or a §6 contact card that freedom, so on every other compared target
+/// only EQUAL tokens agree (#641). Applied globally, the per-token predicate
+/// would have scored `array_sort_order` against `container_malformed` on
+/// `block_file` as agreement — hiding exactly the Python sort/repeat split
+/// #641 adds.
 ///
 /// Must be a subset of [`TOKEN_COMPARED_TARGETS`]; `every_target_is_classified`
 /// checks it.
@@ -87,16 +111,34 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// exactly, so a new target cannot arrive without one.
 ///
 /// Whether it also floors STRICT token comparisons depends on the target.
-/// Three targets are token-compared — `record`, `manifest_body` and
-/// `block_file` — and the phase-dependent tolerance applies on
-/// [`PHASE_DEPENDENT_TOLERANCE_TARGETS`] (`manifest_body`) only. On `record`
-/// and `block_file` (#641) every committed input both sides reject therefore
-/// reaches a strict comparison — but the floor is not that count. It also
-/// counts the committed ACCEPTING bases, which are compared on re-encoded
-/// bytes rather than tokens: 4 of `record`'s 44 (`api_key.cbor`,
-/// `login.cbor`, `secure_note.cbor`, `nesting__256_unknown.bin`, #667) and 1
-/// of `block_file`'s 24 (`golden.bin`), leaving 40 and 23 strict comparisons
-/// today. And the floor
+/// Four targets are token-compared — `record`, `manifest_body`, `block_file`
+/// and `contact_card` — and the phase-dependent tolerance applies on
+/// [`PHASE_DEPENDENT_TOLERANCE_TARGETS`] (`manifest_body`) only. On `record`,
+/// `block_file` and `contact_card` (#641) every committed input both sides
+/// reject therefore reaches a strict comparison — but the floor is not that
+/// count. It also counts the committed ACCEPTING bases, which are compared
+/// on re-encoded bytes rather than tokens: 4 of `record`'s 44
+/// (`api_key.cbor`, `login.cbor`, `secure_note.cbor`,
+/// `nesting__256_unknown.bin`, #667), 1 of `block_file`'s 24 (`golden.bin`),
+/// and 1 of `contact_card`'s 21 (`with_sigs.cbor` — `pre_sig.cbor` rejects,
+/// `MissingField`, so it counts on the strict side), leaving 40, 23 and 20
+/// strict comparisons today (task 10 raised `contact_card` from 4 to 21: 17
+/// generated single-fault seeds — 21 generated, four moved to a LOCAL
+/// parity-order check rather than committed, since each measurably carries a
+/// second, order-dependent fault crypto-design §6 does not rank against the
+/// well-formedness walk (fix round 1; see
+/// `rule_token_seeds_helpers::contact_card`'s module doc and Section RTS's
+/// `_card_ordering_cases`) — all reaching a strict comparison, because
+/// `contact_card` is absent from `PHASE_DEPENDENT_TOLERANCE_TARGETS`, which
+/// is the whole reason and is a TARGET-level decision (see this file's
+/// `PHASE_DEPENDENT_TOLERANCE_TARGETS` doc above). This said "since none of
+/// the eight tokens `contact_card` produces is phase-dependent", which is
+/// false: `non_canonical_unclassified` IS phase-dependent and two committed
+/// seeds carry it (`non_canonical_unclassified__trailing_bytes`,
+/// `__non_shortest_created_at`). The conclusion held for a different reason,
+/// and as written it told a reader that adding `contact_card` to the
+/// tolerance list would be harmless — it would immediately excuse those two
+/// (#698 review). And the floor
 /// is taken before any decode, so it holds that figure only while every
 /// `rule_token_seeds` seed still rejects, which that generator and Section
 /// RTS check and this floor does not. (The `nesting__` seeds are labelled
@@ -110,7 +152,7 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("vault_toml", 9),
     ("record", 44),
-    ("contact_card", 4),
+    ("contact_card", 23),
     ("bundle_file", 1),
     ("manifest_file", 1),
     ("manifest_body", 58),

@@ -65,7 +65,7 @@ pub fn rust_decode(
             .and_then(|c| c.to_canonical_cbor())
             .map(SecretBytes::new)
             .map_err(|e| RustRejection {
-                token: None,
+                token: Some(e.rule_token().as_str()),
                 detail: format!("{:?}", e),
             }),
         "bundle_file" => unlock::bundle_file::decode(bytes)

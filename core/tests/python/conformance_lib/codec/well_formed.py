@@ -28,10 +28,7 @@ ITERATIVE on purpose, and bounded by crypto-design §6.2 rule 6 (#667).
 `RecursionError` -- a harness failure, not a verdict.  This walk keeps an
 explicit stack, and the stack is the depth count: a head that would open level
 257 raises `NestingTooDeep` at once, like every well-formedness fault, so no
-recursive phase after it ever sees more than 256 levels.  `reject_excessive_nesting`
-is the same traversal with the content checks off, for the ONE decoder that has
-no `walk_body` of its own -- `codec/card.py`, since #666 moved the manifest and
-the trash entry onto `walk_body`.
+recursive phase after it ever sees more than 256 levels.
 
 SCOPE.  The first item only.  Trailing bytes are the caller's to judge, and
 `py_decode_record` judges them LAST, where `record::decode` meets them: its
@@ -123,10 +120,22 @@ def _count_one_item(stack: list[_Frame]) -> None:
         top.mid_entry = not top.mid_entry
 
 
-def _walk(buf: bytes, pos: int, *, check_content: bool) -> int:
-    """The one traversal both entry points share: item boundaries, crypto-design
-    §6.2 rule 6 always, and -- when `check_content` -- UTF-8, simple values and
-    rule 4.  The depth check lives here once, so it cannot drift between them."""
+def _walk(buf: bytes, pos: int) -> int:
+    """The one traversal, reached through the one entry point `walk_body`:
+    item boundaries, crypto-design §6.2 rule 6, UTF-8, simple values and
+    rule 4.
+
+    The `check_content: bool` parameter this had until #698 is GONE, and the
+    reason is the one the deletion note at the bottom of this file gives for
+    `reject_excessive_nesting` itself.  `check_content=False` was the
+    CONTENT-BLIND mode that function used; #641/#666 moved every caller onto
+    `walk_body`, which always passes `True`, and the last test driving the
+    blind mode was removed in the same slice -- leaving a fully-functional
+    fail-open one keyword argument away, with no caller and no test.  That is
+    strictly worse than the state #689's ruling condemned, and the docstring
+    still advertised "both entry points" fifty lines above a comment reading
+    "One traversal, one entry point" (#698 review, I5).
+    """
     stack: list[_Frame] = []
     first_rule4: NonCanonicalItem | None = None
     started = False
@@ -142,7 +151,7 @@ def _walk(buf: bytes, pos: int, *, check_content: bool) -> int:
         if major in (MAJOR_UINT, MAJOR_NINT):
             pos += head
         elif major in (MAJOR_BYTES, MAJOR_TEXT):
-            pos = _string_end(buf, pos, major, arg, head, check_utf8=check_content)
+            pos = _string_end(buf, pos, major, arg, head, check_utf8=True)
         elif major in (MAJOR_ARRAY, MAJOR_MAP):
             require_room_for_another_level(len(stack), pos)
             is_map = major == MAJOR_MAP
@@ -151,18 +160,16 @@ def _walk(buf: bytes, pos: int, *, check_content: bool) -> int:
             pos += head
         elif major == MAJOR_TAG:
             require_room_for_another_level(len(stack), pos)
-            if check_content:
-                first_rule4 = first_rule4 or _rule4_at(major, ai, pos)
+            first_rule4 = first_rule4 or _rule4_at(major, ai, pos)
             stack.append(_Frame(definite_left=1))
             pos += head
         else:
             if ai == CBOR_AI_INDEFINITE:
                 raise MalformedCbor(f"unexpected break at offset {pos}")
-            if check_content:
-                rule4 = _rule4_at(major, ai, pos)
-                if rule4 is None:
-                    require_false_true_or_null(ai, pos)
-                first_rule4 = first_rule4 or rule4
+            rule4 = _rule4_at(major, ai, pos)
+            if rule4 is None:
+                require_false_true_or_null(ai, pos)
+            first_rule4 = first_rule4 or rule4
             pos += head
 
 
@@ -173,40 +180,20 @@ def walk_body(buf: bytes, pos: int = 0) -> int:
     `NestingTooDeep`, a subclass, for a level past crypto-design §6.2 rule 6,
     at once -- else `NonCanonicalItem` (rule 4) for the first tag or float.
     """
-    return _walk(buf, pos, check_content=True)
+    return _walk(buf, pos)
 
 
-def reject_excessive_nesting(buf: bytes) -> None:
-    """crypto-design §6.2 rule 6 over a whole document, and nothing else (#667).
-
-    The first statement of `codec/card.py` -- the ONE `codec/` decoder with no
-    `walk_body` of its own -- so a document nested past the limit is refused
-    before any RECURSIVE phase runs, which is what turned a 995-level manifest
-    into a `RecursionError` harness failure.
-
-    It walks item boundaries only.  It reports no content-level fault (invalid
-    UTF-8, a disallowed simple value, a tag or float as rule 4), since none of
-    those moves a boundary; a tag still counts as a level.  A STRUCTURAL fault
-    it cannot walk past -- a truncated head, an overrun, a bad chunk, a stray
-    break -- is RAISED, unconditionally.
-
-    **It used to take a `later_phases_scan_in_byte_order` flag whose `True` arm
-    SWALLOWED such a fault** and left it to a later byte-order phase to re-find.
-    #667 gave it to the manifest, the contact card and the trash entry; #666
-    then moved the manifest and the trash entry onto `walk_body`, leaving the
-    card -- which passed `False` -- as the only caller, so the swallowing arm
-    had no production caller at all and was reachable only from the section
-    that tested it.  A documented fail-open defended solely by its own test is
-    how the next decoder gets wired onto it on the strength of a caller list
-    that no longer holds, so the flag is gone (PR #689 review).  Restoring it
-    needs a caller whose later phases really do scan in byte order, and the
-    argument written down at that caller.
-
-    The reason the surviving behaviour is RAISE and not return: the card's next
-    phase is `cbor2.loads`, which is NOT a byte-order well-formedness check --
-    it accepts a stray break inside a definite array, returning a sentinel
-    object -- so a body with a break ahead of a 300-level chain would otherwise
-    pass silently and be rejected by the ENCODER failing on that sentinel
-    (PR #684 review).
-    """
-    _walk(buf, 0, check_content=False)
+# `reject_excessive_nesting` was deleted in #641.  It was a CONTENT-BLIND
+# depth pass: it walked item boundaries and reported no UTF-8, simple-value or
+# rule-4 fault, because none of those moves a boundary.  #666 moved the
+# manifest and the trash entry onto `walk_body`; #641 moved its last caller,
+# `codec/card.py`, and deleted it rather than leaving it callerless.
+#
+# The reason is #689's, one level up: that function's own
+# `later_phases_scan_in_byte_order` flag was retired because "a documented
+# fail-open defended solely by its own test is how the next decoder gets wired
+# onto it on the strength of a caller list that no longer holds".  With zero
+# callers the whole function is that hazard.  One traversal, one entry point
+# -- literally, since #698 also removed `_walk`'s `check_content` parameter,
+# which had kept the content-blind BEHAVIOUR alive with no caller and no
+# test after the wrapper was gone.
