@@ -609,9 +609,13 @@ fn encode_map(entries: &[(Value, Value)]) -> Result<Vec<u8>, CardError> {
 /// applied in exactly one place rather than once per call site.
 ///
 /// [`CanonicalError::FloatRejected`] / [`CanonicalError::TagRejected`] stay
-/// structurally unreachable here: every `Value` a card hands in is a
-/// `Value::Bytes` / `Value::Text` / `Value::Integer` built from an
-/// already-validated field.
+/// structurally unreachable **from `encode_map`, this function's original
+/// caller**: every `Value` a card hands in there is a `Value::Bytes` /
+/// `Value::Text` / `Value::Integer` built from an already-validated field.
+/// That scoping is no longer the whole story: this function now also backs
+/// `impl From<CanonicalError> for CardError` below, whose entire purpose is
+/// to make those two variants reachable on the DECODE path once a caller
+/// there drives untrusted bytes through it (#641).
 ///
 /// [`CanonicalError::DuplicateKey`] is a different case now, and the
 /// distinction is worth keeping. Before #602 it was unreachable because no
