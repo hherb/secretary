@@ -16,14 +16,18 @@
 //!
 //! **What each caller still supplies.** Only its own `CborDecode`
 //! constructor. The rule-4 arms go through the caller's
-//! `From<CanonicalError>`, which each of this function's THREE callers
+//! `From<CanonicalError>`, which each of this function's FOUR callers
 //! already has and which already maps these two variants — so this function
 //! introduces no new mapping for a future variant to disagree with. Say
-//! "these three callers", not "every vault-body error enum" (PR #689
-//! review): `BundleError` and `CardError` convert through the free functions
-//! `canonical_error_to_bundle_error` / `canonical_error_to_card_error` and
-//! implement no such `From`, so neither would satisfy the `E:
-//! From<CanonicalError>` bound without one being added first.
+//! "these four callers", not "every vault-body error enum" (PR #689
+//! review; #691 made `CardError` the fourth): `BundleError` still converts
+//! only through its free function `canonical_error_to_bundle_error` and
+//! implements no such `From`, so it would not satisfy the `E:
+//! From<CanonicalError>` bound without one being added first. `CardError`
+//! gained `impl From<CanonicalError> for CardError` (delegating to
+//! `canonical_error_to_card_error`) already in #641, ahead of having any
+//! caller to use it for; #691 is what made it an actual caller of this
+//! function.
 
 use crate::cbor::{walk_first_item, CborFault, WalkFault};
 
@@ -56,8 +60,9 @@ const WALK_ROOT_HINT: &str = "<root>";
 ///
 /// A well-formedness fault anywhere outranks a rule-4 fault anywhere —
 /// `docs/vault-format.md` §4.2's precondition. §4.2 requires this ordering
-/// of the manifest body; for this function's other two callers,
-/// `record::decode` and `block::decode_plaintext`, §6.1/§6.3 fix no report
+/// of the manifest body; for this function's other three callers,
+/// `record::decode`, `block::decode_plaintext` and
+/// `ContactCard::from_canonical_cbor`, §5/§6.1/§6.3 fix no report
 /// order at all, so the same ordering there is parity with the manifest
 /// path rather than a spec obligation, pending #668. That precedence is
 /// [`walk_first_item`]'s, not this function's; this function only routes.
@@ -140,7 +145,7 @@ mod tests {
     /// well-formedness fault LATER in the body rather than the rule-4 fault
     /// EARLIER in it. `walk_first_item` is where that precedence actually
     /// lives (`docs/vault-format.md` §4.2, for the manifest body; parity
-    /// pending #668 for this function's other two callers); it is pinned
+    /// pending #668 for this function's other three callers); it is pinned
     /// end to end for `record::decode` by `record_walk_tests.rs`.
     #[test]
     fn a_later_malformed_fault_outranks_an_earlier_tag() {

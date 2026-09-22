@@ -280,25 +280,26 @@ fn nested_document(depth: usize, shape: Chain) -> Vec<u8> {
 
 /// crypto-design §6.2 rule 6 on every CBOR decode path, in every level shape.
 ///
-/// **Only two of the five paths still pin `ciborium` 0.2.2's own recursion
-/// limit**: `ContactCard::from_canonical_cbor` and
-/// `IdentityBundle::from_canonical_cbor`. An upgrade that moved ciborium's
-/// limit -- or stopped charging a tag or an indefinite container -- would
-/// move the spec's limit silently on THOSE TWO, and that is what reds here.
-/// The other three -- `decode_manifest`, `block::decode_plaintext` and
-/// `record::decode` -- now run the byte walk (`cbor::well_formed`) ahead of
-/// ciborium, so they pin the walk's own limit, which answers before ciborium
-/// ever sees the body. **This NARROWS what this test proves about
-/// ciborium**: a silent ciborium-limit move used to be caught by four paths
-/// here and is now caught by two -- do not read the five-row loop below as
-/// unchanged ciborium coverage.
+/// **Only one of the five paths still pins `ciborium` 0.2.2's own recursion
+/// limit**: `IdentityBundle::from_canonical_cbor`. An upgrade that moved
+/// ciborium's limit -- or stopped charging a tag or an indefinite container
+/// -- would move the spec's limit silently on THAT ONE, and that is what
+/// reds here. The other four -- `decode_manifest`, `block::decode_plaintext`,
+/// `ContactCard::from_canonical_cbor` (#691) and `record::decode` -- now run
+/// the byte walk (`cbor::well_formed`) ahead of ciborium, so they pin the
+/// walk's own limit, which answers before ciborium ever sees the body.
+/// **This NARROWS what this test proves about ciborium**: a silent
+/// ciborium-limit move used to be caught by four paths here and is now
+/// caught by one -- do not read the five-row loop below as unchanged
+/// ciborium coverage.
 ///
 /// A depth-256 body must fail for any reason other than `RecursionLimit` (it
 /// is not a valid document), and a depth-257 body must fail with it.
 /// (ciborium charges no level for a bignum over a definite-length byte
 /// string of at most 16 bytes; that edge is #666's, scoped to the three walk
 /// paths in `the_walk_paths_charge_a_level_for_a_short_bignum` below, since
-/// the two ciborium-backed paths do not refuse it for depth at all.)
+/// the one remaining ciborium-backed path does not refuse it for depth at
+/// all.)
 #[test]
 fn every_decode_path_enforces_exactly_the_v1_limit() {
     use secretary_core::identity::card::{CardError, ContactCard};
@@ -368,9 +369,11 @@ fn every_decode_path_enforces_exactly_the_v1_limit() {
 /// was reported as rule 4. Both are depth faults, and the byte walk charges
 /// a level for a tag like any other container.
 ///
-/// Scoped to the three WALK paths on purpose. `ContactCard` and
-/// `IdentityBundle` still rely on ciborium and still do NOT refuse these
-/// bodies for depth; that is #641's and #677's, not a gap this test hides.
+/// Scoped to the three WALK paths this test's `paths` array names, not to
+/// every walk path there now is: `ContactCard::from_canonical_cbor` also
+/// walks since #691, but this test was not extended to cover it. Only
+/// `IdentityBundle` still relies on ciborium and does NOT refuse these
+/// bodies for depth; that is #677's, not a gap this test hides.
 #[test]
 fn the_walk_paths_charge_a_level_for_a_short_bignum() {
     use secretary_core::vault::block::{decode_plaintext, BlockError};
