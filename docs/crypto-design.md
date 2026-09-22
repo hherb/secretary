@@ -292,8 +292,14 @@ not bound peak memory during parse — a general-purpose CBOR parse allocates
 the string before this cap is ever consulted — only how long the decoded
 value is allowed to live afterward, including across the signature check
 that follows. The reference implementation has enforced exactly this limit
-since v1, on parse and on both encode paths, so stating it narrows nothing a
-v1 reader accepts and forbids nothing a v1 writer emits.
+since PR #11 (`20ebc053`), on parse and on both encode paths, so stating it
+narrows nothing the REFERENCE reader accepts and forbids nothing a v1 writer
+emits. It does bind a clean-room reader that had no such bound: this repo's
+own `conformance_lib/wire/card.py` accepted a longer `display_name` until the
+slice that wrote this paragraph, and had to gain the check in the same
+commit. That is the intended effect of stating the rule — a §6 MUST binds
+every conformant card reader — but it is a narrowing for readers built from
+`docs/` alone, and is recorded as one rather than claimed away.
 
 ### 6.1 Card fingerprint
 

@@ -115,7 +115,7 @@ cargo test --release --locked -p secretary-core \
 # isolation, which conformance Section DRS checks rather than assumes, over
 # the committed corpus only.
 #
-# CI replays the 158 committed inputs (no `corpus/` there): 107 until #669
+# CI replays the 160 committed inputs (no `corpus/` there): 107 until #669
 # added 14, 121 until #667/#670 added 10, 131 until #666/#685 added 10,
 # 141 until #641/#691 added 17 committed contact_card seeds (four two-fault
 # rows were added and then moved to Section RTS check 5 inside the same
@@ -463,12 +463,26 @@ record default omission" below) and `sections/rule_token_seeds.py`
 397 -> 347 (net -50: the contact-card single-fault generator was added to
 it, and its card-specific ORDERING cases moved back OUT into the new
 `sections/rule_token_seeds_ordering.py`, a net shrink), and moved nothing
-else the top six holds a line count for. The concrete effect on the ranking:
+else the top six holds a line count for. **The `codec/card.py` figure in
+this paragraph has now been wrong three times running, which is worth more
+than the figure.** It read "256, +121 net" at the docs commit while `wc -l`
+said 259; the #698 review corrected it to 276 and then grew the file again
+in the same review, to 281. Measuring a file and then editing that same
+file later in the same change, without a second `wc -l`, is the
+NEIGHBOURING-NUMBER COPY's sibling and the reason every figure here says
+RE-MEASURE. RE-MEASURED at the #698 review,
+which moved two more: `sections/value_type_structure.py` 507 -> 550 (check
+4b now probes `card.py` too) and `sections/rule_token_seeds.py` 347 -> 392
+(the default-deny class table). Current top six, measured:
+835 `value_type_discipline.py`, 550 `value_type_structure.py`,
+498 `codec/manifest_decode.py`, 492 `sections/nesting_depth.py`,
+491 `sections/manifest_canonicality_cause.py`, 479 `codec/scanner.py` —
+TWO past the 500-line threshold. The concrete effect on the ranking:
 `nesting_depth.py` fell out of the "past the 500-line threshold" set
 entirely (522 -> 492, now under 500) and dropped from second place to a
 near-tie for fourth/fifth against `manifest_canonicality_cause.py` (492 vs
 491, one line apart, where it previously led by 31). `codec/card.py` (135 ->
-256, +121 net) and `codec/well_formed.py` (212 -> 186, -26 net) also changed
+281, +146 net) and `codec/well_formed.py` (212 -> 199, -13 net) also changed
 substantially but neither was ever in the top six and neither entered it.
 Re-measured at #667/#670 (75 -> 78 files: `sections/nesting_depth.py`,
 `sections/nesting_depth_bodies.py`, `sections/record_defaults.py`), which grew
@@ -857,8 +871,13 @@ now says **a default value is written by omission**. Load-bearing:
   decoder gets wired onto it on the strength of a caller list that no longer
   holds, so the flag was retired rather than re-documented; the pass now
   raises unconditionally, which is what its one caller already asked for.
-  One copy of the traversal means one mutation reds both entry points. A
-  second copy would be the #618 shape.
+  One copy of the traversal means one mutation reds every caller. A
+  second copy would be the #618 shape. (This read "both entry points"
+  until #698 — a present-tense claim left standing forty lines below the
+  bullet recording that since #641/#691 there is ONE entry point,
+  `walk_body`. #698 also deleted `_walk`'s `check_content` parameter, so the
+  content-blind BEHAVIOUR the retired wrapper used is gone too, not merely
+  callerless.)
 - **The absolute value 256 is pinned by the committed seeds, not by Section
   WF.** Mutation N3 (Python's limit 256 -> 257) reddened Section NDL through
   check 6, its only absolute check: it compares the committed `nesting__`
@@ -1464,7 +1483,11 @@ survived it. Six things:
   still holds only `manifest_body`, so the four newly-tolerated
   `UnknownField`-paired pairs are inert on the one target that could reach
   them, since `manifest_body`'s Rust decoder has no arm producing
-  `unknown_field` — verified by grep, zero producers in `core/src`.) The 58
+  `unknown_field` — verified by grep, zero producers ON THAT PATH. Not
+  zero in `core/src`, which is how this read until #698's review:
+  `core/src/vault/rule_tokens/card.rs` produces it, which is the whole
+  point of the token. The scope is the manifest decoder, and an absolute
+  phrasing here is what later gets quoted without it.) The 58
   figure is 62 pairs with a phase-dependent member, less the four pairing
   one with `malformed_cbor`, which is never tolerated: §4.2 makes
   well-formedness the precondition for
@@ -1528,16 +1551,28 @@ survived it. Six things:
   `contact_card` needed the same treatment `record` did (below), one level
   up: its own byte-level well-formedness walk wired into
   `ContactCard::from_canonical_cbor` ahead of ciborium, and `codec/card.py`
-  rewritten onto that phase order, plus an 8-token vocabulary of its own
+  rewritten onto that phase order, plus a vocabulary of its own
   (`CardError::rule_token()`, `core/src/vault/rule_tokens/card.rs`) reusing
-  the shared `RuleToken` enum rather than inventing a second one. Unlike
-  `record`/`block_file`, the card has no forward-compat `unknown` bag, so a
-  single-fault depth or rule-4 seed cannot be constructed there; the four
-  precedence shapes that would need one (`card_version` deferral,
-  duplicate-vs-value, trailing-bytes-vs-entry-fault) live as in-section
-  parity checks (Section RTS check 5, 7 `contact_card` cases) with a Rust
-  twin (`core/src/identity/card_order_tests.rs`), never as
-  committed corpus rows — the #618 lesson: a cross-language row must not pin
+  the shared `RuleToken` enum rather than inventing a second one. **Ten**
+  tokens, re-measured — `sed -n '/pub fn rule_token/,/^    }/p' | grep -o
+  'RuleToken::[A-Za-z0-9]*' | sort -u | wc -l`. This said "8-token", which
+  is how many the COMMITTED SEEDS span: a subtotal stated as a total, the
+  failure this file names by name, and ROADMAP.md had it right ("8 tokens
+  the committed seeds cover; `rule_token()` itself reaches ten") while this
+  line did not (#698 review).
+  Unlike `record`/`block_file`, the card has no forward-compat `unknown`
+  bag, so a single-fault DEPTH seed cannot be constructed there. **A
+  single-fault rule-4 seed can, and one is committed** —
+  `rule4_tag_or_float__bignum_wide.bin` — which this line denied while the
+  PR that wrote it generated exactly that file. The **four** precedence
+  shapes needing an unknown bag are the fix-round-1 `created_at` ones
+  (`undefined`, `depth_257`, `float`, `bignum_narrow`); the three this line
+  used to name instead (`card_version` deferral, duplicate-vs-value,
+  trailing-bytes-vs-entry-fault) are the task-10 shapes, which need no such
+  bag. All of them live as in-section parity checks (Section RTS check 5,
+  **8** `contact_card` cases since #698's review added the
+  card_version-vs-missing-key row) with a Rust twin
+  (`core/src/identity/card_order_tests.rs`), never as committed corpus rows — the #618 lesson: a cross-language row must not pin
   an order `docs/` does not fix, and crypto-design §6 fixes no report order
   for the card the way vault-format §4.2 does for the manifest body. `record`
   needed its Python decoder reordered into `record::decode`'s phase order and a byte-level
@@ -1605,14 +1640,15 @@ survived it. Six things:
   because that is how the #647 gap itself survived three slices.
   **State the residual scope exactly, because the wider claim is the one
   someone will want to make.** CI replays the COMMITTED corpus only —
-  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **158** inputs today
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **160** inputs today
   (#641 added 57 generated single-fault seeds for `block_file` and `record`;
   #669 added 14 acceptance seeds for `contact_card`, `vault_toml` and
   `manifest_body`; #667 added 7 `nesting__` seeds for `record` and
   `manifest_body`, and #670 3 `record` default-omission seeds; #666 added 10
   more `manifest_body` seeds — 8 `wellformed__*` plus 2
   `nesting__257_unknown_bignum_{narrow,wide}`; #641/#691 added 17 committed
-  `contact_card` single-fault seeds across 8 tokens, bringing 141 to 158 —
+  `contact_card` single-fault seeds across 8 tokens, bringing 141 to 158, then
+  two more `card_version` range seeds in #698's review for 160 —
   a further four two-fault `contact_card` rows were built and then moved to
   Section RTS check 5 rather than committed, per the #618 no-cross-language-
   row-on-an-unspecified-order rule, so the net addition is 17, not 21).

@@ -126,14 +126,20 @@ impl RuleToken {
     /// **Fail-closed in practice, not a compile-time guarantee — say the
     /// weaker thing.** `token/tests/vocabulary.rs`'s `all_lists_every_variant` matches
     /// exhaustively over the variants it iterates out of this slice, so
-    /// adding an 18th variant *and nothing else* fails to COMPILE there. It
+    /// adding a 19th variant *and nothing else* fails to COMPILE there. It
     /// does not follow that the list cannot fall behind: an author who adds
     /// the new arm to that match and forgets this slice compiles clean and
-    /// passes, because the match then still iterates 17 elements and the
-    /// length assertion still reads 17. What would actually catch that pair
+    /// passes, because the match then still iterates 18 elements and the
+    /// length assertion still reads 18. What would actually catch that pair
     /// of edits is `vocabulary_fixture_matches_the_enum`, which compares this
     /// slice's length against `rule_token_vocabulary.json`'s row count — and
-    /// only once the fixture gains the 18th row.
+    /// only once the fixture gains the 19th row.
+    ///
+    /// (The ordinals above were 18/17/17/18th until #698: #691 added
+    /// `UnknownField` as the 18th variant and left this paragraph — the
+    /// file's own explanation of a fail-open — reasoning in pre-PR numbers,
+    /// so a reader following it got the wrong variant number for the next
+    /// addition.)
     pub const ALL: &'static [RuleToken] = &[
         RuleToken::Rule2IndefiniteLength,
         RuleToken::Rule3NonShortestForm,

@@ -178,7 +178,13 @@ Each defense in §3 must correspond to either a specific test or a specific desi
   `from_canonical_cbor_rejects_oversize_display_name`,
   `from_canonical_cbor_accepts_display_name_at_cap`, `to_canonical_cbor_rejects_oversize_display_name`,
   `to_canonical_cbor_accepts_display_name_at_cap`, `signed_bytes_rejects_oversize_display_name`
-  (cap enforced symmetrically; PR #11).
+  (cap enforced symmetrically; PR #11), plus
+  `the_display_name_cap_fires_at_the_parse_layer_not_the_re_encode`, which
+  is the one that pins the PARSE-layer half (#697). The others cannot:
+  `from_canonical_cbor` ends with its own `to_canonical_cbor()` re-encode,
+  which carries a second copy of the check, so deleting the parse-layer
+  check leaves every one of them green — measured. The discriminator is
+  phase, not variant.
 - **Argon2id v1 floor enforcement (creation-time)** → `core/src/unlock/mod.rs::create_vault_rejects_sub_floor_argon2_params` (unit) + `core/tests/create_vault.rs` (integration, `WeakKdfParams` via `create_vault`). The open path is *not* floor-gated; a downgraded `vault.toml` is instead defeated by (a) `core/tests/unlock.rs::open_with_password_downgraded_kdf_params_fails` (different KEK → AEAD fail) and (b) `core/tests/open_vault_neg.rs::open_vault_kdf_params_mismatch_rejected` (signed-manifest `[kdf]` cross-check).
 - **Vector-clock rollback rejection** → `core/tests/open_vault.rs::open_vault_rollback_rejected` plus `_skipped_when_local_clock_none`.
 - **§4.3 step 5/6 cross-checks at open (`vault_uuid`, `kdf_params`)** → `core/tests/open_vault.rs::open_vault_*` integration tests for the full open path.
