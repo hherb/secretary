@@ -1405,10 +1405,27 @@ the compared list — both still hold.
 
 - [ ] **Step 4: Prove the gate is not decorative**
 
-Temporarily repoint `CardError::UnknownField`'s arm in
-`core/src/vault/rule_tokens/card.rs` at `RuleToken::WrongType`, re-run the
-replay, and confirm it REDS on the corpus's unknown-field inputs. Restore and
-re-run. A target that is compared and catches nothing is #546 restated.
+**Controller ruling (pre-flight CONFLICT-1).** The obvious control — repointing
+`CardError::UnknownField` at `RuleToken::WrongType` — is VACUOUS here. At this
+task the committed `contact_card` corpus is four files: two accepting bases,
+`pre_sig.cbor` (`missing_field`) and two `valuetype__` seeds (`wrong_type`).
+None reaches `unknown_field`, so that mutation passes and proves nothing. Its
+seed lands in Task 10, which now carries that control.
+
+Use a mutation these four seeds DO reach. In
+`core/src/vault/rule_tokens/card.rs`, temporarily repoint the
+`CardError::Malformed(_)` arm at `RuleToken::MalformedCbor`:
+
+```bash
+cargo test --release --locked -p secretary-core \
+  --features differential-replay --test differential_replay
+```
+
+Expected: REDS on both `valuetype__` seeds — Rust would name `malformed_cbor`
+where `conformance.py` names `wrong_type`, and `contact_card` is not in
+`PHASE_DEPENDENT_TOLERANCE_TARGETS`, so nothing excuses the pair. Restore the
+arm, re-run, confirm green. A target that is compared and catches nothing is
+#546 restated.
 
 - [ ] **Step 5: Commit**
 
@@ -1615,6 +1632,13 @@ uv run core/tests/python/conformance.py
 Expected: all three exit 0. The replay now reports `contact_card: N of N
 input(s) compared, N committed` with every new seed reaching a STRICT
 comparison — none of the nine tokens is phase-dependent.
+
+Then run the control Task 9 could not (controller ruling, pre-flight
+CONFLICT-1): temporarily repoint `CardError::UnknownField`'s arm in
+`core/src/vault/rule_tokens/card.rs` at `RuleToken::WrongType` and re-run the
+replay. It must RED on `unknown_field__extra_key.bin`, the seed this task
+commits — that input is what makes the 18th token's wiring observable at all.
+Restore the arm and confirm green.
 
 - [ ] **Step 8: Commit**
 
