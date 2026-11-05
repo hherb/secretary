@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-06-audit-failure-alert-shipped.md
+docs/handoffs/2026-11-06-npm-advisories-709-shipped.md
