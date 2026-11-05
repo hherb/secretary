@@ -68,6 +68,18 @@ implementer experience. `ml-dsa` in particular is at `0.1.0-rc.8`
 crate are weaker than for an established crate, and that's worth
 flagging.
 
+That trust has already been tested once by the advisory feed:
+**RUSTSEC-2026-0385** (2026-10-23) reported non-constant-time mask
+generation and `u128` comparisons in `ctutils` < 0.4.4, the
+constant-time helper crate `ml-dsa` depends on. It was cleared by a
+lockfile-only bump to `ctutils` 0.4.8 (no manifest change; `ml-dsa`
+stays at `0.1.0-rc.8`) with the ML-DSA-65 NIST KATs re-run. It
+surfaced only because the weekly `cargo audit` job runs on a schedule;
+its scheduled runs on `main` failed on 2026-10-26 and 2026-11-02 and
+nothing blocked, because it is not among `main`'s required checks. The reviewer should treat the
+transitive constant-time crates (`ctutils`, `subtle`) as part of
+the upstream surface, not just the four primitive crates named above.
+
 ---
 
 ## 1. AEAD verify-then-decap
