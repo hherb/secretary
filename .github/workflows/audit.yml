@@ -21,6 +21,12 @@ on:
     # Weekly — catches newly-published advisories against unchanged pinned deps.
     - cron: '0 6 * * 1'
   workflow_dispatch:
+    inputs:
+      alert_on_failure:
+        # Lets a manual run exercise the same alert path a scheduled run takes.
+        description: 'Open/comment on the audit issue if this run fails'
+        type: boolean
+        default: false
 
 concurrency:
   group: audit-${{ github.workflow }}-${{ github.ref }}
@@ -48,3 +54,39 @@ jobs:
         run: cargo install --locked cargo-audit
       - name: Audit dependencies (deny all advisories not in .cargo/audit.toml)
         run: cargo audit --deny warnings
+
+  # A red scheduled run gates no PR and is not a required check, so without
+  # this it alerts nobody: RUSTSEC-2026-0385 sat red on main for two weekly
+  # runs (#707). Push/PR runs are not alerted — their author already sees them.
+  # A separate job so `issues: write` never reaches the job running cargo.
+  alert:
+    name: alert on failed scheduled audit
+    needs: cargo-audit
+    if: failure() && (github.event_name == 'schedule' || inputs.alert_on_failure)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Open or update the audit issue
+        # Idempotent: one open `audit` issue collects every failed run; a new
+        # one is opened only once the previous one is closed. Assigning the
+        # owner is what guarantees a notification.
+        run: |
+          set -euo pipefail
+          existing=$(gh issue list --label audit --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Dependency audit failed again: $RUN_URL"
+          else
+            gh label create audit --color B60205 \
+              --description 'Failed scheduled cargo audit (audit.yml)' --force
+            gh issue create --label audit --assignee "$GITHUB_REPOSITORY_OWNER" \
+              --title '[audit] Scheduled cargo audit failed on main' \
+              --body "The \`Dependency audit\` workflow failed: $RUN_URL
+
+          Fix the advisory (or accept it with rationale in \`.cargo/audit.toml\`), then close this issue. Later failures comment here while it stays open."
+          fi
