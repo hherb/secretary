@@ -44,8 +44,6 @@ jobs:
     # Provisional runaway cap (vs the 6h default); a clip fails loud (#427).
     timeout-minutes: 15
     steps:
-      - name: TEMP inject failure (dry run for #707, reverted)
-        run: exit 1
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
