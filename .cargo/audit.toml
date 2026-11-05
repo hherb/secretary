@@ -61,6 +61,17 @@ ignore = [
   "RUSTSEC-2024-0420", # gtk-sys unmaintained
   "RUSTSEC-2024-0370", # proc-macro-error unmaintained (via glib-macros)
 
+  # --- basic-toml unmaintained, BUILD-TIME only via uniffi's bindgen ---
+  # Informational (archived upstream, no patched version exists). Path:
+  # askama_derive (proc-macro) -> askama -> uniffi_bindgen -> uniffi_build ->
+  # uniffi, a [build-dependencies] edge of secretary-ffi-uniffi only.
+  # `cargo tree -i basic-toml -e normal --target all` prints nothing: it is in
+  # no shipped artifact, and it parses only askama's own trusted template
+  # config at compile time. Exit criteria: askama_derive drops basic-toml
+  # (0.16.1, latest as of 2026-11-05, still requires ^0.1.1) or uniffi stops
+  # using askama — re-check on every uniffi bump.
+  "RUSTSEC-2026-0374", # basic-toml unmaintained
+
   # --- unic-* unmaintained, via urlpattern -> tauri-utils -> tauri (desktop) ---
   "RUSTSEC-2025-0075", # unic-char-range unmaintained
   "RUSTSEC-2025-0080", # unic-common unmaintained
