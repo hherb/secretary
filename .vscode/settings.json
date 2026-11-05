@@ -1,0 +1,21 @@
+{
+  // An explicit exclude replaces Pylance's defaults, so they are restated first.
+  "python.analysis.exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.*",
+    ".worktrees",
+    ".claude",
+    "**/.venv",
+    "**/target",
+    "**/build",
+    "**/.build"
+  ],
+  "files.watcherExclude": {
+    "**/.worktrees/**": true,
+    "**/.claude/worktrees/**": true,
+    "**/target/**": true,
+    "**/node_modules/**": true,
+    "**/.venv/**": true
+  }
+}
