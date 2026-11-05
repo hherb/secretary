@@ -16,7 +16,9 @@ blast radius, that came first.
 
 | SHA | What |
 |---|---|
-| _see `git log --oneline abb0d91e..HEAD`_ | `Cargo.lock` bump + `.cargo/audit.toml` entry + side-channel memo + ROADMAP |
+| `439e56e2` | `Cargo.lock` bump + `.cargo/audit.toml` entry + side-channel memo + ROADMAP + this handoff |
+
+PR: [#708](https://github.com/hherb/secretary/pull/708).
 
 - **`ctutils` 0.4.2 → 0.4.8** (RUSTSEC-2026-0385, non-constant-time mask
   generation and `u128` comparisons; patched ≥ 0.4.4). Transitive via
@@ -65,13 +67,17 @@ against it.
    `if: failure() && github.event_name == 'schedule'` step opens or comments
    on one open `audit`-labelled issue (idempotent); `actionlint` clean; proven
    by a `workflow_dispatch` dry run with an injected failure.
-2. Then resume the conformance backlog the previous baton listed
+2. **#709: 20 open Dependabot npm advisories** (desktop + browser
+   extension; `devalue`/`source-map-js`/`vite` rated high). `devalue` rides
+   in via `svelte`, whose runtime ships in the desktop bundle, so check
+   reachability before dismissing anything as dev-only. pnpm only.
+3. Then resume the conformance backlog the previous baton listed
    (`docs/handoffs/2026-09-22-token-compare-contact-card-shipped.md` §6):
    #641 (`bundle_file` / `vault_toml` token comparison), #693 (spec: card
    report order), plus the filed review residuals #699–#705. **#700**
    (nothing pins a target's membership in `TOKEN_COMPARED_TARGETS`) is the
    one with real teeth.
-3. Housekeeping: #659 is fixed in code (der 0.8.2, PR #656) but still open
+4. Housekeeping: #659 is fixed in code (der 0.8.2, PR #656) but still open
    on the tracker; close it.
 
 ## (3) Open decisions / risks
