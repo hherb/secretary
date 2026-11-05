@@ -11,8 +11,8 @@ base `5e71057c` (`main`, after #713 merged).
 |---|---|
 | `5b35a163` | Both JS lockfiles refreshed; the extension declares `vite ^8.1.6` |
 | `97f8a33a` | `.vscode/settings.json`: Pylance `exclude` + watcher excludes |
-| (handoff commit) | This handoff + symlink retarget |
-| (next commit) | `.claude/skills/finalcheck` adapted from `~/src/drugref`: review → fixall → drive CI green, with this repo's per-job local repro commands |
+| `403e9bd3` | This handoff + symlink retarget |
+| `bb2f3109` | `.claude/skills/finalcheck` adapted from `~/src/drugref`: review → fixall → drive CI green, with this repo's per-job local repro commands |
 
 - **Lockfile-only, one package at a time:** `pnpm update <pkg> --depth Infinity`.
   When several names were passed in one invocation it reported "Already up to
