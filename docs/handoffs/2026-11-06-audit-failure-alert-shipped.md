@@ -15,11 +15,11 @@ Branch `ci/audit-failure-alert`, worktree `.worktrees/audit-alert`, base
 | (this commit) | ROADMAP line + this handoff + symlink retarget |
 
 - **`alert` job** (`needs: cargo-audit`,
-  `if: failure() && (github.event_name == 'schedule' || inputs.alert_on_failure)`).
+  `if: always() && needs.cargo-audit.result != 'success' && (github.event_name == 'schedule' || inputs.alert_on_failure)`).
   It is a separate job so `issues: write` never reaches the job that runs
-  cargo. If an `audit`-labelled issue is open it adds a comment with the run
+  cargo. If a `cargo-audit`-labelled issue is open it adds a comment with the run
   URL. If not, it creates the label (`--force`, idempotent) and opens
-  `[audit] Scheduled cargo audit failed on main`, assigned to
+  `[ci] Scheduled cargo audit failed on <branch>`, assigned to
   `$GITHUB_REPOSITORY_OWNER`. The assignment is what makes sure you get
   notified.
 - Push/PR runs never alert, because their author already sees the red
@@ -72,8 +72,17 @@ exercising the "previous issue closed → open a new one" path for free.
   issues. It was, on the branch runs. A repo setting that restricts the
   workflow token would break it silently, because the alert job itself
   would fail with no one watching. Accepted as-is.
-- A timed-out audit job (15 min cap) also counts as `failure()`, so it
-  alerts too. That is intended.
+- **Review fix:** the first version used `failure()`. A job that hits its
+  `timeout-minutes` cap concludes `cancelled`, not `failure` (this repo's own
+  run 34761688040, PR #662: `cancelled` at cap+5 min), so a hung scheduled
+  audit would have alerted nobody. The condition is now
+  `needs.cargo-audit.result != 'success'`. Cost: a scheduled run cancelled by
+  a concurrent push to `main` also alerts. That is rare, and a false alarm is
+  the safe direction. Not re-dry-run: no live timeout was injected.
+- **Review fix:** the label is `cargo-audit`, not `audit`, so it can't be
+  confused with `[audit][Sev]` security-finding issues. The title names
+  `$GITHUB_REF_NAME` instead of hardcoding `main`. The dry runs (#711/#712)
+  used the old `audit` label, which is now unused.
 - Inherited and unchanged: the `basic-toml` acceptance in `.cargo/audit.toml`;
   `ml-dsa` still a release candidate.
 
