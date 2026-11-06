@@ -12,10 +12,10 @@
 //! **How this differs from `rule_token_seeds_helpers`, deliberately, twice:**
 //!
 //! 1. **It binds a Rust error VARIANT and the verdict, not a rule token.**
-//!    `contact_card` and `vault_toml` have no token taxonomy yet (#641), so
-//!    there is no token to bind; requiring one would pin a distinction those
-//!    targets cannot make. `manifest_body` does have one, but the variant is
-//!    finer, so binding the variant everywhere keeps one contract. "Finer" is
+//!    `vault_toml` has no token taxonomy yet (#641), so there is no token to
+//!    bind there, and `contact_card` had none when these seeds were written
+//!    (it gained one in #641/#691). `manifest_body` does have one, but the
+//!    variant is finer, so binding the variant everywhere keeps one contract. "Finer" is
 //!    a property of [`variant_name`] keeping a `&'static str` payload, NOT of
 //!    the variant alone: a bare `Malformed` is `card.rs`'s catch-all with 16
 //!    construction sites, and a bare `MissingField` is shared by all six

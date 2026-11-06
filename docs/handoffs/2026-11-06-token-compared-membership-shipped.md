@@ -60,6 +60,17 @@ so CI covers it.
 - `main`'s Tests run for #713 failed on an apt timeout (Tauri deps), not a
   test; failed job re-run.
 
+**PR #715 review round (one fix commit):**
+- Pinning `wrong_type` on the card rows had dropped their "the rejection names
+  the position" check, because tokened rows `continue`d before it. It now runs
+  on every row. Measured with `scripts/mutate.py` (row `VT715`: plant the
+  card's bool on the OTHER field): RED_AS_EXPECTED on Section VT. The same
+  mutation on the pre-fix tree: `conformance.py` exit 0. All 10 tokened rows
+  already named their key, so nothing else moved.
+- Prose: "pinned nothing" -> "pinned no token"; two present-tense "contact_card
+  has no token taxonomy" lines (CLAUDE.md, `acceptance_seeds_helpers/mod.rs`);
+  `value_type_discipline.py` re-measured 835 -> 849 in both CLAUDE.md figures.
+
 ## (2) What is next
 
 1. **Merge this PR.** Acceptance: CI green, including `cargo test

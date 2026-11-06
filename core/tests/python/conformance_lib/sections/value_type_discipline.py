@@ -209,7 +209,7 @@ class Case:
     def __post_init__(self) -> None:
         # A row must pin a rule IFF its target is token-compared. `token=None`
         # on a token-compared target silently degrades the row to verdict-only
-        # on the one target CI compares tokens for; a token on a target with no
+        # on a target whose tokens CI compares; a token on a target with no
         # taxonomy pins a distinction that target cannot make. Both were
         # representable and neither was checked (#679 review).
         if (self.token is not None) != (self.target in TOKEN_COMPARED_TARGETS):
@@ -660,23 +660,23 @@ def _rejection_issues() -> list[str]:
                     f"{case.label()}: must report {case.token!r}, got {verdict.get('rule')!r} "
                     f"({verdict.get('error_class')}: {verdict.get('detail')})"
                 )
-            continue
-        # A token-less row whose decoder DOES name a rule means the target has
-        # a taxonomy and `TOKEN_COMPARED_TARGETS` above is stale -- how the
-        # card rows pinned nothing from #698 to #700. Derived, not declared.
-        if verdict.get("rule") is not None:
+        elif verdict.get("rule") is not None:
+            # A token-less row whose decoder DOES name a rule means the target
+            # has a taxonomy and `TOKEN_COMPARED_TARGETS` above is stale -- how
+            # the card rows pinned no token from #698 to #700. Derived, not declared.
             issues.append(
                 f"{case.label()}: pins no token, but the decoder names "
                 f"{verdict.get('rule')!r} -- add {case.target!r} to "
                 f"TOKEN_COMPARED_TARGETS and pin the token"
             )
             continue
-        # TOKEN-LESS TARGETS (`vault_toml`; `contact_card` until #700) have no taxonomy to
-        # compare, so "rejected" was the whole assertion -- and a rejection for
-        # an UNRELATED reason satisfied it. Eight of the sixteen rows passed on
-        # a tree carrying #669's defect in full, once the planted body was made
-        # to reject some other way (measured, #679 review). Require the
-        # rejection to name the position it is about.
+        # EVERY row, tokened or not. On a token-less target "rejected" was once
+        # the whole assertion, and a rejection for an UNRELATED reason
+        # satisfied it: eight of the sixteen rows passed on a tree carrying
+        # #669's defect in full, once the planted body was made to reject some
+        # other way (measured, #679 review). A token does not close that
+        # either -- `wrong_type` covers nearly every field fault on the card
+        # (#715 review). Require the rejection to name the position it is about.
         if case.key() not in detail:
             issues.append(
                 f"{case.label()}: rejected, but the reason does not name "
