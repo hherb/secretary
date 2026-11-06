@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-06-strict-comparison-floor-shipped.md
+docs/handoffs/2026-11-07-token-compare-bundle-file-shipped.md
