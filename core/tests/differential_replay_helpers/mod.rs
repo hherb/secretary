@@ -24,6 +24,11 @@
 //! - [`python_worker`] — the worker process: a bounded wait per input, its
 //!   process group killed on timeout, respawned after a transport failure.
 //! - [`progress`] — start/progress/finish lines that libtest cannot swallow.
+//!
+//! #700 pinned which targets are token-compared:
+//!
+//! - [`token_coverage`] — whether a target's classification matches what its
+//!   two decoders can do, derived from the rule tokens they actually report.
 
 pub mod agreement;
 pub mod corpus;
@@ -32,4 +37,5 @@ pub mod python_bridge;
 pub mod python_worker;
 pub mod rust_decoder;
 pub mod targets;
+pub mod token_coverage;
 pub mod tolerance;

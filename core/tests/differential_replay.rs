@@ -41,14 +41,18 @@ use helpers::python_worker::{PyReplayer, MAX_CONSECUTIVE_WORKER_FAILURES, PER_IN
 use helpers::rust_decoder::rust_decode;
 use helpers::targets::{
     min_inputs, MIN_CORPUS_INPUTS, NOT_TOKEN_COMPARED_TARGETS, PHASE_DEPENDENT_TOLERANCE_TARGETS,
-    TARGETS, TOKEN_COMPARED_TARGETS,
+    TARGETS, TOKEN_COMPARED_TARGETS, TOKEN_COMPARISON_BLOCKED,
 };
+use helpers::token_coverage::{misclassification, observe, TokenCoverage};
 use helpers::tolerance::tokens_agree;
 
 #[test]
 fn differential_replay_full_corpus() {
     let mut disagreements: Vec<String> = vec![];
     let mut harness_failures: Vec<String> = vec![];
+    // Targets that could be token-compared but are not classified as such
+    // (#700). Its own category: a classification error, not a verdict.
+    let mut misclassified: Vec<String> = vec![];
     // One worker for every target and every input (#655). The per-input spawn
     // it replaces cost ~0.16 s against a 0.2-0.4 ms decode, which on a
     // fuzzed checkout's 74,924-input corpus was ~3.3 h of apparent hang.
@@ -86,6 +90,7 @@ fn differential_replay_full_corpus() {
         let started = Instant::now();
         let mut last_report = started;
         let mut compared = 0usize;
+        let mut coverage = TokenCoverage::default();
         progress::emit(&progress::start_line(target, inputs.len(), committed));
         for (done, input) in inputs.iter().enumerate() {
             if python.abandoned() {
@@ -96,6 +101,7 @@ fn differential_replay_full_corpus() {
             let rust = rust_decode(target, &bytes);
             let verdict = python.decode(target, &input.path);
             let prefix = format!("[{}] {}", target, input.path.display());
+            coverage = observe(coverage, &rust, &verdict);
             match judge(target, &rust, &verdict) {
                 Judgement::Agree => compared += 1,
                 Judgement::Disagree(msg) => {
@@ -115,6 +121,7 @@ fn differential_replay_full_corpus() {
                 last_report = now;
             }
         }
+        misclassified.extend(misclassification(target, coverage));
         let floor = min_inputs(target);
         let searched: Vec<_> = corpus_dirs(target)
             .iter()
@@ -163,6 +170,11 @@ fn differential_replay_full_corpus() {
          rule — so do not read every line below as \"Python is broken\":\n{}",
         harness_failures.len(),
         harness_failures.join("\n")
+    );
+    assert!(
+        misclassified.is_empty(),
+        "token-comparison classification does not match the decoders:\n{}",
+        misclassified.join("\n")
     );
     if !disagreements.is_empty() {
         panic!(
@@ -216,6 +228,14 @@ fn every_target_is_classified() {
         TARGETS.len(),
         "MIN_CORPUS_INPUTS must cover TARGETS exactly"
     );
+
+    // A blocked target is one that is NOT compared, for a stated reason (#700).
+    for (target, reason) in TOKEN_COMPARISON_BLOCKED {
+        assert!(
+            NOT_TOKEN_COMPARED_TARGETS.contains(target),
+            "{target:?} is blocked ({reason}) but not in NOT_TOKEN_COMPARED_TARGETS"
+        );
+    }
 
     // The phase-dependent licence is vault-format §4.2's, i.e. one target's
     // spec section, and only a compared target can use it (#641).

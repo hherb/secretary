@@ -46,17 +46,15 @@ pub const TARGETS: &[&str] = &[
 /// contact card, so every compared `contact_card` pair must be strictly
 /// equal.
 ///
-/// UNPINNED RESIDUAL (#700). Membership of this list is asserted by nothing
-/// but `every_target_is_classified`, which only checks that the two lists
-/// PARTITION `TARGETS`. Moving `contact_card` (or any other row) into
-/// [`NOT_TOKEN_COMPARED_TARGETS`] is therefore a well-formed edit that still
-/// partitions and leaves the whole `differential_replay` binary green — the
-/// strict comparison this slice exists to add would simply stop happening.
-/// Section RTS and `rule_token_seeds_are_committed_and_label_bound` still pin
-/// each side's tokens in CI, so the tokens themselves cannot drift silently;
-/// what is unpinned is whether they are ever COMPARED. Recorded at the code
-/// rather than only in a session handoff, because a handoff is a session
-/// document and this is a standing property (#698 review).
+/// MEMBERSHIP IS DERIVED, NOT ONLY DECLARED (#700). `every_target_is_classified`
+/// checks only that the two lists PARTITION `TARGETS`, so moving `contact_card`
+/// (or any row) into [`NOT_TOKEN_COMPARED_TARGETS`] used to be a well-formed
+/// edit that left the whole binary green while the strict comparison stopped.
+/// `differential_replay_full_corpus` now reds instead:
+/// [`super::token_coverage::misclassification`] flags a target whose every
+/// reject-vs-reject pair carried a rule token on both sides but which is
+/// neither listed here nor in [`TOKEN_COMPARISON_BLOCKED`]. Not a literal-list
+/// assertion, so adding a target does not red until it can be compared.
 pub const TOKEN_COMPARED_TARGETS: &[&str] =
     &["record", "manifest_body", "block_file", "contact_card"];
 
@@ -68,6 +66,18 @@ pub const TOKEN_COMPARED_TARGETS: &[&str] =
 /// `differential_replay.rs`'s own corpus discovery. `agreement::judge` reads
 /// it too, and reports a target in neither list as a harness failure.
 pub const NOT_TOKEN_COMPARED_TARGETS: &[&str] = &["vault_toml", "bundle_file", "manifest_file"];
+
+/// Targets that are NOT compared although both sides attach a rule token to
+/// every rejection, each with the issue that says why. Without an entry here
+/// such a target reds `differential_replay_full_corpus` (#700); a subset of
+/// [`NOT_TOKEN_COMPARED_TARGETS`], which `every_target_is_classified` checks.
+///
+/// `manifest_file` (#640): both sides name a rule, but not at one granularity.
+/// Rust says `unsupported_version` for a header fault where Python says
+/// `container_malformed`, and the shared variant means no per-variant token
+/// reconciles the two. The committed corpus holds no `manifest_file`
+/// rejection, so only a fuzzed checkout's runtime corpus reaches this entry.
+pub const TOKEN_COMPARISON_BLOCKED: &[(&str, &str)] = &[("manifest_file", "#640")];
 
 /// The compared targets on which a phase-dependent token may stand against a
 /// different token and still count as agreement.
