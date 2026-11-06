@@ -139,8 +139,9 @@ jobs:
       # `required-features` in `core/Cargo.toml`, so dropping `--features`
       # from this line is a hard cargo error. Before that it was exit 0 and
       # `running 0 tests` under a step name that still said it ran (#656
-      # review). Deleting or renaming this step reds the `ci wiring` job below
-      # (#657), which pins it as a row of `scripts/check-ci-wiring.py`.
+      # review). Deleting this step or changing its command reds the
+      # `ci wiring` job below (#657), which pins it as a row of
+      # `scripts/check-ci-wiring.py`. Its `name:` is not checked.
       - name: 'cargo test --features differential-replay (cross-language decoder agreement)'
         if: runner.os == 'Linux'
         run: >-
@@ -392,13 +393,14 @@ jobs:
     # A required JOB that is deleted is loud: its status check never reports
     # and nothing can merge. A STEP deleted from inside one is silent, since
     # the job still goes green, and that is how the differential-replay step
-    # in `rust-test` sat unpinned for three slices (#657). This parses
-    # test.yml and rust-lint.yml and fails if any gate in the guard's
-    # REQUIRED_STEPS table is gone, renamed, or can no longer run on Linux
-    # (`if:`, `continue-on-error`, matrix, trigger filters).
+    # in `rust-test` sat unpinned from #647 to #657. This parses test.yml and
+    # rust-lint.yml and fails if any gate in the guard's REQUIRED_STEPS table
+    # is gone, has its command changed, or can no longer run on Linux (`if:`,
+    # `continue-on-error`, `needs:`, `shell:`, matrix, trigger filters).
     #
-    # It cannot pin itself: delete these steps and nothing notices. What keeps
-    # the job present is `ci wiring` being a required status check on `main`.
+    # It cannot pin itself: delete this job and nothing notices until
+    # `ci wiring` is added to `protect_main`'s required contexts, a post-merge
+    # step not yet done when this job landed (#716).
     runs-on: ubuntu-latest
     timeout-minutes: 10   # runaway cap (vs the 6h default); real duration ~1s
     steps:
