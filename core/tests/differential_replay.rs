@@ -44,7 +44,9 @@ use helpers::targets::{
     NOT_TOKEN_COMPARED_TARGETS, PHASE_DEPENDENT_TOLERANCE_TARGETS, TARGETS, TOKEN_COMPARED_TARGETS,
     TOKEN_COMPARISON_BLOCKED,
 };
-use helpers::token_coverage::{is_strict_comparison, misclassification, observe, TokenCoverage};
+use helpers::token_coverage::{
+    counts_toward_strict_floor, misclassification, observe, TokenCoverage,
+};
 use helpers::tolerance::tokens_agree;
 
 #[test]
@@ -54,6 +56,7 @@ fn differential_replay_full_corpus() {
     // Targets that could be token-compared but are not classified as such
     // (#700). Its own category: a classification error, not a verdict.
     let mut misclassified: Vec<String> = vec![];
+    let mut strict_shortfalls: Vec<String> = vec![];
     // One worker for every target and every input (#655). The per-input spawn
     // it replaces cost ~0.16 s against a 0.2-0.4 ms decode, which on a
     // fuzzed checkout's 74,924-input corpus was ~3.3 h of apparent hang.
@@ -105,7 +108,12 @@ fn differential_replay_full_corpus() {
             let verdict = python.decode(target, &input.path);
             let prefix = format!("[{}] {}", target, input.path.display());
             coverage = observe(coverage, &rust, &verdict);
-            strict += usize::from(input.committed && is_strict_comparison(target, &rust, &verdict));
+            strict += usize::from(counts_toward_strict_floor(
+                input.committed,
+                target,
+                &rust,
+                &verdict,
+            ));
             match judge(target, &rust, &verdict) {
                 Judgement::Agree => compared += 1,
                 Judgement::Disagree(msg) => {
@@ -152,21 +160,19 @@ fn differential_replay_full_corpus() {
             started.elapsed(),
         ));
         // The input floor above counts files fed in, before any decode, so a
-        // Rust raise site re-pointed at a phase-dependent token leaves it, the
+        // raise site re-pointed at a phase-dependent token leaves it, the
         // tolerance breadth and the negative control all green while the
         // pairs it moved stop being compared at all (#658). Committed inputs
-        // only, for the input floor's reason.
+        // only, for the input floor's reason. COLLECTED, not asserted here:
+        // a harness failure or a disagreement also lowers the count, and
+        // those name their cause and their input, so they report first.
         let strict_floor = min_strict_comparisons(target);
-        assert!(
-            strict >= strict_floor,
-            "target {target}: {strict} committed input(s) reached a STRICT token \
-             comparison, floor is {strict_floor}. Either an input that used to be \
-             compared on token equality is now excused by the phase-dependent \
-             tolerance (a raise site moved onto a phase-dependent token, or a token \
-             became phase-dependent) or a committed seed stopped rejecting on both \
-             sides; find which before touching MIN_STRICT_COMPARISONS, and update it \
-             deliberately in the same edit if the move is intended."
-        );
+        if strict < strict_floor {
+            strict_shortfalls.push(format!(
+                "target {target}: {strict} committed input(s) reached a STRICT token \
+                 comparison, floor is {strict_floor}"
+            ));
+        }
     }
     if not_replayed > 0 {
         harness_failures.push(format!(
@@ -204,6 +210,16 @@ fn differential_replay_full_corpus() {
             disagreements.join("\n")
         );
     }
+    assert!(
+        strict_shortfalls.is_empty(),
+        "{}\nEvery input was replayed and agreed, so an input that used to be \
+         compared on token equality is now excused by the phase-dependent \
+         tolerance (a raise site on either side moved onto a phase-dependent \
+         token, or a token became phase-dependent). Find which before touching \
+         MIN_STRICT_COMPARISONS, and update it deliberately in the same edit if \
+         the move is intended.",
+        strict_shortfalls.join("\n")
+    );
 }
 
 /// Every target must be classified as token-compared or not. A new target
@@ -250,8 +266,8 @@ fn every_target_is_classified() {
         "MIN_CORPUS_INPUTS must cover TARGETS exactly"
     );
 
-    // Same for the strict-comparison floor (#658), and an uncompared target
-    // can make no strict comparison, so a non-zero floor there is a typo.
+    // Same for the strict-comparison floor (#658). An uncompared target can
+    // make no strict comparison, and a compared one at 0 would be unfloored.
     for target in TARGETS {
         assert!(
             MIN_STRICT_COMPARISONS.iter().any(|(t, _)| t == target),
@@ -264,9 +280,12 @@ fn every_target_is_classified() {
         "MIN_STRICT_COMPARISONS must cover TARGETS exactly"
     );
     for (target, floor) in MIN_STRICT_COMPARISONS {
-        assert!(
-            *floor == 0 || TOKEN_COMPARED_TARGETS.contains(target),
-            "{target:?} is not token-compared, so its strict floor must be 0, not {floor}"
+        assert_eq!(
+            *floor > 0,
+            TOKEN_COMPARED_TARGETS.contains(target),
+            "{target:?}: a token-compared target needs a non-zero strict floor, \
+             and any other target makes no strict comparison, so its floor is 0; \
+             found {floor}"
         );
         assert!(
             *floor <= min_inputs(target),
