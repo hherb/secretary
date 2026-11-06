@@ -182,6 +182,29 @@ fn unsupported_suite_id(base: &[u8]) -> Vec<u8> {
     b
 }
 
+// The twins below: §6.1 and §14 require EQUALITY, so every check needs a seed
+// on each side of its v1 value. With only the seeds above, a check loosened
+// from `!=` to `>` (or to `<` for the signature lengths) accepted every value
+// on the unseeded side with every gate green (#719; measured for
+// `bundle_file` in the PR #718 review).
+fn wrong_file_kind_below(base: &[u8]) -> Vec<u8> {
+    let mut b = base.to_vec();
+    put_u16(&mut b, FILE_KIND_AT, FILE_KIND_BLOCK - 1);
+    b
+}
+
+fn format_version_below(base: &[u8]) -> Vec<u8> {
+    let mut b = base.to_vec();
+    put_u16(&mut b, FORMAT_VERSION_AT, FORMAT_VERSION - 1);
+    b
+}
+
+fn suite_id_below(base: &[u8]) -> Vec<u8> {
+    let mut b = base.to_vec();
+    put_u16(&mut b, SUITE_ID_AT, SUITE_ID - 1);
+    b
+}
+
 /// Ends one byte into `vault_uuid`.
 fn truncated_header(base: &[u8]) -> Vec<u8> {
     base[..FILE_KIND_AT + U16_LEN + 1].to_vec()
@@ -222,6 +245,28 @@ fn wrong_sig_pq_len(base: &[u8]) -> Vec<u8> {
         &mut b,
         l.sig_suffix_at + size_of::<Fingerprint>() + U16_LEN + ED25519_SIG_LEN,
         u16_of(ML_DSA_65_SIG_LEN - 1),
+    );
+    b
+}
+
+fn wrong_sig_ed_len_above(base: &[u8]) -> Vec<u8> {
+    let l = layout(base);
+    let mut b = base.to_vec();
+    put_u16(
+        &mut b,
+        l.sig_suffix_at + size_of::<Fingerprint>(),
+        u16_of(ED25519_SIG_LEN + 1),
+    );
+    b
+}
+
+fn wrong_sig_pq_len_above(base: &[u8]) -> Vec<u8> {
+    let l = layout(base);
+    let mut b = base.to_vec();
+    put_u16(
+        &mut b,
+        l.sig_suffix_at + size_of::<Fingerprint>() + U16_LEN + ED25519_SIG_LEN,
+        u16_of(ML_DSA_65_SIG_LEN + 1),
     );
     b
 }
@@ -359,6 +404,12 @@ pub fn cases() -> Vec<SeedCase> {
         ),
         case(
             ContainerMalformed,
+            "wrong_file_kind_below",
+            "WrongFileKind",
+            wrong_file_kind_below,
+        ),
+        case(
+            ContainerMalformed,
             "truncated_header",
             "Truncated",
             truncated_header,
@@ -383,9 +434,21 @@ pub fn cases() -> Vec<SeedCase> {
         ),
         case(
             ContainerMalformed,
+            "wrong_sig_ed_len_above",
+            "SigEdWrongLength",
+            wrong_sig_ed_len_above,
+        ),
+        case(
+            ContainerMalformed,
             "wrong_sig_pq_len",
             "SigPqWrongLength",
             wrong_sig_pq_len,
+        ),
+        case(
+            ContainerMalformed,
+            "wrong_sig_pq_len_above",
+            "SigPqWrongLength",
+            wrong_sig_pq_len_above,
         ),
         case(
             ContainerMalformed,
@@ -407,9 +470,21 @@ pub fn cases() -> Vec<SeedCase> {
         ),
         case(
             UnsupportedVersion,
+            "format_version_below",
+            "UnsupportedFormatVersion",
+            format_version_below,
+        ),
+        case(
+            UnsupportedVersion,
             "suite_id",
             "UnsupportedSuiteId",
             unsupported_suite_id,
+        ),
+        case(
+            UnsupportedVersion,
+            "suite_id_below",
+            "UnsupportedSuiteId",
+            suite_id_below,
         ),
         case(
             ArraySortOrder,

@@ -24,7 +24,7 @@ silently, and a class the table omits would never be identity-checked (PR
 #673 review).
 
 WHY A CLASS PER `block_file`, `bundle_file` AND `contact_card` SEED (check 2).  One token
-covers several checks: nine `block_file` `container_malformed` seeds span
+covers several checks: twelve `block_file` `container_malformed` seeds span
 seven `BlockError` variants, and `card_rules.py`'s own docstring names the
 same shape for the card -- `wrong_type` is carried by BOTH `CardWrongType`
 and `CardDisplayNameTooLong`, and `malformed_cbor` by BOTH
@@ -106,8 +106,10 @@ _CONTACT_CARD_FOREIGN_PREFIX = "valuetype__"
 # Per target: the minimum number of committed labelled seeds, and the exact
 # set of tokens those seeds must name between them.
 _TARGETS: dict[str, tuple[int, frozenset[str]]] = {
+    # 28: 23, plus a twin on the other side of each of the five equality
+    # checks (#719), as `bundle_file` below has.
     "block_file": (
-        23,
+        28,
         frozenset(
             {"container_malformed", "unsupported_version", "array_sort_order", "repeated_array_value"}
         ),
@@ -211,15 +213,20 @@ _MIN_TOKENED_MODULES = 4
 _BLOCK_FILE_CLASSES: dict[str, str] = {
     "container_malformed__bad_magic": "EnvelopeBadMagic",
     "container_malformed__wrong_file_kind": "EnvelopeWrongFileKind",
+    "container_malformed__wrong_file_kind_below": "EnvelopeWrongFileKind",
     "container_malformed__truncated_header": "ParseError",
     "container_malformed__truncated_recipient_table": "ParseError",
     "container_malformed__zero_recipients": "EnvelopeNoRecipients",
     "container_malformed__wrong_sig_ed_len": "EnvelopeEd25519SignatureLength",
+    "container_malformed__wrong_sig_ed_len_above": "EnvelopeEd25519SignatureLength",
     "container_malformed__wrong_sig_pq_len": "EnvelopeMlDsaSignatureLength",
+    "container_malformed__wrong_sig_pq_len_above": "EnvelopeMlDsaSignatureLength",
     "container_malformed__truncated_signature_suffix": "ParseError",
     "container_malformed__trailing_bytes": "EnvelopeTrailingBytes",
     "unsupported_version__format_version": "UnsupportedEnvelopeVersion",
+    "unsupported_version__format_version_below": "UnsupportedEnvelopeVersion",
     "unsupported_version__suite_id": "UnsupportedEnvelopeVersion",
+    "unsupported_version__suite_id_below": "UnsupportedEnvelopeVersion",
     "array_sort_order__vector_clock": "EnvelopeSortOrder",
     "array_sort_order__recipients": "EnvelopeSortOrder",
     "array_sort_order__vector_clock_second_pair": "EnvelopeSortOrder",

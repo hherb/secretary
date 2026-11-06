@@ -115,13 +115,14 @@ cargo test --release --locked -p secretary-core \
 # isolation, which conformance Section DRS checks rather than assumes, over
 # the committed corpus only.
 #
-# CI replays the 173 committed inputs (no `corpus/` there): 107 until #669
+# CI replays the 178 committed inputs (no `corpus/` there): 107 until #669
 # added 14, 121 until #667/#670 added 10, 131 until #666/#685 added 10,
 # 141 until #641/#691 added 17 committed contact_card seeds (four two-fault
 # rows were added and then moved to Section RTS check 5 inside the same
 # branch, so the net is +17, not +21), 160 until #641's bundle_file slice
 # added 13 bundle_file seeds (2026-11-07; 9, plus four `_below` twins from
-# the PR #718 review).
+# the PR #718 review), 173 until #719 gave each of block_file's five
+# equality checks a seed on its other side.
 # Re-measure with
 # `ls core/fuzz/seeds/*/* core/tests/data/diff_regressions/*/* | grep -v gitkeep | wc -l`.
 # The 5.98 s test body
@@ -1576,8 +1577,10 @@ survived it. Six things:
   of fault and is compared all the same, because there the variant is not
   shared: `BundleFileError::UnsupportedFormatVersion` has one producer, so
   typing Python's one raise `unsupported_version` reconciled it — the single
-  disagreement measured once the target was compared. `vault_toml` remains
-  #641 — see "Sub-project A" progress in ROADMAP.md.
+  disagreement measured once the target was compared. `vault_toml` is left
+  loose on purpose: #641 was closed without it (2026-11-07), since it is
+  cleartext, never re-encoded, and its rejections already name the position
+  (Section VT), so a token would add only a both-reject WHICH-rule check.
   `contact_card` needed the same treatment `record` did (below), one level
   up: its own byte-level well-formedness walk wired into
   `ContactCard::from_canonical_cbor` ahead of ciborium, and `codec/card.py`
@@ -1692,7 +1695,7 @@ survived it. Six things:
   step is silent; the full LIMITS are in the script's header.
   **State the residual scope exactly, because the wider claim is the one
   someone will want to make.** CI replays the COMMITTED corpus only —
-  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **173** inputs today
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **178** inputs today
   (#641 added 57 generated single-fault seeds for `block_file` and `record`;
   #669 added 14 acceptance seeds for `contact_card`, `vault_toml` and
   `manifest_body`; #667 added 7 `nesting__` seeds for `record` and
@@ -1706,7 +1709,8 @@ survived it. Six things:
   row-on-an-unspecified-order rule, so the net addition is 17, not 21; #641's
   `bundle_file` slice added 13 single-fault `bundle_file` seeds for 173 — 9,
   plus a `_below` twin for each of its four equality checks in the PR #718
-  review, since a check loosened from `!=` to `>` passed every `+ 1` seed).
+  review, since a check loosened from `!=` to `>` passed every `+ 1` seed;
+  #719 gave `block_file`'s five equality checks the same twins for 178).
   `core/fuzz/corpus/` is **gitignored**, so agreement on fuzz-DISCOVERED
   inputs is still proven only by whoever runs the fuzzer, and "the differential
   replay is in CI" must not be read as "the fuzz corpus is differentially
