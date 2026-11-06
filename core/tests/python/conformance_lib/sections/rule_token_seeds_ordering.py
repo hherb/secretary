@@ -1,5 +1,5 @@
 """Section RTS check 5 -- LOCAL parity-order assertions for `record`,
-`block_file` and `contact_card`, split out of `rule_token_seeds.py` (fix
+`block_file`, `contact_card` and `bundle_file`, split out of `rule_token_seeds.py` (fix
 round 1, task 10) once this file's own growth pushed the parent past the
 project's 500-line split threshold.
 
@@ -11,7 +11,9 @@ The `record` rows pin the phase order `py_decode_record` shares with
 missing keys, canonical form last -- the `block_file` row pins that a table
 is judged at its FIRST adjacent pair that is not strictly ascending, as
 `block.rs` does, and the `contact_card` rows pin the order
-`py_decode_contact_card` shares with `card.rs::from_canonical_cbor`. So a
+`py_decode_contact_card` shares with `card.rs::from_canonical_cbor`, and the
+`bundle_file` rows pin where §3's `format_version` check sits among its
+neighbours, as `unlock::bundle_file::decode` places it. So a
 drift in Python's order reds here rather than only in a local full-corpus
 replay. Every committed seed plants ONE fault, so the CI replay cannot see
 an order drift at all; this check is what does.
@@ -19,7 +21,8 @@ an order drift at all; this check is what does.
 Rust's side of the parity: `core/src/vault/record_order_tests.rs` for
 `record`, one `#[test]` per row, each asserting the exact `RecordError` and
 its single-fault controls; `core/src/identity/card_order_tests.rs` for
-`contact_card`, the same shape.
+`contact_card`, the same shape; `core/src/unlock/bundle_file.rs`'s
+`*_outranks_*` tests for `bundle_file`.
 
 Each row names the drift it catches. A row naming `None` is a regression pin
 only: its body was measured to report the same token under the pre-#641
@@ -36,7 +39,7 @@ import os
 
 from conformance_lib import fixtures
 from conformance_lib.codec import record_rules
-from conformance_lib.constants import VECTOR_CLOCK_ENTRY_LEN
+from conformance_lib.constants import FILE_KIND_IDENTITY_BUNDLE, FORMAT_VERSION, VECTOR_CLOCK_ENTRY_LEN
 from conformance_lib.cursor import Cursor, ParseError
 from conformance_lib.diff_replay import replay_bytes
 from conformance_lib.wire.block_file import parse_header
@@ -70,7 +73,12 @@ _NON_SHORTEST_FIVE = bytes([0x18, 0x05])
 _BIGNUM_NARROW = bytes([0xC2, 0x41, 0x01])
 # How many parity-order cases each builder declares; asserted in
 # `ordering_issues`.
-_ORDERING_CASES = {"record": 9, "block_file": 1, "contact_card": 8}
+_ORDERING_CASES = {"record": 9, "block_file": 1, "contact_card": 8, "bundle_file": 3}
+# The committed accepting base the `bundle_file` cases are planted into.
+_BUNDLE_BASE = "golden.bin"
+# §3: magic (u32), then format_version (u16), then file_kind (u16).
+_BUNDLE_FORMAT_VERSION_AT = 4
+_BUNDLE_FILE_KIND_AT = 6
 
 _OrderingCase = tuple[str, bytes, str, "str | None"]
 
@@ -98,6 +106,36 @@ def _block_file_ordering_cases() -> tuple[_OrderingCase, ...]:
     return (
         ("a vector clock out of order at its first pair and repeated at its second",
          body, "array_sort_order", "every pair checked for a repeat before any for order"),
+    )
+
+
+def _bundle_file_ordering_cases() -> tuple[_OrderingCase, ...]:
+    """Three two-fault `bundle_file` bodies, one per neighbour of the
+    `format_version` check -- the only check whose token differs from every
+    other §3 fault, so the only one whose POSITION a token can see.
+
+    §3 fixes no report order, so this is parity with
+    `unlock::bundle_file::decode` (its Rust twin is that module's
+    `*_outranks_*` tests).  Each fault's single-fault control is a committed
+    seed: `bad_magic`, `format_version`, `wrong_file_kind` and
+    `truncated_bundle_ct`, which name different tokens pairwise.
+    """
+    base = (fixtures.fuzz_seed_dir("bundle_file") / _BUNDLE_BASE).read_bytes()
+
+    def plant(body: bytes, at: int, value: int) -> bytes:
+        return body[:at] + value.to_bytes(_U16_LEN, "big") + body[at + _U16_LEN:]
+
+    bad_version = plant(base, _BUNDLE_FORMAT_VERSION_AT, FORMAT_VERSION + 1)
+    return (
+        ("a bad magic beside a bad format_version",
+         bytes([base[0] ^ 0xFF]) + bad_version[1:], "container_malformed",
+         "format_version checked before magic"),
+        ("a bad format_version beside a bad file_kind",
+         plant(bad_version, _BUNDLE_FILE_KIND_AT, FILE_KIND_IDENTITY_BUNDLE + 1),
+         "unsupported_version", "file_kind checked before format_version"),
+        ("a bad format_version on a truncated file",
+         bad_version[:-1], "unsupported_version",
+         "format_version validated only after the whole envelope is read"),
     )
 
 
@@ -294,6 +332,7 @@ def ordering_issues() -> tuple[list[str], str]:
         ("record", _record_ordering_cases),
         ("block_file", _block_file_ordering_cases),
         ("contact_card", _card_ordering_cases),
+        ("bundle_file", _bundle_file_ordering_cases),
     )
     issues: list[str] = []
     tallies = []

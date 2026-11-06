@@ -43,9 +43,11 @@ def parse_identity_bundle_envelope(buf: bytes) -> IdentityBundleEnvelope:
     """Parse the §3 identity.bundle.enc binary envelope.
 
     Field order from `unlock::bundle_file::decode`.  Each check raises the
-    typed `envelope_rules` class naming the `BundleFileError` variant Rust
-    raises there, so the `bundle_file` replay target compares WHICH rule
-    (#641); a truncation is `cursor.take`'s bare `ParseError`.
+    typed `envelope_rules` class whose docstring names the `BundleFileError`
+    variant Rust raises there (the class names are shared with the block
+    envelope, so they do not spell the variant), so the `bundle_file` replay
+    target compares WHICH rule (#641); a truncation is `cursor.take`'s bare
+    `ParseError`.
     """
     cur = Cursor(buf=buf, pos=0)
     magic, cur = take_u32(cur, "magic")

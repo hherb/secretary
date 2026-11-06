@@ -67,8 +67,8 @@ from conformance_lib.rejection import _REJECTION_EXCEPTIONS
 # share `"wrong_type"` -- passed check 1, passed check 3, passed every Rust
 # test, and was caught only by `differential_replay.rs`, which at the time ran
 # in no CI workflow.  A `test.yml` step runs it as of #647, but it compares
-# tokens only on its token-compared targets (four since #641, one of them
-# `manifest_body`) and only for the inputs committed there; identity is what
+# tokens only on its token-compared targets (five since #641's `bundle_file`
+# slice, one of them `manifest_body`) and only for the inputs committed there; identity is what
 # makes this section a pin.
 #
 # FIVE tokened classes reachable from `py_decode_manifest` are deliberately

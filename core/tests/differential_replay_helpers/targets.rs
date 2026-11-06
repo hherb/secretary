@@ -140,9 +140,9 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// on re-encoded bytes rather than tokens: 4 of `record`'s 44
 /// (`api_key.cbor`, `login.cbor`, `secure_note.cbor`,
 /// `nesting__256_unknown.bin`, #667), 1 of `block_file`'s 24 (`golden.bin`),
-/// 1 of `bundle_file`'s 10 (`golden.bin`, beside 9 single-fault seeds),
+/// 1 of `bundle_file`'s 14 (`golden.bin`, beside 13 single-fault seeds),
 /// and 1 of `contact_card`'s 23 (`with_sigs.cbor` — `pre_sig.cbor` rejects,
-/// `MissingField`, so it counts on the strict side), leaving 40, 23, 9 and 22
+/// `MissingField`, so it counts on the strict side), leaving 40, 23, 13 and 22
 /// strict comparisons today (task 10 raised `contact_card` from 4 to 21, and
 /// the #698 review's two `card_version` range seeds to 23: task 10's 17
 /// generated single-fault seeds — 21 generated, four moved to a LOCAL
@@ -177,7 +177,7 @@ pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("vault_toml", 9),
     ("record", 44),
     ("contact_card", 23),
-    ("bundle_file", 10),
+    ("bundle_file", 14),
     ("manifest_file", 1),
     ("manifest_body", 58),
     ("block_file", 24),
@@ -198,7 +198,7 @@ pub const MIN_STRICT_COMPARISONS: &[(&str, usize)] = &[
     ("vault_toml", 0),
     ("record", 40),
     ("contact_card", 22),
-    ("bundle_file", 9),
+    ("bundle_file", 13),
     ("manifest_file", 0),
     ("manifest_body", 25),
     ("block_file", 23),

@@ -121,8 +121,9 @@ fn a_real_rejection_carries_the_expected_token() {
 /// have since changed, and the table is what remains load-bearing.** RTV
 /// asserts the exact token per class as of #645, and a `test.yml` step runs
 /// the replay as of #647 — but the replay reaches a `ManifestError` only on
-/// `manifest_body` (the other token-compared targets, `record` and
-/// `block_file` since #641, raise other error types), so for a variant that is
+/// `manifest_body` (the other token-compared targets -- `record`,
+/// `block_file`, `contact_card` and `bundle_file` -- raise other error
+/// types), so for a variant that is
 /// not live there this table is still the sole pin.
 ///
 /// This is deliberately a SECOND, independent declaration of the mapping, in

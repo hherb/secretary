@@ -23,7 +23,7 @@ subclass that forgot `token =` would otherwise inherit its base's coarse token
 silently, and a class the table omits would never be identity-checked (PR
 #673 review).
 
-WHY A CLASS PER `block_file` AND `contact_card` SEED (check 2).  One token
+WHY A CLASS PER `block_file`, `bundle_file` AND `contact_card` SEED (check 2).  One token
 covers several checks: nine `block_file` `container_malformed` seeds span
 seven `BlockError` variants, and `card_rules.py`'s own docstring names the
 same shape for the card -- `wrong_type` is carried by BOTH `CardWrongType`
@@ -39,8 +39,8 @@ found in the fix round 1 review, measured the same way: repointing
 deleting crypto-design §6's 4096-byte `display_name` bound as a NAMED check
 -- left `uv run core/tests/python/conformance.py` and the gated differential
 replay both green, because the TOKEN (`wrong_type`) is unchanged even
-though the specific check is gone.  Each `block_file` and `contact_card`
-seed's Python class is therefore required by name, default-deny, as
+though the specific check is gone.  Each `block_file`, `bundle_file` and
+`contact_card` seed's Python class is therefore required by name, default-deny, as
 `rule_token_seeds.rs` requires its Rust variant.  The 37 LABELLED `record`
 seeds map one to one onto their tokens, so a class name there would add
 nothing -- measured, not assumed (#698 review, S4).  State that as a property
@@ -62,10 +62,18 @@ WHY FLOORS (check 3) AND AN EXPECTED TOKEN SET (check 4).  An emptied
 directory satisfies check 2 vacuously, and a directory whose seeds were all
 relabelled onto one token satisfies checks 2 and 3.
 
+WHY THE TARGET SET IS DERIVED (check 0).  Checks 2-4 run over `_TARGETS`'
+keys, so deleting one row switched off every check for that target with the
+section green (PR #718 review, measured on `bundle_file`: its typed raises
+collapsed back to `ParseError` and nothing reddened, since the token does not
+move).  The keys must equal the seed directories holding a file labelled
+with a vocabulary token, and the class tables and parity cases must cover
+exactly those keys.
+
 CHECK 5 IS PARITY, NOT SPEC, and lives in its own module,
 `rule_token_seeds_ordering.py` (fix round 1: split out once this file's own
 growth pushed it past the project's 500-line threshold).  It builds
-two-fault bodies for `record`, `block_file` and `contact_card`, never
+two-fault bodies for `record`, `block_file`, `contact_card` and `bundle_file`, never
 committed, because vault-format §6.1/§6.3 and crypto-design §6 fix no report
 order and a committed cross-language row must not pin one (#618's lesson;
 #668).  Read that module's docstring and `_card_ordering_cases`'s for the
@@ -81,7 +89,8 @@ from conformance_lib.codec import card_rules, cbor_faults, record_rules
 from conformance_lib.cursor import ParseError
 from conformance_lib.diff_replay import replay_bytes
 from conformance_lib.sections.nesting_depth_bodies import NESTING_SEED_PREFIX
-from conformance_lib.sections.rule_token_seeds_ordering import ordering_issues
+from conformance_lib.sections.rule_token_seeds_ordering import _ORDERING_CASES, ordering_issues
+from conformance_lib.sections.rule_token_vocabulary import _vocabulary
 from conformance_lib.wire import envelope_rules
 
 # Mirrors `rule_token_seeds_helpers::LABEL_SEPARATOR`.
@@ -103,10 +112,11 @@ _TARGETS: dict[str, tuple[int, frozenset[str]]] = {
             {"container_malformed", "unsupported_version", "array_sort_order", "repeated_array_value"}
         ),
     ),
-    # 9 single-fault seeds planted into `golden.bin` (#641); the accepting
-    # base is not `__`-labelled, so it is not counted here.
+    # 13 single-fault seeds planted into `golden.bin` (#641): 9, plus a
+    # `_below` twin for each of the four equality checks (PR #718 review).
+    # The accepting base is not `__`-labelled, so it is not counted here.
     "bundle_file": (
-        9,
+        13,
         frozenset({"container_malformed", "unsupported_version"}),
     ),
     "record": (
@@ -225,19 +235,25 @@ _BLOCK_FILE_CLASSES: dict[str, str] = {
 }
 
 # Check 2: the Python class every `bundle_file` seed must be rejected with
-# (#641), for `_BLOCK_FILE_CLASSES`'s reason -- seven of the nine seeds share
-# `container_malformed`, so the token alone cannot tell a deleted
-# `wrap_*_ct_len` check from the truncation the parse would hit next.
+# (#641). Eleven of the thirteen seeds share `container_malformed`, so a raise
+# demoted to the bare `ParseError` -- or moved onto a sibling class -- keeps
+# its token, and only the class tells it from a truncation. (A DELETED
+# `wrap_*_ct_len` check is not the risk: the parse reads a fixed-width field
+# next, so the seed is accepted, which the verdict check already reds.)
 _BUNDLE_FILE_CLASSES: dict[str, str] = {
     "container_malformed__bad_magic": "EnvelopeBadMagic",
     "container_malformed__wrong_file_kind": "EnvelopeWrongFileKind",
     "container_malformed__truncated_header": "ParseError",
     "container_malformed__wrap_pw_ct_len": "EnvelopeWrapLength",
     "container_malformed__wrap_rec_ct_len": "EnvelopeWrapLength",
+    "container_malformed__wrong_file_kind_below": "EnvelopeWrongFileKind",
+    "container_malformed__wrap_pw_ct_len_below": "EnvelopeWrapLength",
+    "container_malformed__wrap_rec_ct_len_below": "EnvelopeWrapLength",
     "container_malformed__truncated_bundle_ct": "ParseError",
     "container_malformed__bundle_ct_len_exceeds_file": "ParseError",
     "container_malformed__trailing_bytes": "EnvelopeTrailingBytes",
     "unsupported_version__format_version": "UnsupportedEnvelopeVersion",
+    "unsupported_version__format_version_below": "UnsupportedEnvelopeVersion",
 }
 
 # Check 2 (CRITICAL, fix round 1): the Python class every `contact_card`
@@ -277,7 +293,7 @@ _CONTACT_CARD_CLASSES: dict[str, str] = {
 }
 
 # Check 2's per-target class table, keyed by target name (fix round 1): one
-# lookup instead of an `elif target == ...` per target, so a third
+# lookup instead of an `elif target == ...` per target, so another
 # class-checked target is one dict entry, not a new branch.
 #
 # DEFAULT-DENY ACROSS TARGETS (#698 review, C2).  This was a bare
@@ -319,6 +335,33 @@ def _labelled_seeds(target: str) -> list[Path]:
 
 def _label_token(path: Path) -> str:
     return path.name.split(LABEL_SEPARATOR, 1)[0]
+
+
+def _target_set_issues() -> tuple[list[str], int]:
+    """Check 0: `_TARGETS` is the set of seed directories holding a
+    token-labelled file, and every per-target table covers exactly it.
+    Returns `(issues, directories found)`."""
+    try:
+        tokens = set(_vocabulary())
+        root = fixtures.fuzz_seed_dir("block_file").parent
+        found = {
+            d.name for d in root.iterdir()
+            if d.is_dir() and any(_label_token(p) in tokens for p in d.iterdir() if LABEL_SEPARATOR in p.name)
+        }
+    except (OSError, ValueError) as exc:
+        return [f"cannot census the seed directories: {type(exc).__name__}: {exc}"], 0
+    targets = set(_TARGETS)
+    issues = []
+    for name, have in (
+        ("token-labelled seed directories", found),
+        ("_SEED_CLASSES | _NO_CLASS_TABLE", set(_SEED_CLASSES) | set(_NO_CLASS_TABLE)),
+        ("_ORDERING_CASES", set(_ORDERING_CASES)),
+    ):
+        if have != targets:
+            issues.append(f"_TARGETS holds {sorted(targets)}, the {name} are {sorted(have)}")
+    if overlap := set(_SEED_CLASSES) & set(_NO_CLASS_TABLE):
+        issues.append(f"{sorted(overlap)} both have a class table and a _NO_CLASS_TABLE reason")
+    return issues, len(found)
 
 
 def _identity_issues() -> tuple[list[str], int, int]:
@@ -426,11 +469,14 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
 
 
 def section_rule_token_seeds() -> tuple[bool, list[str]]:
-    issues, classes_checked, modules_scanned = _identity_issues()
-    lines = [
+    issues, found = _target_set_issues()
+    lines = [f"PASS 0: {len(_TARGETS)} seeded targets, matching {found} token-labelled seed directories"]
+    identity, classes_checked, modules_scanned = _identity_issues()
+    issues.extend(identity)
+    lines.append(
         f"PASS 1: {classes_checked} typed classes carry exactly their expected "
         f"token, discovered across {modules_scanned} tokened module(s)"
-    ]
+    )
     for target, (floor, want_tokens) in _TARGETS.items():
         target_issues, summary = _seed_issues(target, floor, want_tokens)
         issues.extend(target_issues)

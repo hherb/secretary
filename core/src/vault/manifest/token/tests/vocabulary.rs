@@ -96,9 +96,11 @@ fn rule4_is_ordered_not_phase_dependent() {
 /// forward-compat `unknown` bags.
 ///
 /// The real reason is narrower and more fragile: `BundleError` has no
-/// `rule_token()` at all, because `bundle_file` is not token-compared. That
-/// property dissolves the day #641 tokenises it, where "no other decoder
-/// does this" would have stayed true and wrong.
+/// `rule_token()` at all, because no compared replay target reaches it.
+/// `bundle_file` IS token-compared (#641), but that target decodes only the
+/// §3 envelope (`BundleFileError`) and never the plaintext bundle. The
+/// property dissolves the day a target decodes the plaintext bundle, where
+/// "no other decoder does this" would have stayed true and wrong.
 ///
 /// It is NOT folded onto `WrongType`: `conformance.py`'s card decoder names
 /// an unknown key exactly, and the full-corpus measurement found 39 inputs

@@ -7,8 +7,8 @@
 //! `record` and `block_file` held four between them, all ACCEPTING, so a
 //! strict token comparison on them would have compared nothing in CI.
 //! (Named explicitly rather than as "these two targets": the sentence
-//! above lists THREE since `contact_card` joined, so the antecedent had
-//! stopped matching — #698 review.)
+//! above lists more than two since `contact_card` joined, so the antecedent
+//! had stopped matching — #698 review.)
 //!
 //! **Why label-bound.** A corpus whose bytes are not bound to their labels
 //! can collapse silently (#614's review measured it). A seed's file name is

@@ -312,6 +312,85 @@ mod tests {
         assert!(matches!(err, BundleFileError::TrailingBytes { .. }));
     }
 
+    // Rust twins of Section RTS check 5's `bundle_file` rows (#641). §3 fixes
+    // no report order, so these are PARITY with
+    // `rule_token_seeds_ordering._bundle_file_ordering_cases`: each two-fault
+    // body pins where the `format_version` check sits among its neighbours,
+    // the only §3 check whose token differs. Each asserts both single-fault
+    // controls, so the body is shown to discriminate.
+
+    const FORMAT_VERSION_AT: usize = 4;
+    const FILE_KIND_AT: usize = 6;
+
+    fn with_u16(mut bytes: Vec<u8>, at: usize, value: u16) -> Vec<u8> {
+        bytes[at..at + 2].copy_from_slice(&value.to_be_bytes());
+        bytes
+    }
+
+    fn bad_version(bytes: Vec<u8>) -> Vec<u8> {
+        with_u16(bytes, FORMAT_VERSION_AT, FORMAT_VERSION + 1)
+    }
+
+    #[test]
+    fn bad_magic_outranks_bad_format_version() {
+        let flip_magic = |mut b: Vec<u8>| {
+            b[0] ^= 0xFF;
+            b
+        };
+        let base = encode(&sample());
+        assert!(matches!(
+            decode(&flip_magic(base.clone())),
+            Err(BundleFileError::BadMagic { .. })
+        ));
+        assert!(matches!(
+            decode(&bad_version(base.clone())),
+            Err(BundleFileError::UnsupportedFormatVersion(_))
+        ));
+        assert!(matches!(
+            decode(&flip_magic(bad_version(base))),
+            Err(BundleFileError::BadMagic { .. })
+        ));
+    }
+
+    #[test]
+    fn bad_format_version_outranks_bad_file_kind() {
+        let bad_kind = |b| with_u16(b, FILE_KIND_AT, FILE_KIND_IDENTITY_BUNDLE + 1);
+        let base = encode(&sample());
+        assert!(matches!(
+            decode(&bad_kind(base.clone())),
+            Err(BundleFileError::UnsupportedFileKind(_))
+        ));
+        assert!(matches!(
+            decode(&bad_version(base.clone())),
+            Err(BundleFileError::UnsupportedFormatVersion(_))
+        ));
+        assert!(matches!(
+            decode(&bad_kind(bad_version(base))),
+            Err(BundleFileError::UnsupportedFormatVersion(_))
+        ));
+    }
+
+    #[test]
+    fn bad_format_version_outranks_truncation() {
+        let truncate = |mut b: Vec<u8>| {
+            b.pop();
+            b
+        };
+        let base = encode(&sample());
+        assert!(matches!(
+            decode(&truncate(base.clone())),
+            Err(BundleFileError::Truncated { .. })
+        ));
+        assert!(matches!(
+            decode(&bad_version(base.clone())),
+            Err(BundleFileError::UnsupportedFormatVersion(_))
+        ));
+        assert!(matches!(
+            decode(&truncate(bad_version(base))),
+            Err(BundleFileError::UnsupportedFormatVersion(_))
+        ));
+    }
+
     #[test]
     fn decode_rejects_wrap_rec_length_mismatch() {
         let bytes = encode(&sample());

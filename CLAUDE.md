@@ -115,20 +115,21 @@ cargo test --release --locked -p secretary-core \
 # isolation, which conformance Section DRS checks rather than assumes, over
 # the committed corpus only.
 #
-# CI replays the 169 committed inputs (no `corpus/` there): 107 until #669
+# CI replays the 173 committed inputs (no `corpus/` there): 107 until #669
 # added 14, 121 until #667/#670 added 10, 131 until #666/#685 added 10,
 # 141 until #641/#691 added 17 committed contact_card seeds (four two-fault
 # rows were added and then moved to Section RTS check 5 inside the same
 # branch, so the net is +17, not +21), 160 until #641's bundle_file slice
-# added 9 bundle_file seeds (2026-11-07).
+# added 13 bundle_file seeds (2026-11-07; 9, plus four `_below` twins from
+# the PR #718 review).
 # Re-measure with
 # `ls core/fuzz/seeds/*/* core/tests/data/diff_regressions/*/* | grep -v gitkeep | wc -l`.
 # The 5.98 s test body
 # and 36 s step quoted in #656 measured the per-input spawn; re-measure before
 # quoting a CI figure. Do not compare a STEP duration against a test body.
-# #641 added 57 generated single-fault seeds for block_file and record (and
-# later 9 for bundle_file, from the same generator) (#670
-# added 3 more record rows, a default present); regenerate with
+# #641 added 57 generated single-fault seeds for block_file and record (#670
+# added 3 more record rows, a default present), and later 13 for bundle_file
+# from the same generator; regenerate with
 # `cargo test --release --locked -p secretary-core --test rule_token_seeds -- --ignored generate_rule_token_seeds`.
 # #667 added 7 `nesting__` seeds (4 record, 3 manifest_body) from their own
 # generator; regenerate with
@@ -486,10 +487,12 @@ RE-MEASURE. RE-MEASURED at the #698 review,
 which moved two more: `sections/value_type_structure.py` 507 -> 550 (check
 4b now probes `card.py` too) and `sections/rule_token_seeds.py` 347 -> 392
 (the default-deny class table). Current top six, measured (re-measured at
-#700/#715, which grew `value_type_discipline.py` 835 -> 849):
+the PR #718 review, whose RTS check 0 and `bundle_file` rows grew
+`sections/rule_token_seeds.py` 443 -> 489 and pushed `codec/scanner.py`
+(479) out of the six):
 849 `value_type_discipline.py`, 550 `value_type_structure.py`,
 498 `codec/manifest_decode.py`, 492 `sections/nesting_depth.py`,
-491 `sections/manifest_canonicality_cause.py`, 479 `codec/scanner.py` —
+491 `sections/manifest_canonicality_cause.py`, 489 `sections/rule_token_seeds.py` —
 TWO past the 500-line threshold. The concrete effect on the ranking:
 `nesting_depth.py` fell out of the "past the 500-line threshold" set
 entirely (522 -> 492, now under 500) and dropped from second place to a
@@ -1489,7 +1492,7 @@ survived it. Six things:
   `Unclassified`, while `conformance.py` names them exactly. There is therefore
   no `trailing_bytes` token. That is coarsening, not a lie; the `detail` text
   stays specific.
-- **`tokens_agree` tolerates a mismatch iff either token is phase-dependent** — **on `manifest_body` only** since #641, which made the licence per TARGET (`PHASE_DEPENDENT_TOLERANCE_TARGETS`): §4.2's two reader designs are the manifest body's, so `record` and `block_file` compare strictly with 0 tolerated pairs, and the breadth test pins both figures —,
+- **`tokens_agree` tolerates a mismatch iff either token is phase-dependent** — **on `manifest_body` only** since #641, which made the licence per TARGET (`PHASE_DEPENDENT_TOLERANCE_TARGETS`): §4.2's two reader designs are the manifest body's, so `record`, `block_file`, `contact_card` and `bundle_file` compare strictly with 0 tolerated pairs, and the breadth test pins both figures —,
   which is DERIVED from §4.2's "deliberately unspecified" paragraphs and is
   strictly BROADER than them — do not write "it IS that sentence", which five
   documents did, the fifth being the shared JSON fixture BOTH languages read.
@@ -1567,8 +1570,9 @@ survived it. Six things:
   `UnsupportedFormatVersion` (token `unsupported_version`) and Python says
   `ParseError` (token `container_malformed`). No mapping reconciles it —
   `header.rs` and the BODY sentinel check raise the same variant, so a per-variant
-  token cannot tell the layers apart, and `ParseError` is one class shared by every
-  target's wire decoder (#640). `bundle_file`'s envelope has the same SHAPE
+  token cannot tell the layers apart, and `ParseError` is one BASE class shared
+  by every target's wire decoder (#640; the block and bundle envelopes now raise
+  typed subclasses of it, `manifest_file`'s still raises the base). `bundle_file`'s envelope has the same SHAPE
   of fault and is compared all the same, because there the variant is not
   shared: `BundleFileError::UnsupportedFormatVersion` has one producer, so
   typing Python's one raise `unsupported_version` reconciled it — the single
@@ -1688,7 +1692,7 @@ survived it. Six things:
   step is silent; the full LIMITS are in the script's header.
   **State the residual scope exactly, because the wider claim is the one
   someone will want to make.** CI replays the COMMITTED corpus only —
-  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **169** inputs today
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **173** inputs today
   (#641 added 57 generated single-fault seeds for `block_file` and `record`;
   #669 added 14 acceptance seeds for `contact_card`, `vault_toml` and
   `manifest_body`; #667 added 7 `nesting__` seeds for `record` and
@@ -1700,7 +1704,9 @@ survived it. Six things:
   a further four two-fault `contact_card` rows were built and then moved to
   Section RTS check 5 rather than committed, per the #618 no-cross-language-
   row-on-an-unspecified-order rule, so the net addition is 17, not 21; #641's
-  `bundle_file` slice added 9 single-fault `bundle_file` seeds for 169).
+  `bundle_file` slice added 13 single-fault `bundle_file` seeds for 173 — 9,
+  plus a `_below` twin for each of its four equality checks in the PR #718
+  review, since a check loosened from `!=` to `>` passed every `+ 1` seed).
   `core/fuzz/corpus/` is **gitignored**, so agreement on fuzz-DISCOVERED
   inputs is still proven only by whoever runs the fuzzer, and "the differential
   replay is in CI" must not be read as "the fuzz corpus is differentially

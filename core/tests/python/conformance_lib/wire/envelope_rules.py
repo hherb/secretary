@@ -9,13 +9,14 @@ existing `except ParseError` in this package -- `sections/block_kat.py`,
 `ParseError` itself keeps `container_malformed` for a TRUNCATION, which is
 what `cursor.take` raises.
 
-The five `container_malformed` classes below draw no distinction the token
+The seven `container_malformed` classes below draw no distinction the token
 does not already draw -- they all carry that token, so no replay comparison
 changes.  They exist so a check can be pinned to its SEED (PR #673 review):
 with one class for every envelope fault, deleting the `sig_ed_len` check let
 the parse fail a few bytes later as a truncation with the same token, and
-Section RTS stayed green.  RTS now requires each `block_file` seed's class
-by name, and `block.rs` draws every one of these distinctions as a variant.
+Section RTS stayed green.  RTS now requires each `block_file` and
+`bundle_file` seed's class by name, and `block.rs` or `bundle_file.rs` draws
+every one of these distinctions as a variant.
 Each class declares `token` itself rather than inheriting it, so Section
 RTS can require that of every verdict class these modules define.
 

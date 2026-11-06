@@ -4,12 +4,15 @@
 //! The §3 envelope (`docs/vault-format.md`) is a fixed big-endian layout read
 //! by offset, so the offsets below are spelled from the field widths in
 //! order. [`checked_base`] asserts each wrap length prefix the base carries is
-//! the §3 value 32 before any seed is planted, so an offset that drifted onto
-//! a neighbouring field fails here instead of planting a different fault.
+//! the §3 value 32 before any seed is planted, so a wrap-length offset that
+//! drifted onto a neighbouring field fails here instead of planting a
+//! different fault. The header offsets have no such check; a drift there is
+//! caught by the row's `variant` binding instead.
 //!
-//! The `variant` column separates the shapes one token covers: seven of the
-//! nine seeds name `container_malformed`, spread over five
+//! The `variant` column separates the shapes one token covers: eleven of the
+//! thirteen seeds name `container_malformed`, spread over five
 //! `BundleFileError` variants, and Section RTS pins the Python class of each.
+//! Every equality check has a seed on each side of its v1 value.
 
 use std::mem::size_of;
 
@@ -89,6 +92,35 @@ fn unsupported_format_version(base: &[u8]) -> Vec<u8> {
     b
 }
 
+// The `_below` twins: §3 requires EQUALITY, so a value on either side of it
+// must reject. With only the `+ 1` seeds, a check loosened from `!=` to `>`
+// accepted every value below and stayed green in both languages (measured,
+// PR #718 review).
+
+fn format_version_below(base: &[u8]) -> Vec<u8> {
+    let mut b = checked_base(base);
+    put_u16(&mut b, FORMAT_VERSION_AT, FORMAT_VERSION - 1);
+    b
+}
+
+fn file_kind_below(base: &[u8]) -> Vec<u8> {
+    let mut b = checked_base(base);
+    put_u16(&mut b, FILE_KIND_AT, FILE_KIND_IDENTITY_BUNDLE - 1);
+    b
+}
+
+fn wrap_pw_ct_len_below(base: &[u8]) -> Vec<u8> {
+    let mut b = checked_base(base);
+    put_u32(&mut b, WRAP_PW_LEN_AT, WRAP_CT_LEN - 1);
+    b
+}
+
+fn wrap_rec_ct_len_below(base: &[u8]) -> Vec<u8> {
+    let mut b = checked_base(base);
+    put_u32(&mut b, WRAP_REC_LEN_AT, WRAP_CT_LEN - 1);
+    b
+}
+
 /// Ends one byte into `vault_uuid`.
 fn truncated_header(base: &[u8]) -> Vec<u8> {
     checked_base(base)[..VAULT_UUID_AT + 1].to_vec()
@@ -149,6 +181,12 @@ pub fn cases() -> Vec<SeedCase> {
         ),
         case(
             ContainerMalformed,
+            "wrong_file_kind_below",
+            "UnsupportedFileKind",
+            file_kind_below,
+        ),
+        case(
+            ContainerMalformed,
             "truncated_header",
             "Truncated",
             truncated_header,
@@ -164,6 +202,18 @@ pub fn cases() -> Vec<SeedCase> {
             "wrap_rec_ct_len",
             "WrapLengthMismatch",
             wrap_rec_ct_len,
+        ),
+        case(
+            ContainerMalformed,
+            "wrap_pw_ct_len_below",
+            "WrapLengthMismatch",
+            wrap_pw_ct_len_below,
+        ),
+        case(
+            ContainerMalformed,
+            "wrap_rec_ct_len_below",
+            "WrapLengthMismatch",
+            wrap_rec_ct_len_below,
         ),
         case(
             ContainerMalformed,
@@ -188,6 +238,12 @@ pub fn cases() -> Vec<SeedCase> {
             "format_version",
             "UnsupportedFormatVersion",
             unsupported_format_version,
+        ),
+        case(
+            UnsupportedVersion,
+            "format_version_below",
+            "UnsupportedFormatVersion",
+            format_version_below,
         ),
     ]
 }

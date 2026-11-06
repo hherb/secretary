@@ -205,10 +205,10 @@ There are exactly three valid output shapes:
   phase-dependent**, in which case `docs/vault-format.md` §4.2 generally
   declares the order unspecified and both readers are conformant. Since #641
   that tolerance applies on manifest_body only
-  (`PHASE_DEPENDENT_TOLERANCE_TARGETS`); `block_file`, `record` and
+  (`PHASE_DEPENDENT_TOLERANCE_TARGETS`); `block_file`, `record`,
   `contact_card` (#691 — there is no §6 analogue of §4.2's two-reader-design
   licence for a contact card, so every compared pair on that target must be
-  strictly equal) compare strictly. The predicate lives on
+  strictly equal) and `bundle_file` (#641) compare strictly. The predicate lives on
   `RuleToken::is_phase_dependent` and is **derived from**
   §4.2's "deliberately unspecified" paragraphs rather than being them — a
   per-token predicate is strictly BROADER than a per-pair rule: over the

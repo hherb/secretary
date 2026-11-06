@@ -14,11 +14,11 @@
 //!
 //! **Why not in `record.rs` / `block.rs` / `identity/card.rs`.**
 //! `record.rs` and `block.rs` are each over 3,000 lines, which is the reason
-//! for those two. `identity/card.rs` is not — it is under 1,500 lines
-//! (measured at this writing; re-measure rather than quoting), nowhere near
-//! that threshold — so its `impl` sits here for a different reason:
-//! consistency with its two siblings' placement, not size, and so does
-//! `bundle_file.rs`'s (`unlock/bundle_file.rs` is under 400). An inherent
+//! for those two. `identity/card.rs` is not — 1,588 lines at the PR #718
+//! review (re-measure rather than quoting), well short of that — so its
+//! `impl` sits here for a different reason: consistency with its two
+//! siblings' placement, not size, and so does `bundle_file.rs`'s
+//! (`unlock/bundle_file.rs` was 414 lines at the same review). An inherent
 //! `impl` may live anywhere in the crate, so all four impls sit in their
 //! own small files beside a second, independent declaration of each mapping
 //! in `tests/`.
