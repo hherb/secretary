@@ -974,7 +974,7 @@ now says **a default value is written by omission**. Load-bearing:
   (Rust's `SEED_PREFIX`, shared by two test binaries via `#[path]`, and
   Python's `NESTING_SEED_PREFIX`).
 
-**It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and, at the time, never enabled in `test.yml` (a step enables it there since #647, which does not change this paragraph's history: that step postdates #546, and it invokes `conformance.py`'s replay mode (one `--diff-replay-serve` worker since #655, one process per corpus input before) rather than running its section suite, so it would not have caught the `pqcrypto` break either — nothing on the `--diff-replay` path calls `ml_dsa_65_verify` — state it as the IMPORT CLOSURE it is, `diff_replay.py` importing only `codec/*` plus `rejection` and no `codec/` module reaching `derivations.hybrid_verify`, rather than as "reachable only from `sections/`", which is false: the function lives in `derivations.py` and both `wire/card.py` and `wire/golden_vault_verify.py` import it, neither under `sections/` (#656 review)). The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. **The job now BLOCKS**, which this paragraph denied until the #599 review measured it: `clean-room conformance` is one of the 24 required contexts in `main`'s `protect_main` ruleset (`gh api repos/hherb/secretary/rules/branches/main`). The sentence "the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking" outlived its fact — and a stale claim in this direction is not harmless, because it gets a real gate discounted when someone weighs whether a Python-side-only pin is enough. One standing consequence remains: five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
+**It runs in CI as the `clean-room conformance` job, and until #546 it did not.** This paragraph used to say the property was "enforced every CI run", which was false: no workflow invoked the script, and its only in-tree invocation — `core/tests/differential_replay.rs` — is `#![cfg(feature = "differential-replay")]`, off by default and, at the time, never enabled in `test.yml` (a step enables it there since #647, which does not change this paragraph's history: that step postdates #546, and it invokes `conformance.py`'s replay mode (one `--diff-replay-serve` worker since #655, one process per corpus input before) rather than running its section suite, so it would not have caught the `pqcrypto` break either — nothing on the `--diff-replay` path calls `ml_dsa_65_verify` — state it as the IMPORT CLOSURE it is, `diff_replay.py` importing only `codec/*` plus `rejection` and no `codec/` module reaching `derivations.hybrid_verify`, rather than as "reachable only from `sections/`", which is false: the function lives in `derivations.py` and both `wire/card.py` and `wire/golden_vault_verify.py` import it, neither under `sections/` (#656 review)). The cost of that gap is on the record: `conformance.py` pinned `pqcrypto>=0.3` unbounded, 1.0.0 changed `ml_dsa_65.verify` from returning a bool to **raising** on failure, and every ML-DSA-65 check reported "rejected" — including the golden vault's genuinely valid contact card — on `main`, undetected, until someone ran the script by hand. Fail-closed, so nothing was wrongly accepted, but the gate was non-functional. **The job now BLOCKS**, which this paragraph denied until the #599 review measured it: `clean-room conformance` is one of the 25 required contexts in `main`'s `protect_main` ruleset (`gh api repos/hherb/secretary/rules/branches/main`). The sentence "the job is not in `main`'s `protect_main` ruleset until added there by name, so it runs without blocking" outlived its fact — and a stale claim in this direction is not harmless, because it gets a real gate discounted when someone weighs whether a Python-side-only pin is enough. One standing consequence remains: five of the six PEP 723 deps are still unbounded (`cryptography`, `pynacl`, `argon2-cffi`, `blake3`, `cbor2`), and `ed25519_verify` has the same "no exception means success" shape `ml_dsa_65_verify` had — with `cryptography`'s `Ed25519PublicKey.verify` the failure direction would be fail-**open**. #544 tracks the migration; #550 tracks the `ed25519_verify` regression test.
 
 ### Crypto layering
 
@@ -1675,7 +1675,8 @@ survived it. Six things:
   the PR #716 review's `shell: 'true {0}'`, `needs:` on a skipped job and a
   Linux gate on `fmt` red it too. It cannot pin ITSELF: its own deletion reds
   nothing until `ci wiring` is added to `protect_main`'s required contexts,
-  which is a post-merge step and NOT yet done at #716. The table pins the
+  which was done after #716 merged (2026-11-06; `protect_main` now holds 25
+  contexts). The table pins the
   workflows and nothing pins the table, so deleting a row together with its
   step is silent; the full LIMITS are in the script's header.
   **State the residual scope exactly, because the wider claim is the one
@@ -1700,10 +1701,16 @@ survived it. Six things:
   only, since counting the gitignored runtime corpus toward it was fail-open on
   the one machine the floor protects: with `fuzz/corpus/` populated, a deleted
   seed still cleared the floor by tens of thousands (#656 review; measured —
-  38 committed against 41 total now reds). What it still does NOT floor is how
-  many inputs reach a STRICT token comparison, which was **15 of 48** on
-  `manifest_body` because every `NonCanonicalEncoding` cause is
-  phase-dependent; #658. **#666's ten new `manifest_body` seeds all reach
+  38 committed against 41 total now reds). It does NOT floor how many inputs
+  reach a STRICT token comparison, which was **15 of 48** on `manifest_body`
+  because every `NonCanonicalEncoding` cause is phase-dependent; since #658
+  `MIN_STRICT_COMPARISONS` does, per target and over committed inputs
+  (`token_coverage::is_strict_comparison`: both sides reject with a token
+  and, on `manifest_body`, neither token is phase-dependent), and each
+  target's finish line prints the count, so re-measure from the CI log.
+  Measured: re-pointing `WrongType` at `NonCanonicalUnclassified` moves 5
+  `manifest_body` inputs onto tolerated pairs with the binary otherwise
+  GREEN; the floor reds it (25 -> 20). **#666's ten new `manifest_body` seeds all reach
   it**, none excused: `RuleToken::is_phase_dependent` names `MalformedCbor`
   and `Rule4TagOrFloat` — the only two tokens any of the ten seeds can
   produce — `false`, so a mismatch on either is never tolerated. That is

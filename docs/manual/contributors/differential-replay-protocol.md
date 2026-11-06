@@ -311,7 +311,9 @@ directories on every run.
 3. Mirror the change on the Rust side in
    `core/tests/differential_replay_helpers/rust_decoder.rs::rust_decode` and
    `core/tests/differential_replay_helpers/targets.rs::TARGETS` (moved out of
-   the entry file in #649), plus a `MIN_CORPUS_INPUTS` row in that same file.
+   the entry file in #649), plus a `MIN_CORPUS_INPUTS` row and a
+   `MIN_STRICT_COMPARISONS` row (0 until the target is token-compared, #658)
+   in that same file.
 4. Add a fuzz target under `core/fuzz/fuzz_targets/<target>.rs` if one
    doesn't exist yet. The differential replay only meaningfully runs
    against inputs the fuzzer has actually mutated — without a

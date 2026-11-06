@@ -41,11 +41,12 @@ pub fn finish_line(
     compared: usize,
     total: usize,
     committed: usize,
+    strict: usize,
     elapsed: Duration,
 ) -> String {
     format!(
         "[differential_replay] {target}: {compared} of {total} input(s) compared, \
-         {committed} committed, in {:.1}s",
+         {committed} committed, {strict} committed strict token comparison(s), in {:.1}s",
         elapsed.as_secs_f64()
     )
 }
@@ -90,8 +91,9 @@ mod tests {
     #[test]
     fn a_finish_line_names_both_counts_so_a_ci_log_proves_what_was_replayed() {
         assert_eq!(
-            finish_line("manifest_body", 26, 41, 39, Duration::from_millis(1500)),
-            "[differential_replay] manifest_body: 26 of 41 input(s) compared, 39 committed, in 1.5s"
+            finish_line("manifest_body", 26, 41, 39, 25, Duration::from_millis(1500)),
+            "[differential_replay] manifest_body: 26 of 41 input(s) compared, 39 committed, \
+             25 committed strict token comparison(s), in 1.5s"
         );
     }
 
