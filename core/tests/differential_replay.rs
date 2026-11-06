@@ -40,10 +40,11 @@ use helpers::python_bridge::serve_command;
 use helpers::python_worker::{PyReplayer, MAX_CONSECUTIVE_WORKER_FAILURES, PER_INPUT_TIMEOUT};
 use helpers::rust_decoder::rust_decode;
 use helpers::targets::{
-    min_inputs, MIN_CORPUS_INPUTS, NOT_TOKEN_COMPARED_TARGETS, PHASE_DEPENDENT_TOLERANCE_TARGETS,
-    TARGETS, TOKEN_COMPARED_TARGETS, TOKEN_COMPARISON_BLOCKED,
+    min_inputs, min_strict_comparisons, MIN_CORPUS_INPUTS, MIN_STRICT_COMPARISONS,
+    NOT_TOKEN_COMPARED_TARGETS, PHASE_DEPENDENT_TOLERANCE_TARGETS, TARGETS, TOKEN_COMPARED_TARGETS,
+    TOKEN_COMPARISON_BLOCKED,
 };
-use helpers::token_coverage::{misclassification, observe, TokenCoverage};
+use helpers::token_coverage::{is_strict_comparison, misclassification, observe, TokenCoverage};
 use helpers::tolerance::tokens_agree;
 
 #[test]
@@ -91,6 +92,8 @@ fn differential_replay_full_corpus() {
         let mut last_report = started;
         let mut compared = 0usize;
         let mut coverage = TokenCoverage::default();
+        // Committed pairs the tolerance cannot excuse (#658); floored below.
+        let mut strict = 0usize;
         progress::emit(&progress::start_line(target, inputs.len(), committed));
         for (done, input) in inputs.iter().enumerate() {
             if python.abandoned() {
@@ -102,6 +105,7 @@ fn differential_replay_full_corpus() {
             let verdict = python.decode(target, &input.path);
             let prefix = format!("[{}] {}", target, input.path.display());
             coverage = observe(coverage, &rust, &verdict);
+            strict += usize::from(input.committed && is_strict_comparison(target, &rust, &verdict));
             match judge(target, &rust, &verdict) {
                 Judgement::Agree => compared += 1,
                 Judgement::Disagree(msg) => {
@@ -144,8 +148,25 @@ fn differential_replay_full_corpus() {
             compared,
             inputs.len(),
             committed,
+            strict,
             started.elapsed(),
         ));
+        // The input floor above counts files fed in, before any decode, so a
+        // Rust raise site re-pointed at a phase-dependent token leaves it, the
+        // tolerance breadth and the negative control all green while the
+        // pairs it moved stop being compared at all (#658). Committed inputs
+        // only, for the input floor's reason.
+        let strict_floor = min_strict_comparisons(target);
+        assert!(
+            strict >= strict_floor,
+            "target {target}: {strict} committed input(s) reached a STRICT token \
+             comparison, floor is {strict_floor}. Either an input that used to be \
+             compared on token equality is now excused by the phase-dependent \
+             tolerance (a raise site moved onto a phase-dependent token, or a token \
+             became phase-dependent) or a committed seed stopped rejecting on both \
+             sides; find which before touching MIN_STRICT_COMPARISONS, and update it \
+             deliberately in the same edit if the move is intended."
+        );
     }
     if not_replayed > 0 {
         harness_failures.push(format!(
@@ -228,6 +249,30 @@ fn every_target_is_classified() {
         TARGETS.len(),
         "MIN_CORPUS_INPUTS must cover TARGETS exactly"
     );
+
+    // Same for the strict-comparison floor (#658), and an uncompared target
+    // can make no strict comparison, so a non-zero floor there is a typo.
+    for target in TARGETS {
+        assert!(
+            MIN_STRICT_COMPARISONS.iter().any(|(t, _)| t == target),
+            "target {target} has no MIN_STRICT_COMPARISONS entry"
+        );
+    }
+    assert_eq!(
+        MIN_STRICT_COMPARISONS.len(),
+        TARGETS.len(),
+        "MIN_STRICT_COMPARISONS must cover TARGETS exactly"
+    );
+    for (target, floor) in MIN_STRICT_COMPARISONS {
+        assert!(
+            *floor == 0 || TOKEN_COMPARED_TARGETS.contains(target),
+            "{target:?} is not token-compared, so its strict floor must be 0, not {floor}"
+        );
+        assert!(
+            *floor <= min_inputs(target),
+            "{target:?}: strict floor {floor} exceeds its input floor"
+        );
+    }
 
     // A blocked target is one that is NOT compared, for a stated reason (#700).
     for (target, reason) in TOKEN_COMPARISON_BLOCKED {

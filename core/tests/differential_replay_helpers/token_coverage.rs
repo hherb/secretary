@@ -15,14 +15,18 @@
 //! already a harness failure in [`super::agreement::judge`].
 //!
 //! LIMIT: the evidence is the corpus that was replayed. A target with no
-//! reject-vs-reject pair at all proves nothing either way and is not flagged;
-//! flooring how many pairs reach a comparison is #658's.
+//! reject-vs-reject pair at all proves nothing either way and is not flagged.
+//!
+//! [`is_strict_comparison`] is the other half (#658): which of those pairs
+//! the tolerance cannot excuse, so that their count can be floored.
 
 use secretary_core::crypto::secret::SecretBytes;
 
 use super::python_bridge::PyOutcome;
 use super::rust_decoder::RustRejection;
-use super::targets::{TOKEN_COMPARED_TARGETS, TOKEN_COMPARISON_BLOCKED};
+use super::targets::{
+    PHASE_DEPENDENT_TOLERANCE_TARGETS, TOKEN_COMPARED_TARGETS, TOKEN_COMPARISON_BLOCKED,
+};
 
 /// Reject-vs-reject pairs seen for one target, and how many of them carried a
 /// rule token on both sides.
@@ -50,6 +54,45 @@ pub fn observe(
     }
 }
 
+/// Did this pair reach a STRICT token comparison, one the phase-dependent
+/// tolerance cannot excuse (#658)?
+///
+/// True when `target` is token-compared, both sides rejected, both named a
+/// token, and — on a [`PHASE_DEPENDENT_TOLERANCE_TARGETS`] target — neither
+/// token is phase-dependent. Those are the pairs whose agreement is decided by
+/// token EQUALITY. The input floor cannot see a Rust raise site re-pointed at
+/// a phase-dependent token: the input is still replayed and the pair is still
+/// scored as agreement, so only a count of these can red. An unrecognised
+/// token counts as ordered, since `tokens_agree` never tolerates one.
+pub fn is_strict_comparison(
+    target: &str,
+    rust: &Result<SecretBytes, RustRejection>,
+    python: &PyOutcome,
+) -> bool {
+    use secretary_core::vault::manifest::RuleToken;
+    let (
+        Err(RustRejection {
+            token: Some(rust_token),
+            ..
+        }),
+        PyOutcome::Reject {
+            rule: Some(py_token),
+            ..
+        },
+    ) = (rust, python)
+    else {
+        return false;
+    };
+    let phase_dependent = |s: &str| {
+        RuleToken::ALL
+            .iter()
+            .any(|t| t.as_str() == s && t.is_phase_dependent())
+    };
+    TOKEN_COMPARED_TARGETS.contains(&target)
+        && !(PHASE_DEPENDENT_TOLERANCE_TARGETS.contains(&target)
+            && (phase_dependent(rust_token) || phase_dependent(py_token)))
+}
+
 /// `Some(explanation)` when `target` could be token-compared on this evidence
 /// but is classified as not compared and not blocked.
 pub fn misclassification(target: &str, coverage: TokenCoverage) -> Option<String> {
@@ -70,7 +113,9 @@ pub fn misclassification(target: &str, coverage: TokenCoverage) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::differential_replay_helpers::targets::NOT_TOKEN_COMPARED_TARGETS;
+    use crate::differential_replay_helpers::targets::{
+        NOT_TOKEN_COMPARED_TARGETS, PHASE_DEPENDENT_TOLERANCE_TARGETS,
+    };
 
     /// Not compared and not blocked: the shape #700 is about.
     const LOOSE: &str = "bundle_file";
@@ -126,6 +171,92 @@ mod tests {
     #[test]
     fn no_rejected_pair_is_no_evidence() {
         assert_eq!(misclassification(LOOSE, coverage(0, 0)), None);
+    }
+
+    /// The tolerance target and a compared target with no tolerance.
+    const TOLERANT: &str = "manifest_body";
+
+    #[test]
+    fn the_strict_fixture_targets_sit_where_the_tests_assume() {
+        assert!(PHASE_DEPENDENT_TOLERANCE_TARGETS.contains(&TOLERANT));
+        assert!(TOKEN_COMPARED_TARGETS.contains(&TOLERANT));
+        assert!(!PHASE_DEPENDENT_TOLERANCE_TARGETS.contains(&COMPARED));
+    }
+
+    #[test]
+    fn two_ordered_tokens_on_a_compared_target_are_a_strict_comparison() {
+        let tok = Some("wrong_type");
+        assert!(is_strict_comparison(
+            TOLERANT,
+            &rust_err(tok),
+            &py_reject(tok)
+        ));
+        assert!(is_strict_comparison(
+            COMPARED,
+            &rust_err(tok),
+            &py_reject(tok)
+        ));
+    }
+
+    /// The direction #658 is about: a Rust raise site moved onto a
+    /// phase-dependent token stops counting, whatever Python says.
+    #[test]
+    fn a_phase_dependent_token_on_either_side_is_not_strict_where_tolerated() {
+        let pd = Some("non_canonical_unclassified");
+        let ordered = Some("wrong_type");
+        assert!(!is_strict_comparison(
+            TOLERANT,
+            &rust_err(pd),
+            &py_reject(ordered)
+        ));
+        assert!(!is_strict_comparison(
+            TOLERANT,
+            &rust_err(ordered),
+            &py_reject(pd)
+        ));
+        assert!(!is_strict_comparison(
+            TOLERANT,
+            &rust_err(pd),
+            &py_reject(pd)
+        ));
+    }
+
+    /// The tolerance is per target, so the same token is strict elsewhere.
+    #[test]
+    fn a_phase_dependent_token_is_strict_where_no_tolerance_applies() {
+        let pd = Some("non_canonical_unclassified");
+        assert!(is_strict_comparison(
+            COMPARED,
+            &rust_err(pd),
+            &py_reject(pd)
+        ));
+    }
+
+    #[test]
+    fn nothing_is_strict_on_an_uncompared_target_or_without_both_tokens() {
+        let tok = Some("wrong_type");
+        let ok: Result<SecretBytes, RustRejection> = Ok(SecretBytes::new(Vec::new()));
+        assert!(!is_strict_comparison(
+            LOOSE,
+            &rust_err(tok),
+            &py_reject(tok)
+        ));
+        assert!(!is_strict_comparison(
+            COMPARED,
+            &rust_err(None),
+            &py_reject(tok)
+        ));
+        assert!(!is_strict_comparison(
+            COMPARED,
+            &rust_err(tok),
+            &py_reject(None)
+        ));
+        assert!(!is_strict_comparison(COMPARED, &ok, &py_reject(tok)));
+        assert!(!is_strict_comparison(
+            COMPARED,
+            &rust_err(tok),
+            &PyOutcome::Accept(Vec::new())
+        ));
     }
 
     #[test]

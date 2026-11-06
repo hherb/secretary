@@ -158,7 +158,8 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// against a different token, so a change on the Rust
 /// raise side could route more of that corpus onto tolerated pairs and shrink
 /// the real comparison toward zero with this floor, the tolerance breadth
-/// assertion and the negative control all green. Tracked as #658.
+/// assertion and the negative control all green. [`MIN_STRICT_COMPARISONS`]
+/// floors that number (#658).
 pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("vault_toml", 9),
     ("record", 44),
@@ -168,6 +169,35 @@ pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("manifest_body", 58),
     ("block_file", 24),
 ];
+
+/// The committed STRICT token comparisons each target must make (#658).
+///
+/// A strict comparison is a pair `token_coverage::is_strict_comparison`
+/// accepts: both sides rejected with a token, and the tolerance cannot excuse
+/// a mismatch. [`MIN_CORPUS_INPUTS`] cannot see the corpus being routed onto
+/// tolerated pairs, since every input is still replayed and still agrees; this
+/// can. The figures are what the committed corpus makes today, read off each
+/// target's finish line, so moving one input onto a phase-dependent token reds.
+/// A floor, not an equality, for the reason [`MIN_CORPUS_INPUTS`] gives.
+/// Untoken-compared targets make none, and `every_target_is_classified` holds
+/// their entries at 0.
+pub const MIN_STRICT_COMPARISONS: &[(&str, usize)] = &[
+    ("vault_toml", 0),
+    ("record", 40),
+    ("contact_card", 22),
+    ("bundle_file", 0),
+    ("manifest_file", 0),
+    ("manifest_body", 25),
+    ("block_file", 23),
+];
+
+pub fn min_strict_comparisons(target: &str) -> usize {
+    MIN_STRICT_COMPARISONS
+        .iter()
+        .find(|(t, _)| *t == target)
+        .map(|(_, n)| *n)
+        .unwrap_or_else(|| panic!("target {target} has no MIN_STRICT_COMPARISONS entry"))
+}
 
 pub fn min_inputs(target: &str) -> usize {
     MIN_CORPUS_INPUTS
