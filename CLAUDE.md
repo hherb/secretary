@@ -256,6 +256,14 @@ uv run scripts/check-test-support-placement.py
 bash scripts/check-secret-slot-hygiene.sh --self-test
 bash scripts/check-secret-slot-hygiene.sh
 
+# Assert CI still RUNS every gate above (#657): a STEP deleted from a required
+# job is silent, since the job still goes green. Parses the workflow YAML (a
+# grep would match a commented-out step) against the `REQUIRED_STEPS` table;
+# adding a CI gate worth keeping means adding a row there. --self-test edits an
+# in-memory fixture and asserts every finding reason has a control.
+uv run scripts/check-ci-wiring.py --self-test
+uv run scripts/check-ci-wiring.py
+
 # Mutation testing: run the harness, do not hand-roll one (#644)
 # This repo cites mutation results as evidence in CLAUDE.md and in every
 # handoff. Until #644 nothing checked that the mutation took effect, and
@@ -1649,10 +1657,17 @@ survived it. Six things:
   blamed is contradicted by the step's own log. Do not compare a step time
   against a test time. (Both figures measured the per-input spawn #655 replaced
   with one worker — 1.42 s locally after it — so re-measure, do not quote.)
-  **What is still unpinned: deleting the step reds nothing.** No test, no
-  guard and no `--self-test` reads `test.yml`; `actionlint` checks syntax, not
-  step presence. Tracked as #657, and named here rather than only in a handoff
-  because that is how the #647 gap itself survived three slices.
+  **Deleting the step reds `ci wiring` since #657, and was silent for four
+  slices before it.** `actionlint` checks syntax, not step presence, and a
+  required JOB going green proves nothing about the steps inside it.
+  `scripts/check-ci-wiring.py` parses `test.yml` and `rust-lint.yml` and
+  fails if any row of its `REQUIRED_STEPS` table (this step, conformance.py,
+  every hygiene guard, fmt/clippy/doc) is deleted, renamed, `if:`-gated off,
+  `continue-on-error`, left without a Linux runner, or trigger-filtered.
+  Measured: deleting this step, renaming its target, `if: false`, dropping
+  `ubuntu-latest` from the matrix and emptying `RUSTDOCFLAGS` each red it with
+  the named reason. It cannot pin ITSELF: what keeps its job present is
+  `ci wiring` being a required status check on `main`.
   **State the residual scope exactly, because the wider claim is the one
   someone will want to make.** CI replays the COMMITTED corpus only —
   `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **160** inputs today
