@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-06-token-compared-membership-shipped.md
+docs/handoffs/2026-11-06-ci-wiring-guard-shipped.md
