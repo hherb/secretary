@@ -80,8 +80,8 @@ identical shape for `bundle_file`.
   both decoders ever became fully tokened without moving it.
 - `sections/rule_token_seeds.py` is 496 lines (489 on `main`), four short of
   the split threshold. The next RTS addition should split it, e.g. moving the
-  class tables out the way `_ordering` was. CLAUDE.md's top-six ranking still
-  says 489 for it; re-measure at merge.
+  class tables out the way `_ordering` was. CLAUDE.md's top-six ranking was
+  updated to 496 (now fourth); re-measure at merge if a review round edits it.
 - `sections/value_type_discipline.py` is still 849 lines (backlog, #683).
 - Remaining worktrees: the two detached `.claude/worktrees/` checkouts and
   branch `backup-pre-reword-1787543234`. Left alone; ask before deleting.

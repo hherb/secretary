@@ -490,10 +490,10 @@ which moved two more: `sections/value_type_structure.py` 507 -> 550 (check
 (the default-deny class table). Current top six, measured (re-measured at
 the PR #718 review, whose RTS check 0 and `bundle_file` rows grew
 `sections/rule_token_seeds.py` 443 -> 489 and pushed `codec/scanner.py`
-(479) out of the six):
+(479) out of the six; then #719 grew it 489 -> 496, from sixth to fourth):
 849 `value_type_discipline.py`, 550 `value_type_structure.py`,
-498 `codec/manifest_decode.py`, 492 `sections/nesting_depth.py`,
-491 `sections/manifest_canonicality_cause.py`, 489 `sections/rule_token_seeds.py` —
+498 `codec/manifest_decode.py`, 496 `sections/rule_token_seeds.py`,
+492 `sections/nesting_depth.py`, 491 `sections/manifest_canonicality_cause.py` —
 TWO past the 500-line threshold. The concrete effect on the ranking:
 `nesting_depth.py` fell out of the "past the 500-line threshold" set
 entirely (522 -> 492, now under 500) and dropped from second place to a
