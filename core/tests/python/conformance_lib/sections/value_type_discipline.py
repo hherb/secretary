@@ -36,9 +36,10 @@ WHY SOME ROWS CARRY A TOKEN AND SOME DO NOT.  `manifest_body` is
 token-compared, so its rows require the exact rule Rust names -- measured
 against `manifest/token.rs`: `WrongType` and `InvalidByteLength` both map to
 `wrong_type`, `IntegerOutOfRange` to `integer_out_of_range`.  `contact_card`
-and `vault_toml` have no token taxonomy yet (#641), so their rows require a
-verdict and nothing finer.  A row must not pin a distinction its target
-cannot make.
+is token-compared too since #641/#691 (`CardError::WrongType` maps to
+`wrong_type`).  `vault_toml` has no token taxonomy yet (#641), so its rows
+require a verdict and nothing finer.  A row must not pin a distinction its
+target cannot make.
 
 WHY `codec/trash_entry.py` IS CHECKED DIFFERENTLY.  It carries the same M1
 defect at two positions, but it is a STANDALONE decoder -- Section PRG and
@@ -183,8 +184,11 @@ def _manifest_base() -> bytes:
 
 #: Mirrors `core/tests/differential_replay_helpers/targets.rs`'s
 #: `TOKEN_COMPARED_TARGETS`. Python had no copy of that classification, so the
-#: rule "pin a token iff the target has a taxonomy" lived only in prose.
-TOKEN_COMPARED_TARGETS = frozenset({"record", "manifest_body", "block_file"})
+#: rule "pin a token iff the target has a taxonomy" lived only in prose. It
+#: lacked `contact_card` from #698 until #700, so the card rows below pinned no
+#: token although CI compares that target's tokens; check 1 now derives the
+#: answer from the decoder instead of trusting this copy.
+TOKEN_COMPARED_TARGETS = frozenset({"record", "manifest_body", "block_file", "contact_card"})
 
 
 @dataclass(frozen=True)
@@ -205,7 +209,7 @@ class Case:
     def __post_init__(self) -> None:
         # A row must pin a rule IFF its target is token-compared. `token=None`
         # on a token-compared target silently degrades the row to verdict-only
-        # on the one target CI compares tokens for; a token on a target with no
+        # on a target whose tokens CI compares; a token on a target with no
         # taxonomy pins a distinction that target cannot make. Both were
         # representable and neither was checked (#679 review).
         if (self.token is not None) != (self.target in TOKEN_COMPARED_TARGETS):
@@ -242,7 +246,7 @@ def _card_case(position: str) -> Case:
         substitution="bool",
         plant=lambda: _cbor_sub(_card_base(), (position,), True),
         base_body=_card_base,
-        token=None,
+        token=_WRONG_TYPE,
     )
 
 
@@ -656,13 +660,23 @@ def _rejection_issues() -> list[str]:
                     f"{case.label()}: must report {case.token!r}, got {verdict.get('rule')!r} "
                     f"({verdict.get('error_class')}: {verdict.get('detail')})"
                 )
+        elif verdict.get("rule") is not None:
+            # A token-less row whose decoder DOES name a rule means the target
+            # has a taxonomy and `TOKEN_COMPARED_TARGETS` above is stale -- how
+            # the card rows pinned no token from #698 to #700. Derived, not declared.
+            issues.append(
+                f"{case.label()}: pins no token, but the decoder names "
+                f"{verdict.get('rule')!r} -- add {case.target!r} to "
+                f"TOKEN_COMPARED_TARGETS and pin the token"
+            )
             continue
-        # TOKEN-LESS TARGETS (`contact_card`, `vault_toml`) have no taxonomy to
-        # compare, so "rejected" was the whole assertion -- and a rejection for
-        # an UNRELATED reason satisfied it. Eight of the sixteen rows passed on
-        # a tree carrying #669's defect in full, once the planted body was made
-        # to reject some other way (measured, #679 review). Require the
-        # rejection to name the position it is about.
+        # EVERY row, tokened or not. On a token-less target "rejected" was once
+        # the whole assertion, and a rejection for an UNRELATED reason
+        # satisfied it: eight of the sixteen rows passed on a tree carrying
+        # #669's defect in full, once the planted body was made to reject some
+        # other way (measured, #679 review). A token does not close that
+        # either -- `wrong_type` covers nearly every field fault on the card
+        # (#715 review). Require the rejection to name the position it is about.
         if case.key() not in detail:
             issues.append(
                 f"{case.label()}: rejected, but the reason does not name "

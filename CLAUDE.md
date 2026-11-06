@@ -398,9 +398,9 @@ Practical consequence: when a Rust change alters observable byte format or merge
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
 was 6849 lines; it is now 156, over an **80**-file package (re-measured at
 #641/#691's merge; see the dated re-measurement entry below) whose largest module is
-`sections/value_type_discipline.py` at **834** lines, then
+`sections/value_type_discipline.py` at **849** lines, then
 `sections/value_type_structure.py` at
-507 — **two** past the 500-line split threshold (#683) now, DOWN from three
+550 (both re-measured at #700/#715) — **two** past the 500-line split threshold (#683) now, DOWN from three
 at the #689 merge-base, because #641/#691 shrank `sections/nesting_depth.py`
 30 net lines (522 -> 492) while deleting the now-callerless
 `reject_excessive_nesting` and its content-blind entry-point machinery —
@@ -473,8 +473,9 @@ NEIGHBOURING-NUMBER COPY's sibling and the reason every figure here says
 RE-MEASURE. RE-MEASURED at the #698 review,
 which moved two more: `sections/value_type_structure.py` 507 -> 550 (check
 4b now probes `card.py` too) and `sections/rule_token_seeds.py` 347 -> 392
-(the default-deny class table). Current top six, measured:
-835 `value_type_discipline.py`, 550 `value_type_structure.py`,
+(the default-deny class table). Current top six, measured (re-measured at
+#700/#715, which grew `value_type_discipline.py` 835 -> 849):
+849 `value_type_discipline.py`, 550 `value_type_structure.py`,
 498 `codec/manifest_decode.py`, 492 `sections/nesting_depth.py`,
 491 `sections/manifest_canonicality_cause.py`, 479 `codec/scanner.py` —
 TWO past the 500-line threshold. The concrete effect on the ranking:
@@ -721,7 +722,7 @@ three added in the #679 review. Four are worth knowing:
   modules scanned" — both #679-review fixes, both the fail-open shapes this
   file records by name.
 - **A TOKEN-LESS row must not pass on any rejection.** `contact_card` and
-  `vault_toml` have no taxonomy, so "rejected" was check 1's whole assertion
+  `vault_toml` had no taxonomy at #669, so "rejected" was check 1's whole assertion
   for 8 of its 16 rows — and they passed on a tree carrying #669's defect in
   full once the planted body was made to reject some other way (measured).
   Those rows now require the rejection to NAME the position and reject an
@@ -729,6 +730,13 @@ three added in the #679 review. Four are worth knowing:
   planting a bool in a card changes the signed bytes, so the hybrid
   self-signature rejects it whatever the type check does, and the first
   version of that check passed with `wire/card.py`'s fix fully reverted.
+  Since #700 only `vault_toml` is token-less: VT's copy of
+  `TOKEN_COMPARED_TARGETS` had missed #698's `contact_card`, so the card rows
+  pinned no token. They pin `wrong_type` now, and a token-less row whose decoder
+  names a rule is itself an issue, so a stale copy reds instead of weakening rows.
+  The name-the-position check now runs on tokened rows too (#715 review): a
+  token alone does not identify the position, since `wrong_type` covers nearly
+  every card field fault.
 - **Check 4 governs OPTIONAL keys only, and the scope is the rule, not a
   caveat.** Every key in `KNOWN − REQUIRED`, censused two ways against the
   cases that actually run (7 optional keys tree-wide). A REQUIRED key losing
@@ -758,7 +766,8 @@ until #669 added `REQUIRED_KDF_KEYS`.
 
 **14 committed seeds** (`core/tests/acceptance_seeds.rs`, prefix
 `valuetype__`) bind a Rust error VARIANT rather than a rule token, because
-`contact_card` and `vault_toml` have no token taxonomy (#641) — and the
+`contact_card` and `vault_toml` had no token taxonomy when they were written
+(#669; `contact_card` gained one in #641/#691, `vault_toml` still has none) — and the
 variant is finer anyway, separating `WrongType` from `InvalidByteLength` on
 one field. Its census is scoped to that prefix: `manifest_body/` already holds
 38 seeds from **two** other generators (`manifest_canonicality_kat` writes 32
@@ -1589,7 +1598,13 @@ survived it. Six things:
   `core/tests/rule_token_seeds.rs` and Section RTS, so CI makes a strict comparison per seed;
   the orders they rely on are PARITY, not spec (§6.1/§6.3 fix none; #668). The classification
   table must PARTITION `TARGETS`, so a new target cannot default into the loose
-  behaviour.
+  behaviour. Partitioning alone let a compared target be moved OUT with the
+  binary green, so since #700 membership is DERIVED as well:
+  `differential_replay_full_corpus` reds when every reject-vs-reject pair of a
+  target carries a token on both sides but the target is neither compared nor in
+  `TOKEN_COMPARISON_BLOCKED` (`manifest_file`, #640 — reached only by a fuzzed
+  checkout's runtime corpus; the committed corpus holds no `manifest_file`
+  rejection, so CI cannot see that entry's necessity).
 - **The tolerance has a committed WITNESS**, because every other corpus row breaks
   exactly one rule and the comparison would otherwise pass vacuously.
   `diff_regressions/manifest_body/arraysort_plus_indefinite.bin` breaks two at
