@@ -215,7 +215,8 @@ fn differential_replay_full_corpus() {
         "{}\nEvery input was replayed and agreed, so an input that used to be \
          compared on token equality is now excused by the phase-dependent \
          tolerance (a raise site on either side moved onto a phase-dependent \
-         token, or a token became phase-dependent). Find which before touching \
+         token, or a token became phase-dependent) or a committed seed is now \
+         accepted by both sides. Find which before touching \
          MIN_STRICT_COMPARISONS, and update it deliberately in the same edit if \
          the move is intended.",
         strict_shortfalls.join("\n")
