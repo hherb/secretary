@@ -24,9 +24,8 @@ use secretary_core::crypto::secret::SecretBytes;
 
 use super::python_bridge::PyOutcome;
 use super::rust_decoder::RustRejection;
-use super::targets::{
-    PHASE_DEPENDENT_TOLERANCE_TARGETS, TOKEN_COMPARED_TARGETS, TOKEN_COMPARISON_BLOCKED,
-};
+use super::targets::{TOKEN_COMPARED_TARGETS, TOKEN_COMPARISON_BLOCKED};
+use super::tolerance::grants_tolerance;
 
 /// Reject-vs-reject pairs seen for one target, and how many of them carried a
 /// rule token on both sides.
@@ -54,22 +53,19 @@ pub fn observe(
     }
 }
 
-/// Did this pair reach a STRICT token comparison, one the phase-dependent
-/// tolerance cannot excuse (#658)?
+/// Did this pair reach a STRICT token comparison (#658)?
 ///
 /// True when `target` is token-compared, both sides rejected, both named a
-/// token, and — on a [`PHASE_DEPENDENT_TOLERANCE_TARGETS`] target — neither
-/// token is phase-dependent. Those are the pairs whose agreement is decided by
-/// token EQUALITY. The input floor cannot see a Rust raise site re-pointed at
-/// a phase-dependent token: the input is still replayed and the pair is still
-/// scored as agreement, so only a count of these can red. An unrecognised
-/// token counts as ordered, since `tokens_agree` never tolerates one.
+/// token, and [`tokens_are_strict`] holds for the two tokens. Those are the
+/// pairs whose agreement is decided by token EQUALITY alone. The input floor
+/// cannot see a raise site on EITHER side re-pointed at a phase-dependent
+/// token: the input is still replayed and the pair is still scored as
+/// agreement, so only a count of these can red.
 pub fn is_strict_comparison(
     target: &str,
     rust: &Result<SecretBytes, RustRejection>,
     python: &PyOutcome,
 ) -> bool {
-    use secretary_core::vault::manifest::RuleToken;
     let (
         Err(RustRejection {
             token: Some(rust_token),
@@ -83,14 +79,40 @@ pub fn is_strict_comparison(
     else {
         return false;
     };
-    let phase_dependent = |s: &str| {
+    TOKEN_COMPARED_TARGETS.contains(&target) && tokens_are_strict(target, rust_token, py_token)
+}
+
+/// Neither token carries the tolerance licence on `target`
+/// ([`grants_tolerance`], the same predicate `tokens_agree` reads).
+///
+/// An unrecognised token grants nothing, so it counts as strict; such a pair
+/// never agrees anyway. A `malformed_cbor` token against a phase-dependent
+/// one is NOT counted, although `tokens_agree` never tolerates that pair: the
+/// phase-dependent side would still excuse any other mismatch, and the pair
+/// is always a disagreement, so it cannot inflate a green run's count.
+/// `a_strict_pair_is_never_excused_by_the_tolerance` pins the property the
+/// floor depends on: no unequal pair counted here is one `tokens_agree`
+/// would accept.
+pub fn tokens_are_strict(target: &str, rust: &str, python: &str) -> bool {
+    use secretary_core::vault::manifest::RuleToken;
+    let grants = |s: &str| {
         RuleToken::ALL
             .iter()
-            .any(|t| t.as_str() == s && t.is_phase_dependent())
+            .any(|t| t.as_str() == s && grants_tolerance(target, *t))
     };
-    TOKEN_COMPARED_TARGETS.contains(&target)
-        && !(PHASE_DEPENDENT_TOLERANCE_TARGETS.contains(&target)
-            && (phase_dependent(rust_token) || phase_dependent(py_token)))
+    !grants(rust) && !grants(python)
+}
+
+/// Does this input count toward [`super::targets::MIN_STRICT_COMPARISONS`]?
+/// Committed inputs only, for the reason `MIN_CORPUS_INPUTS` gives: a
+/// populated, gitignored `fuzz/corpus/` must not be able to pad the count.
+pub fn counts_toward_strict_floor(
+    committed: bool,
+    target: &str,
+    rust: &Result<SecretBytes, RustRejection>,
+    python: &PyOutcome,
+) -> bool {
+    committed && is_strict_comparison(target, rust, python)
 }
 
 /// `Some(explanation)` when `target` could be token-compared on this evidence
@@ -173,7 +195,7 @@ mod tests {
         assert_eq!(misclassification(LOOSE, coverage(0, 0)), None);
     }
 
-    /// The tolerance target and a compared target with no tolerance.
+    /// The one target the phase-dependent tolerance applies on.
     const TOLERANT: &str = "manifest_body";
 
     #[test]
@@ -257,6 +279,61 @@ mod tests {
             &rust_err(tok),
             &PyOutcome::Accept(Vec::new())
         ));
+    }
+
+    /// An unrecognised token grants no tolerance, so it counts as ordered.
+    #[test]
+    fn an_unrecognised_token_counts_as_strict() {
+        assert!(is_strict_comparison(
+            TOLERANT,
+            &rust_err(Some("wrong_type")),
+            &py_reject(Some("no_such_token"))
+        ));
+    }
+
+    /// A gitignored runtime corpus must not pad the floor (#658 review).
+    #[test]
+    fn only_a_committed_input_counts_toward_the_strict_floor() {
+        let tok = Some("wrong_type");
+        assert!(counts_toward_strict_floor(
+            true,
+            COMPARED,
+            &rust_err(tok),
+            &py_reject(tok)
+        ));
+        assert!(!counts_toward_strict_floor(
+            false,
+            COMPARED,
+            &rust_err(tok),
+            &py_reject(tok)
+        ));
+    }
+
+    /// The property the floor depends on, over every token pair on every
+    /// target: a pair counted as strict is never one the tolerance accepts
+    /// unless its tokens are equal. A future widening of `tokens_agree` that
+    /// bypasses `grants_tolerance` (a pair list, say) reds here instead of
+    /// leaving the floor counting pairs that are no longer compared.
+    #[test]
+    fn a_strict_pair_is_never_excused_by_the_tolerance() {
+        use crate::differential_replay_helpers::targets::TARGETS;
+        use crate::differential_replay_helpers::tolerance::tokens_agree;
+        use secretary_core::vault::manifest::RuleToken;
+        let mut strict_unequal = 0usize;
+        for target in TARGETS {
+            for r in RuleToken::ALL.iter().map(|t| t.as_str()) {
+                for p in RuleToken::ALL.iter().map(|t| t.as_str()) {
+                    if r != p && tokens_are_strict(target, r, p) {
+                        strict_unequal += 1;
+                        assert!(
+                            !tokens_agree(target, r, p),
+                            "{target}: ({r}, {p}) is counted strict but tolerated"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(strict_unequal > 0, "the sweep checked no pair");
     }
 
     #[test]

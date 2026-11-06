@@ -25,7 +25,7 @@ use super::targets::PHASE_DEPENDENT_TOLERANCE_TARGETS;
 /// `malformed_cbor` exception below withholds four), of which §4.2 frees a
 /// strict subset. FOUR groups are
 /// tolerated with no §4.2 licence at all, and on the committed corpus the
-/// cost is that **17 of the 32 rejecting `manifest_body` seeds never compare
+/// cost is that **17 of the 42 rejecting `manifest_body` seeds never compare
 /// the Python token**, because every `NonCanonicalEncoding` cause maps to a
 /// phase-dependent token. The rest are compared strictly, and
 /// `MIN_STRICT_COMPARISONS` floors how many (#658; each target's finish line
@@ -86,7 +86,14 @@ pub fn tokens_agree(target: &str, rust: &str, python: &str) -> bool {
     }
     let well_formedness_precondition =
         r == RuleToken::MalformedCbor || p == RuleToken::MalformedCbor;
-    PHASE_DEPENDENT_TOLERANCE_TARGETS.contains(&target)
-        && !well_formedness_precondition
-        && (r.is_phase_dependent() || p.is_phase_dependent())
+    !well_formedness_precondition && (grants_tolerance(target, r) || grants_tolerance(target, p))
+}
+
+/// Does `token` carry the phase-dependent licence on `target`?
+///
+/// The one copy of that rule: [`tokens_agree`] reads it, and so does
+/// `token_coverage::is_strict_comparison`, whose floor (#658) is only as good
+/// as its agreement with this predicate.
+pub fn grants_tolerance(target: &str, token: secretary_core::vault::manifest::RuleToken) -> bool {
+    PHASE_DEPENDENT_TOLERANCE_TARGETS.contains(&target) && token.is_phase_dependent()
 }
