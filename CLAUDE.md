@@ -721,7 +721,7 @@ three added in the #679 review. Four are worth knowing:
   modules scanned" — both #679-review fixes, both the fail-open shapes this
   file records by name.
 - **A TOKEN-LESS row must not pass on any rejection.** `contact_card` and
-  `vault_toml` have no taxonomy, so "rejected" was check 1's whole assertion
+  `vault_toml` had no taxonomy at #669, so "rejected" was check 1's whole assertion
   for 8 of its 16 rows — and they passed on a tree carrying #669's defect in
   full once the planted body was made to reject some other way (measured).
   Those rows now require the rejection to NAME the position and reject an
@@ -729,6 +729,10 @@ three added in the #679 review. Four are worth knowing:
   planting a bool in a card changes the signed bytes, so the hybrid
   self-signature rejects it whatever the type check does, and the first
   version of that check passed with `wire/card.py`'s fix fully reverted.
+  Since #700 only `vault_toml` is token-less: VT's copy of
+  `TOKEN_COMPARED_TARGETS` had missed #698's `contact_card`, so the card rows
+  pinned nothing. They pin `wrong_type` now, and a token-less row whose decoder
+  names a rule is itself an issue, so a stale copy reds instead of weakening rows.
 - **Check 4 governs OPTIONAL keys only, and the scope is the rule, not a
   caveat.** Every key in `KNOWN − REQUIRED`, censused two ways against the
   cases that actually run (7 optional keys tree-wide). A REQUIRED key losing
@@ -1589,7 +1593,13 @@ survived it. Six things:
   `core/tests/rule_token_seeds.rs` and Section RTS, so CI makes a strict comparison per seed;
   the orders they rely on are PARITY, not spec (§6.1/§6.3 fix none; #668). The classification
   table must PARTITION `TARGETS`, so a new target cannot default into the loose
-  behaviour.
+  behaviour. Partitioning alone let a compared target be moved OUT with the
+  binary green, so since #700 membership is DERIVED as well:
+  `differential_replay_full_corpus` reds when every reject-vs-reject pair of a
+  target carries a token on both sides but the target is neither compared nor in
+  `TOKEN_COMPARISON_BLOCKED` (`manifest_file`, #640 — reached only by a fuzzed
+  checkout's runtime corpus; the committed corpus holds no `manifest_file`
+  rejection, so CI cannot see that entry's necessity).
 - **The tolerance has a committed WITNESS**, because every other corpus row breaks
   exactly one rule and the comparison would otherwise pass vacuously.
   `diff_regressions/manifest_body/arraysort_plus_indefinite.bin` breaks two at
