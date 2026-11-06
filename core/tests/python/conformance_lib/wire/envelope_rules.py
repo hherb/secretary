@@ -1,4 +1,6 @@
-"""Typed §6.1/§6.2 block-file envelope rejections carrying a rule token (#641).
+"""Typed envelope rejections carrying a rule token (#641): the §6.1/§6.2
+block file and, since `bundle_file` became token-compared, the §3
+`identity.bundle.enc` envelope.
 
 Subclasses of `cursor.ParseError`, deliberately NOT of a new base: every
 existing `except ParseError` in this package -- `sections/block_kat.py`,
@@ -17,9 +19,12 @@ by name, and `block.rs` draws every one of these distinctions as a variant.
 Each class declares `token` itself rather than inheriting it, so Section
 RTS can require that of every verdict class these modules define.
 
-Only distinctions `core/src/vault/block.rs` also draws are drawn here -- the
-vocabulary's standing rule that a token may only draw a distinction both
-implementations can make.  `manifest_file`'s envelope is untouched; #640 is
+Only distinctions `core/src/vault/block.rs` or `core/src/unlock/bundle_file.rs`
+also draws are drawn here -- the vocabulary's standing rule that a token may
+only draw a distinction both implementations can make.  The bundle parser
+reuses the block classes where the two Rust enums draw the same distinction
+(magic, file kind, format version, trailing bytes); `EnvelopeWrapLength` is
+the one §3-only check.  `manifest_file`'s envelope is untouched; #640 is
 about why that one cannot be refined the same way.
 """
 
@@ -29,13 +34,15 @@ from conformance_lib.cursor import ParseError
 
 
 class EnvelopeBadMagic(ParseError):
-    """The file does not start with the §6.1 magic (`BlockError::BadMagic`)."""
+    """The file does not start with the magic (`BlockError::BadMagic`,
+    `BundleFileError::BadMagic`)."""
 
     token = "container_malformed"
 
 
 class EnvelopeWrongFileKind(ParseError):
-    """`file_kind` is not a block's (`BlockError::WrongFileKind`)."""
+    """`file_kind` is not the one this envelope requires
+    (`BlockError::WrongFileKind`, `BundleFileError::UnsupportedFileKind`)."""
 
     token = "container_malformed"
 
@@ -59,15 +66,24 @@ class EnvelopeMlDsaSignatureLength(ParseError):
 
 
 class EnvelopeTrailingBytes(ParseError):
-    """Bytes follow the signature suffix (`BlockError::TrailingBytes`)."""
+    """Bytes follow the last field (`BlockError::TrailingBytes`,
+    `BundleFileError::TrailingBytes`)."""
 
     token = "container_malformed"
 
 
 class UnsupportedEnvelopeVersion(ParseError):
-    """`format_version` or `suite_id` is not the v1 value."""
+    """`format_version` or `suite_id` is not the v1 value
+    (`BlockError::Unsupported*`, `BundleFileError::UnsupportedFormatVersion`)."""
 
     token = "unsupported_version"
+
+
+class EnvelopeWrapLength(ParseError):
+    """A §3 `wrap_pw_ct_len` / `wrap_rec_ct_len` is not 32
+    (`BundleFileError::WrapLengthMismatch`)."""
+
+    token = "container_malformed"
 
 
 class EnvelopeSortOrder(ParseError):

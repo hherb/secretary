@@ -1,5 +1,5 @@
 """Section RTS -- every committed single-fault seed for a token-compared
-`block_file`, `record` or `contact_card` target is rejected with the rule
+`block_file`, `bundle_file`, `record` or `contact_card` target is rejected with the rule
 its file name says, in this package as in Rust (#641, task 10).
 
 WHAT THIS PINS.  `core/tests/rule_token_seeds.rs` generates one seed per
@@ -103,6 +103,12 @@ _TARGETS: dict[str, tuple[int, frozenset[str]]] = {
             {"container_malformed", "unsupported_version", "array_sort_order", "repeated_array_value"}
         ),
     ),
+    # 9 single-fault seeds planted into `golden.bin` (#641); the accepting
+    # base is not `__`-labelled, so it is not counted here.
+    "bundle_file": (
+        9,
+        frozenset({"container_malformed", "unsupported_version"}),
+    ),
     "record": (
         37,
         frozenset(
@@ -160,6 +166,7 @@ _TOKENED_CLASSES: tuple[tuple[type, str], ...] = (
     (envelope_rules.EnvelopeMlDsaSignatureLength, "container_malformed"),
     (envelope_rules.EnvelopeTrailingBytes, "container_malformed"),
     (envelope_rules.UnsupportedEnvelopeVersion, "unsupported_version"),
+    (envelope_rules.EnvelopeWrapLength, "container_malformed"),
     (envelope_rules.EnvelopeSortOrder, "array_sort_order"),
     (envelope_rules.EnvelopeRepeatedValue, "repeated_array_value"),
     (cbor_faults.MalformedCbor, "malformed_cbor"),
@@ -217,6 +224,22 @@ _BLOCK_FILE_CLASSES: dict[str, str] = {
     "repeated_array_value__recipients_first_pair_of_three": "EnvelopeRepeatedValue",
 }
 
+# Check 2: the Python class every `bundle_file` seed must be rejected with
+# (#641), for `_BLOCK_FILE_CLASSES`'s reason -- seven of the nine seeds share
+# `container_malformed`, so the token alone cannot tell a deleted
+# `wrap_*_ct_len` check from the truncation the parse would hit next.
+_BUNDLE_FILE_CLASSES: dict[str, str] = {
+    "container_malformed__bad_magic": "EnvelopeBadMagic",
+    "container_malformed__wrong_file_kind": "EnvelopeWrongFileKind",
+    "container_malformed__truncated_header": "ParseError",
+    "container_malformed__wrap_pw_ct_len": "EnvelopeWrapLength",
+    "container_malformed__wrap_rec_ct_len": "EnvelopeWrapLength",
+    "container_malformed__truncated_bundle_ct": "ParseError",
+    "container_malformed__bundle_ct_len_exceeds_file": "ParseError",
+    "container_malformed__trailing_bytes": "EnvelopeTrailingBytes",
+    "unsupported_version__format_version": "UnsupportedEnvelopeVersion",
+}
+
 # Check 2 (CRITICAL, fix round 1): the Python class every `contact_card`
 # seed must be rejected with, keyed by file stem -- the same default-deny
 # discipline `_BLOCK_FILE_CLASSES` gives `block_file`, and for the identical
@@ -266,6 +289,7 @@ _CONTACT_CARD_CLASSES: dict[str, str] = {
 # target may now be absent only by being declared absent, with its reason.
 _SEED_CLASSES: dict[str, dict[str, str]] = {
     "block_file": _BLOCK_FILE_CLASSES,
+    "bundle_file": _BUNDLE_FILE_CLASSES,
     "contact_card": _CONTACT_CARD_CLASSES,
 }
 

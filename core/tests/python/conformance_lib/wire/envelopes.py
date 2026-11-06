@@ -13,6 +13,13 @@ from dataclasses import dataclass
 from conformance_lib.constants import AEAD_TAG_LEN, BUNDLE_WRAP_CT_PLUS_TAG_LEN, ED25519_SIG_LEN, FILE_KIND_IDENTITY_BUNDLE, FILE_KIND_MANIFEST, FINGERPRINT_LEN, FORMAT_VERSION, MAGIC, ML_DSA_65_SIG_LEN, RECIPIENT_ENTRY_LEN, SUITE_ID
 from conformance_lib.cursor import Cursor, ParseError, take, take_u16, take_u32, take_u64
 from conformance_lib.wire.block_file import ParsedBlockFile
+from conformance_lib.wire.envelope_rules import (
+    EnvelopeBadMagic,
+    EnvelopeTrailingBytes,
+    EnvelopeWrapLength,
+    EnvelopeWrongFileKind,
+    UnsupportedEnvelopeVersion,
+)
 
 @dataclass
 class IdentityBundleEnvelope:
@@ -35,18 +42,21 @@ class IdentityBundleEnvelope:
 def parse_identity_bundle_envelope(buf: bytes) -> IdentityBundleEnvelope:
     """Parse the §3 identity.bundle.enc binary envelope.
 
-    Field order from `unlock::bundle_file::decode` (bundle_file.rs:102).
+    Field order from `unlock::bundle_file::decode`.  Each check raises the
+    typed `envelope_rules` class naming the `BundleFileError` variant Rust
+    raises there, so the `bundle_file` replay target compares WHICH rule
+    (#641); a truncation is `cursor.take`'s bare `ParseError`.
     """
     cur = Cursor(buf=buf, pos=0)
     magic, cur = take_u32(cur, "magic")
     if magic != MAGIC:
-        raise ParseError(f"identity.bundle.enc bad magic 0x{magic:08x}")
+        raise EnvelopeBadMagic(f"identity.bundle.enc bad magic 0x{magic:08x}")
     fmt, cur = take_u16(cur, "format_version")
     if fmt != FORMAT_VERSION:
-        raise ParseError(f"identity.bundle.enc format_version 0x{fmt:04x}")
+        raise UnsupportedEnvelopeVersion(f"identity.bundle.enc format_version 0x{fmt:04x}")
     kind, cur = take_u16(cur, "file_kind")
     if kind != FILE_KIND_IDENTITY_BUNDLE:
-        raise ParseError(f"identity.bundle.enc file_kind 0x{kind:04x}")
+        raise EnvelopeWrongFileKind(f"identity.bundle.enc file_kind 0x{kind:04x}")
     vault_uuid, cur = take(cur, 16, "vault_uuid")
     created_at_ms, cur = take_u64(cur, "created_at_ms")
 
@@ -54,14 +64,14 @@ def parse_identity_bundle_envelope(buf: bytes) -> IdentityBundleEnvelope:
     wrap_pw_nonce, cur = take(cur, 24, "wrap_pw_nonce")
     wrap_pw_len, cur = take_u32(cur, "wrap_pw_ct_len")
     if wrap_pw_len != 32:
-        raise ParseError(f"wrap_pw_ct_len {wrap_pw_len} (expected 32)")
+        raise EnvelopeWrapLength(f"wrap_pw_ct_len {wrap_pw_len} (expected 32)")
     wrap_pw_ct_with_tag, cur = take(cur, BUNDLE_WRAP_CT_PLUS_TAG_LEN, "wrap_pw_ct||tag")
 
     # wrap_rec
     wrap_rec_nonce, cur = take(cur, 24, "wrap_rec_nonce")
     wrap_rec_len, cur = take_u32(cur, "wrap_rec_ct_len")
     if wrap_rec_len != 32:
-        raise ParseError(f"wrap_rec_ct_len {wrap_rec_len} (expected 32)")
+        raise EnvelopeWrapLength(f"wrap_rec_ct_len {wrap_rec_len} (expected 32)")
     wrap_rec_ct_with_tag, cur = take(
         cur, BUNDLE_WRAP_CT_PLUS_TAG_LEN, "wrap_rec_ct||tag"
     )
@@ -73,7 +83,7 @@ def parse_identity_bundle_envelope(buf: bytes) -> IdentityBundleEnvelope:
     bundle_ct_with_tag, cur = take(cur, bundle_total, "bundle_ct||tag")
 
     if cur.remaining() != 0:
-        raise ParseError(
+        raise EnvelopeTrailingBytes(
             f"identity.bundle.enc trailing {cur.remaining()} bytes after parse"
         )
     return IdentityBundleEnvelope(

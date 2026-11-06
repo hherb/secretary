@@ -1,7 +1,9 @@
 //! `rule_token()` for [`RecordError`](super::record::RecordError),
-//! [`BlockError`](super::block::BlockError) (#641) and
-//! [`CardError`](crate::identity::card::CardError) (#641): which rule a
-//! rejecting record, block-file or contact-card decoder is reporting, as the
+//! [`BlockError`](super::block::BlockError) (#641),
+//! [`CardError`](crate::identity::card::CardError) (#641) and
+//! [`BundleFileError`](crate::unlock::bundle_file::BundleFileError) (#641):
+//! which rule a rejecting record, block-file, contact-card or bundle-file
+//! decoder is reporting, as the
 //! language-neutral token `core/tests/differential_replay.rs` compares
 //! against `conformance.py`.
 //!
@@ -15,12 +17,14 @@
 //! for those two. `identity/card.rs` is not — it is under 1,500 lines
 //! (measured at this writing; re-measure rather than quoting), nowhere near
 //! that threshold — so its `impl` sits here for a different reason:
-//! consistency with its two siblings' placement, not size. An inherent
-//! `impl` may live anywhere in the crate, so all three impls sit in their
+//! consistency with its two siblings' placement, not size, and so does
+//! `bundle_file.rs`'s (`unlock/bundle_file.rs` is under 400). An inherent
+//! `impl` may live anywhere in the crate, so all four impls sit in their
 //! own small files beside a second, independent declaration of each mapping
 //! in `tests/`.
 
 mod block;
+mod bundle_file;
 mod card;
 mod record;
 
