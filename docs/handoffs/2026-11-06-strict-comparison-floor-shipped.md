@@ -38,6 +38,15 @@ differential-replay --test differential_replay`):**
   `a_phase_dependent_token_on_either_side_is_not_strict_where_tolerated`.
 - S3 the counter never increments: reds `differential_replay_full_corpus`.
 
+PR #717 review round, same harness, all RED_AS_EXPECTED, exit 0, tree clean:
+- F1 `counts_toward_strict_floor` ignores `committed`: reds
+  `only_a_committed_input_counts_toward_the_strict_floor`.
+- F2 `record` floor 40 -> 41: reds `differential_replay_full_corpus`, so the
+  deferred (collected, asserted last) floor still fires.
+- F3 `block_file` floor 23 -> 0: reds `every_target_is_classified`.
+- F4 `tokens_agree` widened by a pair that bypasses `grants_tolerance`: reds
+  `a_strict_pair_is_never_excused_by_the_tolerance`.
+
 **Gates run:** the replay test (57 passed), clippy `-p secretary-core
 --features differential-replay --tests -D warnings`, `cargo fmt --check`,
 rustdoc `-D warnings` on `secretary-core`, `check-ci-wiring.py`,
