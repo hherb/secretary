@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-06-npm-advisories-709-shipped.md
+docs/handoffs/2026-11-06-token-compared-membership-shipped.md
