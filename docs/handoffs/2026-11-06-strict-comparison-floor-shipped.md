@@ -58,12 +58,18 @@ rustdoc `-D warnings` on `secretary-core`, `check-ci-wiring.py`,
 
 ## (3) Open decisions / risks
 
-- **Definition choice.** "Strict" means both tokens are ordered. A pair like
-  `rule4_tag_or_float`/`rule4_tag_or_float` counts as strict, though a Python
-  move from it to `rule2_indefinite_length` would be tolerated (group C).
-  The floor catches the Rust raise side moving, which is what #658 asks for.
-  It does not floor Python-side moves onto phase-dependent tokens; Section
-  RTV's corpus-token set check covers those.
+- **Definition choice.** "Strict" means neither token carries the tolerance
+  licence (`tolerance::grants_tolerance`, the predicate `tokens_agree` also
+  reads). A raise site moving onto a phase-dependent token on EITHER side
+  drops the count: `rule4_tag_or_float`/`rule4_tag_or_float` becoming
+  `rule4_tag_or_float`/`rule2_indefinite_length` is tolerated (group C) and
+  no longer counted. A `malformed_cbor`-vs-phase-dependent pair is not
+  counted although never tolerated; it is always a disagreement, so it cannot
+  inflate a green run. `a_strict_pair_is_never_excused_by_the_tolerance`
+  pins that no counted unequal pair is one `tokens_agree` accepts.
+- **Floor failures report last (PR #717 review).** A harness failure or a
+  disagreement also lowers the count, so shortfalls are collected and
+  asserted after both, which name the cause and the input.
 - **Floor, not equality.** Adding seeds does not red; the table goes stale
   low until someone raises it. The finish line prints the live count.
 - `sections/value_type_discipline.py` (849 lines) still over 500; backlog.

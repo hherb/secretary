@@ -125,14 +125,15 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// and `contact_card` — and the phase-dependent tolerance applies on
 /// [`PHASE_DEPENDENT_TOLERANCE_TARGETS`] (`manifest_body`) only. On `record`,
 /// `block_file` and `contact_card` (#641) every committed input both sides
-/// reject therefore reaches a strict comparison — but the floor is not that
-/// count. It also counts the committed ACCEPTING bases, which are compared
+/// reject therefore reaches a strict comparison — but this floor is not that
+/// count ([`MIN_STRICT_COMPARISONS`] is). It also counts the committed ACCEPTING bases, which are compared
 /// on re-encoded bytes rather than tokens: 4 of `record`'s 44
 /// (`api_key.cbor`, `login.cbor`, `secure_note.cbor`,
 /// `nesting__256_unknown.bin`, #667), 1 of `block_file`'s 24 (`golden.bin`),
-/// and 1 of `contact_card`'s 21 (`with_sigs.cbor` — `pre_sig.cbor` rejects,
-/// `MissingField`, so it counts on the strict side), leaving 40, 23 and 20
-/// strict comparisons today (task 10 raised `contact_card` from 4 to 21: 17
+/// and 1 of `contact_card`'s 23 (`with_sigs.cbor` — `pre_sig.cbor` rejects,
+/// `MissingField`, so it counts on the strict side), leaving 40, 23 and 22
+/// strict comparisons today (task 10 raised `contact_card` from 4 to 21, and
+/// the #698 review's two `card_version` range seeds to 23: task 10's 17
 /// generated single-fault seeds — 21 generated, four moved to a LOCAL
 /// parity-order check rather than committed, since each measurably carries a
 /// second, order-dependent fault crypto-design §6 does not rank against the
@@ -151,7 +152,8 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// (#698 review). And the floor
 /// is taken before any decode, so it holds that figure only while every
 /// `rule_token_seeds` seed still rejects, which that generator and Section
-/// RTS check and this floor does not. (The `nesting__` seeds are labelled
+/// RTS check; this floor does not, but [`MIN_STRICT_COMPARISONS`] does, since
+/// a seed that stops rejecting drops out of the strict count. (The `nesting__` seeds are labelled
 /// too, and `nesting__256_unknown` ACCEPTS; `nesting_depth_seeds` and
 /// Section NDL check those.) On `manifest_body` the gap is wider:
 /// `tokens_agree` there lets a phase-dependent token on either side stand
@@ -173,14 +175,14 @@ pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
 /// The committed STRICT token comparisons each target must make (#658).
 ///
 /// A strict comparison is a pair `token_coverage::is_strict_comparison`
-/// accepts: both sides rejected with a token, and the tolerance cannot excuse
-/// a mismatch. [`MIN_CORPUS_INPUTS`] cannot see the corpus being routed onto
+/// accepts: both sides rejected with a token and neither token carries the
+/// tolerance licence, so agreement is decided by token equality alone. [`MIN_CORPUS_INPUTS`] cannot see the corpus being routed onto
 /// tolerated pairs, since every input is still replayed and still agrees; this
 /// can. The figures are what the committed corpus makes today, read off each
-/// target's finish line, so moving one input onto a phase-dependent token reds.
+/// target's finish line, so moving one input on either side onto a phase-dependent token reds.
 /// A floor, not an equality, for the reason [`MIN_CORPUS_INPUTS`] gives.
-/// Untoken-compared targets make none, and `every_target_is_classified` holds
-/// their entries at 0.
+/// A target that is not token-compared makes none: `every_target_is_classified`
+/// holds its entry at 0, and every compared target's above 0.
 pub const MIN_STRICT_COMPARISONS: &[(&str, usize)] = &[
     ("vault_toml", 0),
     ("record", 40),
