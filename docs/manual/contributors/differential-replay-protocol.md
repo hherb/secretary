@@ -192,7 +192,7 @@ There are exactly three valid output shapes:
   `reencoded_b64` already was (#662 review).
 - **`rule` is compared** (#634), for the targets in
   `differential_replay_helpers/targets.rs::TOKEN_COMPARED_TARGETS` — today `manifest_body`,
-  `block_file`, `record` (#641) and `contact_card` (#691). It is one of the tokens in
+  `block_file`, `record` (#641), `contact_card` (#691) and `bundle_file` (#641). It is one of the tokens in
   `core/tests/data/rule_token_vocabulary.json`, which the Rust enum
   `secretary_core::vault::manifest::RuleToken` and Section RTV both check
   themselves against, so the two languages cannot drift onto different
@@ -239,7 +239,7 @@ There are exactly three valid output shapes:
 - **`manifest_file` is deliberately NOT token-compared** (#640): Rust's
   header raises `UnsupportedFormatVersion` where Python raises the same
   `ParseError` it raises for every envelope fault, and no mapping reconciles
-  that. The other five targets are #641.
+  that. `vault_toml`, the one other uncompared target, is #641.
 
 ### Exit code
 

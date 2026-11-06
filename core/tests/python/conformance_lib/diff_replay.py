@@ -97,9 +97,9 @@ def replay_bytes(target: str, data: bytes) -> Replay:
     bug in this script became a green differential test on exactly the inputs
     whose decode paths are most interesting.  #634 narrowed that arm to a
     token comparison for `manifest_body`, #641 extended it to `record` and
-    `block_file`, and this slice (#691) extended it to `contact_card`, which
-    does not retire this split: the other three targets (`vault_toml`,
-    `bundle_file`, `manifest_file`) are still scored on the fact of rejection
+    `block_file`, #691 extended it to `contact_card` and #641 to
+    `bundle_file`, which does not retire this split: the other two targets
+    (`vault_toml`, `manifest_file`) are still scored on the fact of rejection
     alone, and even for `manifest_body` a phase-dependent token tolerates
     whatever the other side said. Both figures moved with the corpus and have
     been re-measured repeatedly rather than trusted from the last time this

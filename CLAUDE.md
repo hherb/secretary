@@ -115,17 +115,19 @@ cargo test --release --locked -p secretary-core \
 # isolation, which conformance Section DRS checks rather than assumes, over
 # the committed corpus only.
 #
-# CI replays the 160 committed inputs (no `corpus/` there): 107 until #669
+# CI replays the 169 committed inputs (no `corpus/` there): 107 until #669
 # added 14, 121 until #667/#670 added 10, 131 until #666/#685 added 10,
 # 141 until #641/#691 added 17 committed contact_card seeds (four two-fault
 # rows were added and then moved to Section RTS check 5 inside the same
-# branch, so the net is +17, not +21).
+# branch, so the net is +17, not +21), 160 until #641's bundle_file slice
+# added 9 bundle_file seeds (2026-11-07).
 # Re-measure with
 # `ls core/fuzz/seeds/*/* core/tests/data/diff_regressions/*/* | grep -v gitkeep | wc -l`.
 # The 5.98 s test body
 # and 36 s step quoted in #656 measured the per-input spawn; re-measure before
 # quoting a CI figure. Do not compare a STEP duration against a test body.
-# #641 added 57 generated single-fault seeds for block_file and record (#670
+# #641 added 57 generated single-fault seeds for block_file and record (and
+# later 9 for bundle_file, from the same generator) (#670
 # added 3 more record rows, a default present); regenerate with
 # `cargo test --release --locked -p secretary-core --test rule_token_seeds -- --ignored generate_rule_token_seeds`.
 # #667 added 7 `nesting__` seeds (4 record, 3 manifest_body) from their own
@@ -1556,8 +1558,9 @@ survived it. Six things:
   failure; an UNRECOGNISED one is an ordinary disagreement (`tokens_agree`
   returns `false`) — "unrecognised OR missing is a harness failure" is wrong
   about the first half, though both red the test.
-- **`manifest_body`, `block_file`, `record` and `contact_card` are token-compared
-  (#634, #641; `contact_card` closed by #641/#691). `manifest_file` is BLOCKED,
+- **`manifest_body`, `block_file`, `record`, `contact_card` and `bundle_file` are
+  token-compared (#634, #641; `contact_card` closed by #641/#691, `bundle_file`
+  by #641 on 2026-11-07). `manifest_file` is BLOCKED,
   and the
   reason generalises: sharing an error enum is not sharing a granularity.**
   Measured on one file with `format_version = 0x0099`, Rust says
@@ -1565,8 +1568,12 @@ survived it. Six things:
   `ParseError` (token `container_malformed`). No mapping reconciles it —
   `header.rs` and the BODY sentinel check raise the same variant, so a per-variant
   token cannot tell the layers apart, and `ParseError` is one class shared by every
-  target's wire decoder (#640). `bundle_file` and `vault_toml` remain #641 —
-  see "Sub-project A" progress in ROADMAP.md for their per-target state.
+  target's wire decoder (#640). `bundle_file`'s envelope has the same SHAPE
+  of fault and is compared all the same, because there the variant is not
+  shared: `BundleFileError::UnsupportedFormatVersion` has one producer, so
+  typing Python's one raise `unsupported_version` reconciled it — the single
+  disagreement measured once the target was compared. `vault_toml` remains
+  #641 — see "Sub-project A" progress in ROADMAP.md.
   `contact_card` needed the same treatment `record` did (below), one level
   up: its own byte-level well-formedness walk wired into
   `ContactCard::from_canonical_cbor` ahead of ciborium, and `codec/card.py`
@@ -1603,7 +1610,7 @@ survived it. Six things:
   reads, which never parse the body through `cbor2`. `block_file` needed no decoder
   reordering, only Python-side typing: its merged sort/repeat check split, and its
   `format_version`/`suite_id` raises typed `unsupported_version` where they had been plain
-  `ParseError`. All three of `record`/`block_file`/`contact_card` have committed single-fault
+  `ParseError`. All four of `record`/`block_file`/`contact_card`/`bundle_file` have committed single-fault
   seeds, generated and label-bound by
   `core/tests/rule_token_seeds.rs` and Section RTS, so CI makes a strict comparison per seed;
   the orders they rely on are PARITY, not spec (§6.1/§6.3 fix none; #668). The classification
@@ -1681,7 +1688,7 @@ survived it. Six things:
   step is silent; the full LIMITS are in the script's header.
   **State the residual scope exactly, because the wider claim is the one
   someone will want to make.** CI replays the COMMITTED corpus only —
-  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **160** inputs today
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **169** inputs today
   (#641 added 57 generated single-fault seeds for `block_file` and `record`;
   #669 added 14 acceptance seeds for `contact_card`, `vault_toml` and
   `manifest_body`; #667 added 7 `nesting__` seeds for `record` and
@@ -1692,7 +1699,8 @@ survived it. Six things:
   two more `card_version` range seeds in #698's review for 160 —
   a further four two-fault `contact_card` rows were built and then moved to
   Section RTS check 5 rather than committed, per the #618 no-cross-language-
-  row-on-an-unspecified-order rule, so the net addition is 17, not 21).
+  row-on-an-unspecified-order rule, so the net addition is 17, not 21; #641's
+  `bundle_file` slice added 9 single-fault `bundle_file` seeds for 169).
   `core/fuzz/corpus/` is **gitignored**, so agreement on fuzz-DISCOVERED
   inputs is still proven only by whoever runs the fuzzer, and "the differential
   replay is in CI" must not be read as "the fuzz corpus is differentially
