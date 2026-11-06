@@ -36,9 +36,10 @@ WHY SOME ROWS CARRY A TOKEN AND SOME DO NOT.  `manifest_body` is
 token-compared, so its rows require the exact rule Rust names -- measured
 against `manifest/token.rs`: `WrongType` and `InvalidByteLength` both map to
 `wrong_type`, `IntegerOutOfRange` to `integer_out_of_range`.  `contact_card`
-and `vault_toml` have no token taxonomy yet (#641), so their rows require a
-verdict and nothing finer.  A row must not pin a distinction its target
-cannot make.
+is token-compared too since #641/#691 (`CardError::WrongType` maps to
+`wrong_type`).  `vault_toml` has no token taxonomy yet (#641), so its rows
+require a verdict and nothing finer.  A row must not pin a distinction its
+target cannot make.
 
 WHY `codec/trash_entry.py` IS CHECKED DIFFERENTLY.  It carries the same M1
 defect at two positions, but it is a STANDALONE decoder -- Section PRG and
@@ -183,8 +184,11 @@ def _manifest_base() -> bytes:
 
 #: Mirrors `core/tests/differential_replay_helpers/targets.rs`'s
 #: `TOKEN_COMPARED_TARGETS`. Python had no copy of that classification, so the
-#: rule "pin a token iff the target has a taxonomy" lived only in prose.
-TOKEN_COMPARED_TARGETS = frozenset({"record", "manifest_body", "block_file"})
+#: rule "pin a token iff the target has a taxonomy" lived only in prose. It
+#: lacked `contact_card` from #698 until #700, so the card rows below pinned no
+#: token although CI compares that target's tokens; check 1 now derives the
+#: answer from the decoder instead of trusting this copy.
+TOKEN_COMPARED_TARGETS = frozenset({"record", "manifest_body", "block_file", "contact_card"})
 
 
 @dataclass(frozen=True)
@@ -242,7 +246,7 @@ def _card_case(position: str) -> Case:
         substitution="bool",
         plant=lambda: _cbor_sub(_card_base(), (position,), True),
         base_body=_card_base,
-        token=None,
+        token=_WRONG_TYPE,
     )
 
 
@@ -657,7 +661,17 @@ def _rejection_issues() -> list[str]:
                     f"({verdict.get('error_class')}: {verdict.get('detail')})"
                 )
             continue
-        # TOKEN-LESS TARGETS (`contact_card`, `vault_toml`) have no taxonomy to
+        # A token-less row whose decoder DOES name a rule means the target has
+        # a taxonomy and `TOKEN_COMPARED_TARGETS` above is stale -- how the
+        # card rows pinned nothing from #698 to #700. Derived, not declared.
+        if verdict.get("rule") is not None:
+            issues.append(
+                f"{case.label()}: pins no token, but the decoder names "
+                f"{verdict.get('rule')!r} -- add {case.target!r} to "
+                f"TOKEN_COMPARED_TARGETS and pin the token"
+            )
+            continue
+        # TOKEN-LESS TARGETS (`vault_toml`; `contact_card` until #700) have no taxonomy to
         # compare, so "rejected" was the whole assertion -- and a rejection for
         # an UNRELATED reason satisfied it. Eight of the sixteen rows passed on
         # a tree carrying #669's defect in full, once the planted body was made
