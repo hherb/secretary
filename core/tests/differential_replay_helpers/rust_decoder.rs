@@ -71,13 +71,13 @@ pub fn rust_decode(
         "bundle_file" => unlock::bundle_file::decode(bytes)
             .map(|f| SecretBytes::new(unlock::bundle_file::encode(&f)))
             .map_err(|e| RustRejection {
-                token: None,
+                token: Some(e.rule_token().as_str()),
                 detail: format!("{:?}", e),
             }),
         // NOTE: this arm fills `token`, but `manifest_file` is in
         // `NOT_TOKEN_COMPARED_TARGETS`, so the value is only ever printed in a
         // failure message — it is a diagnostic, not coverage. #640 explains why
-        // the target cannot be compared and #641 tracks the other five.
+        // the target cannot be compared; #641 tracks `vault_toml`, the last other one.
         "manifest_file" => vault::manifest::decode_manifest_file(bytes)
             .and_then(|f| vault::manifest::encode_manifest_file(&f))
             .map(SecretBytes::new)

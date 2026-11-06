@@ -1,13 +1,14 @@
 //! The committed single-fault seeds for the token-compared `record`,
-//! `block_file` (#641) and `contact_card` (#691, #694) replay targets, and
+//! `block_file` (#641), `contact_card` (#691, #694) and `bundle_file` (#641)
+//! replay targets, and
 //! the ONE table the generator and the label-binding check both read.
 //!
 //! **Why generated.** CI replays only committed inputs. Before #641
 //! `record` and `block_file` held four between them, all ACCEPTING, so a
 //! strict token comparison on them would have compared nothing in CI.
 //! (Named explicitly rather than as "these two targets": the sentence
-//! above lists THREE since `contact_card` joined, so the antecedent had
-//! stopped matching — #698 review.)
+//! above lists more than two since `contact_card` joined, so the antecedent
+//! had stopped matching — #698 review.)
 //!
 //! **Why label-bound.** A corpus whose bytes are not bound to their labels
 //! can collapse silently (#614's review measured it). A seed's file name is
@@ -27,6 +28,7 @@ use std::path::PathBuf;
 use secretary_core::vault::manifest::RuleToken;
 
 pub mod block_file;
+pub mod bundle_file;
 pub mod contact_card;
 pub mod record;
 
@@ -99,6 +101,7 @@ pub fn base(target: &str) -> Vec<u8> {
         "block_file" => "golden.bin",
         "record" => "login.cbor",
         "contact_card" => "with_sigs.cbor",
+        "bundle_file" => "golden.bin",
         other => panic!("no seed base for target {other}"),
     };
     let path = seed_dir(target).join(name);
@@ -115,6 +118,7 @@ pub fn base(target: &str) -> Vec<u8> {
 /// the other by hand.
 pub fn rust_rejection(target: &str, bytes: &[u8]) -> Option<RustRejection> {
     use secretary_core::identity::card::ContactCard;
+    use secretary_core::unlock::bundle_file;
     use secretary_core::vault::{block, record};
     match target {
         "block_file" => block::decode_block_file(bytes)
@@ -138,6 +142,11 @@ pub fn rust_rejection(target: &str, bytes: &[u8]) -> Option<RustRejection> {
                 token: e.rule_token(),
                 variant: variant_name(&e),
             }),
+        // `encode` is infallible, so a decoded file cannot reject later.
+        "bundle_file" => bundle_file::decode(bytes).err().map(|e| RustRejection {
+            token: e.rule_token(),
+            variant: variant_name(&e),
+        }),
         other => panic!("no Rust decoder for target {other}"),
     }
 }
@@ -156,5 +165,6 @@ pub fn all_cases() -> Vec<SeedCase> {
     let mut cases = block_file::cases();
     cases.extend(record::cases());
     cases.extend(contact_card::cases());
+    cases.extend(bundle_file::cases());
     cases
 }

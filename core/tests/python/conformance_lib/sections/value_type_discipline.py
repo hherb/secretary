@@ -188,7 +188,7 @@ def _manifest_base() -> bytes:
 #: lacked `contact_card` from #698 until #700, so the card rows below pinned no
 #: token although CI compares that target's tokens; check 1 now derives the
 #: answer from the decoder instead of trusting this copy.
-TOKEN_COMPARED_TARGETS = frozenset({"record", "manifest_body", "block_file", "contact_card"})
+TOKEN_COMPARED_TARGETS = frozenset({"record", "manifest_body", "block_file", "contact_card", "bundle_file"})
 
 
 @dataclass(frozen=True)

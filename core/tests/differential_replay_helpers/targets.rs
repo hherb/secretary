@@ -21,8 +21,8 @@ pub const TARGETS: &[&str] = &[
 /// Targets whose reject-vs-reject pairs are compared on WHICH rule each side
 /// named, not merely on the fact that both rejected (#634).
 ///
-/// Four: `manifest_body` (#634), `block_file` and `record` (#641), and
-/// `contact_card` (#641/#691). `block_file` needed no decoder reordering:
+/// Five: `manifest_body` (#634), `block_file` and `record` (#641),
+/// `contact_card` (#641/#691), and `bundle_file` (#641). `block_file` needed no decoder reordering:
 /// both implementations walk the §6.1 layout in the same order. What
 /// changed is what Python's raises carry: #641 split its merged sort/repeat
 /// check and typed its version checks `unsupported_version`. `record`
@@ -32,8 +32,12 @@ pub const TARGETS: &[&str] = &[
 /// taxonomy (`CardError::rule_token`, #641), a byte-level well-formedness
 /// walk ahead of `ciborium` in both languages (#641/#691), and the Python
 /// decoder reordered onto `from_canonical_cbor`'s phase order — the same
-/// three-part shape `record` needed one slice earlier. `bundle_file` and
-/// `vault_toml` still need their own taxonomy (#641); `manifest_file` is
+/// three-part shape `record` needed one slice earlier. `bundle_file` needed
+/// only `block_file`'s treatment: `BundleFileError::rule_token` and typed
+/// Python raises, the one real divergence being `format_version`, which
+/// Python raised as a plain `ParseError` (`container_malformed`) where Rust
+/// says `unsupported_version`. `vault_toml` still needs its own taxonomy
+/// (#641); `manifest_file` is
 /// blocked for a different, measured reason (#640) —
 /// Rust's header raises `UnsupportedFormatVersion` where Python raises the
 /// same `ParseError` it raises for every envelope fault, and because that
@@ -55,8 +59,13 @@ pub const TARGETS: &[&str] = &[
 /// reject-vs-reject pair carried a rule token on both sides but which is
 /// neither listed here nor in [`TOKEN_COMPARISON_BLOCKED`]. Not a literal-list
 /// assertion, so adding a target does not red until it can be compared.
-pub const TOKEN_COMPARED_TARGETS: &[&str] =
-    &["record", "manifest_body", "block_file", "contact_card"];
+pub const TOKEN_COMPARED_TARGETS: &[&str] = &[
+    "record",
+    "manifest_body",
+    "block_file",
+    "contact_card",
+    "bundle_file",
+];
 
 /// The rest, listed explicitly rather than by omission.
 ///
@@ -65,7 +74,7 @@ pub const TOKEN_COMPARED_TARGETS: &[&str] =
 /// the loose behaviour — the fail-open shape #595 found in
 /// `differential_replay.rs`'s own corpus discovery. `agreement::judge` reads
 /// it too, and reports a target in neither list as a harness failure.
-pub const NOT_TOKEN_COMPARED_TARGETS: &[&str] = &["vault_toml", "bundle_file", "manifest_file"];
+pub const NOT_TOKEN_COMPARED_TARGETS: &[&str] = &["vault_toml", "manifest_file"];
 
 /// Targets that are NOT compared although both sides attach a rule token to
 /// every rejection, each with the issue that says why. Without an entry here
@@ -121,17 +130,19 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// exactly, so a new target cannot arrive without one.
 ///
 /// Whether it also floors STRICT token comparisons depends on the target.
-/// Four targets are token-compared — `record`, `manifest_body`, `block_file`
-/// and `contact_card` — and the phase-dependent tolerance applies on
-/// [`PHASE_DEPENDENT_TOLERANCE_TARGETS`] (`manifest_body`) only. On `record`,
-/// `block_file` and `contact_card` (#641) every committed input both sides
+/// Five targets are token-compared — `record`, `manifest_body`, `block_file`,
+/// `contact_card` and `bundle_file` — and the phase-dependent tolerance
+/// applies on [`PHASE_DEPENDENT_TOLERANCE_TARGETS`] (`manifest_body`) only. On
+/// `record`, `block_file`, `contact_card` and `bundle_file` (#641) every
+/// committed input both sides
 /// reject therefore reaches a strict comparison — but this floor is not that
 /// count ([`MIN_STRICT_COMPARISONS`] is). It also counts the committed ACCEPTING bases, which are compared
 /// on re-encoded bytes rather than tokens: 4 of `record`'s 44
 /// (`api_key.cbor`, `login.cbor`, `secure_note.cbor`,
 /// `nesting__256_unknown.bin`, #667), 1 of `block_file`'s 24 (`golden.bin`),
+/// 1 of `bundle_file`'s 14 (`golden.bin`, beside 13 single-fault seeds),
 /// and 1 of `contact_card`'s 23 (`with_sigs.cbor` — `pre_sig.cbor` rejects,
-/// `MissingField`, so it counts on the strict side), leaving 40, 23 and 22
+/// `MissingField`, so it counts on the strict side), leaving 40, 23, 13 and 22
 /// strict comparisons today (task 10 raised `contact_card` from 4 to 21, and
 /// the #698 review's two `card_version` range seeds to 23: task 10's 17
 /// generated single-fault seeds — 21 generated, four moved to a LOCAL
@@ -166,7 +177,7 @@ pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("vault_toml", 9),
     ("record", 44),
     ("contact_card", 23),
-    ("bundle_file", 1),
+    ("bundle_file", 14),
     ("manifest_file", 1),
     ("manifest_body", 58),
     ("block_file", 24),
@@ -187,7 +198,7 @@ pub const MIN_STRICT_COMPARISONS: &[(&str, usize)] = &[
     ("vault_toml", 0),
     ("record", 40),
     ("contact_card", 22),
-    ("bundle_file", 0),
+    ("bundle_file", 13),
     ("manifest_file", 0),
     ("manifest_body", 25),
     ("block_file", 23),

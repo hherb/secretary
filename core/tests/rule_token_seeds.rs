@@ -1,5 +1,6 @@
-//! Committed single-fault seeds for the `record`, `block_file` (#641) and
-//! `contact_card` (task 10, #641/#691) replay targets: the generator, and
+//! Committed single-fault seeds for the `record`, `block_file` (#641),
+//! `contact_card` (task 10, #641/#691) and `bundle_file` (#641) replay
+//! targets: the generator, and
 //! the check that binds every committed seed to its label. See
 //! `rule_token_seeds_helpers` for the table, and
 //! `docs/superpowers/specs/2026-09-15-token-compare-record-block-design.md`
@@ -18,7 +19,7 @@ use rule_token_seeds_helpers::{
 };
 
 /// The targets whose seed directories this table owns every labelled file in.
-const SEEDED_TARGETS: &[&str] = &["block_file", "record", "contact_card"];
+const SEEDED_TARGETS: &[&str] = &["block_file", "record", "contact_card", "bundle_file"];
 
 /// `contact_card/` also holds two `valuetype__` seeds from #669's OLDER
 /// acceptance-divergence generator (`valuetype__card_version.bin`,

@@ -139,8 +139,9 @@ mod tests {
         NOT_TOKEN_COMPARED_TARGETS, PHASE_DEPENDENT_TOLERANCE_TARGETS,
     };
 
-    /// Not compared and not blocked: the shape #700 is about.
-    const LOOSE: &str = "bundle_file";
+    /// Not compared and not blocked: the shape #700 is about. `vault_toml`
+    /// is the last such target since `bundle_file` became compared (#641).
+    const LOOSE: &str = "vault_toml";
     const COMPARED: &str = "contact_card";
     const BLOCKED: &str = "manifest_file";
 
