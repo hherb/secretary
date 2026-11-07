@@ -421,11 +421,12 @@ was 6849 lines; it is now 156, over an **81**-file package (re-measured at
 the PR #720 review; see the dated re-measurement entries below) whose largest module is
 `sections/value_type_discipline.py` at **849** lines, then
 `sections/value_type_structure.py` at
-550 (both re-measured at #700/#715) — **two** past the 500-line split threshold (#683) now, DOWN from three
-at the #689 merge-base, because #641/#691 shrank `sections/nesting_depth.py`
+550 (both re-measured at #700/#715) — **three** past the 500-line split threshold (#683) since #723 grew
+`codec/manifest_decode.py` 498 -> 501 (split tracked as #725); it was two after
+the #689 merge-base's three, because #641/#691 shrank `sections/nesting_depth.py`
 30 net lines (522 -> 492) while deleting the now-callerless
 `reject_excessive_nesting` and its content-blind entry-point machinery —
-then `codec/manifest_decode.py` at 498, `sections/nesting_depth.py` at 492
+then `codec/manifest_decode.py` at 501, `sections/nesting_depth.py` at 492
 (a near-tie, one line above `manifest_canonicality_cause.py`, not the
 five-line gap the paragraph below still narrates as current), then
 `sections/manifest_canonicality_cause.py` at 491 and `codec/scanner.py` at
@@ -502,9 +503,9 @@ then the PR #720 review moved its class tables out to the new
 `sections/rule_token_seed_classes.py` (133), taking it 496 -> 382 and out of
 the six, and `scanner.py` back in):
 849 `value_type_discipline.py`, 550 `value_type_structure.py`,
-498 `codec/manifest_decode.py`, 492 `sections/nesting_depth.py`,
+501 `codec/manifest_decode.py` (498 until #723), 492 `sections/nesting_depth.py`,
 491 `sections/manifest_canonicality_cause.py`, 479 `codec/scanner.py` —
-TWO past the 500-line threshold. The concrete effect on the ranking:
+THREE past the 500-line threshold since #723 (#725 tracks the split). The concrete effect on the ranking:
 `nesting_depth.py` fell out of the "past the 500-line threshold" set
 entirely (522 -> 492, now under 500) and dropped from second place to a
 near-tie for fourth/fifth against `manifest_canonicality_cause.py` (492 vs

@@ -30,7 +30,7 @@ Measured through `diff_replay.replay_bytes('manifest_body', ...)`:
 
 | input | Python token now |
 |---|---|
-| `01`, `80`, `0100`, `40` | `wrong_type` (was `None` for the first three) |
+| `01`, `80`, `0100`, `40` | `wrong_type` (was `None` for all four) |
 | `c101` (tag), `f90000` (float) | `rule4_tag_or_float` (unchanged) |
 | `f7` (`undefined`) | `malformed_cbor` (unchanged) |
 
@@ -57,6 +57,39 @@ goes from 184 to 185.
 The TDD red was also seen directly: with the seed committed and no fix,
 RTV reported `toplevel__integer.bin: rejected by ValueError carrying no
 rule token`.
+
+**PR #726 review round.** The single `0x01` seed left two weaknesses
+unpinned. Each was measured green on every gate:
+- a check narrowed to `major == 0`;
+- the check moved above `walk_body`. That makes Python answer `wrong_type`
+  where Rust answers rule 4 or `malformed_cbor` (§4.2: both outrank a wrong
+  type).
+
+Section MSH now runs 11 top-level heads:
+- eight non-map majors (`00 20 40 60 80 f4 f5 f6`), each requiring the
+  `wrong_type` token;
+- `81c101` and `81f90000`, requiring `rule4_tag_or_float`;
+- `81f7`, requiring `malformed_cbor`.
+
+This is a Python-local pin, so no corpus, floor or section count moves.
+The harness results (spec in the scratchpad as `mutations.toml`):
+
+| # | Mutation | Gate | Outcome | Reds |
+|---|---|---|---|---|
+| H1 | check moved above `walk_body` | `conformance.py` | RED_AS_EXPECTED | Section MSH |
+| H2 | `!= MAJOR_MAP` → `== 0` | `conformance.py` | RED_AS_EXPECTED | Section MSH |
+
+The review also corrected three docs:
+- CLAUDE.md's line-count ranking: `manifest_decode.py` is 501, three files
+  are past 500;
+- this table's "first three" (the right figure is all four);
+- RTV's docstring, which implied the map type check was now tokened. It
+  stays untokened at nested positions.
+
+The review's 49-input sweep through both decoders found no disagreement
+this PR introduced. The one mismatch, `a001` (Rust `missing_field`, Python
+`non_canonical_unclassified`), is identical on `main`, and §4.2 tolerates
+it (trailing bytes against a schema fault).
 
 **Docs updated**: CLAUDE.md (the corpus count in the Commands block and the
 residual-scope bullet, and the strict-floor figures in two places), RTV's

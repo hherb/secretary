@@ -23,9 +23,10 @@ than the version before this one, whose three counts were each measured and
 each too small.  THREE modules on `py_decode_manifest`'s own import path
 raise untokened, and #641 shrank the first: `codec/scanner.py` now raises
 `MalformedCbor` (`malformed_cbor`) at every well-formedness site and plain
-`ValueError` at only its 2 type checks ("expected a CBOR map/array"),
-the top-level map one of which `py_decode_manifest` pre-empts with a typed
-`WrongFieldType` since #723 (seed `toplevel__integer.bin`);
+`ValueError` at only its 2 type checks ("expected a CBOR map/array");
+since #723 `py_decode_manifest` checks the top-level head first and raises a
+typed `WrongFieldType` (seed `toplevel__integer.bin`), so the map check
+stays untokened only at nested positions;
 `codec/manifest_schema.py` (9, FOUR of them the NESTED twins of top-level
 sites that DID get a typed class -- non-text key at `:148`/`:244` and
 missing required field at `:163`/`:269`, two per entry-map parser), and
