@@ -323,6 +323,10 @@ fn every_target_is_classified() {
 /// other and against the interpretation-time rules. Rule 4 and
 /// `malformed_cbor` are ordered against everything. Every other target
 /// tolerates nothing.
+///
+/// The name predates #646 and is kept because docs cite it: the test no
+/// longer means "any pair with a phase-dependent member" (that was 58
+/// pairs), but this exact 30-pair set.
 #[test]
 fn tolerance_admits_only_phase_dependent_pairs() {
     use secretary_core::vault::manifest::RuleToken;
@@ -343,7 +347,34 @@ fn tolerance_admits_only_phase_dependent_pairs() {
         "integer_out_of_range",
         "unsupported_version",
     ];
+    // Everything §4.2 orders against all of the above, or that is not a
+    // manifest-body rule at all. The three lists must partition
+    // `RuleToken::ALL`, so a new token reds here until someone decides which
+    // of them §4.2 puts it in (PR #722 review).
+    const ORDERED: &[&str] = &[
+        "rule4_tag_or_float",
+        "malformed_cbor",
+        "unknown_field",
+        "container_malformed",
+        "aead_failure",
+        "signature_invalid",
+        "encoder_refusal",
+        "internal_error",
+    ];
     const WANT_TOLERATED: usize = 30;
+
+    let declared: Vec<&str> = [REENCODE_VISIBLE, INTERPRETATION_TIME, ORDERED].concat();
+    let declared_set: BTreeSet<&str> = declared.iter().copied().collect();
+    let all: BTreeSet<&str> = RuleToken::ALL.iter().map(|t| t.as_str()).collect();
+    assert_eq!(
+        declared.len(),
+        declared_set.len(),
+        "a token is listed twice"
+    );
+    assert_eq!(
+        declared_set, all,
+        "classify every RuleToken against vault-format §4.2's report-order rules"
+    );
 
     let pair = |a: &str, b: &str| {
         if a < b {
