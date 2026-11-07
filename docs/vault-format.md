@@ -432,18 +432,20 @@ are fixed, and a conformant reader MUST follow both:
    a type error. Readers that check a slot's vacancy only after parsing the
    value it holds get this backwards.
 
-**The order of §6.2 rules 1, 2 and 3 against those two is deliberately
+**The order of §6.2 rules 1, 2 and 3 against ordering 2 is deliberately
 unspecified**, and the reason is architectural rather than an omission. This
 section admits two reader designs, and each necessarily detects those rules at
 a different point: a reader whose parse normalises encoding-level choices can
 only detect them at the §4.3 step-4 re-encode, which runs *after*
 interpretation, while a byte-retaining reader must detect them during its scan,
-*before* it. Fixing an order between them and the two rules above would outlaw
-one design or the other. A body that breaks one of rules 1-3 *and* one of the
-two above may therefore be reported as either, and an implementation MUST NOT
+*before* it. Fixing an order between them and ordering 2 would outlaw one
+design or the other. A body that breaks one of rules 1-3 *and* repeats a
+map key may therefore be reported as either, and an implementation MUST NOT
 rely on which. Rule 4 is not in this category precisely because no reader gets
 it from the re-encode: both designs enforce it by the separate walk, so both
-can be required to run that walk first.
+can be required to run that walk first. Ordering 1 therefore binds rules 1-3
+as well: a body carrying a tag or a float and also breaking one of rules 1-3
+is reported as a rule-4 violation.
 
 **The order of this section's five array sort disciplines against §6.2 rules 1,
 2 and 3, and against ordering 2 above, is unspecified for the same reason, one
@@ -472,11 +474,24 @@ exception to them: rule 4 is the one rule NEITHER design obtains from the
 re-encode, so both can be required to run its whole-body walk before anything
 else.
 
-This does NOT extend to the repeated-array-value rules. Both reader designs
-check those during interpretation — sortedness and distinctness are independent,
-and a body carrying a repeat re-encodes to itself byte for byte, so no reader
-obtains them from the re-encode. Their order relative to the two fixed orderings
-above is therefore not given away here.
+**The general rule, of which the paragraphs above are instances.** Call
+a fault *re-encode-visible* if a normalising-parse reader may first detect it
+at the §4.3 step-4 re-encode comparison: §6.2 rules 1, 2 and 3, this section's
+five array sort disciplines, and bytes trailing the manifest map (a reader
+whose parse stops at the end of the map sees those only at that comparison).
+A re-encode-visible fault is unordered against every other rule this section
+or crypto-design §6.2 states, except rule 4 (ordering 1) and the
+well-formedness precondition. So a body that is out of array sort order and
+also repeats a value inside one of the four distinct arrays may be reported as
+either, and so may one that carries trailing bytes and also a value of the
+wrong type. An implementation MUST NOT rely on which.
+
+The repeated-array-value rules are not themselves in that set. Both reader
+designs check them during interpretation — sortedness and distinctness are
+independent, and a body carrying a repeat re-encodes to itself byte for byte,
+so no reader obtains them from the re-encode. Their order relative to the two
+fixed orderings above is therefore not given away here, and neither is their
+order against the other checks made during interpretation.
 
 `kdf_params` is duplicated here (also in `vault.toml`) so the manifest signature attests to them. A modified `vault.toml` cannot trick a reader into deriving a wrong `master_kek` without also producing an invalid manifest signature.
 

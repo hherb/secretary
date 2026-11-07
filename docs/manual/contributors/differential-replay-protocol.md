@@ -201,32 +201,23 @@ There are exactly three valid output shapes:
   token-compared target that is a **harness failure**, not agreement —
   default-deny, so a new untokened rejection fails loudly rather than
   silently restoring the blindness this field removed.
-- A token mismatch is a disagreement **unless either token is
-  phase-dependent**, in which case `docs/vault-format.md` §4.2 generally
-  declares the order unspecified and both readers are conformant. Since #641
+- A token mismatch is a disagreement **unless `docs/vault-format.md` §4.2
+  frees that pair**, in which case both readers are conformant. Since #641
   that tolerance applies on manifest_body only
   (`PHASE_DEPENDENT_TOLERANCE_TARGETS`); `block_file`, `record`,
   `contact_card` (#691 — there is no §6 analogue of §4.2's two-reader-design
   licence for a contact card, so every compared pair on that target must be
-  strictly equal) and `bundle_file` (#641) compare strictly. The predicate lives on
-  `RuleToken::is_phase_dependent` and is **derived from**
-  §4.2's "deliberately unspecified" paragraphs rather than being them — a
-  per-token predicate is strictly BROADER than a per-pair rule: over the
-  current 18-token vocabulary it tolerates **58 of the 153 unequal token
-  pairs** (62 have a phase-dependent member; the four pairing one with
-  `malformed_cbor` are withheld, because §4.2 makes well-formedness a
-  precondition that outranks every rule), and the FOUR
-  groups it tolerates
-  that §4.2 does not license are written out in that method's own LIMITS
-  block. Read "generally declares the order unspecified" above with that in
-  mind — because all four `NonCanonicalCause` outcomes map to phase-dependent
-  tokens, **17 of the 42 rejecting `manifest_body` seeds never compare the
-  Python token at all** (the NUMERATOR has not moved since #634; the
-  denominator has, twice — "17 of the 24" from #634, re-measured to 32 at
-  #667 and to 42 at #666, whose ten new seeds every one reaches a strict
-  comparison. Re-measure the denominator, never quote it). It is still not a list of tolerated pairs, because
-  such a list drifts from §4.2 silently; #646 tracks replacing it with a
-  two-argument relation once §4.2 settles the two groups it leaves open.
+  strictly equal) and `bundle_file` (#641) compare strictly. Since #646 the
+  relation is two-argument: a pair is tolerated iff one member is
+  re-encode-visible (`RuleToken::is_phase_dependent`: §6.2 rules 1-3, trailing
+  bytes, the array sort disciplines) and both are manifest rules §4.2's "general
+  rule" paragraph covers, which excludes rule 4 and `malformed_cbor`. That
+  is **30 of the 153 unequal token pairs**, pinned against an independent
+  declaration by `tolerance_admits_only_phase_dependent_pairs`; the old
+  per-token predicate tolerated 58, including rule-4 pairs §4.2 fixes. A
+  re-encode-visible token still excuses most mismatches, so the 17 committed
+  single-fault `NonCanonicalEncoding` seeds are not strict comparisons; #721
+  tracks binding them by label.
 - An **unrecognised** token — one absent from the vocabulary — is never
   agreement, but its mechanism is not the missing-token one above: it falls
   through `tokens_agree` to `false` and is reported as an ordinary
@@ -269,7 +260,7 @@ The four-way agreement matrix:
 | Accept | Accept | Compare re-encoded bytes (skipped for `vault_toml`). |
 | Accept | Reject | **Disagreement** — one of them has a spec bug. |
 | Reject | Accept | **Disagreement** — one of them has a spec bug. |
-| Reject | Reject | Agreement on the verdict. For a token-compared target the `rule` tokens must also agree, or one must be phase-dependent — see §3. |
+| Reject | Reject | Agreement on the verdict. For a token-compared target the `rule` tokens must also be equal, or, on `manifest_body` only, form one of the 30 pairs vault-format §4.2 leaves freely ordered — see §3. |
 
 When you investigate a disagreement, the rule of thumb:
 

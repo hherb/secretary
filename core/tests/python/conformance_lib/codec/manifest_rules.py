@@ -87,12 +87,13 @@ class RepeatedArrayValue(ManifestRejection):
     NOT the same rule as a repeated MAP key, and deliberately a different
     token.  §4.2 FIXES an ordering for the map-key rule -- ordering 2, ahead
     of the type, range and version checks -- and fixes none for this one.
-    Read that as "no ordering is stated", never as "§4.2 declares this one
-    free": §4.2 says in as many words that its "deliberately unspecified"
-    paragraphs do NOT extend to the repeated-value rules, because both reader
-    designs check them during interpretation -- `[x, x]` is sorted and
-    re-encodes to itself, so neither design obtains them from the re-encode.
-    That is why this token is deliberately NOT phase-dependent on either side.
+    The rule is not itself re-encode-visible: both reader designs check it
+    during interpretation -- `[x, x]` is sorted and re-encodes to itself, so
+    neither design obtains it from the re-encode.  That is why this token is
+    deliberately NOT phase-dependent on either side.  Since #646, §4.2's
+    general rule frees it against every re-encode-visible fault (an array
+    sort discipline, say); against the other interpretation-time checks
+    §4.2 states no order at all.
     `recipients` is §4.2's explicit exception and never reaches here.
     """
 

@@ -100,8 +100,8 @@ def replay_bytes(target: str, data: bytes) -> Replay:
     `block_file`, #691 extended it to `contact_card` and #641 to
     `bundle_file`, which does not retire this split: the other two targets
     (`vault_toml`, `manifest_file`) are still scored on the fact of rejection
-    alone, and even for `manifest_body` a phase-dependent token tolerates
-    whatever the other side said. Both figures moved with the corpus and have
+    alone, and even for `manifest_body` a re-encode-visible token tolerates
+    most other manifest rules on the other side (#646's pair relation). Both figures moved with the corpus and have
     been re-measured repeatedly rather than trusted from the last time this
     paragraph was edited: 13 of 27 when this paragraph was first written, 17
     of 32 at #634 (this is where the stale "17 of those 32" wording came

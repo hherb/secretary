@@ -86,10 +86,12 @@ pub fn is_strict_comparison(
 /// ([`grants_tolerance`], the same predicate `tokens_agree` reads).
 ///
 /// An unrecognised token grants nothing, so it counts as strict; such a pair
-/// never agrees anyway. A `malformed_cbor` token against a phase-dependent
-/// one is NOT counted, although `tokens_agree` never tolerates that pair: the
-/// phase-dependent side would still excuse any other mismatch, and the pair
-/// is always a disagreement, so it cannot inflate a green run's count.
+/// never agrees anyway. A phase-dependent token against one outside the
+/// freely ordered set (`malformed_cbor`, `rule4_tag_or_float`, ...) is NOT
+/// counted, although `tokens_agree` never tolerates that pair: the
+/// phase-dependent side still excuses a mismatch against the other freely
+/// ordered manifest rules, and the pair itself is always a disagreement, so
+/// leaving it out can only undercount a green run, never inflate it.
 /// `a_strict_pair_is_never_excused_by_the_tolerance` pins the property the
 /// floor depends on: no unequal pair counted here is one `tokens_agree`
 /// would accept.

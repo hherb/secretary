@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-07-block-file-seed-both-sides-shipped.md
+docs/handoffs/2026-11-07-pairwise-report-order-tolerance-shipped.md

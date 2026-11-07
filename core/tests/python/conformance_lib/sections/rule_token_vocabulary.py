@@ -215,14 +215,12 @@ def section_rule_token_vocabulary() -> tuple[bool, list[str]]:
     # The Rust side pins the same set against its own enum; the fixture is
     # what makes the two comparable.
     #
-    # Note what this set is and is not.  It is the set of tokens whose ORDER
-    # §4.2 leaves free.  It is NOT a statement that `tokens_agree` tolerates
-    # only pairs §4.2 frees: that predicate is per-token, so it tolerates 58
-    # of the 153 unequal pairs on `manifest_body` (the 62 with a
-    # phase-dependent member, less the four pairing one with `malformed_cbor`),
-    # four groups of which §4.2 does not license.
-    # `RuleToken::is_phase_dependent`'s LIMITS block enumerates them and #646
-    # tracks narrowing the predicate.
+    # Note what this set is and is not.  It is §4.2's re-encode-visible
+    # faults: the tokens whose order §4.2 leaves free against every other
+    # manifest rule except rule 4 and well-formedness.  The freedom itself is
+    # a property of a PAIR, which `tokens_agree` in
+    # `core/tests/differential_replay_helpers/tolerance.rs` builds from this
+    # flag and pins as 30 tolerated pairs on `manifest_body` (#646).
     want_phase_dependent = {
         "array_sort_order",
         "non_canonical_unclassified",

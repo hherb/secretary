@@ -233,7 +233,7 @@ mod tests {
     /// predicate, but nothing here did: `tokens_agree(rt, pt)` rewritten as
     /// `rt == pt` left every test in this module green, and only the full
     /// corpus replay, through its one witness input, noticed (#662 review).
-    /// This is the line #646 edits, and the reason `judge` was lifted out of
+    /// #646 narrowed the relation behind this line, and the reason `judge` was lifted out of
     /// the corpus loop was to test it without Python.
     #[test]
     fn a_phase_dependent_pair_on_a_compared_target_agrees() {
@@ -265,6 +265,23 @@ mod tests {
         ));
     }
 
+    /// Rule 4 outranks every re-encode-visible fault (vault-format §4.2
+    /// ordering 1, settled for rules 1-3 by #646), so a reader that let the
+    /// sort check answer first is a disagreement even on the licensed
+    /// target. Until #646 the per-token predicate scored this pair as
+    /// agreement.
+    #[test]
+    fn rule4_against_a_reencode_visible_token_disagrees_on_the_licensed_target() {
+        assert!(matches!(
+            judge(
+                COMPARED,
+                &rust_err(Some("rule4_tag_or_float")),
+                &py_reject(Some("array_sort_order"))
+            ),
+            Judgement::Disagree(_)
+        ));
+    }
+
     /// An unrecognised token is a DISAGREEMENT, not a harness failure: the
     /// missing-token guard catches only `None`, and a typo'd token must still
     /// red the run rather than read as tolerated.
@@ -281,19 +298,21 @@ mod tests {
     }
 
     /// The tolerance is per TARGET (#641). A pair that agrees on
-    /// `manifest_body` because one token is phase-dependent is a disagreement
-    /// on a compared target the licence does not reach: a `block_file` sort
-    /// check mis-reported as a malformed container must red.
+    /// `manifest_body` is a disagreement on a compared target the licence
+    /// does not reach: a `block_file` sort check mis-reported as a repeat must
+    /// red. The first assertion keeps the pair one §4.2 frees on
+    /// `manifest_body`; without it a pair that disagrees everywhere (this
+    /// test used `container_malformed` until the PR #722 review) passes
+    /// whatever the per-target licence does.
     #[test]
     fn a_phase_dependent_pair_on_an_unlicensed_compared_target_disagrees() {
         const UNLICENSED: &str = "block_file";
         assert!(TOKEN_COMPARED_TARGETS.contains(&UNLICENSED));
+        let rust = rust_err(Some("array_sort_order"));
+        let py = py_reject(Some("repeated_array_value"));
+        assert_eq!(judge(COMPARED, &rust, &py), Judgement::Agree);
         assert!(matches!(
-            judge(
-                UNLICENSED,
-                &rust_err(Some("array_sort_order")),
-                &py_reject(Some("container_malformed"))
-            ),
+            judge(UNLICENSED, &rust, &py),
             Judgement::Disagree(_)
         ));
     }
