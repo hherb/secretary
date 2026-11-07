@@ -179,7 +179,7 @@ pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("contact_card", 23),
     ("bundle_file", 15),
     ("manifest_file", 1),
-    ("manifest_body", 61),
+    ("manifest_body", 62),
     ("block_file", 31),
 ];
 
@@ -198,14 +198,16 @@ pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
 /// holds its entry at 0, and every compared target's above 0.
 /// `manifest_body` rose 26 -> 43 with #721: its 17 single-fault seeds whose
 /// token is re-encode-visible are bound by label to that token
-/// (`seed_binding`), so they are compared on equality too.
+/// (`seed_binding`), so they are compared on equality too. It rose 43 -> 44
+/// with #723's `toplevel__integer.bin`, a non-map body both sides reject as
+/// `wrong_type`.
 pub const MIN_STRICT_COMPARISONS: &[(&str, usize)] = &[
     ("vault_toml", 0),
     ("record", 40),
     ("contact_card", 22),
     ("bundle_file", 14),
     ("manifest_file", 0),
-    ("manifest_body", 43),
+    ("manifest_body", 44),
     ("block_file", 30),
 ];
 
