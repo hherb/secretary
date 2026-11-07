@@ -24,7 +24,7 @@ silently, and a class the table omits would never be identity-checked (PR
 #673 review).
 
 WHY A CLASS PER `block_file`, `bundle_file` AND `contact_card` SEED (check 2).  One token
-covers several checks: nine `block_file` `container_malformed` seeds span
+covers several checks: fourteen `block_file` `container_malformed` seeds span
 seven `BlockError` variants, and `card_rules.py`'s own docstring names the
 same shape for the card -- `wrong_type` is carried by BOTH `CardWrongType`
 and `CardDisplayNameTooLong`, and `malformed_cbor` by BOTH
@@ -89,6 +89,7 @@ from conformance_lib.codec import card_rules, cbor_faults, record_rules
 from conformance_lib.cursor import ParseError
 from conformance_lib.diff_replay import replay_bytes
 from conformance_lib.sections.nesting_depth_bodies import NESTING_SEED_PREFIX
+from conformance_lib.sections.rule_token_seed_classes import _NO_CLASS_TABLE, _SEED_CLASSES
 from conformance_lib.sections.rule_token_seeds_ordering import _ORDERING_CASES, ordering_issues
 from conformance_lib.sections.rule_token_vocabulary import _vocabulary
 from conformance_lib.wire import envelope_rules
@@ -106,17 +107,21 @@ _CONTACT_CARD_FOREIGN_PREFIX = "valuetype__"
 # Per target: the minimum number of committed labelled seeds, and the exact
 # set of tokens those seeds must name between them.
 _TARGETS: dict[str, tuple[int, frozenset[str]]] = {
+    # 30: 23, plus a twin on the other side of each of the six equality
+    # checks (#719; `magic`'s in the PR #720 review), plus the
+    # `aead_ct_len_exceeds_file` truncation (PR #720 review).
     "block_file": (
-        23,
+        30,
         frozenset(
             {"container_malformed", "unsupported_version", "array_sort_order", "repeated_array_value"}
         ),
     ),
-    # 13 single-fault seeds planted into `golden.bin` (#641): 9, plus a
-    # `_below` twin for each of the four equality checks (PR #718 review).
-    # The accepting base is not `__`-labelled, so it is not counted here.
+    # 14 single-fault seeds planted into `golden.bin` (#641): 9, plus a
+    # `_below` twin for each of the five equality checks (PR #718 review;
+    # `magic`'s in the PR #720 review). The accepting base is not
+    # `__`-labelled, so it is not counted here.
     "bundle_file": (
-        13,
+        14,
         frozenset({"container_malformed", "unsupported_version"}),
     ),
     "record": (
@@ -204,120 +209,6 @@ _TOKENED_MODULES = (card_rules, cbor_faults, record_rules, envelope_rules)
 #: emptied, so the floor is what makes the derived PASS-line figure load
 #: bearing (#698 review, S1).
 _MIN_TOKENED_MODULES = 4
-
-# Check 2: the Python class every `block_file` seed must be rejected with,
-# keyed by file stem.  Default-deny: a seed missing here is an issue.  A
-# truncation is what `cursor.take` raises, the bare `ParseError`.
-_BLOCK_FILE_CLASSES: dict[str, str] = {
-    "container_malformed__bad_magic": "EnvelopeBadMagic",
-    "container_malformed__wrong_file_kind": "EnvelopeWrongFileKind",
-    "container_malformed__truncated_header": "ParseError",
-    "container_malformed__truncated_recipient_table": "ParseError",
-    "container_malformed__zero_recipients": "EnvelopeNoRecipients",
-    "container_malformed__wrong_sig_ed_len": "EnvelopeEd25519SignatureLength",
-    "container_malformed__wrong_sig_pq_len": "EnvelopeMlDsaSignatureLength",
-    "container_malformed__truncated_signature_suffix": "ParseError",
-    "container_malformed__trailing_bytes": "EnvelopeTrailingBytes",
-    "unsupported_version__format_version": "UnsupportedEnvelopeVersion",
-    "unsupported_version__suite_id": "UnsupportedEnvelopeVersion",
-    "array_sort_order__vector_clock": "EnvelopeSortOrder",
-    "array_sort_order__recipients": "EnvelopeSortOrder",
-    "array_sort_order__vector_clock_second_pair": "EnvelopeSortOrder",
-    "array_sort_order__recipients_second_pair": "EnvelopeSortOrder",
-    "array_sort_order__vector_clock_first_pair_of_three": "EnvelopeSortOrder",
-    "array_sort_order__recipients_first_pair_of_three": "EnvelopeSortOrder",
-    "repeated_array_value__vector_clock": "EnvelopeRepeatedValue",
-    "repeated_array_value__recipients": "EnvelopeRepeatedValue",
-    "repeated_array_value__vector_clock_second_pair": "EnvelopeRepeatedValue",
-    "repeated_array_value__recipients_second_pair": "EnvelopeRepeatedValue",
-    "repeated_array_value__vector_clock_first_pair_of_three": "EnvelopeRepeatedValue",
-    "repeated_array_value__recipients_first_pair_of_three": "EnvelopeRepeatedValue",
-}
-
-# Check 2: the Python class every `bundle_file` seed must be rejected with
-# (#641). Eleven of the thirteen seeds share `container_malformed`, so a raise
-# demoted to the bare `ParseError` -- or moved onto a sibling class -- keeps
-# its token, and only the class tells it from a truncation. (A DELETED
-# `wrap_*_ct_len` check is not the risk: the parse reads a fixed-width field
-# next, so the seed is accepted, which the verdict check already reds.)
-_BUNDLE_FILE_CLASSES: dict[str, str] = {
-    "container_malformed__bad_magic": "EnvelopeBadMagic",
-    "container_malformed__wrong_file_kind": "EnvelopeWrongFileKind",
-    "container_malformed__truncated_header": "ParseError",
-    "container_malformed__wrap_pw_ct_len": "EnvelopeWrapLength",
-    "container_malformed__wrap_rec_ct_len": "EnvelopeWrapLength",
-    "container_malformed__wrong_file_kind_below": "EnvelopeWrongFileKind",
-    "container_malformed__wrap_pw_ct_len_below": "EnvelopeWrapLength",
-    "container_malformed__wrap_rec_ct_len_below": "EnvelopeWrapLength",
-    "container_malformed__truncated_bundle_ct": "ParseError",
-    "container_malformed__bundle_ct_len_exceeds_file": "ParseError",
-    "container_malformed__trailing_bytes": "EnvelopeTrailingBytes",
-    "unsupported_version__format_version": "UnsupportedEnvelopeVersion",
-    "unsupported_version__format_version_below": "UnsupportedEnvelopeVersion",
-}
-
-# Check 2 (CRITICAL, fix round 1): the Python class every `contact_card`
-# seed must be rejected with, keyed by file stem -- the same default-deny
-# discipline `_BLOCK_FILE_CLASSES` gives `block_file`, and for the identical
-# reason: `wrong_type` is carried by both `CardWrongType` and
-# `CardDisplayNameTooLong`, `malformed_cbor` by both `cbor_faults.MalformedCbor`
-# and `cbor_faults.NestingTooDeep`, and `rule4_tag_or_float` entirely by
-# `scanner.NonCanonicalItem` (a token check alone cannot tell those apart).
-# Before this table, no `contact_card` seed had its Python class checked at
-# all -- `_seed_issues`'s class branch fired only `elif target ==
-# "block_file"`. Measured cost: repointing `codec/card.py`'s
-# `raise CardDisplayNameTooLong(...)` at `CardWrongType` -- deleting
-# crypto-design §6's 4096-byte `display_name` bound as a named check --
-# left BOTH blocking CI gates (`clean-room conformance`, the gated
-# differential replay) green.
-_CONTACT_CARD_CLASSES: dict[str, str] = {
-    "malformed_cbor__two_byte_simple": "MalformedCbor",
-    "malformed_cbor__nested_indefinite_chunk": "MalformedCbor",
-    "malformed_cbor__truncated": "MalformedCbor",
-    "rule4_tag_or_float__bignum_wide": "NonCanonicalItem",
-    "wrong_type__not_a_map": "CardWrongType",
-    "wrong_type__non_text_key": "CardWrongType",
-    "wrong_type__created_at_text": "CardWrongType",
-    "wrong_type__x25519_pk_short": "CardWrongType",
-    "wrong_type__display_name_over_cap": "CardDisplayNameTooLong",
-    "wrong_type__card_version_text": "CardWrongType",
-    "wrong_type__card_version_over_u8": "CardWrongType",
-    "wrong_type__card_version_negative": "CardWrongType",
-    "wrong_type__created_at_negative": "CardWrongType",
-    "missing_field__no_x25519_pk": "CardMissingField",
-    "duplicate_map_key__repeated_created_at": "CardDuplicateKey",
-    "unknown_field__extra_key": "CardUnknownField",
-    "unsupported_version__card_version_two": "CardUnsupportedVersion",
-    "non_canonical_unclassified__trailing_bytes": "CardNonCanonical",
-    "non_canonical_unclassified__non_shortest_created_at": "CardNonCanonical",
-}
-
-# Check 2's per-target class table, keyed by target name (fix round 1): one
-# lookup instead of an `elif target == ...` per target, so another
-# class-checked target is one dict entry, not a new branch.
-#
-# DEFAULT-DENY ACROSS TARGETS (#698 review, C2).  This was a bare
-# `_SEED_CLASSES.get(target)` whose `None` meant "skip every class assertion
-# for this target", so renaming or mistyping one key silently switched off all
-# 17 `contact_card` class checks AND `block_file`'s 23 -- restoring the exact
-# false green this table was added to close -- while the PASS line, which
-# reported seeds LISTED and never classes CHECKED, stayed byte-identical.  A
-# target may now be absent only by being declared absent, with its reason.
-_SEED_CLASSES: dict[str, dict[str, str]] = {
-    "block_file": _BLOCK_FILE_CLASSES,
-    "bundle_file": _BUNDLE_FILE_CLASSES,
-    "contact_card": _CONTACT_CARD_CLASSES,
-}
-
-# Targets deliberately without a class table, each with the reason it needs
-# none.  A target in neither mapping is a FAILURE, not a skip.
-_NO_CLASS_TABLE: dict[str, str] = {
-    "record": (
-        "its 37 labelled seeds map one to one onto their tokens (measured), "
-        "so a class name would restate the token check"
-    ),
-}
-
 
 def _labelled_seeds(target: str) -> list[Path]:
     directory = fixtures.fuzz_seed_dir(target)
@@ -448,6 +339,8 @@ def _seed_issues(target: str, floor: int, want_tokens: frozenset[str]) -> tuple[
                     f"{target}/{path.name}: Python raised {verdict.get('error_class')}, the seed "
                     f"names the check {want_class} ({verdict.get('detail')})"
                 )
+    if class_table is not None and (stale := set(class_table) - {p.stem for p in seeds}):
+        issues.append(f"{target}: class rows with no committed seed: {sorted(stale)}")
     if len(seeds) < floor:
         issues.append(f"{target}: only {len(seeds)} labelled seeds, floor is {floor}")
     named = {_label_token(p) for p in seeds}

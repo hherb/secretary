@@ -29,13 +29,15 @@ core/tests/          — integration tests; tests/data/ holds KATs and fuzz regr
 core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (156 lines; the PEP
                                              723 header is the sole dependency declaration).
                                              `conformance.py:NNN` citations predating #593 are
-                                             stale — the verifier is now an 80-file package.
+                                             stale — the verifier is now an 81-file package.
                                              RE-MEASURE: `find core/tests/python/conformance_lib
                                              -name '*.py' | wc -l` — this line said 62 while the
                                              paragraph below said 65 for a whole slice, and said
                                              78 through #641/#691's own merge until re-measured
                                              here (that branch added `codec/card_rules.py` and
-                                             `sections/rule_token_seeds_ordering.py`, 78 -> 80).
+                                             `sections/rule_token_seeds_ordering.py`, 78 -> 80;
+                                             the PR #720 review split out
+                                             `sections/rule_token_seed_classes.py`, 80 -> 81).
 core/tests/python/conformance_lib/         — DIRECTORY module (#593), the verifier itself: no
                                              dependency on `secretary-core`; proves the spec is
                                              implementable from `docs/` alone. `wire/` parses to
@@ -115,13 +117,16 @@ cargo test --release --locked -p secretary-core \
 # isolation, which conformance Section DRS checks rather than assumes, over
 # the committed corpus only.
 #
-# CI replays the 173 committed inputs (no `corpus/` there): 107 until #669
+# CI replays the 181 committed inputs (no `corpus/` there): 107 until #669
 # added 14, 121 until #667/#670 added 10, 131 until #666/#685 added 10,
 # 141 until #641/#691 added 17 committed contact_card seeds (four two-fault
 # rows were added and then moved to Section RTS check 5 inside the same
 # branch, so the net is +17, not +21), 160 until #641's bundle_file slice
 # added 13 bundle_file seeds (2026-11-07; 9, plus four `_below` twins from
-# the PR #718 review).
+# the PR #718 review), 173 until #719 gave each of block_file's five
+# equality checks a seed on its other side, 178 until the PR #720 review
+# added `magic`'s other side on block_file and bundle_file plus a
+# block_file `aead_ct_len` truncation.
 # Re-measure with
 # `ls core/fuzz/seeds/*/* core/tests/data/diff_regressions/*/* | grep -v gitkeep | wc -l`.
 # The 5.98 s test body
@@ -409,8 +414,8 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 156, over an **80**-file package (re-measured at
-#641/#691's merge; see the dated re-measurement entry below) whose largest module is
+was 6849 lines; it is now 156, over an **81**-file package (re-measured at
+the PR #720 review; see the dated re-measurement entries below) whose largest module is
 `sections/value_type_discipline.py` at **849** lines, then
 `sections/value_type_structure.py` at
 550 (both re-measured at #700/#715) — **two** past the 500-line split threshold (#683) now, DOWN from three
@@ -489,10 +494,13 @@ which moved two more: `sections/value_type_structure.py` 507 -> 550 (check
 (the default-deny class table). Current top six, measured (re-measured at
 the PR #718 review, whose RTS check 0 and `bundle_file` rows grew
 `sections/rule_token_seeds.py` 443 -> 489 and pushed `codec/scanner.py`
-(479) out of the six):
+(479) out of the six; then #719 grew it 489 -> 496, from sixth to fourth;
+then the PR #720 review moved its class tables out to the new
+`sections/rule_token_seed_classes.py` (133), taking it 496 -> 382 and out of
+the six, and `scanner.py` back in):
 849 `value_type_discipline.py`, 550 `value_type_structure.py`,
 498 `codec/manifest_decode.py`, 492 `sections/nesting_depth.py`,
-491 `sections/manifest_canonicality_cause.py`, 489 `sections/rule_token_seeds.py` —
+491 `sections/manifest_canonicality_cause.py`, 479 `codec/scanner.py` —
 TWO past the 500-line threshold. The concrete effect on the ranking:
 `nesting_depth.py` fell out of the "past the 500-line threshold" set
 entirely (522 -> 492, now under 500) and dropped from second place to a
@@ -1576,8 +1584,10 @@ survived it. Six things:
   of fault and is compared all the same, because there the variant is not
   shared: `BundleFileError::UnsupportedFormatVersion` has one producer, so
   typing Python's one raise `unsupported_version` reconciled it — the single
-  disagreement measured once the target was compared. `vault_toml` remains
-  #641 — see "Sub-project A" progress in ROADMAP.md.
+  disagreement measured once the target was compared. `vault_toml` is left
+  loose on purpose: #641 was closed without it (2026-11-07), since it is
+  cleartext, never re-encoded, and its rejections already name the position
+  (Section VT), so a token would add only a both-reject WHICH-rule check.
   `contact_card` needed the same treatment `record` did (below), one level
   up: its own byte-level well-formedness walk wired into
   `ContactCard::from_canonical_cbor` ahead of ciborium, and `codec/card.py`
@@ -1692,7 +1702,7 @@ survived it. Six things:
   step is silent; the full LIMITS are in the script's header.
   **State the residual scope exactly, because the wider claim is the one
   someone will want to make.** CI replays the COMMITTED corpus only —
-  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **173** inputs today
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **181** inputs today
   (#641 added 57 generated single-fault seeds for `block_file` and `record`;
   #669 added 14 acceptance seeds for `contact_card`, `vault_toml` and
   `manifest_body`; #667 added 7 `nesting__` seeds for `record` and
@@ -1706,7 +1716,12 @@ survived it. Six things:
   row-on-an-unspecified-order rule, so the net addition is 17, not 21; #641's
   `bundle_file` slice added 13 single-fault `bundle_file` seeds for 173 — 9,
   plus a `_below` twin for each of its four equality checks in the PR #718
-  review, since a check loosened from `!=` to `>` passed every `+ 1` seed).
+  review, since a check loosened from `!=` to `>` passed every `+ 1` seed;
+  #719 gave `block_file`'s five equality checks the same twins for 178,
+  and the PR #720 review `magic`'s on both targets plus a `block_file`
+  `aead_ct_len` truncation for 181 — `every_equality_check_is_seeded_on_both_sides`
+  in `rule_token_seeds.rs` now reds a one-sided check, reading the side off
+  the decoder's own error).
   `core/fuzz/corpus/` is **gitignored**, so agreement on fuzz-DISCOVERED
   inputs is still proven only by whoever runs the fuzzer, and "the differential
   replay is in CI" must not be read as "the fuzz corpus is differentially

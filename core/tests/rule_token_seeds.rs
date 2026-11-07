@@ -15,7 +15,7 @@ mod rule_token_seeds_helpers;
 use std::collections::{BTreeMap, BTreeSet};
 
 use rule_token_seeds_helpers::{
-    all_cases, rust_rejection, seed_dir, RustRejection, SeedCase, LABEL_SEPARATOR,
+    all_cases, rust_rejection, seed_dir, EqualityReading, RustRejection, SeedCase, LABEL_SEPARATOR,
 };
 
 /// The targets whose seed directories this table owns every labelled file in.
@@ -139,6 +139,80 @@ fn rule_token_seeds_are_committed_and_label_bound() {
             on_disk, declared,
             "target {target}: the committed labelled seeds and the case table disagree"
         );
+    }
+}
+
+/// The envelope checks §3 (`bundle_file`) and §6.1/§14 (`block_file`) state
+/// as EQUALITY, per target.
+const EQUALITY_CHECKS: &[(&str, &[&str])] = &[
+    (
+        "block_file",
+        &[
+            "magic",
+            "format_version",
+            "suite_id",
+            "file_kind",
+            "sig_ed_len",
+            "sig_pq_len",
+        ],
+    ),
+    (
+        "bundle_file",
+        &[
+            "magic",
+            "format_version",
+            "file_kind",
+            "wrap_pw",
+            "wrap_rec",
+        ],
+    ),
+];
+
+/// Every equality check is seeded on BOTH sides of its v1 value, and a
+/// `_below` / `_above` seed lies on the side its name says. A check seeded on
+/// one side only stays green when loosened from `!=` to `>` or `<`: measured
+/// for `bundle_file` in the PR #718 review, found by reading the seeds for
+/// `block_file`'s five version and length checks in #719, and missed by both
+/// for `magic` until the PR #720 review. The side comes from the decoder's own error, so a row
+/// edited to plant `+ 2` under a `_below` name reds here.
+#[test]
+fn every_equality_check_is_seeded_on_both_sides() {
+    for (target, checks) in EQUALITY_CHECKS {
+        let checker: fn(&[u8]) -> Option<EqualityReading> = match *target {
+            "block_file" => rule_token_seeds_helpers::block_file::equality_check,
+            "bundle_file" => rule_token_seeds_helpers::bundle_file::equality_check,
+            other => panic!("no equality checker for {other}"),
+        };
+        let mut sides: BTreeMap<&str, (bool, bool)> = BTreeMap::new();
+        for case in all_cases().iter().filter(|c| c.target == *target) {
+            let Some((check, found, v1)) = checker(&case.bytes()) else {
+                continue;
+            };
+            assert_ne!(found, v1, "seed {} carries the v1 value", case.file_name());
+            let below = found < v1;
+            for (suffix, want_below) in [("_below", true), ("_above", false)] {
+                assert!(
+                    !case.shape.ends_with(suffix) || below == want_below,
+                    "seed {}: {check} is {found} against v1 {v1}, not on the side its name says",
+                    case.file_name()
+                );
+            }
+            let side = sides.entry(check).or_default();
+            if below {
+                side.0 = true;
+            } else {
+                side.1 = true;
+            }
+        }
+        let seen: BTreeSet<&str> = sides.keys().copied().collect();
+        let want: BTreeSet<&str> = checks.iter().copied().collect();
+        assert_eq!(seen, want, "target {target}: the equality checks seeded");
+        for (check, (below, above)) in sides {
+            assert!(
+                below && above,
+                "target {target}: {check} is seeded below v1: {below}, above: {above}"
+            );
+        }
     }
 }
 
