@@ -217,10 +217,10 @@ impl RuleToken {
     /// could draw that distinction (see this module's own doc).
     ///
     /// On the committed corpus, every `NonCanonicalEncoding` rejection this
-    /// crate makes carries a token flagged here, so those single-fault seeds
-    /// are scored by the pair relation rather than by strict equality.
-    /// Binding each such seed to its expected token by label would make them
-    /// strict; that is #721.
+    /// crate makes carries a token flagged here, so the pair relation alone
+    /// would excuse them. The differential replay binds each single-fault
+    /// KAT seed to its expected token by label instead and compares it on
+    /// equality (#721); the multi-fault witnesses stay on the pair relation.
     pub fn is_phase_dependent(&self) -> bool {
         match self {
             RuleToken::Rule2IndefiniteLength

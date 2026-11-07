@@ -1529,10 +1529,26 @@ survived it. Six things:
   (`wrong_type` vs `missing_field`) are compared strictly, which is parity
   rather than spec. **What #646 did NOT change: the strict-comparison count.**
   A re-encode-visible token still excuses most mismatches, so the 17 committed
-  single-fault `NonCanonicalEncoding` seeds are still not strict. The
-  `manifest_body` floor moved only by one, 25 -> 26 of 61, from the PR #722
-  review's rule-4 order witness (two-fault, both sides `rule4_tag_or_float`); binding them to their expected token
-  by label is **#721**. A MISSING token is a harness failure; an UNRECOGNISED
+  single-fault `NonCanonicalEncoding` seeds were still not strict, and the
+  `manifest_body` floor moved only 25 -> 26 (the PR #722 review's rule-4
+  order witness). **#721 binds them by label**:
+  `differential_replay_helpers/seed_binding.rs` reads the canonicality and
+  uniqueness KAT fixtures that generated each seed (`expect_cause`, or
+  `repeated_array_value`) and `agreement::judge_bound` requires BOTH sides to
+  name that one token, whatever `tokens_agree` would excuse. That is 24 bound
+  seeds, 17 of them re-encode-visible, and the floor is **43 of 61**. The
+  multi-fault witnesses are in neither fixture and stay on the pair relation;
+  only files under `fuzz/seeds/manifest_body/` are bound at all, so a witness
+  reusing a KAT label stays unbound. Two pins keep the binding live (PR #724
+  review): the replay asserts every bound seed was judged, naming the ones
+  that were not (the strict floor cannot see the seven bound seeds whose token
+  is not re-encode-visible, since they count as strict unbound), and
+  `every_binding_names_a_committed_seed` checks both directions, so a seed
+  orphaned by a renamed KAT row reds. `judge` is private to `agreement.rs`,
+  so the replay can call only `judge_bound`.
+  Mutation-proven: switching the binding off, Rust naming rule 2 for the
+  arraysort seeds, and Python naming `repeated_array_value` for them each red
+  `differential_replay_full_corpus` (the last two are pairs §4.2 frees). A MISSING token is a harness failure; an UNRECOGNISED
   one is an ordinary disagreement. Both red the test.
 - **`manifest_body`, `block_file`, `record`, `contact_card` and `bundle_file` are
   token-compared (#634, #641; `contact_card` closed by #641/#691, `bundle_file`
@@ -1703,16 +1719,20 @@ survived it. Six things:
   because every `NonCanonicalEncoding` cause is phase-dependent; since #658
   `MIN_STRICT_COMPARISONS` does, per target and over committed inputs
   (`token_coverage::is_strict_comparison`: both sides reject with a token
-  and, on `manifest_body`, neither token is phase-dependent), and each
+  and, on `manifest_body`, neither token is phase-dependent; or, for a
+  label-bound seed (#721), both sides name its bound token), and each
   target's finish line prints the count, so re-measure from the CI log.
   Measured: re-pointing `WrongType` at `NonCanonicalUnclassified` moves 5
   `manifest_body` inputs onto tolerated pairs with the binary otherwise
   GREEN; the floor reds it (25 -> 20). **#666's ten new `manifest_body` seeds all reach
   it**, none excused: `RuleToken::is_phase_dependent` names `MalformedCbor`
   and `Rule4TagOrFloat` — the only two tokens any of the ten seeds can
-  produce — `false`, so a mismatch on either is never tolerated. That is
-  **26 of 61** now (#646's two tolerance witnesses are tolerated pairs and
-  so not strict; its rule-4 order pin is the 26th), re-measured by a `diff_replay.replay_bytes` sweep over
+  produce — `false`, so a mismatch on either is never tolerated. That was
+  **26 of 61** before #721 (#646's two tolerance witnesses are tolerated pairs and
+  so not strict; its rule-4 order pin is the 26th) and is **43** since #721's
+  label binding (above), read off the Rust replay's finish line (the binding
+  is Rust-side only, so a Python sweep cannot see it). The 26 was re-measured
+  by a `diff_replay.replay_bytes` sweep over
   the committed corpus rather than derived from `is_phase_dependent`'s match
   arms plus a per-row token column, which is what the "24 of 57" this
   replaces was (PR #689 review added the tenth seed,
@@ -1733,7 +1753,12 @@ survived it. Six things:
   `conformance.py`. The unscoped version of this sentence was wrong, and it
   is the reason #651 exists.** Swapping one phase-dependent token for another
   is tolerated by `tokens_agree`, since §4.2 declares that order free, so
-  `differential_replay` does not flag it and should not. This bullet then said
+  `differential_replay` does not flag it on an UNBOUND input. **Since #721 it
+  does flag it on the label-bound seeds**: `ArraySortOrderViolation.token` ->
+  `rule2_indefinite_length` reds `differential_replay_full_corpus` with 7
+  named disagreements, one per `arraysort__*` seed, because a seed breaking
+  one rule leaves no order to be free. The tolerance still excuses it on the
+  multi-fault witnesses, rightly. This bullet then said
   "Nothing catches it and nothing should", which generalised one gate's answer
   to every gate. Section **RTV** reds the same mutation, and rightly: §4.2
   frees the ORDER two implementations may report rules in, and says nothing

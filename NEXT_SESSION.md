@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-07-pairwise-report-order-tolerance-shipped.md
+docs/handoffs/2026-11-07-bind-manifest-seed-tokens-shipped.md

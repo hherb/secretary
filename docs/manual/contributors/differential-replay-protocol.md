@@ -215,9 +215,13 @@ There are exactly three valid output shapes:
   is **30 of the 153 unequal token pairs**, pinned against an independent
   declaration by `tolerance_admits_only_phase_dependent_pairs`; the old
   per-token predicate tolerated 58, including rule-4 pairs §4.2 fixes. A
-  re-encode-visible token still excuses most mismatches, so the 17 committed
-  single-fault `NonCanonicalEncoding` seeds are not strict comparisons; #721
-  tracks binding them by label.
+  re-encode-visible token still excuses most mismatches, so since #721 the
+  committed single-fault seeds the manifest canonicality and uniqueness KATs
+  generated are bound by label to their expected token (`seed_binding.rs`:
+  a canonicality row's `expect_cause`, and `repeated_array_value` for every
+  rejecting uniqueness row): both sides must name exactly that token, and
+  each counts as a strict comparison. The multi-fault witnesses under
+  `diff_regressions/` stay on the pair relation.
 - An **unrecognised** token — one absent from the vocabulary — is never
   agreement, but its mechanism is not the missing-token one above: it falls
   through `tokens_agree` to `false` and is reported as an ordinary

@@ -185,22 +185,27 @@ pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
 
 /// The committed STRICT token comparisons each target must make (#658).
 ///
-/// A strict comparison is a pair `token_coverage::is_strict_comparison`
-/// accepts: both sides rejected with a token and neither token carries the
-/// tolerance licence, so agreement is decided by token equality alone. [`MIN_CORPUS_INPUTS`] cannot see the corpus being routed onto
+/// A strict comparison is one `token_coverage::counts_toward_strict_floor`
+/// counts: a pair `is_strict_comparison` accepts (both sides rejected with a
+/// token and neither token carries the tolerance licence), or a label-bound
+/// seed both sides rejected naming its bound token (#721). Either way agreement
+/// is decided by token equality alone. [`MIN_CORPUS_INPUTS`] cannot see the corpus being routed onto
 /// tolerated pairs, since every input is still replayed and still agrees; this
 /// can. The figures are what the committed corpus makes today, read off each
 /// target's finish line, so moving one input on either side onto a phase-dependent token reds.
 /// A floor, not an equality, for the reason [`MIN_CORPUS_INPUTS`] gives.
 /// A target that is not token-compared makes none: `every_target_is_classified`
 /// holds its entry at 0, and every compared target's above 0.
+/// `manifest_body` rose 26 -> 43 with #721: its 17 single-fault seeds whose
+/// token is re-encode-visible are bound by label to that token
+/// (`seed_binding`), so they are compared on equality too.
 pub const MIN_STRICT_COMPARISONS: &[(&str, usize)] = &[
     ("vault_toml", 0),
     ("record", 40),
     ("contact_card", 22),
     ("bundle_file", 14),
     ("manifest_file", 0),
-    ("manifest_body", 26),
+    ("manifest_body", 43),
     ("block_file", 30),
 ];
 

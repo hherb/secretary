@@ -24,6 +24,7 @@ use secretary_core::crypto::secret::SecretBytes;
 
 use super::python_bridge::PyOutcome;
 use super::rust_decoder::RustRejection;
+use super::seed_binding::both_reject_naming;
 use super::targets::{TOKEN_COMPARED_TARGETS, TOKEN_COMPARISON_BLOCKED};
 use super::tolerance::grants_tolerance;
 
@@ -108,13 +109,22 @@ pub fn tokens_are_strict(target: &str, rust: &str, python: &str) -> bool {
 /// Does this input count toward [`super::targets::MIN_STRICT_COMPARISONS`]?
 /// Committed inputs only, for the reason `MIN_CORPUS_INPUTS` gives: a
 /// populated, gitignored `fuzz/corpus/` must not be able to pad the count.
+///
+/// A label-bound seed (`expected = Some`, #721) is compared on equality with
+/// its bound token whatever the tolerance would excuse, so it counts when
+/// both sides named that token, even a re-encode-visible one.
 pub fn counts_toward_strict_floor(
     committed: bool,
     target: &str,
+    expected: Option<&str>,
     rust: &Result<SecretBytes, RustRejection>,
     python: &PyOutcome,
 ) -> bool {
-    committed && is_strict_comparison(target, rust, python)
+    committed
+        && match expected {
+            Some(want) => both_reject_naming(want, rust, python),
+            None => is_strict_comparison(target, rust, python),
+        }
 }
 
 /// `Some(explanation)` when `target` could be token-compared on this evidence
@@ -301,14 +311,53 @@ mod tests {
         assert!(counts_toward_strict_floor(
             true,
             COMPARED,
+            None,
             &rust_err(tok),
             &py_reject(tok)
         ));
         assert!(!counts_toward_strict_floor(
             false,
             COMPARED,
+            None,
             &rust_err(tok),
             &py_reject(tok)
+        ));
+    }
+
+    /// #721: a label-bound seed whose token is re-encode-visible counts as
+    /// strict on the tolerant target once both sides named the bound token,
+    /// and does not count when either side names another one.
+    #[test]
+    fn a_bound_seed_counts_as_strict_only_on_its_bound_token() {
+        let pd = "array_sort_order";
+        let bound = Some(pd);
+        assert!(!counts_toward_strict_floor(
+            true,
+            TOLERANT,
+            None,
+            &rust_err(Some(pd)),
+            &py_reject(Some(pd))
+        ));
+        assert!(counts_toward_strict_floor(
+            true,
+            TOLERANT,
+            bound,
+            &rust_err(Some(pd)),
+            &py_reject(Some(pd))
+        ));
+        assert!(!counts_toward_strict_floor(
+            true,
+            TOLERANT,
+            bound,
+            &rust_err(Some(pd)),
+            &py_reject(Some("repeated_array_value"))
+        ));
+        assert!(!counts_toward_strict_floor(
+            false,
+            TOLERANT,
+            bound,
+            &rust_err(Some(pd)),
+            &py_reject(Some(pd))
         ));
     }
 

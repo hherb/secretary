@@ -10,6 +10,7 @@ use secretary_core::crypto::secret::SecretBytes;
 
 use super::python_bridge::PyOutcome;
 use super::rust_decoder::RustRejection;
+use super::seed_binding::both_reject_naming;
 use super::targets::{NOT_TOKEN_COMPARED_TARGETS, TOKEN_COMPARED_TARGETS};
 use super::tolerance::tokens_agree;
 
@@ -28,12 +29,9 @@ pub enum Judgement {
     Harness(String),
 }
 
-/// Compare `rust` and `python` for one input of `target`.
-pub fn judge(
-    target: &str,
-    rust: &Result<SecretBytes, RustRejection>,
-    python: &PyOutcome,
-) -> Judgement {
+/// Compare `rust` and `python` for one input of `target`. Private: the
+/// replay calls [`judge_bound`], so it cannot drop the label binding (#721).
+fn judge(target: &str, rust: &Result<SecretBytes, RustRejection>, python: &PyOutcome) -> Judgement {
     // A harness failure is not a verdict, so it never reaches the agreement
     // match below: that match reads a Rust `Err` beside a `PyOutcome::Reject`
     // as "both implementations rejected", and a Python crash or timeout
@@ -119,6 +117,31 @@ pub fn judge(
             PyOutcome::Harness(_) => unreachable!("returned above"),
         },
     ))
+}
+
+/// [`judge`] with one more requirement on a label-bound seed (#721): both
+/// sides must reject naming `expected`, the one rule it breaks. A pair
+/// [`tokens_agree`] would tolerate is a disagreement here, since a seed that
+/// breaks one rule leaves no order to be free. `expected = None` is `judge`.
+pub fn judge_bound(
+    target: &str,
+    expected: Option<&str>,
+    rust: &Result<SecretBytes, RustRejection>,
+    python: &PyOutcome,
+) -> Judgement {
+    match (judge(target, rust, python), expected) {
+        (Judgement::Agree, Some(want)) if !both_reject_naming(want, rust, python) => {
+            Judgement::Disagree(format!(
+                "label-bound seed: both sides must reject naming {want:?}, rust={:?} python={:?}",
+                rust.as_ref().err().and_then(|r| r.token),
+                match python {
+                    PyOutcome::Reject { rule, .. } => Some(rule.clone()),
+                    _ => None,
+                }
+            ))
+        }
+        (judgement, _) => judgement,
+    }
 }
 
 #[cfg(test)]
@@ -380,5 +403,38 @@ mod tests {
             ),
             Judgement::Disagree(_)
         ));
+    }
+
+    /// #721: the tolerated group-D pair is a disagreement on a seed bound to
+    /// one of its members, as is the same wrong token on both sides.
+    #[test]
+    fn a_bound_seed_must_name_its_bound_token_on_both_sides() {
+        let want = Some("array_sort_order");
+        let tolerated = (
+            rust_err(Some("repeated_array_value")),
+            py_reject(Some("array_sort_order")),
+        );
+        assert_eq!(
+            judge(COMPARED, &tolerated.0, &tolerated.1),
+            Judgement::Agree
+        );
+        assert!(matches!(
+            judge_bound(COMPARED, want, &tolerated.0, &tolerated.1),
+            Judgement::Disagree(_)
+        ));
+        let both_wrong = (rust_err(Some("wrong_type")), py_reject(Some("wrong_type")));
+        assert!(matches!(
+            judge_bound(COMPARED, want, &both_wrong.0, &both_wrong.1),
+            Judgement::Disagree(_)
+        ));
+        let both_right = (rust_err(want), py_reject(want));
+        assert_eq!(
+            judge_bound(COMPARED, want, &both_right.0, &both_right.1),
+            Judgement::Agree
+        );
+        assert_eq!(
+            judge_bound(COMPARED, None, &tolerated.0, &tolerated.1),
+            Judgement::Agree
+        );
     }
 }
