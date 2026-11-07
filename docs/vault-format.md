@@ -438,8 +438,8 @@ section admits two reader designs, and each necessarily detects those rules at
 a different point: a reader whose parse normalises encoding-level choices can
 only detect them at the §4.3 step-4 re-encode, which runs *after*
 interpretation, while a byte-retaining reader must detect them during its scan,
-*before* it. Fixing an order between them and the two rules above would outlaw
-one design or the other. A body that breaks one of rules 1-3 *and* repeats a
+*before* it. Fixing an order between them and ordering 2 would outlaw one
+design or the other. A body that breaks one of rules 1-3 *and* repeats a
 map key may therefore be reported as either, and an implementation MUST NOT
 rely on which. Rule 4 is not in this category precisely because no reader gets
 it from the re-encode: both designs enforce it by the separate walk, so both
