@@ -9,17 +9,18 @@
 //! different fault. The header offsets have no such check; a drift there is
 //! caught by the row's `variant` binding instead.
 //!
-//! The `variant` column separates the shapes one token covers: eleven of the
-//! thirteen seeds name `container_malformed`, spread over five
+//! The `variant` column separates the shapes one token covers: twelve of the
+//! fourteen seeds name `container_malformed`, spread over five
 //! `BundleFileError` variants, and Section RTS pins the Python class of each.
 //! Every equality check has a seed on each side of its v1 value.
 
 use std::mem::size_of;
 
+use secretary_core::unlock::bundle_file::{decode, BundleFileError};
 use secretary_core::vault::manifest::RuleToken;
-use secretary_core::version::FORMAT_VERSION;
+use secretary_core::version::{FORMAT_VERSION, MAGIC};
 
-use super::SeedCase;
+use super::{EqualityReading, SeedCase};
 
 // §3 field widths.
 const U16_LEN: usize = size_of::<u16>();
@@ -96,6 +97,12 @@ fn unsupported_format_version(base: &[u8]) -> Vec<u8> {
 // must reject. With only the `+ 1` seeds, a check loosened from `!=` to `>`
 // accepted every value below and stayed green in both languages (measured,
 // PR #718 review).
+
+fn bad_magic_below(base: &[u8]) -> Vec<u8> {
+    let mut b = checked_base(base);
+    put_u32(&mut b, MAGIC_AT, MAGIC - 1);
+    b
+}
 
 fn format_version_below(base: &[u8]) -> Vec<u8> {
     let mut b = checked_base(base);
@@ -175,6 +182,12 @@ pub fn cases() -> Vec<SeedCase> {
         case(ContainerMalformed, "bad_magic", "BadMagic", bad_magic),
         case(
             ContainerMalformed,
+            "bad_magic_below",
+            "BadMagic",
+            bad_magic_below,
+        ),
+        case(
+            ContainerMalformed,
             "wrong_file_kind",
             "UnsupportedFileKind",
             wrong_file_kind,
@@ -246,4 +259,26 @@ pub fn cases() -> Vec<SeedCase> {
             format_version_below,
         ),
     ]
+}
+
+/// For a seed rejected by one of §3's EQUALITY checks: the check, the value
+/// the seed carries, and the v1 value the check requires. `None` for every
+/// other rejection. Read off the decoder's own error, as `block_file`'s twin
+/// does.
+pub fn equality_check(bytes: &[u8]) -> Option<EqualityReading> {
+    match decode(bytes).err()? {
+        BundleFileError::BadMagic { got } => Some(("magic", got.into(), MAGIC.into())),
+        BundleFileError::UnsupportedFormatVersion(found) => {
+            Some(("format_version", found.into(), FORMAT_VERSION.into()))
+        }
+        BundleFileError::UnsupportedFileKind(found) => {
+            Some(("file_kind", found.into(), FILE_KIND_IDENTITY_BUNDLE.into()))
+        }
+        BundleFileError::WrapLengthMismatch {
+            field,
+            expected,
+            declared,
+        } => Some((field, declared.into(), expected.into())),
+        _ => None,
+    }
 }

@@ -24,12 +24,13 @@ use std::mem::size_of;
 use secretary_core::crypto::sig::{ED25519_SIG_LEN, ML_DSA_65_SIG_LEN};
 use secretary_core::identity::fingerprint::Fingerprint;
 use secretary_core::vault::block::{
-    decode_header, decode_recipient_table, FILE_KIND_BLOCK, RECIPIENT_ENTRY_LEN,
+    decode_block_file, decode_header, decode_recipient_table, BlockError, FILE_KIND_BLOCK,
+    RECIPIENT_ENTRY_LEN,
 };
 use secretary_core::vault::manifest::RuleToken;
-use secretary_core::version::{FORMAT_VERSION, SUITE_ID};
+use secretary_core::version::{FORMAT_VERSION, MAGIC, SUITE_ID};
 
-use super::SeedCase;
+use super::{EqualityReading, SeedCase};
 
 // §6.1 header prefix: magic (u32), format_version (u16), suite_id (u16),
 // file_kind (u16), in that order.
@@ -39,6 +40,8 @@ const SUITE_ID_AT: usize = FORMAT_VERSION_AT + size_of::<u16>();
 const FILE_KIND_AT: usize = SUITE_ID_AT + size_of::<u16>();
 /// Every table count and signature length prefix is a u16.
 const U16_LEN: usize = size_of::<u16>();
+/// The AEAD section opens with its 24-byte nonce, then the u32 `aead_ct_len`.
+const AEAD_NONCE_LEN: usize = 24;
 /// device_uuid (16) || counter (u64).
 const VECTOR_CLOCK_ENTRY_LEN: usize = size_of::<Fingerprint>() + size_of::<u64>();
 /// author_fingerprint || sig_ed_len || sig_ed || sig_pq_len || sig_pq.
@@ -85,6 +88,10 @@ fn layout(base: &[u8]) -> Layout {
 
 fn put_u16(bytes: &mut [u8], at: usize, value: u16) {
     bytes[at..at + U16_LEN].copy_from_slice(&value.to_be_bytes());
+}
+
+fn put_u32(bytes: &mut [u8], at: usize, value: u32) {
+    bytes[at..at + size_of::<u32>()].copy_from_slice(&value.to_be_bytes());
 }
 
 fn u16_of(value: usize) -> u16 {
@@ -187,6 +194,12 @@ fn unsupported_suite_id(base: &[u8]) -> Vec<u8> {
 // from `!=` to `>` (or to `<` for the signature lengths) accepted every value
 // on the unseeded side with every gate green (#719; measured for
 // `bundle_file` in the PR #718 review).
+fn bad_magic_below(base: &[u8]) -> Vec<u8> {
+    let mut b = base.to_vec();
+    put_u32(&mut b, MAGIC_AT, MAGIC - 1);
+    b
+}
+
 fn wrong_file_kind_below(base: &[u8]) -> Vec<u8> {
     let mut b = base.to_vec();
     put_u16(&mut b, FILE_KIND_AT, FILE_KIND_BLOCK - 1);
@@ -267,6 +280,18 @@ fn wrong_sig_pq_len_above(base: &[u8]) -> Vec<u8> {
         &mut b,
         l.sig_suffix_at + size_of::<Fingerprint>() + U16_LEN + ED25519_SIG_LEN,
         u16_of(ML_DSA_65_SIG_LEN + 1),
+    );
+    b
+}
+
+/// Declares more ciphertext than the file holds, with every byte present.
+fn aead_ct_len_exceeds_file(base: &[u8]) -> Vec<u8> {
+    let l = layout(base);
+    let mut b = base.to_vec();
+    put_u32(
+        &mut b,
+        l.recipients_at + l.recipients_len + AEAD_NONCE_LEN,
+        u32::MAX,
     );
     b
 }
@@ -398,6 +423,12 @@ pub fn cases() -> Vec<SeedCase> {
         case(ContainerMalformed, "bad_magic", "BadMagic", bad_magic),
         case(
             ContainerMalformed,
+            "bad_magic_below",
+            "BadMagic",
+            bad_magic_below,
+        ),
+        case(
+            ContainerMalformed,
             "wrong_file_kind",
             "WrongFileKind",
             wrong_file_kind,
@@ -449,6 +480,12 @@ pub fn cases() -> Vec<SeedCase> {
             "wrong_sig_pq_len_above",
             "SigPqWrongLength",
             wrong_sig_pq_len_above,
+        ),
+        case(
+            ContainerMalformed,
+            "aead_ct_len_exceeds_file",
+            "Truncated",
+            aead_ct_len_exceeds_file,
         ),
         case(
             ContainerMalformed,
@@ -559,4 +596,31 @@ pub fn cases() -> Vec<SeedCase> {
             recipients_repeated_at_first_pair,
         ),
     ]
+}
+
+/// For a seed rejected by one of §6.1/§14's EQUALITY checks: the check, the
+/// value the seed carries, and the v1 value the check requires. `None` for
+/// every other rejection. Read off the decoder's own error, so a seed's side
+/// of its check is what the decoder saw, not what the generator meant.
+pub fn equality_check(bytes: &[u8]) -> Option<EqualityReading> {
+    let widen = |n: usize| u64::try_from(n).expect("a usize fits u64");
+    match decode_block_file(bytes).err()? {
+        BlockError::BadMagic { found } => Some(("magic", found.into(), MAGIC.into())),
+        BlockError::UnsupportedFormatVersion { found } => {
+            Some(("format_version", found.into(), FORMAT_VERSION.into()))
+        }
+        BlockError::UnsupportedSuiteId { found } => {
+            Some(("suite_id", found.into(), SUITE_ID.into()))
+        }
+        BlockError::WrongFileKind { found, expected } => {
+            Some(("file_kind", found.into(), expected.into()))
+        }
+        BlockError::SigEdWrongLength { found } => {
+            Some(("sig_ed_len", widen(found), widen(ED25519_SIG_LEN)))
+        }
+        BlockError::SigPqWrongLength { found } => {
+            Some(("sig_pq_len", widen(found), widen(ML_DSA_65_SIG_LEN)))
+        }
+        _ => None,
+    }
 }

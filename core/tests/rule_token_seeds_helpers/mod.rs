@@ -42,7 +42,7 @@ pub struct SeedCase {
     pub shape: &'static str,
     /// The Rust error VARIANT the decoder must raise, as its `Debug` name.
     ///
-    /// The token alone is coarser than the check a shape names. Nine
+    /// The token alone is coarser than the check a shape names. Fourteen
     /// `container_malformed` shapes span seven `BlockError` variants, so a
     /// raise site that names a sibling variant, or a plant that drifts onto a
     /// sibling's fault, still names the row's token: swapping
@@ -53,6 +53,10 @@ pub struct SeedCase {
     /// Build the seed from the target's committed accepting base.
     pub plant: fn(&[u8]) -> Vec<u8>,
 }
+
+/// What a target's `equality_check` reads off a seed's rejection: the
+/// check, the value the seed carries, and the v1 value the check requires.
+pub type EqualityReading = (&'static str, u64, u64);
 
 /// How the Rust decoder rejected a seed.
 #[derive(Debug, PartialEq)]

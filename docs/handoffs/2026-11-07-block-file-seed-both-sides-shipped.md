@@ -13,7 +13,9 @@ base `37283d29` (`main`, after #718 merged).
 | (no commit) | #641 **closed without `vault_toml`** (user decision). Reasoning is in the issue comment: the target is cleartext and never re-encoded, accept-versus-reject is already compared, and Section VT already requires each rejection to name the position. A token would add only a both-reject which-rule check. |
 | (no commit) | Removed the merged worktrees `pin-token-compared`, `ci-wiring`, `strict-floor` and `bundle-tokens`, plus their four local branches (user OK'd merged ones only). |
 | `268535ff` | #719: 5 twin seeds, RTS class table + floor, replay floors, CLAUDE.md + ROADMAP |
-| (this commit) | This handoff + symlink retarget |
+| `02d2cbb1` | This handoff + symlink retarget |
+| `e06ccf4f` | CLAUDE.md top-six re-rank |
+| (review fix) | `/finalcheck` review fixes, below |
 
 **The gap.** Every `block_file` seed planted `file_kind`, `format_version`
 and `suite_id` at `+ 1` and the two signature lengths at `- 1`. Both decoders
@@ -46,6 +48,42 @@ These mutations were **not** re-run on the base to show they were green
 there. #719 states the gap from reading the seeds, and #718 measured the
 identical shape for `bundle_file`.
 
+**Review fixes (`/finalcheck`, PR #720).** Two reviewers (code, test
+coverage). Findings and what was done:
+
+- **`magic` was a sixth one-sided equality check**, on `bundle_file` too
+  (#718 missed it). `bad_magic` XORs the first byte, giving `0xAC454352`,
+  which is above `MAGIC`, so `!=` → `>` stayed green. Added
+  `container_malformed__bad_magic_below` on both targets.
+- **Nothing bound a twin's name to its side.** New test
+  `every_equality_check_is_seeded_on_both_sides` (`rule_token_seeds.rs`).
+  Each helper module's `equality_check` reads `found` and the v1 value off
+  the decoder's own error. The test reds a check seeded on one side only, a
+  missing check from the `EQUALITY_CHECKS` census, or a `_below`/`_above` row
+  on the wrong side.
+- **No `block_file` seed reached `decode_aead_section`'s past-end check.**
+  Added `container_malformed__aead_ct_len_exceeds_file` (`Truncated` /
+  Python `ParseError`).
+- **A stale class row (no seed file) was silently ignored.** Section RTS now
+  reports it.
+- **`rule_token_seeds.py` would have crossed 500 lines.** Its class tables
+  moved to `sections/rule_token_seed_classes.py` (133 lines;
+  `rule_token_seeds.py` is now 382). The package is 81 files.
+- **CLAUDE.md's lead ranking omitted `rule_token_seeds.py`.** This is moot
+  after the split, which took that file out of the top six. Both rankings
+  now read 849 / 550 / 498 / 492 / 491 / 479 (`scanner.py` back in).
+
+Floors: `block_file` 31 inputs / 30 strict and RTS 30; `bundle_file` 15 / 14
+and RTS 14. The committed corpus is 181. All existing seeds came out
+byte-identical.
+
+Review mutations (`scripts/mutate.py`, `--self-test` 20/20, exit 0, all
+`RED_AS_EXPECTED`, tree clean): P-MB/R-MB (block `magic` `!=` → `>`, Python /
+Rust), P-MU/R-MU (the same on bundle), T-DIR (`bad_magic_below` planting
+`MAGIC + 1` reds the new both-sides test), P-STALE (a class row with no seed
+reds RTS). The `magic` rows were not run on the base. The gap was read off
+the seed bytes (`xxd`: `ac454352`).
+
 **Gates run, all exit 0:**
 - `cargo test --release --locked -p secretary-core` (56 binaries, all ok)
 - the replay test (60 passed; `block_file: 29 of 29 ... 28 committed strict`)
@@ -59,7 +97,8 @@ identical shape for `bundle_file`.
 ## (2) What is next
 
 1. **Merge this PR.** CI's `cargo test (ubuntu-latest)` replay step must
-   print `block_file: 29 of 29 ... 28 committed strict token comparison(s)`.
+   print `block_file: 31 of 31 ... 30 committed strict token comparison(s)`
+   and `bundle_file: 15 of 15 ... 14`.
 2. **#646**: narrowing the per-token tolerance on `manifest_body`.
    Acceptance: the §4.2 decisions it needs are written into `docs/` first,
    then `tokens_agree` is narrowed to match, and the `manifest_body` strict
@@ -78,10 +117,9 @@ identical shape for `bundle_file`.
 - **`vault_toml` stays loose by decision**, not by omission. It remains in
   `NOT_TOKEN_COMPARED_TARGETS`. #700's derived-membership check would red if
   both decoders ever became fully tokened without moving it.
-- `sections/rule_token_seeds.py` is 496 lines (489 on `main`), four short of
-  the split threshold. The next RTS addition should split it, e.g. moving the
-  class tables out the way `_ordering` was. CLAUDE.md's top-six ranking was
-  updated to 496 (now fourth); re-measure at merge if a review round edits it.
+- `sections/rule_token_seeds.py` was split in the review (class tables now
+  in `sections/rule_token_seed_classes.py`). It is 382 lines, out of the top
+  six. Re-measure at merge.
 - `sections/value_type_discipline.py` is still 849 lines (backlog, #683).
 - Remaining worktrees: the two detached `.claude/worktrees/` checkouts and
   branch `backup-pre-reword-1787543234`. Left alone; ask before deleting.
