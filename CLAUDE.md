@@ -117,7 +117,7 @@ cargo test --release --locked -p secretary-core \
 # isolation, which conformance Section DRS checks rather than assumes, over
 # the committed corpus only.
 #
-# CI replays the 182 committed inputs (no `corpus/` there): 107 until #669
+# CI replays the 184 committed inputs (no `corpus/` there): 107 until #669
 # added 14, 121 until #667/#670 added 10, 131 until #666/#685 added 10,
 # 141 until #641/#691 added 17 committed contact_card seeds (four two-fault
 # rows were added and then moved to Section RTS check 5 inside the same
@@ -127,7 +127,8 @@ cargo test --release --locked -p secretary-core \
 # equality checks a seed on its other side, 178 until the PR #720 review
 # added `magic`'s other side on block_file and bundle_file plus a
 # block_file `aead_ct_len` truncation, 181 until #646 added a second
-# `diff_regressions/manifest_body/` two-fault witness.
+# `diff_regressions/manifest_body/` two-fault witness, 182 until the PR #722
+# review added two more (a group-A tolerance witness and a rule-4 order pin).
 # Re-measure with
 # `ls core/fuzz/seeds/*/* core/tests/data/diff_regressions/*/* | grep -v gitkeep | wc -l`.
 # The 5.98 s test body
@@ -1518,8 +1519,8 @@ survived it. Six things:
   fault, (B) `array_sort_order` vs `rule4_tag_or_float`, which ordering 1
   fixes, (C) rules 1-3 vs rule 4, where §4.2 contradicted itself, and (D)
   re-encode-visible tokens vs `repeated_array_value`, where §4.2 was silent.
-  The user ruled C as rule 4 outranks, and A and D as free under the new
-  sentence. B and C are now real disagreements. D had a measured LIVE
+  #646 settled C as rule 4 outranks (vault-format §4.2's ordering-1 and
+  rules-1-3 paragraphs), and A and D as free under the new sentence. B and C are now real disagreements. D had a measured LIVE
   divergence (Rust `repeated_array_value`, Python `array_sort_order`) and now
   has a committed witness, `diff_regressions/manifest_body/arraysort_plus_repeated_block_uuid.bin`.
   Mutation-proven: dropping `repeated_array_value` from the free set reds
@@ -1528,8 +1529,9 @@ survived it. Six things:
   (`wrong_type` vs `missing_field`) are compared strictly, which is parity
   rather than spec. **What #646 did NOT change: the strict-comparison count.**
   A re-encode-visible token still excuses most mismatches, so the 17 committed
-  single-fault `NonCanonicalEncoding` seeds are still not strict and the
-  `manifest_body` floor stays 25 of 59; binding them to their expected token
+  single-fault `NonCanonicalEncoding` seeds are still not strict. The
+  `manifest_body` floor moved only by one, 25 -> 26 of 61, from the PR #722
+  review's rule-4 order witness (two-fault, both sides `rule4_tag_or_float`); binding them to their expected token
   by label is **#721**. A MISSING token is a harness failure; an UNRECOGNISED
   one is an ordinary disagreement. Both red the test.
 - **`manifest_body`, `block_file`, `record`, `contact_card` and `bundle_file` are
@@ -1599,8 +1601,10 @@ survived it. Six things:
   `TOKEN_COMPARISON_BLOCKED` (`manifest_file`, #640 — reached only by a fuzzed
   checkout's runtime corpus; the committed corpus holds no `manifest_file`
   rejection, so CI cannot see that entry's necessity).
-- **The tolerance has a committed WITNESS**, because every other corpus row breaks
-  exactly one rule and the comparison would otherwise pass vacuously.
+- **The tolerance has committed WITNESSES**, because every other corpus row breaks
+  exactly one rule and the comparison would otherwise pass vacuously. There
+  are two since #646, which added `arraysort_plus_repeated_block_uuid.bin`
+  (group D, above); the first is described here.
   `diff_regressions/manifest_body/arraysort_plus_indefinite.bin` breaks two at
   once: Rust names `array_sort_order`, Python names `rule2_indefinite_length`,
   same offset 929, both conformant. §4.2's ARRAY-SORT paragraph licenses that
@@ -1665,7 +1669,7 @@ survived it. Six things:
   step is silent; the full LIMITS are in the script's header.
   **State the residual scope exactly, because the wider claim is the one
   someone will want to make.** CI replays the COMMITTED corpus only —
-  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **182** inputs today
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **184** inputs today
   (#641 added 57 generated single-fault seeds for `block_file` and `record`;
   #669 added 14 acceptance seeds for `contact_card`, `vault_toml` and
   `manifest_body`; #667 added 7 `nesting__` seeds for `record` and
@@ -1682,7 +1686,8 @@ survived it. Six things:
   review, since a check loosened from `!=` to `>` passed every `+ 1` seed;
   #719 gave `block_file`'s five equality checks the same twins for 178,
   and the PR #720 review `magic`'s on both targets plus a `block_file`
-  `aead_ct_len` truncation for 181, and #646's group-D witness for 182 — `every_equality_check_is_seeded_on_both_sides`
+  `aead_ct_len` truncation for 181, and #646's group-D witness for 182, and the PR #722 review's
+  group-A witness and rule-4 order pin for 184 — `every_equality_check_is_seeded_on_both_sides`
   in `rule_token_seeds.rs` now reds a one-sided check, reading the side off
   the decoder's own error).
   `core/fuzz/corpus/` is **gitignored**, so agreement on fuzz-DISCOVERED
@@ -1706,7 +1711,8 @@ survived it. Six things:
   it**, none excused: `RuleToken::is_phase_dependent` names `MalformedCbor`
   and `Rule4TagOrFloat` — the only two tokens any of the ten seeds can
   produce — `false`, so a mismatch on either is never tolerated. That is
-  **25 of 58** now, re-measured by a `diff_replay.replay_bytes` sweep over
+  **26 of 61** now (#646's two tolerance witnesses are tolerated pairs and
+  so not strict; its rule-4 order pin is the 26th), re-measured by a `diff_replay.replay_bytes` sweep over
   the committed corpus rather than derived from `is_phase_dependent`'s match
   arms plus a per-row token column, which is what the "24 of 57" this
   replaces was (PR #689 review added the tenth seed,

@@ -198,8 +198,8 @@ impl RuleToken {
     /// (`core/tests/differential_replay_helpers/tolerance.rs`) builds the pair
     /// relation from this flag plus the set of manifest rules the freedom
     /// ranges over, and pins the resulting 30 tolerated pairs (#646). Until
-    /// #646 the harness tolerated every pair with a member flagged here,
-    /// 58 pairs, including rule 4 pairs that §4.2's ordering 1 fixes.
+    /// #646 the harness tolerated every pair with a member flagged here
+    /// except those with `malformed_cbor`, 58 pairs, including rule 4 pairs that §4.2's ordering 1 fixes.
     ///
     /// Rule 4 is deliberately absent: NEITHER design obtains it from the
     /// re-encode, so §4.2 requires both to run the whole-body walk first

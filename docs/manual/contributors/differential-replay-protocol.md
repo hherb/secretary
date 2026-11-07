@@ -210,8 +210,8 @@ There are exactly three valid output shapes:
   strictly equal) and `bundle_file` (#641) compare strictly. Since #646 the
   relation is two-argument: a pair is tolerated iff one member is
   re-encode-visible (`RuleToken::is_phase_dependent`: §6.2 rules 1-3, trailing
-  bytes, the array sort disciplines) and both are manifest rules §4.2's general
-  re-encode paragraph covers, which excludes rule 4 and `malformed_cbor`. That
+  bytes, the array sort disciplines) and both are manifest rules §4.2's "general
+  rule" paragraph covers, which excludes rule 4 and `malformed_cbor`. That
   is **30 of the 153 unequal token pairs**, pinned against an independent
   declaration by `tolerance_admits_only_phase_dependent_pairs`; the old
   per-token predicate tolerated 58, including rule-4 pairs §4.2 fixes. A
@@ -260,7 +260,7 @@ The four-way agreement matrix:
 | Accept | Accept | Compare re-encoded bytes (skipped for `vault_toml`). |
 | Accept | Reject | **Disagreement** — one of them has a spec bug. |
 | Reject | Accept | **Disagreement** — one of them has a spec bug. |
-| Reject | Reject | Agreement on the verdict. For a token-compared target the `rule` tokens must also agree, or one must be phase-dependent — see §3. |
+| Reject | Reject | Agreement on the verdict. For a token-compared target the `rule` tokens must also be equal, or, on `manifest_body` only, form one of the 30 pairs vault-format §4.2 leaves freely ordered — see §3. |
 
 When you investigate a disagreement, the rule of thumb:
 

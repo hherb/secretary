@@ -37,8 +37,8 @@ const FREELY_ORDERED_MANIFEST_RULES: &[RuleToken] = &[
 ///
 /// Equal tokens always do. Two unequal tokens do only on a target in
 /// [`PHASE_DEPENDENT_TOLERANCE_TARGETS`], and only when §4.2 frees that PAIR
-/// (#646). §4.2's re-encode paragraph says a fault a normalising reader sees
-/// only at the §4.3 step-4 re-encode is unordered against every other rule
+/// (#646). §4.2's "general rule" paragraph says a fault a normalising reader
+/// may first detect at the §4.3 step-4 re-encode is unordered against every other rule
 /// except rule 4 and the well-formedness precondition. That reading is:
 ///
 /// - one of the two is re-encode-visible ([`RuleToken::is_phase_dependent`]:
