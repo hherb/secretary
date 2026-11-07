@@ -117,7 +117,7 @@ cargo test --release --locked -p secretary-core \
 # isolation, which conformance Section DRS checks rather than assumes, over
 # the committed corpus only.
 #
-# CI replays the 181 committed inputs (no `corpus/` there): 107 until #669
+# CI replays the 182 committed inputs (no `corpus/` there): 107 until #669
 # added 14, 121 until #667/#670 added 10, 131 until #666/#685 added 10,
 # 141 until #641/#691 added 17 committed contact_card seeds (four two-fault
 # rows were added and then moved to Section RTS check 5 inside the same
@@ -126,7 +126,8 @@ cargo test --release --locked -p secretary-core \
 # the PR #718 review), 173 until #719 gave each of block_file's five
 # equality checks a seed on its other side, 178 until the PR #720 review
 # added `magic`'s other side on block_file and bundle_file plus a
-# block_file `aead_ct_len` truncation.
+# block_file `aead_ct_len` truncation, 181 until #646 added a second
+# `diff_regressions/manifest_body/` two-fault witness.
 # Re-measure with
 # `ls core/fuzz/seeds/*/* core/tests/data/diff_regressions/*/* | grep -v gitkeep | wc -l`.
 # The 5.98 s test body
@@ -1364,11 +1365,10 @@ not safety. vault-format §4.2 now fixes two orderings and deliberately
 refuses to fix a third. Four things about it:
 
 - **Rule 4 outranks the repeated-key rule and the checks below it, and
-  that half was genuinely broken.** Not "everything": the bullet two
-  below leaves §6.2 rules 1-3 unordered against it, so the loose
-  phrasing contradicts this list's own third entry, and a clean-room
-  implementer reading it as absolute implements a precedence §4.2
-  declines to fix.
+  that half was genuinely broken.** Since #646 that includes §6.2 rules
+  1-3: §4.2 used to say rule 4 outranked them in ordering 1 and leave
+  them unordered against it one paragraph later, and #646 settled it for
+  rule 4, which both readers already did.
   `decode_manifest` runs `reject_floats_and_tags` over the whole tree at
   `decode/mod.rs:131`, six lines before `parse_manifest_map`, so a float or
   tag anywhere wins. `conformance.py` checked rule 4 **per value inside its
@@ -1381,8 +1381,8 @@ refuses to fix a third. Four things about it:
   closure, restated as a spec obligation. Python agreed only BY
   CONSTRUCTION (`_validate_manifest_shape` runs after the entry loop); it is
   now pinned.
-- **§6.2 rules 1-3 are UNSPECIFIED against those two, and that is
-  architectural.** A normalising reader can only see them at the §4.3 step-4
+- **§6.2 rules 1-3 are UNSPECIFIED against ordering 2 (not against rule 4,
+  since #646), and that is architectural.** A normalising reader can only see them at the §4.3 step-4
   re-encode — after interpretation; a byte-retaining reader must see them
   during its scan — before it. Measured: one body, Rust says the repeat,
   Python says rule 3, both conformant. Rule 4 escapes this only because
@@ -1500,75 +1500,38 @@ survived it. Six things:
   `Unclassified`, while `conformance.py` names them exactly. There is therefore
   no `trailing_bytes` token. That is coarsening, not a lie; the `detail` text
   stays specific.
-- **`tokens_agree` tolerates a mismatch iff either token is phase-dependent** — **on `manifest_body` only** since #641, which made the licence per TARGET (`PHASE_DEPENDENT_TOLERANCE_TARGETS`): §4.2's two reader designs are the manifest body's, so `record`, `block_file`, `contact_card` and `bundle_file` compare strictly with 0 tolerated pairs, and the breadth test pins both figures —,
-  which is DERIVED from §4.2's "deliberately unspecified" paragraphs and is
-  strictly BROADER than them — do not write "it IS that sentence", which five
-  documents did, the fifth being the shared JSON fixture BOTH languages read.
-  **State the breadth as a number, because the list-of-exceptions form has now
-  been wrong twice.** A per-TOKEN predicate tolerates every pair its token
-  appears in, so with 4 of the 18 tokens phase-dependent it tolerates **58 of
-  the 153 unequal pairs**; §4.2 frees a strict subset. (This was 54 of 136
-  with 4 of 17 tokens phase-dependent before #641 added the 18th token,
-  `UnknownField` — C(18,2) = 153 unequal pairs, 62 with a phase-dependent
-  member, less the four pairing one with `malformed_cbor` below = 58; the new
-  token is not itself phase-dependent, and `PHASE_DEPENDENT_TOLERANCE_TARGETS`
-  still holds only `manifest_body`, so the four newly-tolerated
-  `UnknownField`-paired pairs are inert on the one target that could reach
-  them, since `manifest_body`'s Rust decoder has no arm producing
-  `unknown_field` — verified by grep, zero producers ON THAT PATH. Not
-  zero in `core/src`, which is how this read until #698's review:
-  `core/src/vault/rule_tokens/card.rs` produces it, which is the whole
-  point of the token. The scope is the manifest decoder, and an absolute
-  phrasing here is what later gets quoted without it.) The 58
-  figure is 62 pairs with a phase-dependent member, less the four pairing
-  one with `malformed_cbor`, which is never tolerated: §4.2 makes
-  well-formedness the precondition for
-  both orderings. Withholding it came from the PR #673 review, which measured
-  Python's newly tokened scanner raises turning a would-be harness failure into
-  agreement for `undefined` and nested-chunk manifest bodies. All four
-  `NonCanonicalCause` outcomes map to phase-dependent tokens, so **every**
-  `NonCanonicalEncoding` rejection Rust makes is scored as agreement whatever
-  Python said — measured on the committed corpus, that is **17 of the 42
-  rejecting `manifest_body` seeds** (7 `arraysort__*`, 4 `keyorder__*`, 3
-  rule-2, 3 rule-3), leaving 25 that reach a real comparison. #669 added 6
-  `valuetype__trash_*` rows answering `wrong_type` / `integer_out_of_range`,
-  #667 two `nesting__{257,2048}_unknown` rows and #666 ten more (8
-  `wellformed__*`, 2 `nesting__257_unknown_bignum_*`), every one answering
-  `malformed_cbor` or `rule4_tag_or_float`, neither of which is ever
-  tolerated. So the TOLERATED count has not moved — it is still the same 17
-  `NonCanonicalEncoding` rows — while the strict one went
-  7 -> 13 -> 15 -> 25, and the DENOMINATOR moved 32 -> 42 with it.
-  **Both halves of that sentence have now gone stale twice**: at "17 of 24,
-  leaving 7" for a whole slice (#679 review), and again at "17 of 32, leaving
-  15" — which #666 left behind while updating the sibling bullet below to
-  "25 of 58" in the same commit, so the one file disagreed with itself
-  (PR #689 review). Re-measure rather than quoting; the recipe is a
-  `diff_replay.replay_bytes` sweep of `core/fuzz/seeds/manifest_body/`
-  bucketed by `RuleToken::is_phase_dependent`. #667 re-measured them per seed, with a scratch probe over
-  `decode_manifest(..).rule_token()` and `diff_replay.replay_bytes`. FOUR groups are
-  tolerated with no §4.2 licence, enumerated in
-  `RuleToken::is_phase_dependent`'s own LIMITS block and tracked by **#646**:
-  (A) trailing bytes, folded into `non_canonical_unclassified` because Rust
-  cannot name them, beside ANY schema fault; (B) `array_sort_order` against
-  `rule4_tag_or_float`, which §4.2's ordering 1 FIXES; (C) rules 2, 3 and
-  `non_canonical_unclassified` against `rule4_tag_or_float`, where §4.2 does
-  not read consistently — ordering 1 puts rule 4 ahead of "§6.2 rules 1–5"
-  while the next paragraph declares rules 1-3 unordered against both
-  fixed orderings; and (D) any of the four against `repeated_array_value`,
-  where §4.2 is SILENT rather than ordering it, its closing paragraph
-  withholding the freedom only "relative to the two fixed orderings above".
-  **A CLAUDE.md version of this bullet said §4.2 "pointedly does NOT free"
-  group D — it says no such thing about that pair**, and asserting a spec
-  sentence that does not exist is worse than admitting silence. The group-D
-  `array_sort_order` member is a measured LIVE divergence with no committed
-  witness. Narrowing the predicate by hand would manufacture false
-  disagreements on the pairs §4.2 genuinely leaves free, so #646 pairs the
-  narrowing with the §4.2 decisions it needs. The BREADTH is now pinned as a
-  number by `tolerance_admits_only_phase_dependent_pairs`, so a fifth
-  phase-dependent token cannot widen it silently. A MISSING token is a harness
-  failure; an UNRECOGNISED one is an ordinary disagreement (`tokens_agree`
-  returns `false`) — "unrecognised OR missing is a harness failure" is wrong
-  about the first half, though both red the test.
+- **`tokens_agree` is a two-argument relation derived from §4.2 (#646), on
+  `manifest_body` only** (`PHASE_DEPENDENT_TOLERANCE_TARGETS`, since #641:
+  §4.2's two reader designs are the manifest body's, so `record`,
+  `block_file`, `contact_card` and `bundle_file` tolerate 0 pairs). A pair is
+  tolerated iff one member is RE-ENCODE-VISIBLE (`RuleToken::is_phase_dependent`:
+  §6.2 rules 1-3, trailing bytes, the array sort disciplines) and both are in
+  `tolerance.rs`'s `FREELY_ORDERED_MANIFEST_RULES`, which leaves out rule 4,
+  `malformed_cbor`, `unknown_field` and the envelope/harness tokens. That is
+  **30 of the 153 unequal pairs**, pinned as an exact SET against a second
+  declaration in `tolerance_admits_only_phase_dependent_pairs`. It derives
+  from one sentence §4.2 gained in #646: a re-encode-visible fault is unordered
+  against every other manifest rule except rule 4 and the well-formedness
+  precondition. **Until #646 it was a per-TOKEN predicate** (either token
+  phase-dependent, bar `malformed_cbor`) that tolerated **58** pairs, four
+  groups of them with no §4.2 licence: (A) trailing bytes beside a schema
+  fault, (B) `array_sort_order` vs `rule4_tag_or_float`, which ordering 1
+  fixes, (C) rules 1-3 vs rule 4, where §4.2 contradicted itself, and (D)
+  re-encode-visible tokens vs `repeated_array_value`, where §4.2 was silent.
+  The user ruled C as rule 4 outranks, and A and D as free under the new
+  sentence. B and C are now real disagreements. D had a measured LIVE
+  divergence (Rust `repeated_array_value`, Python `array_sort_order`) and now
+  has a committed witness, `diff_regressions/manifest_body/arraysort_plus_repeated_block_uuid.bin`.
+  Mutation-proven: dropping `repeated_array_value` from the free set reds
+  that witness's replay and the pair-set test, and restoring the per-token
+  predicate reds the pair-set test. Pairs of two INTERPRETATION-time rules
+  (`wrong_type` vs `missing_field`) are compared strictly, which is parity
+  rather than spec. **What #646 did NOT change: the strict-comparison count.**
+  A re-encode-visible token still excuses most mismatches, so the 17 committed
+  single-fault `NonCanonicalEncoding` seeds are still not strict and the
+  `manifest_body` floor stays 25 of 59; binding them to their expected token
+  by label is **#721**. A MISSING token is a harness failure; an UNRECOGNISED
+  one is an ordinary disagreement. Both red the test.
 - **`manifest_body`, `block_file`, `record`, `contact_card` and `bundle_file` are
   token-compared (#634, #641; `contact_card` closed by #641/#691, `bundle_file`
   by #641 on 2026-11-07). `manifest_file` is BLOCKED,
@@ -1702,7 +1665,7 @@ survived it. Six things:
   step is silent; the full LIMITS are in the script's header.
   **State the residual scope exactly, because the wider claim is the one
   someone will want to make.** CI replays the COMMITTED corpus only —
-  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **181** inputs today
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **182** inputs today
   (#641 added 57 generated single-fault seeds for `block_file` and `record`;
   #669 added 14 acceptance seeds for `contact_card`, `vault_toml` and
   `manifest_body`; #667 added 7 `nesting__` seeds for `record` and
@@ -1719,7 +1682,7 @@ survived it. Six things:
   review, since a check loosened from `!=` to `>` passed every `+ 1` seed;
   #719 gave `block_file`'s five equality checks the same twins for 178,
   and the PR #720 review `magic`'s on both targets plus a `block_file`
-  `aead_ct_len` truncation for 181 — `every_equality_check_is_seeded_on_both_sides`
+  `aead_ct_len` truncation for 181, and #646's group-D witness for 182 — `every_equality_check_is_seeded_on_both_sides`
   in `rule_token_seeds.rs` now reds a one-sided check, reading the side off
   the decoder's own error).
   `core/fuzz/corpus/` is **gitignored**, so agreement on fuzz-DISCOVERED
@@ -1780,9 +1743,9 @@ survived it. Six things:
   **Generalise it:** a mutation result is a property of ONE gate. Every row in
   `scripts/mutate.py`'s table now names its gate (#651) so this cannot be
   written from pasted evidence again. Note also the narrower true statement
-  about the tolerance itself: the predicate tolerates a phase-dependent token
-  against ANY token, not only against another phase-dependent one, which is
-  what the four groups above are. Every other
+  about the tolerance itself: a re-encode-visible token is tolerated against
+  the interpretation-time manifest rules as well as against another
+  re-encode-visible one (30 pairs since #646). Every other
   mutation reds: an ordered token swapped for another ordered one (4 differential
   disagreements), a removed token (4 harness failures), a dropped `rule` field
   (25 harness failures), a dropped or flipped vocabulary row (Section RTV), and
@@ -1800,9 +1763,11 @@ scoped to those three and not to the whole free set — the handoff's "the array
 sort disciplines only" describes the first widening alone); and ordering 1
 still binds them. The witness is licensed by the FIRST of those, not the
 second: §4.2 says in as many words that a body out of array sort order which
-also breaks one of §6.2 rules 1-3 may be reported as either. Deliberately NOT the repeated-value rules,
-because both reader designs check those during interpretation, so that
-ordering stays free of charge.
+also breaks one of §6.2 rules 1-3 may be reported as either. #646 then
+generalised all of it into one sentence: a re-encode-visible fault (rules
+1-3, the sort disciplines, trailing bytes) is unordered against every other
+manifest rule except rule 4 and well-formedness. That frees sort order
+against a repeated array value, too.
 
 **The residual, stated exactly, because the obvious wider claim is false.**
 Inside a forward-compat `unknown` subtree the check misses **duplicate map

@@ -96,8 +96,8 @@ pub const TOKEN_COMPARISON_BLOCKED: &[(&str, &str)] = &[("manifest_file", "#640"
 /// reader designs that detect §6.2 rules 1-3 and the array sort disciplines at
 /// different points. Nothing gives a §6.1 block-file envelope, a §6.3 record
 /// body, or a §6 contact card that freedom, so on every other compared target
-/// only EQUAL tokens agree (#641). Applied globally, the per-token predicate
-/// would have scored `array_sort_order` against `container_malformed` on
+/// only EQUAL tokens agree (#641). Applied globally, the tolerance would
+/// have scored `array_sort_order` against `repeated_array_value` on
 /// `block_file` as agreement — hiding exactly the Python sort/repeat split
 /// #641 adds.
 ///
@@ -167,8 +167,8 @@ pub const PHASE_DEPENDENT_TOLERANCE_TARGETS: &[&str] = &["manifest_body"];
 /// a seed that stops rejecting drops out of the strict count. (The `nesting__` seeds are labelled
 /// too, and `nesting__256_unknown` ACCEPTS; `nesting_depth_seeds` and
 /// Section NDL check those.) On `manifest_body` the gap is wider:
-/// `tokens_agree` there lets a phase-dependent token on either side stand
-/// against a different token, so a change on the Rust
+/// `tokens_agree` there lets a re-encode-visible token on either side stand
+/// against most other manifest rules, so a change on the Rust
 /// raise side could route more of that corpus onto tolerated pairs and shrink
 /// the real comparison toward zero with this floor, the tolerance breadth
 /// assertion and the negative control all green. [`MIN_STRICT_COMPARISONS`]
@@ -179,7 +179,7 @@ pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("contact_card", 23),
     ("bundle_file", 15),
     ("manifest_file", 1),
-    ("manifest_body", 58),
+    ("manifest_body", 59),
     ("block_file", 31),
 ];
 

@@ -11,9 +11,9 @@
 //! - [`rust_decoder`] — the Rust decode/re-encode per target, carrying the
 //!   rule token on rejection. #641 edits this too.
 //! - [`tolerance`] — `tokens_agree`, the §4.2-derived predicate for when two
-//!   different tokens still count as agreement. #646 edits this.
+//!   different tokens still count as agreement; a pair relation since #646.
 //! - [`agreement`] — `judge`, whether one input's two verdicts agree. Pure,
-//!   lifted out of the corpus loop by #655. #641 and #646 change what it
+//!   lifted out of the corpus loop by #655. #641 and #646 changed what it
 //!   compares, so the rules live here rather than in the test body.
 //!
 //! #655 replaced the per-input Python spawn with one long-lived worker:

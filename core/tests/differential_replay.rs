@@ -313,142 +313,121 @@ fn every_target_is_classified() {
 }
 
 /// The NEGATIVE control the corpus cannot provide: no committed input makes
-/// two ORDERED tokens disagree, so without this test an always-true tolerance
+/// two ordered tokens disagree, so without this test an always-true tolerance
 /// would pass.
 ///
-/// **It does NOT check that the tolerance is exactly §4.2's free set**, and an
-/// earlier version of this docstring claimed it did — while `tokens_agree`'s
-/// own doc (now in `differential_replay_helpers/tolerance.rs`, #649) says in
-/// bold that the predicate is strictly BROADER than §4.2. Two doc comments
-/// asserting opposite strengths for one predicate is how a reader concludes
-/// the residual cannot exist. What is
-/// checked here is reflexivity, one tolerated pair, one denied pair, that two
-/// ORDERED tokens agree only when equal, and — since the residual is a
-/// BREADTH rather than a wrong answer — the exact SIZE of the tolerated set,
-/// so that adding a token or flipping a flag cannot widen it silently.
+/// It pins the EXACT tolerated pair set on `manifest_body` against a second
+/// declaration written here from vault-format §4.2's text (#646), not derived
+/// from `tokens_agree`'s own tables. Re-encode-visible faults (§6.2 rules 1-3,
+/// trailing bytes, the array sort disciplines) are unordered against each
+/// other and against the interpretation-time rules. Rule 4 and
+/// `malformed_cbor` are ordered against everything. Every other target
+/// tolerates nothing.
 #[test]
 fn tolerance_admits_only_phase_dependent_pairs() {
     use secretary_core::vault::manifest::RuleToken;
+    use std::collections::BTreeSet;
 
     const LICENSED: &str = "manifest_body";
+    const REENCODE_VISIBLE: &[&str] = &[
+        "rule2_indefinite_length",
+        "rule3_non_shortest_form",
+        "non_canonical_unclassified",
+        "array_sort_order",
+    ];
+    const INTERPRETATION_TIME: &[&str] = &[
+        "repeated_array_value",
+        "duplicate_map_key",
+        "missing_field",
+        "wrong_type",
+        "integer_out_of_range",
+        "unsupported_version",
+    ];
+    const WANT_TOLERATED: usize = 30;
 
-    // Identical tokens always agree, phase-dependent or not.
-    for t in RuleToken::ALL {
-        assert!(
-            tokens_agree(LICENSED, t.as_str(), t.as_str()),
-            "{:?} vs itself",
-            t.as_str()
-        );
+    let pair = |a: &str, b: &str| {
+        if a < b {
+            (a.to_owned(), b.to_owned())
+        } else {
+            (b.to_owned(), a.to_owned())
+        }
+    };
+    let mut want = BTreeSet::new();
+    for (i, a) in REENCODE_VISIBLE.iter().enumerate() {
+        for b in REENCODE_VISIBLE[i + 1..].iter().chain(INTERPRETATION_TIME) {
+            want.insert(pair(a, b));
+        }
     }
+    assert_eq!(want.len(), WANT_TOLERATED, "the §4.2 declaration above");
 
-    // #621's pair, BOTH phase-dependent -> tolerated. §4.2's array-sort
-    // paragraph licenses it DIRECTLY and by name: "a body that is out of
-    // array sort order and also breaks one of §6.2 rules 1-3 may be reported
-    // as either". An earlier comment here credited the later "no order among
-    // rules 1, 2 and 3 themselves" paragraph instead, which is a different
-    // sentence and does not reach a pair one of whose members is an array
-    // sort discipline; `diff_regressions/README.md` had it right throughout.
+    let mut got = BTreeSet::new();
+    for a in RuleToken::ALL {
+        assert!(
+            tokens_agree(LICENSED, a.as_str(), a.as_str()),
+            "{a:?} vs itself"
+        );
+        for b in RuleToken::ALL {
+            let agrees = tokens_agree(LICENSED, a.as_str(), b.as_str());
+            assert_eq!(
+                agrees,
+                tokens_agree(LICENSED, b.as_str(), a.as_str()),
+                "{a:?}/{b:?} asymmetric"
+            );
+            if a != b && agrees {
+                got.insert(pair(a.as_str(), b.as_str()));
+            }
+        }
+    }
+    assert_eq!(
+        got, want,
+        "the tolerated pair set moved: re-derive it against vault-format §4.2's \
+         report-order paragraphs before changing either side"
+    );
+
+    // The pairs #646 settled, named so a failure says which one moved.
+    // #621's witness: sort order against rule 2, free.
     assert!(tokens_agree(
         LICENSED,
         "array_sort_order",
         "rule2_indefinite_length"
     ));
+    // Group D, the measured live divergence: free, and witnessed.
     assert!(tokens_agree(
         LICENSED,
-        "rule2_indefinite_length",
+        "repeated_array_value",
         "array_sort_order"
     ));
-
-    // #618's pair, BOTH ordered -> a real disagreement. If this ever passes,
-    // the divergence #618 fixed could return unseen.
+    // Group B: ordering 1 puts rule 4 ahead of the sort disciplines.
+    assert!(!tokens_agree(
+        LICENSED,
+        "array_sort_order",
+        "rule4_tag_or_float"
+    ));
+    // Group C: rule 4 outranks §6.2 rules 1-3 too.
+    assert!(!tokens_agree(
+        LICENSED,
+        "rule3_non_shortest_form",
+        "rule4_tag_or_float"
+    ));
+    // #618's pair: both ordered, a real disagreement.
     assert!(!tokens_agree(
         LICENSED,
         "rule4_tag_or_float",
         "duplicate_map_key"
     ));
+    // The well-formedness precondition outranks everything (PR #673 review).
     assert!(!tokens_agree(
         LICENSED,
-        "duplicate_map_key",
-        "rule4_tag_or_float"
+        "malformed_cbor",
+        "array_sort_order"
     ));
 
-    // Two ordered tokens never agree unless equal.
-    let ordered: Vec<&str> = RuleToken::ALL
-        .iter()
-        .filter(|t| !t.is_phase_dependent())
-        .map(|t| t.as_str())
-        .collect();
-    for a in &ordered {
-        for b in &ordered {
-            assert_eq!(tokens_agree(LICENSED, a, b), a == b, "{} vs {}", a, b);
-        }
-    }
-
-    // §4.2's well-formedness precondition: a body that is not well-formed
-    // CBOR is reported as such "whatever else the body also breaks", so
-    // `malformed_cbor` against a phase-dependent token is never licensed
-    // (#641, PR #673 review). Without this, Python naming `malformed_cbor`
-    // for a shape ciborium parses leniently scored as agreement.
-    for t in RuleToken::ALL.iter().filter(|t| t.is_phase_dependent()) {
-        assert!(
-            !tokens_agree(LICENSED, "malformed_cbor", t.as_str()),
-            "{t:?}"
-        );
-        assert!(
-            !tokens_agree(LICENSED, t.as_str(), "malformed_cbor"),
-            "{t:?}"
-        );
-    }
-
-    // The BREADTH itself, pinned as a number. The four groups in
-    // `is_phase_dependent`'s LIMITS block are tolerated with no §4.2
-    // licence, so the honest statement of this predicate is "58 of the 153
-    // unequal pairs", not "the pairs §4.2 frees": 62 pairs have a
-    // phase-dependent member, less the four that pair it with
-    // `malformed_cbor`. Asserting the count means a fifth phase-dependent
-    // token, or a 19th token, cannot widen the tolerance without someone
-    // re-deriving this figure against §4.2 and updating the LIMITS block in
-    // the same edit. #646 owns narrowing it.
-    //
-    // Moved 54 -> 58 when #641 added the 18th token, `unknown_field`: it is
-    // not phase-dependent, but a new non-phase-dependent token still adds
-    // one newly-tolerated pair per phase-dependent token it now pairs
-    // against (four), which is exactly what this comment predicted would
-    // need re-deriving.
-    let n = RuleToken::ALL.len();
-    let mut unequal = 0usize;
-    let mut tolerated = 0usize;
-    for a in RuleToken::ALL {
-        for b in RuleToken::ALL {
-            if a >= b {
-                continue;
-            }
-            unequal += 1;
-            if tokens_agree(LICENSED, a.as_str(), b.as_str()) {
-                tolerated += 1;
-            }
-        }
-    }
-    assert_eq!(unequal, n * (n - 1) / 2, "unordered pair count");
-    assert_eq!(
-        tolerated, 58,
-        "the tolerated-pair count moved: re-derive it against vault-format \
-         §4.2 and update RuleToken::is_phase_dependent's LIMITS block, which \
-         states this figure and the four groups it covers"
-    );
-
-    // Every other target: no tolerated pair at all. The licence above is
-    // §4.2's, the manifest body's; a sequential block-file envelope or a
-    // record body inherits none of it (#641).
-    //
-    // The loop below skips whatever the list names, so on its own it cannot
-    // see the list widen: adding `record` to it removed `record` from the
-    // loop (PR #673 review). Pin the list's contents first.
+    // Every other target: no tolerated pair at all. Pin the list first, since
+    // the loop below skips whatever it names (PR #673 review).
     assert_eq!(
         PHASE_DEPENDENT_TOLERANCE_TARGETS,
         ["manifest_body"],
-        "widening the phase-dependent licence is a vault-format §4.2 decision, \
-         not a table edit"
+        "widening the licence is a vault-format §4.2 decision, not a table edit"
     );
     for target in TARGETS
         .iter()

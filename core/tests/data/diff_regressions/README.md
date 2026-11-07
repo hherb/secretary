@@ -49,7 +49,7 @@ Both reject, both are conformant, and the tokens differ. It is here as the
 §4.2 declares the order of the array sort disciplines against §6.2 rules 1-3
 unspecified, because the two reader designs §4.2 admits detect them at
 different points. `tokens_agree`
-(`core/tests/differential_replay.rs`) therefore accepts this pair, and
+(`core/tests/differential_replay_helpers/tolerance.rs`) therefore accepts this pair, and
 deleting that tolerance reds this input — before this fixture existed, the
 tolerance had no witness among committed bytes and the comparison passed
 vacuously.
@@ -57,3 +57,22 @@ vacuously.
 Do NOT "fix" the divergence by making one implementation report the other's
 rule. Doing so would require one architecture to detect a rule at a point its
 design cannot reach, which is what §4.2's paragraph exists to prevent.
+
+## `manifest_body/arraysort_plus_repeated_block_uuid.bin` (#646)
+
+`uniq__blocks__duplicate_block_uuid` with its three `blocks` entries reversed
+by byte surgery, giving `[b2, b2, b1]`: out of sort order AND repeating a
+`block_uuid`.
+
+```
+Rust    -> DuplicateBlockUuid (raised during the parse) -> repeated_array_value
+Python  -> ArraySortOrderViolation (sort check first)   -> array_sort_order
+```
+
+Before #646 this was a measured live divergence with no committed witness.
+`docs/vault-format.md` §4.2 said nothing about this pair. Its general
+re-encode paragraph now frees it: the array sort disciplines are
+re-encode-visible, and those are unordered against every other manifest rule
+except rule 4. `tokens_agree` accepts the pair, and taking `repeated_array_value`
+out of its freely-ordered set reds this input. The same "do not fix it" note
+as above applies.

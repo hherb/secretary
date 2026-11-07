@@ -186,138 +186,41 @@ impl RuleToken {
         }
     }
 
-    /// True when the two reader designs `docs/vault-format.md` §4.2 admits
-    /// detect this rule at DIFFERENT points, so §4.2 declares its order
-    /// against the section's fixed orderings unspecified.
+    /// True when this rule is *re-encode-visible* in `docs/vault-format.md`
+    /// §4.2's sense: a normalising-parse reader may first detect it at the
+    /// §4.3 step-4 re-encode, after interpretation, where a byte-retaining
+    /// reader detects it during its scan, before. §4.2 makes such a fault
+    /// unordered against every other manifest rule except rule 4 and the
+    /// well-formedness precondition.
     ///
-    /// **DERIVED from §4.2's "deliberately unspecified" paragraphs, and
-    /// strictly BROADER than them.** It is not that sentence, and the
-    /// difference is not cosmetic — see LIMITS below for the FOUR groups of
-    /// pairs it tolerates without a §4.2 licence, and for how much of the
-    /// committed corpus that costs. It is still a predicate rather than
-    /// a hand-maintained list of tolerated pairs, because a pair list would
-    /// have to be re-derived every time a token is added and would drift from
-    /// §4.2 silently; a predicate that is knowably wider is easier to state
-    /// the residual of than a list that is silently stale.
+    /// This is a property of ONE token, and §4.2's freedom is a property of a
+    /// PAIR. The replay harness's `tokens_agree`
+    /// (`core/tests/differential_replay_helpers/tolerance.rs`) builds the pair
+    /// relation from this flag plus the set of manifest rules the freedom
+    /// ranges over, and pins the resulting 30 tolerated pairs (#646). Until
+    /// #646 the harness tolerated every pair with a member flagged here,
+    /// 58 pairs, including rule 4 pairs that §4.2's ordering 1 fixes.
     ///
-    /// A normalising-parse reader sees these only at the §4.3 step-4
-    /// re-encode — after interpretation. A byte-retaining reader must see
-    /// them during its scan — before it. Rule 4 is deliberately absent:
-    /// NEITHER design obtains it from the re-encode, so §4.2 can and does
-    /// require both to run the whole-body walk first (#618).
-    ///
-    /// The repeated-array-value rule is absent for the mirror reason: both
-    /// designs check it during interpretation, because `[x, x]` is sorted
-    /// and re-encodes to itself, so no reader gets it from the re-encode
-    /// either.
+    /// Rule 4 is deliberately absent: NEITHER design obtains it from the
+    /// re-encode, so §4.2 requires both to run the whole-body walk first
+    /// (#618). The repeated-array-value rule is absent for the mirror reason:
+    /// `[x, x]` is sorted and re-encodes to itself, so both designs check it
+    /// during interpretation.
     ///
     /// # LIMITS
     ///
-    /// **On `manifest_body` only.** Since #641 the replay harness applies
-    /// this predicate solely on the targets its
-    /// `PHASE_DEPENDENT_TOLERANCE_TARGETS` lists, today `manifest_body`: the
-    /// licence is §4.2's two manifest reader designs, and §6.1 and §6.3 give
-    /// none, so `record` and `block_file` compare strictly and tolerate no
-    /// unequal pair. Every count below is about `manifest_body`.
+    /// [`Self::NonCanonicalUnclassified`] is a union of §6.2 rule-1 map-key
+    /// disorder and trailing bytes after the manifest map. §4.2 lists both as
+    /// re-encode-visible, so the union is honest, but the token cannot tell a
+    /// reader which of the two it saw. There is no `trailing_bytes` token
+    /// because `ciborium` performs no EOF check, so only one implementation
+    /// could draw that distinction (see this module's own doc).
     ///
-    /// On that target, marking a TOKEN phase-dependent tolerates EVERY pair
-    /// that token appears in, so the tolerated set is far wider than the set
-    /// §4.2 frees, and the honest way to state it is a count rather than a
-    /// short list of exceptions. Four of the eighteen tokens are
-    /// phase-dependent, so 62 of the 153 unequal token pairs have at least
-    /// one phase-dependent member, and **58 are tolerated**: the harness
-    /// withholds the four that pair one with [`Self::MalformedCbor`], because
-    /// §4.2 makes well-formedness the precondition for both of its orderings
-    /// rather than a rule inside them (PR #673 review). §4.2 licenses a
-    /// strict subset of those 58. (#641's [`Self::UnknownField`] joined the
-    /// non-phase-dependent majority and moved these two counts up from 58/54
-    /// — a new non-phase-dependent token always adds four tolerated pairs,
-    /// one per phase-dependent token it now pairs against.)
-    ///
-    /// **What that costs on the committed corpus, measured rather than
-    /// argued.** All four [`NonCanonicalCause`] outcomes map to
-    /// phase-dependent tokens, so every `NonCanonicalEncoding` rejection
-    /// this crate makes is scored as agreement whatever `conformance.py`
-    /// said. `core/fuzz/seeds/manifest_body/` holds 47 bodies of which 32
-    /// are rejected by both implementations, and **17 of those 32** make
-    /// this crate answer with a phase-dependent token: 7 `arraysort__*`,
-    /// 4 `keyorder__*`, 3 `*__rule2_indefinite_map`, 3
-    /// `*__rule3_non_shortest_int`. 15 reach a real comparison — the 3
-    /// `*__rule4_float` rows, the 4 `uniq__*` rows, the 6
-    /// `valuetype__trash_*` rows #669 added, which answer `wrong_type` or
-    /// `integer_out_of_range`, and the 2 rejecting `nesting__*` rows #667
-    /// added, which answer `malformed_cbor` (measured per seed, both
-    /// decoders; neither addition moved the tolerated 17, while the strict
-    /// count went 7 -> 13 -> 15). Re-measure rather than quoting: these
-    /// figures were stale by a whole slice twice already. Do not read the
-    /// committed witness under `tests/data/diff_regressions/manifest_body/`
-    /// as evidence against this: it is itself one of the tolerated pairs, so
-    /// it proves the tolerance FIRES, not that it is tight.
-    ///
-    /// The four GROUPS below are tolerated with no §4.2 licence. They are
-    /// recorded rather than closed, because a per-token predicate cannot
-    /// express a pairwise ordering at all and narrowing it by hand would
-    /// manufacture false disagreements on the pairs §4.2 genuinely does
-    /// leave free. Closing them needs §4.2 to settle groups C and D and a
-    /// two-argument tolerance derived from that text, which is **#646**.
-    ///
-    /// A. **[`Self::NonCanonicalUnclassified`] is a UNION of two causes and
-    ///    only one of them is phase-dependent.** It covers §6.2 rule-1
-    ///    map-key disorder, which genuinely is, and trailing bytes after the
-    ///    manifest map, which is not — §4.2 gives trailing bytes no ordering
-    ///    at all. The two readers place that check at opposite ends of their
-    ///    pipelines: `conformance.py` tests it immediately after the rule-4
-    ///    walk, before every schema check, while this crate cannot see it
-    ///    until the §4.3 step-4 re-encode, the last step, because `ciborium`
-    ///    performs no EOF check. So a body carrying trailing bytes *and* any
-    ///    schema fault makes the two name genuinely different rules and the
-    ///    harness still scores agreement. Measured on
-    ///    `uniq__blocks__duplicate_block_uuid.bin`: Python says
-    ///    `repeated_array_value`, and with one `0x00` appended it says
-    ///    `non_canonical_unclassified` while this crate's answer cannot move.
-    ///    The same holds for trailing bytes beside a missing field, a wrong
-    ///    type, an out-of-range integer, a duplicate map key or a bad
-    ///    sentinel — a systematic family, not one input. Splitting the union
-    ///    would need a `trailing_bytes` token, which is precisely the
-    ///    distinction only ONE implementation can make (see this module's own
-    ///    doc), so the residual is the price of that coarsening rule.
-    /// B. **[`Self::ArraySortOrder`] against [`Self::Rule4TagOrFloat`] is
-    ///    ORDERED by §4.2 and tolerated here.** §4.2's ordering 1 puts rule 4
-    ///    ahead of "this section's schema checks", and the five array sort
-    ///    disciplines are among them — §4.2 says so in as many words. The
-    ///    predicate cannot express that, because it reads one token at a time
-    ///    and `ArraySortOrder` is phase-dependent against §6.2 rules 1-3.
-    /// C. **[`Self::Rule2IndefiniteLength`], [`Self::Rule3NonShortestForm`]
-    ///    and [`Self::NonCanonicalUnclassified`] against
-    ///    [`Self::Rule4TagOrFloat`], where §4.2 does not read consistently.**
-    ///    Ordering 1 says rule 4 outranks "every check below it", scoped to
-    ///    "§6.2 rules 1–5", which includes rules 1, 2 and 3; the
-    ///    paragraph immediately after declares the order of rules 1, 2 and 3
-    ///    against BOTH fixed orderings unspecified. The two sentences cannot
-    ///    both govern this pair. There is no live divergence today, because
-    ///    both implementations run the whole-body rule-4 walk first — which
-    ///    is exactly what #618 established, and exactly what this harness is
-    ///    the negative control for. The control is switched off precisely
-    ///    when the other rule is 1, 2 or 3.
-    /// D. **[`Self::ArraySortOrder`], [`Self::Rule2IndefiniteLength`],
-    ///    [`Self::Rule3NonShortestForm`] and
-    ///    [`Self::NonCanonicalUnclassified`] against
-    ///    [`Self::RepeatedArrayValue`], where §4.2 is SILENT.** Its closing
-    ///    paragraph withholds the freedom from the repeated-array-value
-    ///    rules only "relative to the two fixed orderings above", and none
-    ///    of these four is one of those two — so the section neither frees
-    ///    nor orders these pairs. **An earlier version of this block said
-    ///    §4.2 "pointedly does NOT free it" and that the repeated-array-value
-    ///    rules "stay ordered"; §4.2 says neither of those things about this
-    ///    pair, and a comment asserting a spec sentence that does not exist
-    ///    is worse than one admitting silence.** The `ArraySortOrder` member
-    ///    is a MEASURED live divergence: from one body whose `blocks` array
-    ///    is both out of order and carries a repeat, this crate says
-    ///    `repeated_array_value` (`DuplicateBlockUuid`, raised by
-    ///    `decode/entries.rs` during the parse) and `conformance.py` says
-    ///    `array_sort_order` (its sort check precedes its repeat check), and
-    ///    the harness scores agreement. It has no committed witness; #646
-    ///    owns both halves.
+    /// On the committed corpus, every `NonCanonicalEncoding` rejection this
+    /// crate makes carries a token flagged here, so those single-fault seeds
+    /// are scored by the pair relation rather than by strict equality.
+    /// Binding each such seed to its expected token by label would make them
+    /// strict; that is #721.
     pub fn is_phase_dependent(&self) -> bool {
         match self {
             RuleToken::Rule2IndefiniteLength

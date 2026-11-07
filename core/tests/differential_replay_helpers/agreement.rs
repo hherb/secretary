@@ -233,7 +233,7 @@ mod tests {
     /// predicate, but nothing here did: `tokens_agree(rt, pt)` rewritten as
     /// `rt == pt` left every test in this module green, and only the full
     /// corpus replay, through its one witness input, noticed (#662 review).
-    /// This is the line #646 edits, and the reason `judge` was lifted out of
+    /// #646 narrowed the relation behind this line, and the reason `judge` was lifted out of
     /// the corpus loop was to test it without Python.
     #[test]
     fn a_phase_dependent_pair_on_a_compared_target_agrees() {

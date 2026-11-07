@@ -1,99 +1,89 @@
-//! The rule-token tolerance predicate: when two DIFFERENT tokens still count
+//! The rule-token tolerance relation: when two DIFFERENT tokens still count
 //! as agreement.
 //!
-//! Split out of `differential_replay.rs` (#649) because it is the part #646
-//! edits, and it carries normative weight from `docs/vault-format.md` §4.2
-//! that the corpus walk does not. Its two tests —
-//! `tolerance_admits_only_phase_dependent_pairs` and
+//! Split out of `differential_replay.rs` (#649) because it carries normative
+//! weight from `docs/vault-format.md` §4.2 that the corpus walk does not. Its
+//! two tests — `tolerance_admits_only_phase_dependent_pairs` and
 //! `an_unknown_token_is_never_tolerated` — stay in the entry file so their
 //! test names do not change.
 
+use secretary_core::vault::manifest::RuleToken;
+
 use super::targets::PHASE_DEPENDENT_TOLERANCE_TARGETS;
+
+/// The manifest-body rules §4.2's report-order freedom ranges over: every
+/// rule a §4.2 reader can name for a well-formed body, less rule 4.
+///
+/// Left out, each for a §4.2 reason: [`RuleToken::Rule4TagOrFloat`]
+/// (ordering 1 puts it ahead of every other rule), [`RuleToken::MalformedCbor`]
+/// (well-formedness is the precondition for both orderings, not a rule inside
+/// them), [`RuleToken::UnknownField`] (the manifest has a forward-compat
+/// `unknown` bag, so no manifest rule rejects an unknown key), and the
+/// envelope, harness and encoder tokens, which no §4.2 body rule produces.
+const FREELY_ORDERED_MANIFEST_RULES: &[RuleToken] = &[
+    RuleToken::Rule2IndefiniteLength,
+    RuleToken::Rule3NonShortestForm,
+    RuleToken::NonCanonicalUnclassified,
+    RuleToken::ArraySortOrder,
+    RuleToken::RepeatedArrayValue,
+    RuleToken::DuplicateMapKey,
+    RuleToken::MissingField,
+    RuleToken::WrongType,
+    RuleToken::IntegerOutOfRange,
+    RuleToken::UnsupportedVersion,
+];
 
 /// Do two rule tokens count as agreement?
 ///
-/// Equal tokens always do. Unequal tokens do **only** when at least one is
-/// phase-dependent, which is DERIVED from `docs/vault-format.md` §4.2's
-/// "deliberately unspecified" paragraphs: those rules are detected at
-/// different points by the two reader designs §4.2 admits, so ordering them
-/// would outlaw one design.
+/// Equal tokens always do. Two unequal tokens do only on a target in
+/// [`PHASE_DEPENDENT_TOLERANCE_TARGETS`], and only when §4.2 frees that PAIR
+/// (#646). §4.2's re-encode paragraph says a fault a normalising reader sees
+/// only at the §4.3 step-4 re-encode is unordered against every other rule
+/// except rule 4 and the well-formedness precondition. That reading is:
 ///
-/// **Derived from, and strictly BROADER than, those paragraphs — it is not
-/// them.** A per-token predicate tolerates every pair its token appears in,
-/// so with 4 of the 18 tokens phase-dependent this tolerates **58 of the 153
-/// unequal pairs** on `manifest_body` (62 have a phase-dependent member; the
-/// `malformed_cbor` exception below withholds four), of which §4.2 frees a
-/// strict subset. FOUR groups are
-/// tolerated with no §4.2 licence at all, and on the committed corpus the
-/// cost is that **17 of the 42 rejecting `manifest_body` seeds never compare
-/// the Python token**, because every `NonCanonicalEncoding` cause maps to a
-/// phase-dependent token. The rest are compared strictly, and
-/// `MIN_STRICT_COMPARISONS` floors how many (#658; each target's finish line
-/// prints the current count, so re-measure there rather than quoting a
-/// number). All four groups and that measurement are stated in
-/// full on [`RuleToken::is_phase_dependent`]'s own LIMITS block, beside the
-/// predicate rather than beside this caller; #646 tracks closing them.
-/// Narrowing the predicate by hand would manufacture false disagreements on
-/// the pairs §4.2 genuinely leaves free, so the residual is recorded rather
-/// than half-fixed.
+/// - one of the two is re-encode-visible ([`RuleToken::is_phase_dependent`]:
+///   §6.2 rules 1-3, trailing bytes, the array sort disciplines), and
+/// - both are in [`FREELY_ORDERED_MANIFEST_RULES`].
 ///
-/// Still deliberately NOT a list of tolerated pairs: a pair list would have
-/// to be re-derived every time a token is added and would drift from §4.2
-/// silently, where a predicate that is knowably wider can at least have its
-/// residual written down.
+/// On `manifest_body` that is 30 of the 153 unequal pairs: the 6 among the
+/// four re-encode-visible tokens, plus each of the four against the six
+/// interpretation-time rules. `tolerance_admits_only_phase_dependent_pairs`
+/// pins the exact set against a second, independent declaration. Until #646
+/// this was a per-TOKEN test, which tolerated 58 pairs, including the
+/// rule 4 pairs §4.2's ordering 1 fixes.
 ///
-/// An unrecognised token on either side is never agreement. Note the
-/// MECHANISM, which is not the one the missing-token guard in
-/// [`super::agreement::judge`] uses: an unknown non-null token falls
-/// through to `false` here and is reported as an ordinary DISAGREEMENT, while
-/// a *missing* token is caught before this function is reached and reported
-/// as a harness failure. Both red the test, so nothing is lost — but
-/// "unrecognised or missing is a harness failure" is wrong about half of it.
+/// Pairs of two interpretation-time rules (`wrong_type` against
+/// `missing_field`, say) are NOT tolerated. §4.2 does not fix their order
+/// either, but both reader designs check them during interpretation, so the
+/// harness holds the two implementations to the same answer. That is parity,
+/// not spec.
 ///
-/// **Per target (#641).** The phase-dependent licence applies only on
-/// [`PHASE_DEPENDENT_TOLERANCE_TARGETS`]; everywhere else unequal tokens
-/// never agree. Every other target's breadth is 0, and
-/// `tolerance_admits_only_phase_dependent_pairs` pins both figures.
-///
-/// **`malformed_cbor` is never tolerated, on any target (#641, PR #673
-/// review).** §4.2 makes well-formedness the precondition for both of its
-/// orderings rather than a third rule inside them: a reader that cannot find
-/// a body's item boundaries "reports that instead, whatever else the body
-/// also breaks". So a pair naming `malformed_cbor` against a phase-dependent
-/// token has no §4.2 licence, and withholding it manufactures no false
-/// disagreement. It is why `manifest_body`'s breadth is **58**, not the 62
-/// pairs that have a phase-dependent member. Rust's `malformed_cbor` also
-/// covers the recursion limit, and since #667 that IS a well-formedness
-/// fault: crypto-design §6.2 rule 6, listed among §4.2's preconditions, and
-/// reported by both implementations under this token.
-///
-/// That exception is not cosmetic. Python's scanner raises `malformed_cbor`
-/// for `undefined` and for a nested indefinite-length chunk; `ciborium`
-/// accepts both, so Rust rejects the same body later, under a phase-dependent
-/// token. Tolerating that pair turned what used to be a harness failure (an
-/// untokened raise) into agreement, and would have let #666's `manifest_body`
-/// seeds pass before the Rust manifest walk exists.
-///
-/// [`RuleToken::is_phase_dependent`]: secretary_core::vault::manifest::RuleToken::is_phase_dependent
+/// An unrecognised token on either side is never agreement. It falls through
+/// to `false` here and is reported as an ordinary DISAGREEMENT, while a
+/// *missing* token is caught earlier by [`super::agreement::judge`] and
+/// reported as a harness failure. Both red the test.
 pub fn tokens_agree(target: &str, rust: &str, python: &str) -> bool {
-    use secretary_core::vault::manifest::RuleToken;
     let lookup = |s: &str| RuleToken::ALL.iter().find(|t| t.as_str() == s).copied();
     let (Some(r), Some(p)) = (lookup(rust), lookup(python)) else {
         return false;
     };
-    if r == p {
-        return true;
-    }
-    let well_formedness_precondition =
-        r == RuleToken::MalformedCbor || p == RuleToken::MalformedCbor;
-    !well_formedness_precondition && (grants_tolerance(target, r) || grants_tolerance(target, p))
+    r == p || report_order_is_free(target, r, p)
 }
 
-/// Does `token` carry the phase-dependent licence on `target`?
+/// Does §4.2 leave the order of `a` against `b` free on `target`? Symmetric.
+fn report_order_is_free(target: &str, a: RuleToken, b: RuleToken) -> bool {
+    (grants_tolerance(target, a) || grants_tolerance(target, b))
+        && FREELY_ORDERED_MANIFEST_RULES.contains(&a)
+        && FREELY_ORDERED_MANIFEST_RULES.contains(&b)
+}
+
+/// Can `token` excuse a mismatch on `target`? True for a re-encode-visible
+/// token on a licensed target: some other token would be tolerated against it.
 ///
-/// The one copy of that rule: [`tokens_agree`] reads it, and so does
-/// `token_coverage::is_strict_comparison`, whose floor (#658) is only as good
-/// as its agreement with this predicate.
-pub fn grants_tolerance(target: &str, token: secretary_core::vault::manifest::RuleToken) -> bool {
+/// `token_coverage::is_strict_comparison` reads this, so an input counted
+/// as strict is one whose tokens excuse nothing. A tolerated pair always has
+/// a member for which this is true. `a_strict_pair_is_never_excused_by_the_tolerance`
+/// pins that.
+pub fn grants_tolerance(target: &str, token: RuleToken) -> bool {
     PHASE_DEPENDENT_TOLERANCE_TARGETS.contains(&target) && token.is_phase_dependent()
 }
