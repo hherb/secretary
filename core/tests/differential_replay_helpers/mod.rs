@@ -25,6 +25,11 @@
 //!   process group killed on timeout, respawned after a transport failure.
 //! - [`progress`] — start/progress/finish lines that libtest cannot swallow.
 //!
+//! #721 bound single-fault seeds to their expected token:
+//!
+//! - [`seed_binding`] — which committed `manifest_body` seeds the manifest
+//!   KAT fixtures generated, and the one token both decoders must name.
+//!
 //! #700 pinned which targets are token-compared:
 //!
 //! - [`token_coverage`] — whether a target's classification matches what its
@@ -36,6 +41,7 @@ pub mod progress;
 pub mod python_bridge;
 pub mod python_worker;
 pub mod rust_decoder;
+pub mod seed_binding;
 pub mod targets;
 pub mod token_coverage;
 pub mod tolerance;

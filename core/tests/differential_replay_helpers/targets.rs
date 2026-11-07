@@ -194,13 +194,16 @@ pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
 /// A floor, not an equality, for the reason [`MIN_CORPUS_INPUTS`] gives.
 /// A target that is not token-compared makes none: `every_target_is_classified`
 /// holds its entry at 0, and every compared target's above 0.
+/// `manifest_body` rose 26 -> 43 with #721: its 17 single-fault seeds whose
+/// token is re-encode-visible are bound by label to that token
+/// (`seed_binding`), so they are compared on equality too.
 pub const MIN_STRICT_COMPARISONS: &[(&str, usize)] = &[
     ("vault_toml", 0),
     ("record", 40),
     ("contact_card", 22),
     ("bundle_file", 14),
     ("manifest_file", 0),
-    ("manifest_body", 26),
+    ("manifest_body", 43),
     ("block_file", 30),
 ];
 

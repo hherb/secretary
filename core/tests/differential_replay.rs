@@ -33,12 +33,13 @@ use std::time::Instant;
 mod differential_replay_helpers;
 
 use differential_replay_helpers as helpers;
-use helpers::agreement::{judge, Judgement};
+use helpers::agreement::{judge_bound, Judgement};
 use helpers::corpus::{corpus_dirs, corpus_inputs};
 use helpers::progress;
 use helpers::python_bridge::serve_command;
 use helpers::python_worker::{PyReplayer, MAX_CONSECUTIVE_WORKER_FAILURES, PER_INPUT_TIMEOUT};
 use helpers::rust_decoder::rust_decode;
+use helpers::seed_binding::SeedBindings;
 use helpers::targets::{
     min_inputs, min_strict_comparisons, MIN_CORPUS_INPUTS, MIN_STRICT_COMPARISONS,
     NOT_TOKEN_COMPARED_TARGETS, PHASE_DEPENDENT_TOLERANCE_TARGETS, TARGETS, TOKEN_COMPARED_TARGETS,
@@ -66,6 +67,8 @@ fn differential_replay_full_corpus() {
     // cap there is no verdict left to get, and on a fuzzed checkout a line per
     // input is tens of thousands of lines burying the failures that say why.
     let mut not_replayed = 0usize;
+    // Seeds that break one rule, bound to the token both sides must name (#721).
+    let bindings = SeedBindings::load();
     for target in TARGETS {
         // Per-target input floor (#595). `corpus_dirs` skips any directory
         // that does not exist, with no `else` — so a renamed or moved
@@ -82,13 +85,9 @@ fn differential_replay_full_corpus() {
         // `fuzz/corpus/` a deleted committed seed still cleared the floor by
         // tens of thousands, so "deleting an input reds" was true only where
         // `corpus/` was absent (#656 review).
-        //
-        // Say DIRECTORY, not "git-tracked": the tagging is positional
-        // (`corpus.rs`'s `committed` flag is set per directory), so an
-        // untracked file dropped into `fuzz/seeds/<target>/` counts toward the
-        // floor too. What actually binds each committed seed to a row is the
-        // prefix-scoped two-way census in the generator that owns it — for the
-        // `valuetype__` seeds, `acceptance_seeds.rs` (#679 review).
+        // "Committed" is positional (per directory, `corpus.rs`), not
+        // git-tracked; each seed is bound to a row by the census in the
+        // generator that owns it, e.g. `acceptance_seeds.rs` (#679 review).
         let inputs = corpus_inputs(target).expect("list corpus inputs");
         let committed = inputs.iter().filter(|i| i.committed).count();
         let started = Instant::now();
@@ -107,14 +106,16 @@ fn differential_replay_full_corpus() {
             let rust = rust_decode(target, &bytes);
             let verdict = python.decode(target, &input.path);
             let prefix = format!("[{}] {}", target, input.path.display());
+            let expected = bindings.expected(target, input);
             coverage = observe(coverage, &rust, &verdict);
             strict += usize::from(counts_toward_strict_floor(
                 input.committed,
                 target,
+                expected,
                 &rust,
                 &verdict,
             ));
-            match judge(target, &rust, &verdict) {
+            match judge_bound(target, expected, &rust, &verdict) {
                 Judgement::Agree => compared += 1,
                 Judgement::Disagree(msg) => {
                     compared += 1;

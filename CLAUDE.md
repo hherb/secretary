@@ -1529,10 +1529,18 @@ survived it. Six things:
   (`wrong_type` vs `missing_field`) are compared strictly, which is parity
   rather than spec. **What #646 did NOT change: the strict-comparison count.**
   A re-encode-visible token still excuses most mismatches, so the 17 committed
-  single-fault `NonCanonicalEncoding` seeds are still not strict. The
-  `manifest_body` floor moved only by one, 25 -> 26 of 61, from the PR #722
-  review's rule-4 order witness (two-fault, both sides `rule4_tag_or_float`); binding them to their expected token
-  by label is **#721**. A MISSING token is a harness failure; an UNRECOGNISED
+  single-fault `NonCanonicalEncoding` seeds were still not strict, and the
+  `manifest_body` floor moved only 25 -> 26 (the PR #722 review's rule-4
+  order witness). **#721 binds them by label**:
+  `differential_replay_helpers/seed_binding.rs` reads the canonicality and
+  uniqueness KAT fixtures that generated each seed (`expect_cause`, or
+  `repeated_array_value`) and `agreement::judge_bound` requires BOTH sides to
+  name that one token, whatever `tokens_agree` would excuse. That is 24 bound
+  seeds, 17 of them re-encode-visible, and the floor is **43 of 61**. The
+  multi-fault witnesses are in neither fixture and stay on the pair relation.
+  Mutation-proven: switching the binding off, Rust naming rule 2 for the
+  arraysort seeds, and Python naming `repeated_array_value` for them each red
+  `differential_replay_full_corpus` (the last two are pairs §4.2 frees). A MISSING token is a harness failure; an UNRECOGNISED
   one is an ordinary disagreement. Both red the test.
 - **`manifest_body`, `block_file`, `record`, `contact_card` and `bundle_file` are
   token-compared (#634, #641; `contact_card` closed by #641/#691, `bundle_file`
@@ -1710,9 +1718,10 @@ survived it. Six things:
   GREEN; the floor reds it (25 -> 20). **#666's ten new `manifest_body` seeds all reach
   it**, none excused: `RuleToken::is_phase_dependent` names `MalformedCbor`
   and `Rule4TagOrFloat` — the only two tokens any of the ten seeds can
-  produce — `false`, so a mismatch on either is never tolerated. That is
-  **26 of 61** now (#646's two tolerance witnesses are tolerated pairs and
-  so not strict; its rule-4 order pin is the 26th), re-measured by a `diff_replay.replay_bytes` sweep over
+  produce — `false`, so a mismatch on either is never tolerated. That was
+  **26 of 61** before #721 (#646's two tolerance witnesses are tolerated pairs and
+  so not strict; its rule-4 order pin is the 26th) and is **43** since #721's
+  label binding (above), re-measured by a `diff_replay.replay_bytes` sweep over
   the committed corpus rather than derived from `is_phase_dependent`'s match
   arms plus a per-row token column, which is what the "24 of 57" this
   replaces was (PR #689 review added the tenth seed,
