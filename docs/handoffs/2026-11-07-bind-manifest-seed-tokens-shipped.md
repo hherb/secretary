@@ -19,9 +19,11 @@ Branch `test/bind-manifest-seed-tokens`, worktree
   REJECTING row binds its seed file (`<label>.bin`, or `uniq__<label>.bin`
   for uniqueness rows) to one token. For canonicality rows the token comes
   from `expect_cause`: `null` → `rule4_tag_or_float`, and an unknown cause
-  name panics. Uniqueness rows bind to `repeated_array_value`. Only committed
-  `manifest_body` inputs are bound, so the `diff_regressions/` multi-fault
-  witnesses stay on the §4.2 pair relation.
+  name panics, as does a missing or non-string `expect_cause` (PR #724
+  review). Uniqueness rows bind to `repeated_array_value`. Only files under
+  `fuzz/seeds/manifest_body/` are bound. The `diff_regressions/` multi-fault
+  witnesses are committed too, but their names are in neither fixture and
+  they sit outside that directory, so they stay on the §4.2 pair relation.
 - `agreement::judge_bound`. This is `judge`, plus one rule for a bound
   seed: an `Agree` becomes `Disagree` unless both sides named the bound
   token.
@@ -29,14 +31,34 @@ Branch `test/bind-manifest-seed-tokens`, worktree
   argument. A bound seed counts as strict when both sides named its token,
   even a re-encode-visible one.
 - `targets.rs`: `MIN_STRICT_COMPARISONS["manifest_body"]` 26 → **43**.
-- `differential_replay.rs` loads the bindings once and calls the two new
-  functions. A comment was shortened, so the file is still under the
-  threshold at **499** lines.
+- `differential_replay.rs` loads the bindings once, calls the two new
+  functions, and asserts every bound seed was judged. It is at **500**
+  lines, the threshold.
 
 **Tests added**: 5 in `seed_binding.rs`, including a census over the real
 fixtures (all 24 bound names exist as seed files, 17 of them
 re-encode-visible), 1 in `agreement.rs` and 1 in `token_coverage.rs`. The
-replay binary runs 68 tests.
+PR #724 review added 2 more in `seed_binding.rs`, so the replay binary runs
+70 tests.
+
+**PR #724 review fixes** (four review agents; no correctness bug found):
+- The replay asserts every bound seed was judged
+  (`SeedBindings::assert_every_seed_was_judged`). Mutation: replacing
+  `bindings.expected(..)` with `None` reds it, naming the unjudged seeds.
+  Before, only the strict floor caught that, and it cannot see the 7 bound
+  seeds that count as strict unbound.
+- `every_binding_names_a_committed_seed` checks the reverse direction too: a
+  seed with a KAT prefix must be a row of its fixture.
+- `expected()` binds only files under `fuzz/seeds/manifest_body/`.
+- `expect_cause` is read with `.get()`, the `manifest_canonicality_kat.rs`
+  idiom, so a missing key or a number panics instead of binding rule 4.
+- `agreement::judge` is private, so the replay can call only `judge_bound`.
+- Docs: the CLAUDE.md "GREEN UNDER THE TOLERANCE" bullet and the ROADMAP
+  #634 entry said the replay does not and should not flag a phase-dependent
+  token swap. Since #721 it does, on the bound seeds. Also fixed the
+  strict-comparison definition in CLAUDE.md and `targets.rs`, where the 43
+  is measured, and wording in `token.rs`, `seed_binding.rs` and
+  `differential_replay.rs`.
 
 **Mutation evidence** (`scripts/mutate.py`, `--self-test` 20/20 first, exit
 0, tree clean afterwards; spec in the session scratchpad as `m721.toml`):
@@ -72,7 +94,7 @@ rest.
 
 1. **Merge this PR.** CI's replay step must print
    `manifest_body: 61 of 61 ... 43 committed strict token comparison(s)`.
-2. **#649**: `differential_replay.rs` is at **499** lines. The next addition
+2. **#649**: `differential_replay.rs` is at **500** lines. The next addition
    to it must split it. The tests stay in the entry file because their names
    are cited, so move loop logic into helpers instead.
 3. **#677**: `bundle_file` / `manifest_file` value-type sweep. The first step
@@ -88,11 +110,13 @@ rest.
   not check a bound seed's token. The CI replay step checks both sides
   against the binding, so CI does cover it. Section RTV still checks the
   corpus token SET.
-- Other single-fault `manifest_body` seeds are **not** label-bound:
-  `valuetype__`, `wellformed__` and `nesting__`. Each is already strict (its
-  token is not re-encode-visible) and is pinned by its own generator's Rust
-  test. Binding them would need one table per generator, and nothing is
-  excused today.
+- The other `manifest_body` seeds are **not** label-bound: `valuetype__`,
+  `wellformed__` and `nesting__`. Not all of them are single-fault:
+  `wellformed__{tag,float}_then_malformed` are two-fault precedence rows, and
+  `nesting__256_unknown` is an accepting seed. The 18 that reject are all
+  already strict (no re-encode-visible token), and each is pinned by its own
+  generator's Rust test. Binding them would need one table per generator, and
+  nothing is excused today.
 - §4.2 leaves the order among interpretation-time checks unstated. The
   harness compares those strictly, as parity rather than spec. This is
   unchanged.

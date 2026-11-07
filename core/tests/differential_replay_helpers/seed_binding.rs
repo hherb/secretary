@@ -10,12 +10,18 @@
 //! token against most other manifest rules. So a raise site moved onto another
 //! freely ordered rule passed, and none of them counted as strict.
 //!
-//! The expectation is read from the FIXTURE that generated each seed, not
-//! restated here, so a new KAT row is bound without an edit. The multi-fault
-//! witnesses under `tests/data/diff_regressions/` are in neither fixture and
-//! stay scored by the pair relation.
+//! The canonicality rows are read from the FIXTURE that generated each seed
+//! (its `expect_cause` column, through [`canonicality_token`]'s cause table);
+//! the uniqueness fixture has no cause column, so every rejecting row there is
+//! bound to [`UNIQUENESS_TOKEN`]. A new KAT row is bound without an edit here,
+//! but the exact census in `every_binding_names_a_committed_seed` and the
+//! `MIN_STRICT_COMPARISONS` floor still ask for one, deliberately. Only files
+//! under `fuzz/seeds/manifest_body/` are bound: the multi-fault witnesses under
+//! `tests/data/diff_regressions/` are committed too, but they break two rules,
+//! so they stay scored by the pair relation even if one reused a KAT label.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use secretary_core::crypto::secret::SecretBytes;
@@ -27,6 +33,8 @@ use super::rust_decoder::RustRejection;
 
 /// The one target whose seeds the two manifest KATs write.
 const BOUND_TARGET: &str = "manifest_body";
+/// The directory both generators write into, relative to the package root.
+const SEED_DIR: &str = "fuzz/seeds/manifest_body";
 const CANONICALITY_KAT: &str = "tests/data/manifest_canonicality_kat.json";
 const UNIQUENESS_KAT: &str = "tests/data/manifest_uniqueness_kat.json";
 /// `manifest_uniqueness_kat`'s generator writes row `L` as `uniq__L.bin`;
@@ -52,9 +60,11 @@ fn canonicality_token(label: &str, expect_cause: Option<&str>) -> &'static str {
     }
 }
 
-/// Seed file name -> the token both decoders must name.
+/// Seed file name -> the token both decoders must name, plus the names
+/// [`SeedBindings::expected`] has matched so far, so the replay can prove it
+/// judged every bound seed ([`SeedBindings::assert_every_seed_was_judged`]).
 #[derive(Debug, Default)]
-pub struct SeedBindings(BTreeMap<String, &'static str>);
+pub struct SeedBindings(BTreeMap<String, &'static str>, RefCell<BTreeSet<String>>);
 
 impl SeedBindings {
     /// Read both fixtures under the secretary-core package root.
@@ -86,7 +96,7 @@ impl SeedBindings {
                     continue;
                 }
                 let token = if prefix.is_empty() {
-                    canonicality_token(label, row["expect_cause"].as_str())
+                    canonicality_token(label, expect_cause(label, row))
                 } else {
                     UNIQUENESS_TOKEN
                 };
@@ -97,18 +107,51 @@ impl SeedBindings {
                 );
             }
         }
-        Self(map)
+        Self(map, RefCell::default())
     }
 
-    /// The token `input` is bound to, if it is a committed seed of a bound
-    /// target that one of the fixtures generated.
+    /// The token `input` is bound to, if it is a committed seed in
+    /// [`SEED_DIR`] that one of the fixtures generated. Records the match.
     pub fn expected(&self, target: &str, input: &CorpusInput) -> Option<&'static str> {
-        if target != BOUND_TARGET || !input.committed {
+        let in_seed_dir = input.path.parent().is_some_and(|d| d.ends_with(SEED_DIR));
+        if target != BOUND_TARGET || !input.committed || !in_seed_dir {
             return None;
         }
         let name = input.path.file_name()?.to_str()?;
-        self.0.get(name).copied()
+        let token = self.0.get(name).copied()?;
+        self.1.borrow_mut().insert(name.to_owned());
+        Some(token)
     }
+
+    /// Panic naming every bound seed [`Self::expected`] never matched. The
+    /// strict floor would red too, but not for the seven bound seeds whose
+    /// token is not re-encode-visible (they count as strict unbound), and
+    /// without naming a file.
+    pub fn assert_every_seed_was_judged(&self) {
+        let seen = self.1.borrow();
+        let missed: Vec<_> = self.0.keys().filter(|k| !seen.contains(*k)).collect();
+        assert!(
+            missed.is_empty(),
+            "label-bound seed(s) never judged against their token: {missed:?}"
+        );
+    }
+}
+
+/// A canonicality row's `expect_cause`: `None` for an explicit `null`. A
+/// missing key or a non-string panics, since `row["expect_cause"]` would read
+/// both as `null`, and `null` binds rule 4 (`manifest_canonicality_kat.rs`
+/// reads the column the same way, for the same reason).
+fn expect_cause<'a>(label: &str, row: &'a Value) -> Option<&'a str> {
+    let v = row
+        .get("expect_cause")
+        .unwrap_or_else(|| panic!("row {label:?}: no `expect_cause` key"));
+    if v.is_null() {
+        return None;
+    }
+    Some(
+        v.as_str()
+            .unwrap_or_else(|| panic!("row {label:?}: `expect_cause` must be a string or null")),
+    )
 }
 
 /// Did both sides reject, each naming exactly `want`?
@@ -129,7 +172,7 @@ mod tests {
 
     fn seed(name: &str, committed: bool) -> CorpusInput {
         CorpusInput {
-            path: PathBuf::from("fuzz/seeds/manifest_body").join(name),
+            path: PathBuf::from(SEED_DIR).join(name),
             committed,
         }
     }
@@ -185,6 +228,28 @@ mod tests {
             b.expected(BOUND_TARGET, &seed("arraysort_plus_indefinite.bin", true)),
             None
         );
+        // A committed witness reusing a KAT label outside the seed dir.
+        let witness = CorpusInput {
+            path: PathBuf::from("tests/data/diff_regressions/manifest_body")
+                .join("arraysort__blocks.bin"),
+            committed: true,
+        };
+        assert_eq!(b.expected(BOUND_TARGET, &witness), None);
+    }
+
+    #[test]
+    fn every_bound_seed_must_be_judged() {
+        let b = fixtures();
+        let all: Vec<String> = b.0.keys().cloned().collect();
+        for name in &all[1..] {
+            assert!(b.expected(BOUND_TARGET, &seed(name, true)).is_some());
+        }
+        let missed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            b.assert_every_seed_was_judged()
+        }));
+        assert!(missed.is_err(), "one seed was never judged");
+        b.expected(BOUND_TARGET, &seed(&all[0], true));
+        b.assert_every_seed_was_judged();
     }
 
     #[test]
@@ -195,23 +260,69 @@ mod tests {
         SeedBindings::from_fixtures(&canonicality, &json!({"rows": []}));
     }
 
-    /// The census over the real fixtures: every bound name is a committed
-    /// seed on disk, and the re-encode-visible ones #721 is about are all
-    /// there. A seed renamed away from its label would otherwise drop out of
-    /// the binding silently (the strict floor would red too, but later and
-    /// without naming the file).
+    /// `row["expect_cause"]` reads a missing key and a number as `null`,
+    /// which would bind rule 4; both are refused instead.
+    #[test]
+    fn a_missing_or_non_string_cause_is_refused() {
+        for row in [
+            json!({"label": "x", "expect_accept": false}),
+            json!({"label": "x", "expect_accept": false, "expect_cause": 7}),
+        ] {
+            let r = std::panic::catch_unwind(|| {
+                SeedBindings::from_fixtures(&json!({"rows": [row.clone()]}), &json!({"rows": []}))
+            });
+            assert!(r.is_err(), "{row}");
+        }
+    }
+
+    /// The census over the real fixtures, both directions. Every bound name
+    /// is a committed seed on disk, and every seed carrying a KAT generator's
+    /// prefix is a row of its fixture: a seed orphaned by a renamed row would
+    /// otherwise stay unbound and be scored by the pair relation. For the 17
+    /// re-encode-visible seeds the strict floor would red too, later and
+    /// without naming the file; for the other 7 this census alone does,
+    /// since they count as strict unbound.
     #[test]
     fn every_binding_names_a_committed_seed() {
         let b = SeedBindings::load();
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("fuzz/seeds")
-            .join(BOUND_TARGET);
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(SEED_DIR);
         for name in b.0.keys() {
             assert!(
                 dir.join(name).is_file(),
                 "bound seed {name} is not in {}",
                 dir.display()
             );
+        }
+        let rows = |rel: &str, prefix: &str| -> BTreeSet<String> {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            v["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| format!("{prefix}{}{SEED_EXTENSION}", r["label"].as_str().unwrap()))
+                .collect()
+        };
+        let mut known = rows(CANONICALITY_KAT, "");
+        known.extend(rows(UNIQUENESS_KAT, UNIQUENESS_SEED_PREFIX));
+        // `manifest_canonicality_kat`'s level and mutation prefixes, and
+        // `manifest_uniqueness_kat`'s.
+        const KAT_PREFIXES: [&str; 6] = [
+            "top__",
+            "block__",
+            "trash__",
+            "arraysort__",
+            "keyorder__",
+            UNIQUENESS_SEED_PREFIX,
+        ];
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            if KAT_PREFIXES.iter().any(|p| name.starts_with(p)) {
+                assert!(
+                    known.contains(&name),
+                    "seed {name} is a row of neither KAT fixture"
+                );
+            }
         }
         let reencode_visible =
             b.0.values()

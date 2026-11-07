@@ -218,9 +218,9 @@ impl RuleToken {
     ///
     /// On the committed corpus, every `NonCanonicalEncoding` rejection this
     /// crate makes carries a token flagged here, so the pair relation alone
-    /// would excuse those single-fault seeds. The differential replay binds
-    /// each to its expected token by label instead and compares it on
-    /// equality (#721).
+    /// would excuse them. The differential replay binds each single-fault
+    /// KAT seed to its expected token by label instead and compares it on
+    /// equality (#721); the multi-fault witnesses stay on the pair relation.
     pub fn is_phase_dependent(&self) -> bool {
         match self {
             RuleToken::Rule2IndefiniteLength

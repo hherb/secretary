@@ -85,9 +85,9 @@ fn differential_replay_full_corpus() {
         // `fuzz/corpus/` a deleted committed seed still cleared the floor by
         // tens of thousands, so "deleting an input reds" was true only where
         // `corpus/` was absent (#656 review).
-        // "Committed" is positional (per directory, `corpus.rs`), not
-        // git-tracked; each seed is bound to a row by the census in the
-        // generator that owns it, e.g. `acceptance_seeds.rs` (#679 review).
+        // "Committed" is per DIRECTORY (`corpus.rs`), not git-tracked: an
+        // untracked file in `fuzz/seeds/<target>/` counts too. Generated seeds
+        // are censused by their generator, e.g. `acceptance_seeds.rs` (#679).
         let inputs = corpus_inputs(target).expect("list corpus inputs");
         let committed = inputs.iter().filter(|i| i.committed).count();
         let started = Instant::now();
@@ -211,6 +211,7 @@ fn differential_replay_full_corpus() {
             disagreements.join("\n")
         );
     }
+    bindings.assert_every_seed_was_judged();
     assert!(
         strict_shortfalls.is_empty(),
         "{}\nEvery input was replayed and agreed, so an input that used to be \

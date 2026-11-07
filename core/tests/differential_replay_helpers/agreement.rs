@@ -29,12 +29,9 @@ pub enum Judgement {
     Harness(String),
 }
 
-/// Compare `rust` and `python` for one input of `target`.
-pub fn judge(
-    target: &str,
-    rust: &Result<SecretBytes, RustRejection>,
-    python: &PyOutcome,
-) -> Judgement {
+/// Compare `rust` and `python` for one input of `target`. Private: the
+/// replay calls [`judge_bound`], so it cannot drop the label binding (#721).
+fn judge(target: &str, rust: &Result<SecretBytes, RustRejection>, python: &PyOutcome) -> Judgement {
     // A harness failure is not a verdict, so it never reaches the agreement
     // match below: that match reads a Rust `Err` beside a `PyOutcome::Reject`
     // as "both implementations rejected", and a Python crash or timeout
@@ -136,7 +133,7 @@ pub fn judge_bound(
         (Judgement::Agree, Some(want)) if !both_reject_naming(want, rust, python) => {
             Judgement::Disagree(format!(
                 "label-bound seed: both sides must reject naming {want:?}, rust={:?} python={:?}",
-                rust.as_ref().err().map(|r| r.token),
+                rust.as_ref().err().and_then(|r| r.token),
                 match python {
                     PyOutcome::Reject { rule, .. } => Some(rule.clone()),
                     _ => None,
