@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-07-bind-manifest-seed-tokens-shipped.md
+docs/handoffs/2026-11-07-manifest-not-a-map-token-shipped.md
