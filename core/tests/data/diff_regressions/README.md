@@ -70,9 +70,44 @@ Python  -> ArraySortOrderViolation (sort check first)   -> array_sort_order
 ```
 
 Before #646 this was a measured live divergence with no committed witness.
-`docs/vault-format.md` §4.2 said nothing about this pair. Its general
-re-encode paragraph now frees it: the array sort disciplines are
+`docs/vault-format.md` §4.2 said nothing about this pair. Its "general
+rule" paragraph now frees it: the array sort disciplines are
 re-encode-visible, and those are unordered against every other manifest rule
 except rule 4. `tokens_agree` accepts the pair, and taking `repeated_array_value`
 out of its freely-ordered set reds this input. The same "do not fix it" note
 as above applies.
+
+## `manifest_body/repeated_block_uuid_plus_trailing_byte.bin` (PR #722 review)
+
+`uniq__blocks__duplicate_block_uuid` with one `0x00` byte appended: a repeated
+`block_uuid` AND trailing bytes after the manifest map.
+
+```
+Rust    -> DuplicateBlockUuid (ciborium stops at the map end) -> repeated_array_value
+Python  -> TrailingBytesAfterMap                              -> non_canonical_unclassified
+```
+
+The group-A witness #646 freed: trailing bytes are re-encode-visible (a reader
+whose parse stops at the map end sees them only at the §4.3 step-4
+comparison), so §4.2's "general rule" paragraph leaves them unordered against
+a repeated array value. Measured by making `tokens_agree` strict equality: this
+input, and the two above, are the only committed disagreements.
+
+## `manifest_body/rule4_float_plus_arraysort.bin` (PR #722 review)
+
+`top__rule4_float` with its two `blocks` entries swapped by byte surgery,
+giving `[b2, b1]` (the disorder of `arraysort__blocks`) ahead of the float in
+byte order.
+
+```
+Rust    -> Canonical(FloatRejected) -> rule4_tag_or_float
+Python  -> NonCanonicalItem rule=4  -> rule4_tag_or_float
+```
+
+Not a tolerance witness: both sides name the same token. It pins the ORDER
+#646 fixed (vault-format §4.2 ordering 1 binds the array sort disciplines and
+§6.2 rules 1-3), and it pins DECODER behaviour, which the pair-set test cannot:
+a reader that let its sort check answer before the rule-4 walk would report
+`array_sort_order`, and `tokens_agree` never tolerates that against rule 4.
+Before #646 a cross-language row could not pin this, because §4.2 left the
+order open.

@@ -179,7 +179,7 @@ pub const MIN_CORPUS_INPUTS: &[(&str, usize)] = &[
     ("contact_card", 23),
     ("bundle_file", 15),
     ("manifest_file", 1),
-    ("manifest_body", 59),
+    ("manifest_body", 61),
     ("block_file", 31),
 ];
 
@@ -200,7 +200,7 @@ pub const MIN_STRICT_COMPARISONS: &[(&str, usize)] = &[
     ("contact_card", 22),
     ("bundle_file", 14),
     ("manifest_file", 0),
-    ("manifest_body", 25),
+    ("manifest_body", 26),
     ("block_file", 30),
 ];
 
