@@ -13,7 +13,8 @@ Branch `test/pairwise-report-order-tolerance`, worktree
 | (no commit) | Four spec decisions taken by the user, all as recommended (below). |
 | (no commit) | Filed **#721**: bind the committed single-fault `manifest_body` seeds to their expected token by label. |
 | `07c586a8` | #646: §4.2 text, the pair relation, the pair-set test, the group-D witness, docs |
-| (this commit) | This handoff + symlink retarget |
+| `25f62377` | This handoff + symlink retarget |
+| (review commit) | PR #722 review fixes (see "Review fixes" below) |
 
 **User decisions (2026-11-07):**
 - Group C: **rule 4 outranks §6.2 rules 1-3.** §4.2 had put them under ordering 1 and then called them unordered against "those two". The second sentence now reads "against ordering 2", and one added sentence says ordering 1 binds rules 1-3.
@@ -32,15 +33,15 @@ unchanged.
 
 **Test**: `tolerance_admits_only_phase_dependent_pairs` (name kept, it is
 cited) now asserts the exact tolerated set against a second declaration
-written from §4.2 (4 re-encode-visible × 6 interpretation-time strings, plus
-symmetry). It names the B, C and D pairs.
+written from §4.2 (the 6 pairs among 4 re-encode-visible strings plus 4 × 6
+against interpretation-time strings, 30 in all, plus symmetry). It names the B, C and D pairs.
 
 **Witness**: `core/tests/data/diff_regressions/manifest_body/arraysort_plus_repeated_block_uuid.bin`
 is `uniq__blocks__duplicate_block_uuid` with `blocks` reversed by byte
 surgery (`[b2, b2, b1]`). Rust says `repeated_array_value`, Python says
 `array_sort_order` (checked with `diff_replay.replay_bytes`). Documented in
 `diff_regressions/README.md`. `MIN_CORPUS_INPUTS["manifest_body"]` 58 → 59.
-The committed corpus is 182.
+The committed corpus was 182 at this commit (184 after the review fixes).
 
 **Mutation evidence** (`scripts/mutate.py`, `--self-test` 20/20 first, exit 0,
 tree clean afterwards; spec in the session scratchpad as `m646.toml`):
@@ -71,23 +72,53 @@ this branch has 98). That is the known #642.
 one `core/src` doc comment, Python comments, JSON and docs changed. CI runs
 the rest.
 
+**Review fixes (PR #722 review: code, comment and test reviewers):**
+- §4.2's rules-1-3 paragraph still justified itself with "fixing an order
+  between them and the two rules above would outlaw one design", which
+  contradicted its own new last sentence. It now says "and ordering 2".
+- `a_phase_dependent_pair_on_an_unlicensed_compared_target_disagrees` was
+  vacuous: its pair (`container_malformed`) disagrees on `manifest_body` too.
+  It now uses a pair §4.2 frees and asserts that it agrees there first.
+- Two new committed inputs (corpus 182 → 184, `manifest_body` floors 59 → 61
+  inputs and 25 → 26 strict):
+  `repeated_block_uuid_plus_trailing_byte.bin` (group-A witness: Rust
+  `repeated_array_value`, Python `non_canonical_unclassified`) and
+  `rule4_float_plus_arraysort.bin` (both sides `rule4_tag_or_float`). The
+  second pins the order #646 FIXED, in decoder behaviour, which the pair-set
+  test cannot see.
+- The pair-set test now requires its three declared lists to partition
+  `RuleToken::ALL`, so a new token reds until it is classified. A call-site
+  test pins rule 4 vs `array_sort_order` as a disagreement.
+- Stale text fixed: `manifest_rules.py` quoted a §4.2 sentence this PR
+  deleted; the protocol doc's agreement matrix still stated the per-token
+  rule; CLAUDE.md "25 of 58" and "a committed WITNESS"; `token_coverage.rs`
+  "any other mismatch"; "re-encode paragraph"/"only" paraphrases of §4.2's
+  "general rule"/"may first detect"; ROADMAP "the pair"; this handoff's
+  "4 × 6" and "440".
+- Filed **#723** (pre-existing): Python's non-map manifest rejection is
+  untokened.
+
 ## (2) What is next
 
 1. **Merge this PR.** CI's replay step must print
-   `manifest_body: 59 of 59 ... 25 committed strict token comparison(s)`.
+   `manifest_body: 61 of 61 ... 26 committed strict token comparison(s)`.
 2. **#721**: bind each committed single-fault `manifest_body` seed to its
    expected token (from the canonicality/uniqueness KAT fixtures or the seed
    label) and count it as strict even when the token is re-encode-visible.
    Acceptance: the 17 `NonCanonicalEncoding` seeds compare by equality,
    `MIN_STRICT_COMPARISONS["manifest_body"]` rises to about 42, and the two
-   multi-fault witnesses are still scored by the pair relation.
+   multi-fault tolerance witnesses (now three) are still scored by the pair
+   relation.
 3. **#677**: `bundle_file` / `manifest_file` value-type sweep. The first step
    is deciding what a sweep means for a binary envelope.
 4. **#668 / #693**: report-order spec questions (block envelope + record;
    contact card). These are spec decisions, so ask the user.
 5. **#699, #701-#705**: card review residuals.
-6. **#649**: `differential_replay.rs` is now **440** lines, under 500 after
-   this slice's test rewrite. Re-check whether #649 still needs doing.
+6. **#649**: `differential_replay.rs` is **498** lines after the review
+   fixes (467 at `07c586a8`), two under the 500-line split threshold. The
+   next addition to it should split it.
+7. **#723**: Python's non-map `manifest_body` rejection carries no token
+   (found in this PR's review).
 
 ## (3) Open decisions / risks
 
@@ -95,10 +126,13 @@ the rest.
   against `missing_field`, a repeat against a type error) unstated. The
   harness compares those strictly as **parity**, not spec. If a clean-room
   reader differs there, that is a spec question, not a bug.
-- Neither witness's Rust token is pinned by a direct decode test. If Rust
-  started saying `array_sort_order` for the new witness, the pair would become
-  equal and the witness would silently stop testing the tolerance. The
-  `#621` witness had the same exposure before this slice.
+- No tolerance witness's Rust token is pinned by a direct decode test. If
+  Rust started saying `array_sort_order` for the group-D witness, the pair
+  would become equal and the witness would silently stop testing the
+  tolerance. The `#621` witness had the same exposure before this slice. The
+  review MEASURED all three Rust tokens once, by making `tokens_agree` strict
+  equality in a scratch worktree: exactly the three tolerance witnesses
+  disagreed, with the tokens their README entries name.
 - `vault_toml` stays loose by decision (#641 closed without it).
 - `sections/value_type_discipline.py` is still 849 lines (#683).
 - Worktrees: `.worktrees/block-seeds` (merged #720), the two detached
