@@ -34,7 +34,7 @@ from conformance_lib.codec.scanner import (
     _decode_head,
     _scan_map_entries,
 )
-from conformance_lib.codec.well_formed import walk_body
+from conformance_lib.codec.well_formed import MAJOR_MAP, walk_body
 from conformance_lib.constants import FORMAT_VERSION, SUITE_ID
 
 class ArraySortOrderViolation(ValueError):
@@ -208,6 +208,9 @@ def py_decode_manifest(data: bytes) -> dict:
     # sees its own repeat.
     walk_body(data)
 
+    # Rust's `NotAMap` (`wrong_type`); the scanner's own raise is untokened (#723).
+    if (major := _decode_head(data, 0)[0]) != MAJOR_MAP:
+        raise WrongFieldType(f"expected a CBOR map at offset 0, got major type {major}")
     entries, end = _scan_map_entries(data, 0)
     if end != len(data):
         raise TrailingBytesAfterMap(f"trailing bytes after manifest map: {len(data) - end}")

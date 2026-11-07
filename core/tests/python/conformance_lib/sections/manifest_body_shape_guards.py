@@ -12,6 +12,7 @@ from conformance_lib.fixtures import manifest_body_seed
 
 from conformance_lib.canonical import encode_canonical_map_raw
 from conformance_lib.codec.manifest_decode import py_decode_manifest
+from conformance_lib.codec.manifest_rules import token_for
 from conformance_lib.codec.manifest_encode import (
     ENCODER_REFUSAL_PREFIX,
     _encode_array_header,
@@ -233,9 +234,32 @@ def section_manifest_body_shape_guard() -> tuple[bool, list[str]]:
                     f"(message lacks {want!r}): {e}"
                 )
 
+    # Top-level head (#723, PR #726 review). Every major but a map is Rust's
+    # `NotAMap` (`wrong_type`); a narrowed check (`major == 0`) passed every
+    # other gate, since the corpus holds one non-map body. The last three
+    # rows pin the check AFTER `walk_body`: §4.2 has rule 4 and
+    # well-formedness outrank a wrong type, and a check moved above the walk
+    # answered `wrong_type` for them with every other gate green.
+    head_rows = [(bytes.fromhex(h), "wrong_type") for h in ("00", "20", "40", "60", "80", "f4", "f5", "f6")]
+    head_rows += [
+        (bytes.fromhex("81c101"), "rule4_tag_or_float"),
+        (bytes.fromhex("81f90000"), "rule4_tag_or_float"),
+        (bytes.fromhex("81f7"), "malformed_cbor"),
+    ]
+    for body, want_token in head_rows:
+        try:
+            py_decode_manifest(body)
+            issues.append(f"top-level {body.hex()}: ACCEPTED -- Rust rejects this body")
+        except ValueError as e:
+            if token_for(e) != want_token:
+                issues.append(
+                    f"top-level {body.hex()}: token {token_for(e)!r} "
+                    f"({type(e).__name__}), want {want_token!r}"
+                )
+
     if issues:
         return False, issues
     return True, [
         f"PASS  manifest body shape guard: {len(rows)} mutations rejected, "
-        "unmutated control accepted"
+        f"{len(head_rows)} top-level heads tokened, unmutated control accepted"
     ]

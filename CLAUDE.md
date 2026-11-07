@@ -117,7 +117,7 @@ cargo test --release --locked -p secretary-core \
 # isolation, which conformance Section DRS checks rather than assumes, over
 # the committed corpus only.
 #
-# CI replays the 184 committed inputs (no `corpus/` there): 107 until #669
+# CI replays the 185 committed inputs (no `corpus/` there): 107 until #669
 # added 14, 121 until #667/#670 added 10, 131 until #666/#685 added 10,
 # 141 until #641/#691 added 17 committed contact_card seeds (four two-fault
 # rows were added and then moved to Section RTS check 5 inside the same
@@ -128,7 +128,8 @@ cargo test --release --locked -p secretary-core \
 # added `magic`'s other side on block_file and bundle_file plus a
 # block_file `aead_ct_len` truncation, 181 until #646 added a second
 # `diff_regressions/manifest_body/` two-fault witness, 182 until the PR #722
-# review added two more (a group-A tolerance witness and a rule-4 order pin).
+# review added two more (a group-A tolerance witness and a rule-4 order pin),
+# 184 until #723 added `manifest_body/toplevel__integer.bin` (a non-map body).
 # Re-measure with
 # `ls core/fuzz/seeds/*/* core/tests/data/diff_regressions/*/* | grep -v gitkeep | wc -l`.
 # The 5.98 s test body
@@ -420,11 +421,12 @@ was 6849 lines; it is now 156, over an **81**-file package (re-measured at
 the PR #720 review; see the dated re-measurement entries below) whose largest module is
 `sections/value_type_discipline.py` at **849** lines, then
 `sections/value_type_structure.py` at
-550 (both re-measured at #700/#715) — **two** past the 500-line split threshold (#683) now, DOWN from three
-at the #689 merge-base, because #641/#691 shrank `sections/nesting_depth.py`
+550 (both re-measured at #700/#715) — **three** past the 500-line split threshold (#683) since #723 grew
+`codec/manifest_decode.py` 498 -> 501 (split tracked as #725); it was two after
+the #689 merge-base's three, because #641/#691 shrank `sections/nesting_depth.py`
 30 net lines (522 -> 492) while deleting the now-callerless
 `reject_excessive_nesting` and its content-blind entry-point machinery —
-then `codec/manifest_decode.py` at 498, `sections/nesting_depth.py` at 492
+then `codec/manifest_decode.py` at 501, `sections/nesting_depth.py` at 492
 (a near-tie, one line above `manifest_canonicality_cause.py`, not the
 five-line gap the paragraph below still narrates as current), then
 `sections/manifest_canonicality_cause.py` at 491 and `codec/scanner.py` at
@@ -501,9 +503,9 @@ then the PR #720 review moved its class tables out to the new
 `sections/rule_token_seed_classes.py` (133), taking it 496 -> 382 and out of
 the six, and `scanner.py` back in):
 849 `value_type_discipline.py`, 550 `value_type_structure.py`,
-498 `codec/manifest_decode.py`, 492 `sections/nesting_depth.py`,
+501 `codec/manifest_decode.py` (498 until #723), 492 `sections/nesting_depth.py`,
 491 `sections/manifest_canonicality_cause.py`, 479 `codec/scanner.py` —
-TWO past the 500-line threshold. The concrete effect on the ranking:
+THREE past the 500-line threshold since #723 (#725 tracks the split). The concrete effect on the ranking:
 `nesting_depth.py` fell out of the "past the 500-line threshold" set
 entirely (522 -> 492, now under 500) and dropped from second place to a
 near-tie for fourth/fifth against `manifest_canonicality_cause.py` (492 vs
@@ -1536,7 +1538,8 @@ survived it. Six things:
   uniqueness KAT fixtures that generated each seed (`expect_cause`, or
   `repeated_array_value`) and `agreement::judge_bound` requires BOTH sides to
   name that one token, whatever `tokens_agree` would excuse. That is 24 bound
-  seeds, 17 of them re-encode-visible, and the floor is **43 of 61**. The
+  seeds, 17 of them re-encode-visible, and the floor was **43 of 61** (44 of
+  62 since #723's non-map seed). The
   multi-fault witnesses are in neither fixture and stay on the pair relation;
   only files under `fuzz/seeds/manifest_body/` are bound at all, so a witness
   reusing a KAT label stays unbound. Two pins keep the binding live (PR #724
@@ -1685,7 +1688,7 @@ survived it. Six things:
   step is silent; the full LIMITS are in the script's header.
   **State the residual scope exactly, because the wider claim is the one
   someone will want to make.** CI replays the COMMITTED corpus only —
-  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **184** inputs today
+  `core/fuzz/seeds/` plus `core/tests/data/diff_regressions/`, **185** inputs today
   (#641 added 57 generated single-fault seeds for `block_file` and `record`;
   #669 added 14 acceptance seeds for `contact_card`, `vault_toml` and
   `manifest_body`; #667 added 7 `nesting__` seeds for `record` and
@@ -1703,7 +1706,8 @@ survived it. Six things:
   #719 gave `block_file`'s five equality checks the same twins for 178,
   and the PR #720 review `magic`'s on both targets plus a `block_file`
   `aead_ct_len` truncation for 181, and #646's group-D witness for 182, and the PR #722 review's
-  group-A witness and rule-4 order pin for 184 — `every_equality_check_is_seeded_on_both_sides`
+  group-A witness and rule-4 order pin for 184, and #723's non-map
+  `manifest_body` seed for 185 — `every_equality_check_is_seeded_on_both_sides`
   in `rule_token_seeds.rs` now reds a one-sided check, reading the side off
   the decoder's own error).
   `core/fuzz/corpus/` is **gitignored**, so agreement on fuzz-DISCOVERED
@@ -1729,8 +1733,8 @@ survived it. Six things:
   and `Rule4TagOrFloat` — the only two tokens any of the ten seeds can
   produce — `false`, so a mismatch on either is never tolerated. That was
   **26 of 61** before #721 (#646's two tolerance witnesses are tolerated pairs and
-  so not strict; its rule-4 order pin is the 26th) and is **43** since #721's
-  label binding (above), read off the Rust replay's finish line (the binding
+  so not strict; its rule-4 order pin is the 26th), was **43** after #721's
+  label binding (above), and is **44 of 62** since #723's non-map seed, both read off the Rust replay's finish line (the binding
   is Rust-side only, so a Python sweep cannot see it). The 26 was re-measured
   by a `diff_replay.replay_bytes` sweep over
   the committed corpus rather than derived from `is_phase_dependent`'s match
