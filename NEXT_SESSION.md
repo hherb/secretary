@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-07-manifest-not-a-map-token-shipped.md
+docs/handoffs/2026-11-14-split-manifest-decode-shipped.md
