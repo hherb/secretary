@@ -765,9 +765,10 @@ fn concurrent_state(vault_uuid: [u8; 16]) -> SyncState {
 /// conflict copies were consumed and the canonical record stayed live).
 #[test]
 fn commit_decisions_keep_local_keeps_record_live() {
-    let (_tmp, vault_folder, identity, _password, vault_uuid, _block_uuid) =
+    let (_tmp, vault_folder, identity, password, vault_uuid, _block_uuid) =
         stage_concurrent_veto_vault();
     let mut state = concurrent_state(vault_uuid);
+    let local_entries = state.highest_vector_clock_seen.clone();
 
     // Read the veto set + token from a clone of the state so the real
     // `state` stays at its pre-commit value to commit against below.
@@ -798,6 +799,21 @@ fn commit_decisions_keep_local_keeps_record_live() {
     )
     .expect("commit must succeed");
     assert_eq!(outcome, SyncPassOutcome::MergedClean);
+
+    // #730: the written clock folds in the prior highest-seen clock, so it
+    // carries the local entry the disk lacked, and the saved clock equals it.
+    let opened = open_vault(&vault_folder, Unlocker::Password(&password), None).expect("open");
+    let disk = &opened.manifest.vector_clock;
+    for e in &local_entries {
+        assert!(
+            disk.contains(e),
+            "disk clock {disk:?} lacks local entry {e:?}"
+        );
+    }
+    assert_eq!(
+        &state.highest_vector_clock_seen, disk,
+        "saved clock == disk clock"
+    );
 
     // After committing the merge the conflict copies are consumed; a
     // fresh inspect against the advanced state no longer raises a veto.
