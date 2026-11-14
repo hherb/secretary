@@ -9,6 +9,7 @@ mod orchestration;
 pub use orchestration::{
     repair_vault_with_device_secret, repair_vault_with_password, repair_vault_with_recovery,
 };
+pub(crate) use orchestration::baseline_provider;
 
 mod types;
 pub use types::FfiApprovedWidening;

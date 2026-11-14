@@ -28,6 +28,7 @@ use secretary_core::vault::{verify_vault_state, VerifiedVaultState};
 use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
+use crate::repair::baseline_provider;
 use crate::sync::dto::{SyncOutcomeDto, VetoDecisionDto};
 use crate::sync::pass::{
     commit_advanced, commit_outcome_to_dto, default_state_dir_or_err, inspect_advanced,
@@ -53,13 +54,16 @@ pub fn refresh_manifest(
 /// write was refused with [`FfiVaultError::VaultChangedOnDisk`].
 ///
 /// The §10 rollback check runs against this device's highest-seen clock from
-/// the sync state in `state_dir`; an unreadable state means no baseline,
-/// mirroring the open path. On any `Err` the handle is unchanged, and a retry
-/// is safe.
+/// the sync state in `state_dir`. A missing or empty state means no baseline,
+/// as on the open path. Any other state-load failure refuses the refresh: it
+/// fails closed like the mutating repair path (#384), because a refresh
+/// exists to enable later writes that re-sign the adopted manifest. On any
+/// `Err` the handle is unchanged, and a retry is safe.
 ///
 /// # Errors
-/// - `CorruptVault` — either handle has been wiped, or the disk manifest is
-///   older than this device has seen (`Rollback`), or it fails verification.
+/// - `CorruptVault` — either handle has been wiped, or the sync state in
+///   `state_dir` exists but cannot be read, or the disk manifest is older
+///   than this device has seen (`Rollback`), or it fails verification.
 /// - Any other mapping of the disk re-verify's `VaultError` (e.g. a missing or
 ///   mismatched block file while a cloud drive is still delivering files).
 pub fn refresh_manifest_in(
@@ -68,12 +72,9 @@ pub fn refresh_manifest_in(
     manifest: &OpenVaultManifest,
 ) -> Result<(), FfiVaultError> {
     let (folder, vault_uuid) = session_target(manifest)?;
-    let baseline = secretary_cli::state::load(state_dir, vault_uuid).ok();
-    let clock = baseline
-        .as_ref()
-        .map(|s| s.highest_vector_clock_seen.as_slice());
+    let baseline = baseline_provider(Some(state_dir))(&vault_uuid)?;
     let verified = identity
-        .with_core(|id| verify_vault_state(&folder, id, clock))
+        .with_core(|id| verify_vault_state(&folder, id, baseline.as_deref()))
         .ok_or_else(handle_closed)??;
     adopt(manifest, verified)
 }
@@ -103,9 +104,11 @@ pub fn sync_vault_with_session(
 /// refuse the very manifest the pass just accepted.
 ///
 /// The identity handle's lock is held across the pass and the refresh, so
-/// other calls on that identity wait for it; a `save_block` queued behind the
-/// pass then finds the disk changed and gets `VaultChangedOnDisk` instead of
-/// writing over the pass's result.
+/// other calls on that identity wait for it. A `save_block` queued behind the
+/// pass never writes over the pass's result: if it reads the manifest handle
+/// after the refresh adopted the disk, it writes on top of the merged state;
+/// if it snapshotted the handle before the adopt, or the pass wrote and the
+/// refresh failed, it finds the disk changed and gets `VaultChangedOnDisk`.
 ///
 /// If the pass succeeds but the refresh fails (typically a block file the
 /// cloud drive has not delivered yet), this returns the refresh's `Err` and
@@ -113,7 +116,7 @@ pub fn sync_vault_with_session(
 /// ever adopted: after `AppliedAutomatically` or `MergedClean` the repeat pass
 /// is `NothingToDo` and refreshes. After `SilentMerge` the persisted LUB clock
 /// dominates the disk, so the repeat pass reports `RollbackRejected` and does
-/// not refresh until the disk clock catches up.
+/// not refresh until the disk clock catches up (#730).
 ///
 /// # Errors
 /// As [`crate::sync_vault_in`] (minus `WrongPasswordOrCorrupt`), plus

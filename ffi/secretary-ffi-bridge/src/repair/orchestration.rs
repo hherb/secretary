@@ -102,8 +102,10 @@ fn build_repair_policy(approvals: &[FfiApprovedWidening]) -> RepairPolicy {
 /// dir), where a baseline may exist but cannot be proven absent — on this
 /// mutating path a skipped check would launder a rollback permanently,
 /// whereas the read-only open path's skip posture self-heals on the next
-/// open (#384; deliberate asymmetry).
-pub(super) fn baseline_provider(
+/// open (#384; deliberate asymmetry). The session refresh
+/// ([`crate::sync::session::refresh_manifest_in`]) uses it too, for the same
+/// reason: a refresh exists to enable writes that re-sign what it adopts.
+pub(crate) fn baseline_provider(
     state_dir: Option<&Path>,
 ) -> impl FnOnce(&[u8; 16]) -> Result<Option<Vec<VectorClockEntry>>, VaultError> + '_ {
     move |vault_uuid: &[u8; 16]| {

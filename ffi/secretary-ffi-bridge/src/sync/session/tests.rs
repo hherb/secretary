@@ -178,6 +178,31 @@ fn refresh_refuses_rollback_and_keeps_handle() {
     assert!(has_block(&session, &other_block));
 }
 
+/// An unreadable sync state fails the refresh closed (#384's posture): a
+/// skipped §10 check here would let the next write re-sign a rolled-back
+/// manifest.
+#[test]
+fn refresh_refuses_an_unreadable_state_file_and_keeps_handle() {
+    let (_tmp, session, other_block) = session_and_other_writer();
+    let state_dir = TempDir::new().unwrap();
+    let vault_uuid: [u8; 16] = session.manifest.vault_uuid().try_into().unwrap();
+    let path = secretary_cli::state::state_file_path(state_dir.path(), vault_uuid);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut garbage = vec![0u8; 64];
+    OsRng.fill_bytes(&mut garbage);
+    std::fs::write(&path, &garbage).unwrap();
+    let before = session.manifest.block_summaries();
+
+    let err =
+        refresh_manifest_in(state_dir.path(), &session.identity, &session.manifest).unwrap_err();
+    assert!(
+        matches!(err, FfiVaultError::CorruptVault { .. }),
+        "got {err:?}"
+    );
+    assert_eq!(session.manifest.block_summaries(), before);
+    assert!(!has_block(&session, &other_block));
+}
+
 #[test]
 fn rollback_rejected_does_not_refresh_and_writes_stay_refused() {
     let (tmp, session, other_block) = session_and_other_writer();
