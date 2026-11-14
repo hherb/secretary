@@ -1,7 +1,23 @@
 # Design: sync through the open session, and refuse writes over a changed vault
 
-Status: draft for approval, 2026-11-14. Branch `feature/session-sync`, base
-`13ce2ef8`. Closes the substance of **#101**.
+Status: approved and shipped, 2026-11-14 (PR #739). Branch
+`feature/session-sync`, base `13ce2ef8`. Closes the substance of **#101**.
+
+**As shipped, the code differs from this draft in four places.** The draft
+text below is left as written; the code is authoritative.
+
+- §5.1: `verify_vault_state` is `pub` and re-exported from
+  `core::vault`, not crate-private, because the bridge calls it.
+- §5.3: the two `*_with_session` calls do not go through `refresh_manifest`.
+  `run_session_pass` calls `verify_vault_state` itself, against the pre-pass
+  clock on `SilentMerge` and the post-pass clock on the other refreshing arms,
+  not the clock loaded from `state_dir`.
+- §5.3: "a repeat pass is `NothingToDo`" is not true after a `SilentMerge`,
+  whose persisted clock dominates the disk, so the repeat pass is
+  `RollbackRejected` and does not refresh (#730).
+- §5.4: no app shows "this vault is older than this device has seen". The
+  bridge folds `Rollback` into `CorruptVault` (#734). iOS shows a neutral
+  notice on a `RollbackRejected` pass instead.
 
 ## 1. Why
 
