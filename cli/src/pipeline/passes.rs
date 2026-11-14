@@ -53,7 +53,7 @@ use crate::veto::VetoUx;
 /// - [`RunOutcome::SilentMerge`] / [`RunOutcome::MergedAndCommitted`] —
 ///   a merged manifest is written and `state` becomes its clock: the LUB
 ///   of the canonical disk clock, every conflict-copy clock and the
-///   prior local-seen (see [`commit_merge`]). `SilentMerge` is the arm
+///   prior local-seen (see `commit_merge`). `SilentMerge` is the arm
 ///   where no block diverged, so only the manifest is rewritten (#730).
 ///
 /// On `Err`, `state` may have been partially mutated only if the error
