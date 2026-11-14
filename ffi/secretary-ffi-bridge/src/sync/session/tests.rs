@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use rand_core::{OsRng, RngCore};
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::sync::SyncState;
+use secretary_core::vault::VectorClockEntry;
 use tempfile::TempDir;
 
 use secretary_test_utils::copy_dir_to_tempdir;
@@ -68,6 +69,36 @@ fn seed_dominating_state(state_dir: &Path, folder: &Path) {
     secretary_cli::state::save(state_dir, &state).expect("seed state");
 }
 
+/// Seed `state_dir` with a clock concurrent with any disk clock: one entry
+/// for a device the disk has never seen, and none of the disk's entries.
+fn seed_concurrent_state(state_dir: &Path, session: &OpenVaultOutput) {
+    let vault_uuid: [u8; 16] = session.manifest.vault_uuid().try_into().unwrap();
+    let clock = vec![VectorClockEntry {
+        device_uuid: random_16(),
+        counter: 2,
+    }];
+    let state = SyncState::new(vault_uuid, clock).expect("canonical clock");
+    secretary_cli::state::save(state_dir, &state).expect("seed state");
+}
+
+#[test]
+fn session_sync_silent_merge_refreshes_and_write_succeeds() {
+    let (_tmp, session, other_block) = session_and_other_writer();
+    let state_dir = TempDir::new().unwrap();
+    seed_concurrent_state(state_dir.path(), &session);
+
+    let outcome = sync_vault_with_session_in(
+        state_dir.path(),
+        &session.identity,
+        &session.manifest,
+        2_000,
+    )
+    .expect("a silent merge refreshes");
+    assert_eq!(outcome, SyncOutcomeDto::SilentMerge);
+    assert!(has_block(&session, &other_block), "handle refreshed");
+    write_block(&session).expect("write after silent merge");
+}
+
 const REFRESHING: [SyncOutcomeDto; 4] = [
     SyncOutcomeDto::AppliedAutomatically,
     SyncOutcomeDto::SilentMerge,
@@ -87,7 +118,8 @@ fn session_sync_then_write_succeeds() {
         2_000,
     )
     .expect("session sync");
-    assert!(REFRESHING.contains(&outcome), "got {outcome:?}");
+    // A fresh state dir is the lattice bottom, so the pass fast-forwards.
+    assert_eq!(outcome, SyncOutcomeDto::AppliedAutomatically);
 
     write_block(&session).expect("write after session sync");
     assert!(
@@ -137,6 +169,13 @@ fn refresh_refuses_rollback_and_keeps_handle() {
     );
     assert_eq!(session.manifest.block_summaries(), before);
     assert!(!has_block(&session, &other_block));
+
+    // Control: the same refresh of the same handle without the seeded
+    // dominating clock succeeds, so the refusal above is the rollback check.
+    let no_state = TempDir::new().unwrap();
+    refresh_manifest_in(no_state.path(), &session.identity, &session.manifest)
+        .expect("refresh without a dominating baseline");
+    assert!(has_block(&session, &other_block));
 }
 
 #[test]
@@ -175,13 +214,25 @@ fn session_sync_refresh_failure_leaves_handle_and_retry_succeeds() {
 
     // The pass itself does not read block files; the refresh's fingerprint
     // check does, and refuses.
-    sync_vault_with_session_in(
+    let err = sync_vault_with_session_in(
         state_dir.path(),
         &session.identity,
         &session.manifest,
         2_000,
     )
     .expect_err("refresh must fail on a missing block file");
+    // Core `BlockFileMissing` folds to `CorruptVault`; its detail names it.
+    let FfiVaultError::CorruptVault { detail } = &err else {
+        panic!("expected the refresh's missing-block error, got {err:?}");
+    };
+    assert!(
+        detail.as_str().contains("file missing from blocks/"),
+        "got {detail:?}"
+    );
+    // ...after the pass itself succeeded and persisted its state.
+    let vault_uuid: [u8; 16] = session.manifest.vault_uuid().try_into().unwrap();
+    let status = crate::sync_status_in(state_dir.path(), vault_uuid).expect("status");
+    assert!(status.has_state, "the pass persisted before the refresh");
     assert_eq!(session.manifest.block_count(), count_before);
     assert!(!has_block(&session, &other_block));
 
@@ -267,7 +318,11 @@ fn session_sync_on_wiped_manifest_writes_nothing() {
 
 #[test]
 fn conflicts_pending_does_not_refresh() {
-    let (_vault_tmp, state_tmp, out) = open_fixture("sync_conflict_fixture");
+    let (vault_tmp, state_tmp, out) = open_fixture("sync_conflict_fixture");
+    // A second writer moves the canonical manifest after the session opened,
+    // so a wrongful refresh at the pause would show its block.
+    let other = open_vault_with_password(vault_tmp.path(), VAULT_001_PASSWORD).expect("open");
+    let other_block = write_block(&other).expect("other writer saves a block");
     let before = out.manifest.manifest_body();
 
     let outcome = sync_vault_with_session_in(state_tmp.path(), &out.identity, &out.manifest, 1)
@@ -282,6 +337,7 @@ fn conflicts_pending_does_not_refresh() {
     };
     assert!(!vetoes.is_empty());
     assert_eq!(out.manifest.manifest_body(), before, "no refresh on pause");
+    assert!(!has_block(&out, &other_block));
 
     let decisions = vetoes
         .iter()
@@ -300,6 +356,6 @@ fn conflicts_pending_does_not_refresh() {
     )
     .expect("commit");
     assert_eq!(outcome, SyncOutcomeDto::MergedClean);
-    assert_ne!(out.manifest.manifest_body(), before, "commit refreshes");
+    assert!(has_block(&out, &other_block), "commit refreshes");
     write_block(&out).expect("write after commit");
 }
