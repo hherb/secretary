@@ -11,16 +11,18 @@ describe('writeCommands registry', () => {
     expect(classifiedCommandNames().size).toBe(50);
   });
 
-  it('lists the gated write wrappers (17)', () => {
+  it('lists the gated write wrappers (19)', () => {
     const w = gatedWrappers();
     expect(w).toContain('saveRecord');
     expect(w).toContain('importContact');
     expect(w).toContain('runRetention');
     expect(w).toContain('purgeBlock');
     expect(w).toContain('emptyTrash');
+    expect(w).toContain('syncNow'); // session sync, no password per pass (#732)
+    expect(w).toContain('syncCommitDecisions');
     expect(w).not.toContain('createVault'); // exempt
     expect(w).not.toContain('listBlocks'); // read
-    expect(w).toHaveLength(17);
+    expect(w).toHaveLength(19);
   });
 
   it('requires every exempt write to record a reason', () => {

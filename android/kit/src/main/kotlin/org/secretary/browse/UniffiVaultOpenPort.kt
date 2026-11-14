@@ -4,13 +4,16 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.secretary.diagnostics.diagnosticDetail
+import org.secretary.sync.VaultSyncError
 import uniffi.secretary.BlockReadOutput
 import uniffi.secretary.FieldHandle
 import uniffi.secretary.OpenVaultManifest
 import uniffi.secretary.OpenVaultOutput
 import uniffi.secretary.Record
+import uniffi.secretary.SyncOutcomeDto
 import uniffi.secretary.UnlockedIdentity
 import uniffi.secretary.VaultException
+import uniffi.secretary.VetoDecisionDto
 import uniffi.secretary.appendRecord as ffiAppendRecord
 import uniffi.secretary.autoPurgeExpired as ffiAutoPurgeExpired
 import uniffi.secretary.createBlock as ffiCreateBlock
@@ -29,12 +32,13 @@ import uniffi.secretary.readSettings as ffiReadSettings
 import uniffi.secretary.reauthWindowDefaultMs as ffiReauthWindowDefaultMs
 import uniffi.secretary.reauthWindowMaxMs as ffiReauthWindowMaxMs
 import uniffi.secretary.reauthWindowMinMs as ffiReauthWindowMinMs
-import uniffi.secretary.refreshManifest as ffiRefreshManifest
 import uniffi.secretary.renameBlock as ffiRenameBlock
 import uniffi.secretary.restoreBlock as ffiRestoreBlock
 import uniffi.secretary.resurrectRecord as ffiResurrectRecord
 import uniffi.secretary.retentionWindowMaxMs as ffiRetentionWindowMaxMs
 import uniffi.secretary.retentionWindowMinMs as ffiRetentionWindowMinMs
+import uniffi.secretary.syncCommitDecisionsWithSession as ffiSyncCommitDecisionsWithSession
+import uniffi.secretary.syncVaultWithSession as ffiSyncVaultWithSession
 import uniffi.secretary.tombstoneRecord as ffiTombstoneRecord
 import uniffi.secretary.writeSettings as ffiWriteSettings
 import java.security.SecureRandom
@@ -128,7 +132,10 @@ class UniffiVaultSession(
 
     /** Serializes all access to the FFI handles + [currentBlock] across the IO dispatcher (reads)
      *  and the main thread (wipe). The held section spans the block decrypt, so a concurrent
-     *  [wipe] waits for an in-flight read (bounded — one block decrypt is milliseconds). */
+     *  [wipe] waits for an in-flight read (bounded — one block decrypt is milliseconds). It also
+     *  spans a whole sync pass ([syncThroughSession]): verify, merge, commit and refresh, with no
+     *  Argon2id. A [wipe] during a pass therefore waits on the main thread for the pass to finish,
+     *  writes included. That wait has not been measured on a large vault. */
     private val sessionLock = Any()
 
     /** Set true by [wipe]; a read that observes it must not retain its block. */
@@ -145,15 +152,25 @@ class UniffiVaultSession(
 
     override fun vaultUuidHex(): String = vaultUuidHexValue
 
-    /** Re-read the vault folder into this session's handles after a password sync pass wrote it
-     *  through a separate open; without this the next write is refused as VaultChangedOnDisk (#101).
-     *  Takes [sessionLock] like every other handle access; a no-op once [wiped]. On error the
-     *  bridge leaves the handles unchanged, so the raw [VaultException] propagates for the caller
-     *  to map. */
-    fun refreshFromDisk(stateDir: String) {
-        synchronized(sessionLock) {
-            if (!wiped) ffiRefreshManifest(stateDir, identity, manifest)
-        }
+    /** One sync pass through this session's handles (#733); the bridge refreshes the manifest
+     *  handle from disk afterwards on every arm that wrote or accepted a manifest. Takes
+     *  [sessionLock] like every other handle access, and after [wipe] throws without touching the
+     *  zeroized handles, so the pass writes nothing. Raw [VaultException]s propagate for the sync
+     *  port to map. */
+    fun syncThroughSession(stateDir: String, nowMs: ULong): SyncOutcomeDto = synchronized(sessionLock) {
+        if (wiped) throw VaultSyncError.Failed("sync on a wiped session")
+        ffiSyncVaultWithSession(stateDir, identity, manifest, nowMs)
+    }
+
+    /** Commit veto decisions through this session's handles, then refresh; see [syncThroughSession]. */
+    fun commitDecisionsThroughSession(
+        stateDir: String,
+        decisions: List<VetoDecisionDto>,
+        manifestHash: ByteArray,
+        nowMs: ULong,
+    ): SyncOutcomeDto = synchronized(sessionLock) {
+        if (wiped) throw VaultSyncError.Failed("commit on a wiped session")
+        ffiSyncCommitDecisionsWithSession(stateDir, identity, manifest, decisions, manifestHash, nowMs)
     }
 
     override fun blockSummaries(): List<BlockSummaryView> =

@@ -10,30 +10,29 @@ import org.secretary.sync.WallClock
 // Local minimal test doubles — :vault-access's test fakes are not visible across modules (no
 // test-fixtures configuration); replace with shared fixtures if one is introduced later.
 
-/** Returns a fixed outcome for sync/commit and an empty status. Records the password seen. */
+/** Returns a fixed outcome for sync/commit and an empty status. Counts the calls. */
 class ScriptedSyncPort(
     private val syncOutcome: SyncOutcome,
     private val commitOutcome: SyncOutcome = syncOutcome,
 ) : VaultSyncPort {
-    val passwords: MutableList<ByteArray> = mutableListOf()
+    var syncCalls: Int = 0
+    var commitCalls: Int = 0
 
     override suspend fun status(stateDir: String, vaultUuid: ByteArray): SyncStatus =
         SyncStatus(hasState = false, deviceClocks = emptyList(), lastStateWriteMs = null)
 
-    override suspend fun sync(stateDir: String, vaultFolder: String, password: ByteArray, nowMs: ULong): SyncOutcome {
-        passwords += password
+    override suspend fun sync(stateDir: String, nowMs: ULong): SyncOutcome {
+        syncCalls++
         return syncOutcome
     }
 
     override suspend fun commitDecisions(
         stateDir: String,
-        vaultFolder: String,
-        password: ByteArray,
         decisions: List<SyncVetoDecision>,
         manifestHash: ByteArray,
         nowMs: ULong,
     ): SyncOutcome {
-        passwords += password
+        commitCalls++
         return commitOutcome
     }
 }

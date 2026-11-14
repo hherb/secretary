@@ -54,15 +54,8 @@ class OpenBrowseWithSyncSmokeTest {
 
         assertTrue("browse VM loaded blocks", session.browse.blocks.value.isNotEmpty())
 
-        // Background sync-at-unlock with a password copy; join the job (test-only) and assert clean.
-        // launchSyncAtUnlock copies internally and zeroizes the copy; the ORIGINAL here is ours to
-        // wipe after the pass settles.
-        val syncPw = goldenPassword.toByteArray()
-        val job = withContext(Dispatchers.Main) {
-            launchSyncAtUnlock(this, syncPw, session.sync::syncAtUnlock)
-        }
-        job.join()
-        syncPw.fill(0)
+        // Sync-at-unlock through the open session (no password, #733); assert a clean pass.
+        withContext(Dispatchers.Main) { session.sync.syncAtUnlock() }
         assertNull("clean silent pass surfaces no error", session.sync.lastError.value)
         assertTrue("review not raised on a clean single-device pass", !session.sync.reviewNeeded.value)
 

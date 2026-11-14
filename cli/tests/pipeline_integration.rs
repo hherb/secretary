@@ -33,6 +33,7 @@ use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::sync::SyncState;
 use secretary_core::unlock::{open_with_password, vault_toml, UnlockedIdentity};
 use secretary_core::vault::block::VectorClockEntry;
+use secretary_core::vault::{open_vault, Unlocker};
 use secretary_test_utils::{copy_dir_recursive, core_test_data_dir};
 
 /// Filename of the golden vault folder under `core/tests/data/`.
@@ -207,4 +208,40 @@ fn run_one_threads_autokeeplocal_through_dyn_boundary() {
     let outcome = run_one(&vault_dir, &identity, &mut state, ux_ref, TEST_NOW_MS)
         .expect("run_one with dyn-trait UX must succeed");
     assert_eq!(outcome, RunOutcome::AppliedAutomatically);
+}
+
+/// #730 on the daemon's path: a concurrent state with no diverging block is a
+/// `SilentMerge`, and it WRITES the merge. The disk clock then carries the
+/// local entry the disk had never seen and equals the saved clock, so the next
+/// pass is `NothingToDo`, not a rollback. Before the fix `run_one` advanced the
+/// state without writing, and the repeat pass returned `RollbackRejected`.
+#[test]
+fn run_one_silent_merge_writes_the_merge_and_the_next_pass_is_nothing_to_do() {
+    let (_tmp, vault_dir, identity, vault_uuid) = stage_and_unlock_golden();
+    let local = VectorClockEntry {
+        device_uuid: [0xEE; 16],
+        counter: 2,
+    };
+    let mut state = SyncState::new(vault_uuid, vec![local.clone()]).expect("canonical clock");
+    let mut ux = AutoKeepLocalVetoUx;
+
+    let first = run_one(&vault_dir, &identity, &mut state, &mut ux, TEST_NOW_MS)
+        .expect("first run_one must succeed");
+    assert_eq!(first, RunOutcome::SilentMerge);
+
+    let password = golden_vault_password();
+    let opened = open_vault(&vault_dir, Unlocker::Password(&password), None).expect("open");
+    let disk = &opened.manifest.vector_clock;
+    assert!(
+        disk.contains(&local),
+        "disk clock {disk:?} lacks the local entry"
+    );
+    assert_eq!(
+        &state.highest_vector_clock_seen, disk,
+        "saved clock == disk clock"
+    );
+
+    let second = run_one(&vault_dir, &identity, &mut state, &mut ux, TEST_NOW_MS)
+        .expect("second run_one must succeed");
+    assert_eq!(second, RunOutcome::NothingToDo);
 }

@@ -45,6 +45,8 @@ export const COMMAND_CLASSIFICATION: Record<string, CommandClass> = {
   run_retention: { kind: 'write', gate: 'gated', wrapper: 'runRetention' },
   purge_block: { kind: 'write', gate: 'gated', wrapper: 'purgeBlock' },
   empty_trash: { kind: 'write', gate: 'gated', wrapper: 'emptyTrash' },
+  sync_now: { kind: 'write', gate: 'gated', wrapper: 'syncNow' },
+  sync_commit_decisions: { kind: 'write', gate: 'gated', wrapper: 'syncCommitDecisions' },
 
   // --- writes: exempt, with recorded reason ---
   create_vault: {
@@ -58,18 +60,6 @@ export const COMMAND_CLASSIFICATION: Record<string, CommandClass> = {
     gate: 'exempt',
     wrapper: 'probeCreateTarget',
     reason: 'pre-unlock probe of a target folder; performs no vault mutation',
-  },
-  sync_now: {
-    kind: 'write',
-    gate: 'exempt',
-    wrapper: 'syncNow',
-    reason: 'takes the vault password directly — re-auth is intrinsic',
-  },
-  sync_commit_decisions: {
-    kind: 'write',
-    gate: 'exempt',
-    wrapper: 'syncCommitDecisions',
-    reason: 'takes the vault password directly — re-auth is intrinsic',
   },
   pick_vault_folder: {
     kind: 'write',

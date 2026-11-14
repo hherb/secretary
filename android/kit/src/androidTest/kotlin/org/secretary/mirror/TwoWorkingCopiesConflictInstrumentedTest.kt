@@ -192,8 +192,12 @@ class TwoWorkingCopiesConflictInstrumentedTest {
         //    A-canonical fork sees a CONCURRENT relation (the merge trigger). Syncing B's working
         //    copy (canonical = B) against a fresh state dir advances the persisted clock to B's.
         val stateDir = freshDir("state")
-        val syncPort = UniffiVaultSyncPort()
-        val seedOutcome = syncPort.sync(stateDir.path, workingB.path, goldenPassword, nowMs)
+        val sessionB = GoldenVaultStaging.openSession(workingB)
+        val seedOutcome = try {
+            UniffiVaultSyncPort(sessionB).sync(stateDir.path, nowMs)
+        } finally {
+            sessionB.wipe()
+        }
         assertEquals(
             "seeding B into a fresh state dir must fast-forward to B's clock",
             SyncOutcome.AppliedAutomatically,
@@ -230,7 +234,12 @@ class TwoWorkingCopiesConflictInstrumentedTest {
             "materialized working copy must hold the block sibling pulled via SAF",
             File(workingMergeA, blockRel + siblingSuffix).exists(),
         )
-        val mergeOutcome = syncPort.sync(stateDir.path, workingMergeA.path, goldenPassword, nowMs)
+        val sessionMergeA = GoldenVaultStaging.openSession(workingMergeA)
+        val mergeOutcome = try {
+            UniffiVaultSyncPort(sessionMergeA).sync(stateDir.path, nowMs)
+        } finally {
+            sessionMergeA.wipe()
+        }
         assertEquals(
             "concurrent disjoint-append merge commits cleanly (no veto)",
             SyncOutcome.MergedClean,

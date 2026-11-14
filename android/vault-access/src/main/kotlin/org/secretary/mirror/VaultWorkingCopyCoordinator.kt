@@ -23,7 +23,7 @@ class PendingFlushNotPersisted(val createdVaultUuidHex: String, cause: Throwable
  *
  * @param S the opaque opened-session handle the caller hands to Browse (e.g. a BrowseSession).
  * @param openAndSync materialized working copy is on disk when this runs: it unlocks + runs the
- *   existing sync_vault_in/makeVaultSync pass against the working dir and returns the browse handle.
+ *   makeVaultSync assembly against the working dir and returns the browse handle.
  */
 class VaultWorkingCopyCoordinator<S>(
     private val mirror: WorkingCopyMirror,

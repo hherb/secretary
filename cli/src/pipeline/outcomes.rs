@@ -41,15 +41,11 @@ pub enum RunOutcome {
         vetoes_resolved: usize,
     },
     /// Concurrent state was detected but the diff plan was empty
-    /// (no diverging blocks after authentication; this is the
-    /// "concurrent at the manifest level, identical at the block
-    /// level" fast path). `state.highest_vector_clock_seen` advanced
-    /// to the LUB of the canonical disk clock, every conflict-copy
-    /// clock in the bundle, and the prior local-seen — mirroring
-    /// what `commit_with_decisions` returns on the
-    /// [`Self::MergedAndCommitted`] arm via
-    /// [`secretary_core::sync::DraftMerge::post_merge_clock`]. No
-    /// commit was issued.
+    /// (no diverging blocks after authentication: "concurrent at the
+    /// manifest level, identical at the block level"). A manifest-only
+    /// merge was committed (crypto-design §10, #730) and `state` is its
+    /// clock: the LUB of the canonical disk clock, every conflict-copy
+    /// clock and the prior local-seen.
     SilentMerge,
     /// Disk vector clock is strictly dominated by the local
     /// `highest_vector_clock_seen` (rollback per
@@ -90,8 +86,8 @@ pub enum SyncPassOutcome {
     NothingToDo,
     /// Disk strictly dominates local. `state` advanced; no vault write.
     AppliedAutomatically,
-    /// Concurrent, `diverging_blocks` empty → silent-merge clock advance.
-    /// `state` advanced; no vault write.
+    /// Concurrent, `diverging_blocks` empty → a manifest-only merge was
+    /// committed (#730). `state` advanced.
     SilentMerge,
     /// Concurrent, `diverging_blocks` non-empty, **zero** vetoes →
     /// `commit_with_decisions(.., [])` wrote the merged result. `state` advanced.
@@ -117,8 +113,8 @@ pub enum InspectOutcome {
     NothingToDo,
     /// Disk strictly dominates local. `state` advanced; no vault write.
     AppliedAutomatically,
-    /// Concurrent, `diverging_blocks` empty -> silent-merge clock advance.
-    /// `state` advanced; no vault write.
+    /// Concurrent, `diverging_blocks` empty -> a manifest-only merge was
+    /// committed (#730). `state` advanced.
     SilentMerge,
     /// Concurrent, `diverging_blocks` non-empty, **zero** vetoes ->
     /// `commit_with_decisions(.., [])` wrote the merged result. `state` advanced.

@@ -9,6 +9,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.secretary.browse.UniffiVaultSession
 import java.io.File
 
 /**
@@ -20,27 +21,27 @@ import java.io.File
  * assembled stack — not just the raw port.
  *
  * Scope: this proves the native surface works end-to-end (load → marshal → outcome arm → state
- * persistence), asserting the SyncOutcome and hasState only. Record-level content fidelity through
- * a merge is not asserted here — a single-device golden vault can only fast-forward, never merge
- * or veto; content round-trip + the ConflictsPending/commitDecisions path need a seeded concurrent
- * state and are future coverage.
+ * persistence), asserting the SyncOutcome and hasState only. A single golden vault can only
+ * fast-forward; [silentMerge_thenRepeatPass_thenWrite_onDevice] stages two working copies to reach
+ * the SilentMerge arm (#730). Record-level content fidelity through a merge and the
+ * ConflictsPending/commitDecisions path are not covered here (see
+ * TwoWorkingCopiesConflictInstrumentedTest for the conflict surface).
  */
 @RunWith(AndroidJUnit4::class)
 class SyncRoundTripInstrumentedTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
 
-    // The published golden-vault KAT password — not a real secret, so not zeroized.
-    private val goldenPassword = "correct horse battery staple".toByteArray()
-
     // nowMs only stamps merge timestamps (`last_mod_ms`) in the commit/write path
-    // (core/src/sync/commit/write.rs), which a single-device pass never reaches: the
-    // asserted AppliedAutomatically fast-forward arm consumes it nowhere. Pinned to the
-    // golden vault's clock domain for determinism.
+    // (core/src/sync/commit/write.rs). Pinned to the golden vault's clock domain for determinism.
     private val mergeClockMs = 2_000_000_000_000uL
 
     private val toClean = mutableListOf<File>()
+    private val sessions = mutableListOf<UniffiVaultSession>()
 
-    @After fun cleanup() = toClean.forEach { it.deleteRecursively() }
+    @After fun cleanup() {
+        sessions.forEach { it.wipe() }
+        toClean.forEach { it.deleteRecursively() }
+    }
 
     private fun stageVault(): File =
         GoldenVaultStaging.stageWritableVault(context).also { toClean += it.parentFile!! }
@@ -48,21 +49,23 @@ class SyncRoundTripInstrumentedTest {
     private fun stateDir(): File =
         GoldenVaultStaging.freshStateDir(context).also { toClean += it }
 
+    private fun session(folder: File): UniffiVaultSession =
+        GoldenVaultStaging.openSession(folder).also { sessions += it }
+
     @Test
     fun rawPort_statusThenSync_roundTripsThroughNativeFfi() = runBlocking {
         val vault = stageVault()
         val state = stateDir()
         val uuid = GoldenVaultStaging.goldenVaultUuid(context)
-        val port = UniffiVaultSyncPort()
+        val port = UniffiVaultSyncPort(session(vault))
 
         val before = port.status(state.path, uuid)
         assertFalse("fresh state dir reports no sync state", before.hasState)
 
-        // The headline proof: native load + uniffi call + DTO→domain mapping.
-        // observed on-device: AppliedAutomatically (not NothingToDo) — the first sync against a
-        // fresh state dir has no prior persisted clock, so the single device's current vault state
-        // is applied as the initial baseline rather than being a no-op. This is an ADVANCING arm.
-        val outcome = port.sync(state.path, vault.path, goldenPassword, mergeClockMs)
+        // The headline proof: native load + uniffi call + DTO→domain mapping. The first sync
+        // against a fresh state dir has no prior persisted clock, so the vault's current state is
+        // applied as the initial baseline: an ADVANCING arm.
+        val outcome = port.sync(state.path, mergeClockMs)
         assertEquals(SyncOutcome.AppliedAutomatically, outcome)
 
         // AppliedAutomatically advances the clock, so the first sync persists sync state.
@@ -74,12 +77,35 @@ class SyncRoundTripInstrumentedTest {
     fun coordinator_overRealPort_runsAPassOnDevice() = runBlocking {
         val vault = stageVault()
         val state = stateDir()
-        val coordinator = SyncCoordinator(UniffiVaultSyncPort(), state.path, vault.path)
+        val coordinator = SyncCoordinator(UniffiVaultSyncPort(session(vault)), state.path)
 
-        // Proves the assembled slice-1 (pure core) + slice-2a (adapter) stack on device.
-        // First pass over a fresh state dir establishes the baseline (advancing arm),
-        // matching the rawPort test's characterized AppliedAutomatically result.
-        val outcome = coordinator.runPass(goldenPassword, mergeClockMs)
+        val outcome = coordinator.runPass(mergeClockMs)
         assertEquals(SyncOutcome.AppliedAutomatically, outcome)
+    }
+
+    /**
+     * #733 acceptance, and the #730 regression on device: two working copies branch from the
+     * golden vault and each adds its own block, so their clocks are concurrent but no block
+     * diverges. Seeding the state from copy B and syncing copy A takes the SilentMerge arm. It
+     * must commit its merge (#730): the repeat pass has nothing to do, and the session's next
+     * write succeeds. Before #730 the repeat pass was RollbackRejected.
+     */
+    @Test
+    fun silentMerge_thenRepeatPass_thenWrite_onDevice() = runBlocking {
+        val vaultA = stageVault()
+        val vaultB = stageVault()
+        val state = stateDir()
+        val sessionA = session(vaultA)
+        val sessionB = session(vaultB)
+        sessionA.createBlock("only on A")
+        sessionB.createBlock("only on B")
+
+        assertEquals(SyncOutcome.AppliedAutomatically, UniffiVaultSyncPort(sessionB).sync(state.path, mergeClockMs))
+
+        val portA = UniffiVaultSyncPort(sessionA)
+        assertEquals(SyncOutcome.SilentMerge, portA.sync(state.path, mergeClockMs))
+        assertEquals(SyncOutcome.NothingToDo, portA.sync(state.path, mergeClockMs))
+        sessionA.createBlock("written after the merge")
+        Unit
     }
 }

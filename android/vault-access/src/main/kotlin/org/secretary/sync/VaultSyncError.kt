@@ -111,4 +111,9 @@ sealed class VaultSyncError(message: String? = null) : Exception(message), Secre
 
     /** Coordinator guard: `resolve` was called with no paused conflict stashed. */
     data object NoPendingConflict : VaultSyncError()
+
+    /** An interactive pass or resolve was refused because the biometric presence proof failed
+     *  (lockout / hardware unavailable / not-a-match). [detail] is a fixed clause from
+     *  `reauthFailedMessage`. A user *cancel* is NOT this: it aborts silently. */
+    data class ReauthFailed(val detail: String) : VaultSyncError(detail)
 }

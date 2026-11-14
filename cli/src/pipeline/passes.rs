@@ -8,8 +8,8 @@
 use std::path::Path;
 
 use secretary_core::sync::{
-    commit_with_decisions, prepare_merge, sync_once, ManifestHash, SyncError, SyncOutcome,
-    SyncState, VaultBundle, VetoDecision,
+    commit_with_decisions, prepare_merge, sync_once, DiffPlan, DraftMerge, ManifestHash, SyncError,
+    SyncOutcome, SyncState, VaultBundle, VetoDecision,
 };
 use secretary_core::unlock::UnlockedIdentity;
 use secretary_core::vault::block::VectorClockEntry;
@@ -50,18 +50,11 @@ use crate::veto::VetoUx;
 /// - [`RunOutcome::AppliedAutomatically`] — `state.highest_vector_clock_seen`
 ///   advances to the disk clock (the dominance case — disk strictly
 ///   ≥ local, so the disk clock alone is already the LUB).
-/// - [`RunOutcome::SilentMerge`] — `state.highest_vector_clock_seen`
-///   advances to the LUB of the canonical disk clock, every
-///   conflict-copy clock in the authenticated bundle, and the prior
-///   local-seen. Mirrors what `commit_with_decisions` returns on the
-///   [`RunOutcome::MergedAndCommitted`] arm (which folds canonical +
-///   copies into `DraftMerge::post_merge_clock`); folding in the
-///   prior local-seen is defensive — under monotone clock evolution
-///   it's already dominated by the LUB, but the fold is cheap and
-///   keeps the contract independent of that invariant.
-/// - [`RunOutcome::MergedAndCommitted`] — `state` is replaced with the
-///   `SyncState` returned by `commit_with_decisions` (the post-merge
-///   clock that includes both local and peer contributions).
+/// - [`RunOutcome::SilentMerge`] / [`RunOutcome::MergedAndCommitted`] —
+///   a merged manifest is written and `state` becomes its clock: the LUB
+///   of the canonical disk clock, every conflict-copy clock and the
+///   prior local-seen (see `commit_merge`). `SilentMerge` is the arm
+///   where no block diverged, so only the manifest is rewritten (#730).
 ///
 /// On `Err`, `state` may have been partially mutated only if the error
 /// came from `commit_with_decisions` after state was updated — but
@@ -89,30 +82,19 @@ pub fn run_one(
             bundle,
             plan,
             manifest_hash: _,
-            disk_vector_clock,
+            disk_vector_clock: _,
             local_highest_seen: _,
         } => {
-            // Silent-merge fast path: the manifest clocks are concurrent
-            // but no block-level divergence survived authentication. We
-            // can advance the local clock without re-encrypting anything,
-            // but we MUST advance it to the LUB of every clock visible at
-            // this moment — not just the canonical disk clock. See
-            // `silent_merge_clock` for the full rationale.
+            // Concurrent clocks with no diverging block: nothing to
+            // re-encrypt, but §10 still requires the merge to be written.
             if plan.diverging_blocks.is_empty() {
-                let copy_clocks = gather_copy_clocks(&bundle);
-                state.highest_vector_clock_seen = silent_merge_clock(
-                    &disk_vector_clock,
-                    &copy_clocks,
-                    &state.highest_vector_clock_seen,
-                );
+                commit_manifest_only_merge(vault_folder, identity, state, &bundle, &plan, now_ms)?;
                 return Ok(RunOutcome::SilentMerge);
             }
             let draft = prepare_merge(vault_folder, identity, &bundle, &plan)?;
             let vetoes_count = draft.vetoes.len();
             let decisions = veto_ux.decide(&draft.vetoes);
-            let new_state =
-                commit_with_decisions(vault_folder, identity, draft, decisions, now_ms)?;
-            *state = new_state;
+            commit_merge(vault_folder, identity, state, draft, decisions, now_ms)?;
             Ok(RunOutcome::MergedAndCommitted {
                 vetoes_resolved: vetoes_count,
             })
@@ -151,16 +133,11 @@ pub fn sync_pass_pause_on_conflict(
             bundle,
             plan,
             manifest_hash: _,
-            disk_vector_clock,
+            disk_vector_clock: _,
             local_highest_seen: _,
         } => {
             if plan.diverging_blocks.is_empty() {
-                let copy_clocks = gather_copy_clocks(&bundle);
-                state.highest_vector_clock_seen = silent_merge_clock(
-                    &disk_vector_clock,
-                    &copy_clocks,
-                    &state.highest_vector_clock_seen,
-                );
+                commit_manifest_only_merge(vault_folder, identity, state, &bundle, &plan, now_ms)?;
                 return Ok(SyncPassOutcome::SilentMerge);
             }
             let draft = prepare_merge(vault_folder, identity, &bundle, &plan)?;
@@ -169,9 +146,7 @@ pub fn sync_pass_pause_on_conflict(
                     veto_count: draft.vetoes.len(),
                 });
             }
-            let new_state =
-                commit_with_decisions(vault_folder, identity, draft, Vec::new(), now_ms)?;
-            *state = new_state;
+            commit_merge(vault_folder, identity, state, draft, Vec::new(), now_ms)?;
             Ok(SyncPassOutcome::MergedClean)
         }
     }
@@ -214,16 +189,11 @@ pub fn sync_pass_inspect(
             bundle,
             plan,
             manifest_hash: _,
-            disk_vector_clock,
+            disk_vector_clock: _,
             local_highest_seen: _,
         } => {
             if plan.diverging_blocks.is_empty() {
-                let copy_clocks = gather_copy_clocks(&bundle);
-                state.highest_vector_clock_seen = silent_merge_clock(
-                    &disk_vector_clock,
-                    &copy_clocks,
-                    &state.highest_vector_clock_seen,
-                );
+                commit_manifest_only_merge(vault_folder, identity, state, &bundle, &plan, now_ms)?;
                 return Ok(InspectOutcome::SilentMerge);
             }
             let draft = prepare_merge(vault_folder, identity, &bundle, &plan)?;
@@ -237,9 +207,7 @@ pub fn sync_pass_inspect(
                     manifest_hash: draft.manifest_hash.clone(),
                 });
             }
-            let new_state =
-                commit_with_decisions(vault_folder, identity, draft, Vec::new(), now_ms)?;
-            *state = new_state;
+            commit_merge(vault_folder, identity, state, draft, Vec::new(), now_ms)?;
             Ok(InspectOutcome::MergedClean)
         }
     }
@@ -275,14 +243,16 @@ pub fn sync_pass_inspect(
 /// non-diverging arm — `NothingToDo`, `AppliedAutomatically`, or
 /// `SilentMerge` — this returns that arm directly and the caller's
 /// `decisions` are **silently dropped** (the merge that produced the
-/// veto no longer exists in the same shape). This is CRDT-correct: on
-/// those arms the disk's vector clock has moved to a state that already
+/// veto no longer exists in the same shape). This is CRDT-correct. On
+/// `NothingToDo` / `AppliedAutomatically` the disk's vector clock already
 /// subsumes the local one, so adopting it is the right resolution
-/// regardless of what the operator chose in the now-stale modal — but it
-/// does mean a `KeepLocal` choice can be overridden by an incoming
-/// dominating update that carries the tombstone. Nothing *incorrect* is
-/// written; the modal's intent is simply moot. A caller that needs the
-/// operator's choice to be authoritative must re-inspect and re-prompt.
+/// regardless of what the operator chose in the now-stale modal. On
+/// `SilentMerge` the clocks are still concurrent but no block diverges, so
+/// the arm writes a manifest-only merge (#730) and there is no veto left to
+/// decide. Either way a `KeepLocal` choice can be overridden by an incoming
+/// update that carries the tombstone. Nothing *incorrect* is written; the
+/// modal's intent is simply moot. A caller that needs the operator's choice
+/// to be authoritative must re-inspect and re-prompt.
 ///
 /// # Decision coverage
 /// `decisions` must exactly cover the **recomputed** veto set:
@@ -323,16 +293,11 @@ pub fn sync_pass_commit_decisions(
             bundle,
             plan,
             manifest_hash,
-            disk_vector_clock,
+            disk_vector_clock: _,
             local_highest_seen: _,
         } => {
             if plan.diverging_blocks.is_empty() {
-                let copy_clocks = gather_copy_clocks(&bundle);
-                state.highest_vector_clock_seen = silent_merge_clock(
-                    &disk_vector_clock,
-                    &copy_clocks,
-                    &state.highest_vector_clock_seen,
-                );
+                commit_manifest_only_merge(vault_folder, identity, state, &bundle, &plan, now_ms)?;
                 return Ok(SyncPassOutcome::SilentMerge);
             }
             // Freshness gate FIRST: if a concurrent writer advanced the
@@ -342,77 +307,65 @@ pub fn sync_pass_commit_decisions(
                 return Err(SyncError::EvidenceStale);
             }
             let draft = prepare_merge(vault_folder, identity, &bundle, &plan)?;
-            let new_state =
-                commit_with_decisions(vault_folder, identity, draft, decisions, now_ms)?;
-            *state = new_state;
+            commit_merge(vault_folder, identity, state, draft, decisions, now_ms)?;
             Ok(SyncPassOutcome::MergedClean)
         }
     }
 }
 
-/// Borrow every conflict-copy manifest's `vector_clock` out of `bundle`
-/// as a slice-of-slices, ready to feed [`silent_merge_clock`] as its
-/// `copy_clocks` argument.
-///
-/// Each of the four sync passes reaches the silent-merge fast path with
-/// the same need — fold every conflict copy's clock into the LUB — so the
-/// gather lives here once rather than copy-pasted per pass. Pure: borrows
-/// from `bundle` without allocating beyond the outer `Vec` of references.
-fn gather_copy_clocks(bundle: &VaultBundle) -> Vec<&[VectorClockEntry]> {
-    bundle
-        .copies
-        .iter()
-        .map(|c| c.manifest.vector_clock.as_slice())
-        .collect()
+/// The `SilentMerge` arm: the clocks are concurrent but no block diverged.
+/// There is nothing to re-encrypt, yet crypto-design §10 still requires a
+/// concurrent clock to end in a written merge. Saving the LUB without writing
+/// it left the saved clock strictly dominating the disk, so this device's next
+/// pass, refresh and open were all refused as a rollback (#730). With no
+/// diverging block the draft has no vetoes, so no decisions are needed.
+fn commit_manifest_only_merge(
+    vault_folder: &Path,
+    identity: &UnlockedIdentity,
+    state: &mut SyncState,
+    bundle: &VaultBundle,
+    plan: &DiffPlan,
+    now_ms: u64,
+) -> Result<(), SyncError> {
+    let draft = prepare_merge(vault_folder, identity, bundle, plan)?;
+    commit_merge(vault_folder, identity, state, draft, Vec::new(), now_ms)
 }
 
-/// Compute the post-silent-merge `highest_vector_clock_seen` as the
-/// LUB of:
+/// Commit `draft` and adopt the written clock as `state`.
 ///
-/// 1. The authenticated canonical disk vector clock (`disk_clock`).
-/// 2. Every conflict-copy manifest's `vector_clock` in `copy_clocks`.
-/// 3. The prior `state.highest_vector_clock_seen` (`prior_local_seen`).
-///
-/// (1) + (2) mirrors what `commit_with_decisions` writes into
-/// `DraftMerge::post_merge_clock` on the
-/// [`RunOutcome::MergedAndCommitted`] arm — a conflict-copy's clock
-/// may contain a (device, counter) pair that's strictly greater than
-/// the canonical's, and a silent merge MUST preserve those.
-///
-/// (3) is defensive — `clock_relation(prior, disk) == Concurrent`
-/// implies prior has some entry strictly greater than disk's only if
-/// monotone-clock evolution is somehow violated (e.g. backup restore,
-/// future-protocol bug). The fold is cheap and keeps this function's
-/// correctness independent of that invariant.
-///
-/// Pure function — no I/O, no logging, no side effects. Takes raw
-/// clock slices (rather than `&[ManifestSnapshot]`) so the
-/// `silent_merge_clock_*` unit tests can pin the LUB contract
-/// without constructing manifest fixtures.
-fn silent_merge_clock(
-    disk_clock: &[VectorClockEntry],
-    copy_clocks: &[&[VectorClockEntry]],
+/// The written manifest clock folds in `state`'s prior highest-seen clock as
+/// well as the canonical and conflict-copy clocks `prepare_merge` folded. A
+/// concurrent prior clock is ahead of the disk on some entry (a write the
+/// cloud dropped, say); writing it keeps the saved clock equal to the disk
+/// clock, so §10 neither forgets what this device has seen nor later reads
+/// this device's own merge as a rollback. `state` is only assigned on `Ok`.
+fn commit_merge(
+    vault_folder: &Path,
+    identity: &UnlockedIdentity,
+    state: &mut SyncState,
+    mut draft: DraftMerge,
+    decisions: Vec<VetoDecision>,
+    now_ms: u64,
+) -> Result<(), SyncError> {
+    draft.post_merge_clock =
+        fold_local_clock(&draft.post_merge_clock, &state.highest_vector_clock_seen);
+    *state = commit_with_decisions(vault_folder, identity, draft, decisions, now_ms)?;
+    Ok(())
+}
+
+/// The clock a merge writes: the merged peer clocks joined with this device's
+/// prior highest-seen clock.
+fn fold_local_clock(
+    merged: &[VectorClockEntry],
     prior_local_seen: &[VectorClockEntry],
 ) -> Vec<VectorClockEntry> {
-    let mut new_clock = disk_clock.to_vec();
-    for copy in copy_clocks {
-        new_clock = merge_vector_clocks(&new_clock, copy);
-    }
-    merge_vector_clocks(&new_clock, prior_local_seen)
+    merge_vector_clocks(merged, prior_local_seen)
 }
 
 #[cfg(test)]
 mod tests {
-    //! Pure LUB-contract tests for [`silent_merge_clock`]. End-to-end
-    //! orchestration tests for the pass functions live in
-    //! `cli/tests/pipeline_integration.rs` /
-    //! `cli/tests/sync_pass_integration.rs` (they need a real
-    //! `golden_vault_001`-backed on-disk vault the unit harness can't fake).
-
     use super::*;
 
-    /// Build a `VectorClockEntry` from a fill byte + counter — keeps
-    /// the LUB-helper tests' fixture lines compact and self-evident.
     fn vc(fill: u8, counter: u64) -> VectorClockEntry {
         VectorClockEntry {
             device_uuid: [fill; 16],
@@ -420,82 +373,27 @@ mod tests {
         }
     }
 
-    /// With no conflict copies and a prior local-seen that's already
-    /// dominated by disk, the LUB is just the disk clock. This is the
-    /// degenerate but most common silent-merge shape — concurrent
-    /// solely because two devices' counters happened to advance, all
-    /// of which the disk now reflects.
+    /// An entry only the prior local clock carries survives into the
+    /// written clock; that is what keeps the saved clock from dominating
+    /// the disk after the commit (#730).
     #[test]
-    fn silent_merge_clock_no_copies_disk_dominates() {
-        let disk = vec![vc(0xAA, 5), vc(0xBB, 3)];
-        let copies: Vec<&[VectorClockEntry]> = Vec::new();
-        let prior = vec![vc(0xAA, 5), vc(0xBB, 3)];
-        let result = silent_merge_clock(&disk, &copies, &prior);
-        assert_eq!(result, vec![vc(0xAA, 5), vc(0xBB, 3)]);
-    }
-
-    /// A conflict-copy carrying a (device, counter) pair strictly
-    /// greater than the canonical disk's MUST land in the LUB.
-    /// This is the regression test for the bug fixed in this commit:
-    /// the previous implementation set `state = disk_clock` only,
-    /// silently dropping any counter that was only in a conflict copy.
-    #[test]
-    fn silent_merge_clock_folds_in_copy_with_higher_counter() {
-        let disk = vec![vc(0xAA, 5)];
-        let copy = vec![vc(0xAA, 7), vc(0xCC, 2)];
-        let copies: Vec<&[VectorClockEntry]> = vec![copy.as_slice()];
-        let prior: Vec<VectorClockEntry> = Vec::new();
-        let result = silent_merge_clock(&disk, &copies, &prior);
-        // 0xAA: max(5, 7) = 7. 0xCC: only-in-copy = 2.
-        assert_eq!(result, vec![vc(0xAA, 7), vc(0xCC, 2)]);
-    }
-
-    /// A prior local-seen entry not present on disk or in any copy
-    /// MUST survive the LUB fold. Defensive: under monotone clock
-    /// evolution this is unreachable (disk-canonical only grows,
-    /// state was previously observed from it), but the helper's
-    /// contract is defined independent of that invariant — a backup
-    /// restore or future-protocol bug shouldn't silently regress the
-    /// local-seen clock.
-    #[test]
-    fn silent_merge_clock_folds_in_prior_local_seen() {
-        let disk = vec![vc(0xAA, 5)];
-        let copies: Vec<&[VectorClockEntry]> = Vec::new();
-        let prior = vec![vc(0xAA, 5), vc(0xDD, 9)];
-        let result = silent_merge_clock(&disk, &copies, &prior);
-        // 0xAA: max(5, 5) = 5. 0xDD: only-in-prior = 9 — must survive.
-        assert_eq!(result, vec![vc(0xAA, 5), vc(0xDD, 9)]);
-    }
-
-    /// Multiple copies, disk, and prior all contribute disjoint
-    /// device entries — the LUB is the union with element-wise max.
-    /// Sanity-check that the three-source fold composes correctly.
-    #[test]
-    fn silent_merge_clock_folds_disjoint_sources() {
-        let disk = vec![vc(0xAA, 3)];
-        let copy1 = vec![vc(0xBB, 4)];
-        let copy2 = vec![vc(0xCC, 5)];
-        let copies: Vec<&[VectorClockEntry]> = vec![copy1.as_slice(), copy2.as_slice()];
-        let prior = vec![vc(0xDD, 6)];
-        let result = silent_merge_clock(&disk, &copies, &prior);
-        // All four sources contributed one disjoint device each.
+    fn a_local_only_entry_reaches_the_written_clock() {
+        let merged = vec![vc(0xAA, 5)];
+        let prior = vec![vc(0xAA, 3), vc(0xDD, 9)];
         assert_eq!(
-            result,
-            vec![vc(0xAA, 3), vc(0xBB, 4), vc(0xCC, 5), vc(0xDD, 6)]
+            fold_local_clock(&merged, &prior),
+            vec![vc(0xAA, 5), vc(0xDD, 9)]
         );
     }
 
-    /// Element-wise max across all three sources: every device's
-    /// counter resolves to the max seen across disk + every copy +
-    /// prior, not the value from any single source.
+    /// Element-wise max: neither side's counter is taken wholesale.
     #[test]
-    fn silent_merge_clock_element_wise_max_across_sources() {
-        let disk = vec![vc(0xAA, 1), vc(0xBB, 9)];
-        let copy = vec![vc(0xAA, 5), vc(0xBB, 2)];
-        let copies: Vec<&[VectorClockEntry]> = vec![copy.as_slice()];
-        let prior = vec![vc(0xAA, 3), vc(0xBB, 4)];
-        let result = silent_merge_clock(&disk, &copies, &prior);
-        // 0xAA: max(1, 5, 3) = 5. 0xBB: max(9, 2, 4) = 9.
-        assert_eq!(result, vec![vc(0xAA, 5), vc(0xBB, 9)]);
+    fn the_written_clock_is_the_element_wise_max() {
+        let merged = vec![vc(0xAA, 1), vc(0xBB, 9)];
+        let prior = vec![vc(0xAA, 5), vc(0xBB, 2)];
+        assert_eq!(
+            fold_local_clock(&merged, &prior),
+            vec![vc(0xAA, 5), vc(0xBB, 9)]
+        );
     }
 }

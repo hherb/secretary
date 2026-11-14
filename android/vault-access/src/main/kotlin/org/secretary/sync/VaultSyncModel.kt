@@ -3,6 +3,9 @@ package org.secretary.sync
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.secretary.browse.DeviceUnlockError
+import org.secretary.browse.WriteReauthGate
+import org.secretary.browse.reauthFailedMessage
 
 /**
  * The host-tested heart of the Android sync UI — the Kotlin mirror of the iOS VaultSyncViewModel
@@ -11,11 +14,12 @@ import kotlinx.coroutines.flow.asStateFlow
  * [SyncBadgeState], and drives the two sync triggers that converge on one resolution path.
  *
  * Two triggers, one resolution path:
- *  - [syncAtUnlock]: a silent pass with the in-hand unlock password; auto-applying arms update the
- *    badge silently, a conflict only raises [reviewNeeded] (the password is dropped, never held
- *    across a modal at unlock).
- *  - [runInteractivePass] -> [resolve]: the user re-enters a password; a conflict surfaces a
- *    [pendingConflict] for slice 5's sheet, which calls [resolve] with the collected decisions.
+ *  - [syncAtUnlock]: a silent pass right after any unlock (password, biometric or recovery);
+ *    auto-applying arms update the badge silently, a conflict only raises [reviewNeeded]. Ungated:
+ *    the user has just proven presence by unlocking.
+ *  - [runInteractivePass] -> [resolve]: "Sync now" and conflict Apply, each behind the write
+ *    re-auth [gate] (as on iOS, #733); a conflict surfaces a [pendingConflict] for the sheet,
+ *    which calls [resolve] with the collected decisions.
  *
  * Concurrency: main-thread-confined like the iOS @MainActor view model — callers invoke these
  * methods from the UI dispatcher. The underlying [SyncCoordinator] is Mutex-serialized across its
@@ -27,14 +31,15 @@ import kotlinx.coroutines.flow.asStateFlow
  * This deliberately differs from iOS, which refreshes inside the pass; on Android the refresh is a UI-layer
  * concern to avoid re-parking behind the just-released coordinator mutex.
  *
- * Secret hygiene: the password is a per-call argument, forwarded straight to the coordinator and
- * never stored on the model.
+ * Secret hygiene: no secret crosses the model; every pass runs through the open session.
  */
 class VaultSyncModel(
     private val coordinator: SyncCoordinator,
     private val wallClock: WallClock,
     private val monitorHook: SyncMonitorHook,
     private val vaultUuid: ByteArray?,
+    // No default: a forgotten gate would let "Sync now" and Apply through unprompted (#733).
+    private val gate: WriteReauthGate,
 ) {
     private val _badge = MutableStateFlow<SyncBadgeState>(SyncBadgeState.NeverSynced)
     val badge: StateFlow<SyncBadgeState> = _badge.asStateFlow()
@@ -53,6 +58,7 @@ class VaultSyncModel(
 
     private var pendingChanges: Boolean = false
     private var lastStatus: SyncStatus? = null
+    private var interactiveBusy: Boolean = false
 
     /** The change monitor's onChange seam: a debounced remote change was detected. */
     fun pendingChangesRaised() {
@@ -60,20 +66,22 @@ class VaultSyncModel(
         recomputeBadge()
     }
 
-    /** Silent pass with the in-hand unlock password. A conflict only raises the review badge. */
-    suspend fun syncAtUnlock(password: ByteArray) {
-        runPass(password) { _reviewNeeded.value = true }
+    /** Silent pass right after unlock. A conflict only raises the review badge. */
+    suspend fun syncAtUnlock() {
+        runPass { _reviewNeeded.value = true }
     }
 
-    /** Interactive pass: a conflict surfaces a [pendingConflict] for the resolution sheet. */
-    suspend fun runInteractivePass(password: ByteArray) {
-        runPass(password) { outcome -> surfaceConflict(outcome) }
+    /** Interactive pass ("Sync now"), gated: a conflict surfaces a [pendingConflict] for the sheet. */
+    suspend fun runInteractivePass() = exclusive {
+        if (!authorized("Confirm syncing this vault")) return@exclusive
+        runPass { outcome -> surfaceConflict(outcome) }
     }
 
-    /** Commit the user's veto decisions for the paused conflict. */
-    suspend fun resolve(decisions: List<SyncVetoDecision>, password: ByteArray) {
+    /** Commit the user's veto decisions for the paused conflict, gated like a write. */
+    suspend fun resolve(decisions: List<SyncVetoDecision>) = exclusive {
+        if (!authorized("Confirm applying your sync choices")) return@exclusive
         guardedPass {
-            when (val outcome = coordinator.resolve(decisions, password, wallClock.nowMs())) {
+            when (val outcome = coordinator.resolve(decisions, wallClock.nowMs())) {
                 is SyncOutcome.ConflictsPending -> surfaceConflict(outcome) // re-stashed; keep sheet open
                 else -> onCleanArm()
             }
@@ -98,10 +106,44 @@ class VaultSyncModel(
         }
     }
 
+    /**
+     * Prove presence before an interactive pass. A cancel returns false silently (nothing runs, a
+     * conflict sheet stays open); any other proof failure is surfaced as [VaultSyncError.ReauthFailed].
+     * CancellationException is not caught, so coroutine cancellation still propagates.
+     */
+    private suspend fun authorized(reason: String): Boolean {
+        try {
+            gate.authorizeWrite(reason)
+        } catch (e: DeviceUnlockError.UserCancelled) {
+            _lastError.value = null // the user retried and backed out; an older error is stale
+            return false
+        } catch (e: DeviceUnlockError) {
+            _lastError.value = VaultSyncError.ReauthFailed(reauthFailedMessage(e))
+            return false
+        }
+        return true
+    }
+
+    /**
+     * Run one gated action at a time. The re-auth prompt suspends before [isSyncing] goes true, so
+     * without this a second tap on "Sync now" or Apply while the prompt is up would queue a second
+     * pass (or a second resolve against an already-emptied stash). Main-thread confined, so a plain
+     * flag suffices; a tap that arrives while busy is dropped.
+     */
+    private suspend fun exclusive(action: suspend () -> Unit) {
+        if (interactiveBusy) return
+        interactiveBusy = true
+        try {
+            action()
+        } finally {
+            interactiveBusy = false
+        }
+    }
+
     /** Shared pass body: mute -> run -> dispatch the ConflictsPending arm to [onConflict], else clean. */
-    private suspend fun runPass(password: ByteArray, onConflict: (SyncOutcome.ConflictsPending) -> Unit) {
+    private suspend fun runPass(onConflict: (SyncOutcome.ConflictsPending) -> Unit) {
         guardedPass {
-            when (val outcome = coordinator.runPass(password, wallClock.nowMs())) {
+            when (val outcome = coordinator.runPass(wallClock.nowMs())) {
                 is SyncOutcome.ConflictsPending -> onConflict(outcome)
                 else -> onCleanArm()
             }

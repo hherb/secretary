@@ -1,15 +1,16 @@
 <script lang="ts">
   // Interactive sync-conflict resolver (Task 12). Native <dialog> mirroring
-  // SyncPasswordDialog: callback props, showModal() on mount via $effect,
+  // ConfirmDialog: callback props, showModal() on mount via $effect,
   // Esc → preventDefault + onCancel so the parent's unmount is the single
   // close route. One card per veto (metadata only — no secret values cross
   // the IPC boundary) with a Keep-mine / Accept-delete toggle defaulting to
   // Keep mine (the no-data-loss safe choice). Auto-merged field collisions
   // are surfaced read-only for disclosure, not as a prompt. The mutation is
   // strict: a failure renders the typed AppError inline and keeps the dialog
-  // open for a retry; onResolved fires only on success. The password is a
-  // prop (held by the parent) — never prompted, logged, or stashed here.
+  // open for a retry; onResolved fires only on success. Apply runs the write
+  // re-auth gate, then commits through the open session (#732).
   import { syncCommitDecisions, isAppError } from '../lib/ipc';
+  import { authorizeWrite, ReauthCancelled } from '../lib/writeGuard';
   import { userMessageFor, type AppError } from '../lib/errors';
   import {
     collectDecisions,
@@ -25,11 +26,10 @@
     vetoes: VetoDto[];
     collisions: CollisionDto[];
     manifestHash: number[];
-    password: string;
     onResolved: (outcome: SyncOutcome) => void;
     onCancel: () => void;
   };
-  let { vetoes, collisions, manifestHash, password, onResolved, onCancel }: Props = $props();
+  let { vetoes, collisions, manifestHash, onResolved, onCancel }: Props = $props();
 
   let dialogEl: HTMLDialogElement | undefined = $state();
   // Explicit per-veto overrides. Empty initially; an unset record reads as
@@ -66,11 +66,17 @@
   async function apply(event: Event) {
     event.preventDefault();
     if (!canApply) return;
-    busy = true;
     error = null;
     try {
+      await authorizeWrite('Confirm applying your sync choices');
+    } catch (err) {
+      if (err === ReauthCancelled) return; // the dialog stays open
+      error = isAppError(err) ? err : { code: 'internal' };
+      return;
+    }
+    busy = true;
+    try {
       const outcome = await syncCommitDecisions(
-        password,
         collectDecisions(vetoes, effectiveChoices),
         manifestHash
       );

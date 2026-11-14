@@ -1,12 +1,16 @@
 <script lang="ts">
   // Combined sync indicator + trigger in the TopBar (D.1.14). The pill shows
-  // the last-synced label and IS the "Sync now" control; clicking it opens
-  // SyncPasswordDialog. Self-contained: reads sync_status on mount and after
+  // the last-synced label and IS the "Sync now" control. Clicking it runs the
+  // write re-auth gate, then syncs through the open session (no password per
+  // pass, #732); the backend refreshes the session on every arm that wrote or
+  // accepted a manifest. Self-contained: reads sync_status on mount and after
   // each sync; on a data-changing outcome it calls the global refreshManifest
-  // (the in-memory manifest goes stale when sync applies peer changes).
+  // so the records view re-reads the refreshed session.
   import { onMount } from 'svelte';
-  import { syncStatus } from '../lib/ipc';
+  import { syncNow, syncStatus, isAppError } from '../lib/ipc';
   import { refreshManifest } from '../lib/stores';
+  import { authorizeWrite, ReauthCancelled } from '../lib/writeGuard';
+  import { userMessageFor } from '../lib/errors';
   import {
     lastSyncedLabel,
     syncOutcomeMessage,
@@ -15,7 +19,6 @@
     type SyncOutcome,
     type SyncMessage
   } from '../lib/sync';
-  import SyncPasswordDialog from './SyncPasswordDialog.svelte';
   import ConflictResolutionDialog from './ConflictResolutionDialog.svelte';
   import Sync from './icons/Sync.svelte';
 
@@ -25,14 +28,10 @@
   const SYNC_NOTICE_DISMISS_MS = 5_000;
 
   let status = $state<SyncStatusDto | null>(null);
-  let dialogOpen = $state(false);
+  let busy = $state(false);
   let notice = $state<SyncMessage | null>(null);
-  // The pending conflict detail + the password entered in the password dialog,
-  // handed up so the resolution dialog can commit without a second prompt. The
-  // password lives transiently in $state (JS can't zeroize) and is nulled on
-  // every terminal path (resolved, cancel, Esc).
+  // The pending conflict detail, handed to the resolution dialog.
   let conflicts = $state<Extract<SyncOutcome, { kind: 'conflictsPending' }> | null>(null);
-  let conflictPassword = $state<string | null>(null);
 
   const label = $derived(status ? lastSyncedLabel(status, Date.now()) : 'Sync…');
   // Only fold the status into the accessible name once it has loaded — before
@@ -50,40 +49,65 @@
 
   onMount(loadStatus);
 
-  async function onSynced(outcome: SyncOutcome) {
-    dialogOpen = false;
-    notice = syncOutcomeMessage(outcome);
-    await loadStatus();
-    if (syncChangedData(outcome)) {
-      await refreshManifest();
+  function errorNotice(err: unknown): SyncMessage {
+    const msg = userMessageFor(isAppError(err) ? err : { code: 'internal' });
+    return { kind: 'error', text: msg.actionHint ? `${msg.title} — ${msg.actionHint}` : msg.title };
+  }
+
+  async function syncClicked() {
+    if (busy) return;
+    notice = null;
+    try {
+      await authorizeWrite('Confirm syncing this vault');
+    } catch (err) {
+      if (err !== ReauthCancelled) notice = errorNotice(err);
+      return;
+    }
+    busy = true;
+    try {
+      const outcome = await syncNow();
+      if (outcome.kind === 'conflictsPending') {
+        conflicts = outcome;
+      } else {
+        await onSynced(outcome);
+      }
+    } catch (err) {
+      notice = errorNotice(err);
+    } finally {
+      busy = false;
     }
   }
 
-  function onConflicts(
-    outcome: Extract<SyncOutcome, { kind: 'conflictsPending' }>,
-    password: string
-  ) {
-    dialogOpen = false;
-    conflicts = outcome;
-    conflictPassword = password;
+  // Never rejects: the sync itself has already committed, so a failed records
+  // reload is reported as that, not as a failed sync.
+  async function onSynced(outcome: SyncOutcome) {
+    notice = syncOutcomeMessage(outcome);
+    await loadStatus();
+    if (syncChangedData(outcome)) {
+      try {
+        await refreshManifest();
+      } catch (err) {
+        notice = { kind: 'error', text: `Synced, but the records could not reload: ${errorNotice(err).text}` };
+      }
+    }
   }
 
   async function onResolved(outcome: SyncOutcome) {
     conflicts = null;
-    conflictPassword = null; // drop the password (cannot zeroize in JS; null it ASAP)
     await onSynced(outcome); // reuse the post-sync handler (notice + status reload + manifest refresh)
   }
 
   function onResolveCancel() {
     conflicts = null;
-    conflictPassword = null;
   }
 
-  // Auto-dismiss: when a notice appears, clear it after SYNC_NOTICE_DISMISS_MS.
-  // Re-runs whenever `notice` changes so a new notice resets the timer;
-  // returning clearTimeout ensures no late-firing set on unmount.
+  // Auto-dismiss: when a success notice appears, clear it after
+  // SYNC_NOTICE_DISMISS_MS. An error stays until the next click, so a failure
+  // the user looked away from is not lost. Re-runs whenever `notice` changes so
+  // a new notice resets the timer; returning clearTimeout ensures no
+  // late-firing set on unmount.
   $effect(() => {
-    if (notice === null) return;
+    if (notice === null || notice.kind === 'error') return;
     const timerId = setTimeout(() => { notice = null; }, SYNC_NOTICE_DISMISS_MS);
     return () => clearTimeout(timerId);
   });
@@ -93,7 +117,8 @@
   <button
     type="button"
     class="sync-pill__button"
-    onclick={() => { notice = null; dialogOpen = true; }}
+    onclick={syncClicked}
+    disabled={busy}
     aria-label={ariaLabel}
     title="Sync now"
   >
@@ -111,16 +136,11 @@
   {/if}
 </div>
 
-{#if dialogOpen}
-  <SyncPasswordDialog {onSynced} {onConflicts} onCancel={() => (dialogOpen = false)} />
-{/if}
-
-{#if conflicts && conflictPassword !== null}
+{#if conflicts}
   <ConflictResolutionDialog
     vetoes={conflicts.vetoes}
     collisions={conflicts.collisions}
     manifestHash={conflicts.manifestHash}
-    password={conflictPassword}
     {onResolved}
     onCancel={onResolveCancel}
   />

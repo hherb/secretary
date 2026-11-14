@@ -10,11 +10,17 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.secretary.browse.FileDeviceUuidStore
+import org.secretary.browse.UniffiVaultSession
+import org.secretary.browse.UnlockCredential
+import org.secretary.browse.openWithCredential
+import org.secretary.browse.uniffiVaultOpenPort
 import org.secretary.sync.ChangeDetectionMonitor
 import org.secretary.sync.SyncBadgeState
 import org.secretary.sync.VaultSyncModel
 import org.secretary.sync.makeVaultSync
 import java.io.File
+import org.secretary.browse.NoopReauthGate
 
 /**
  * The first on-device exercise of the FULL app wiring: production provisioning → makeVaultSync
@@ -35,8 +41,10 @@ class MakeVaultSyncSmokeTest {
     private val goldenPassword = "correct horse battery staple"
 
     private val toClean = mutableListOf<File>()
+    private var session: UniffiVaultSession? = null
 
     @After fun cleanup() {
+        session?.wipe()
         toClean.forEach { it.deleteRecursively() }
         // Reset provisioning so each test stages fresh (stageGoldenVault is idempotent on filesDir).
         File(context.filesDir, "golden_vault_001").deleteRecursively()
@@ -51,19 +59,24 @@ class MakeVaultSyncSmokeTest {
         val stateDir = syncStateDir(stateBase).apply { mkdirs() }
         toClean += stateBase
         val uuid = AppVaultProvisioning.goldenVaultUuid(context)
+        val deviceUuids = FileDeviceUuidStore(File(context.noBackupFilesDir, "devices-${System.nanoTime()}"))
+        val credential = UnlockCredential.Password(goldenPassword.toByteArray())
+        val opened = runBlocking { openWithCredential(uniffiVaultOpenPort(deviceUuids), folder.path, credential) }
+            as UniffiVaultSession
+        session = opened
         lateinit var pair: Pair<VaultSyncModel, ChangeDetectionMonitor>
         instrumentation.runOnMainSync {
-            pair = makeVaultSync(folder, stateDir, uuid)
+            pair = makeVaultSync(folder, stateDir, uuid, opened, NoopReauthGate)
         }
         return pair
     }
 
     @Test
-    fun syncAtUnlock_correctPassword_reachesSyncedBadge() = runBlocking {
+    fun syncAtUnlock_reachesSyncedBadge() = runBlocking {
         val (model, monitor) = buildOnMain()
         instrumentation.runOnMainSync { monitor.start() }
 
-        model.syncAtUnlock(goldenPassword.toByteArray())
+        model.syncAtUnlock()
 
         // Clean silent pass: no error, review cleared.
         assertNull("clean pass surfaces no error", model.lastError.value)
@@ -80,13 +93,14 @@ class MakeVaultSyncSmokeTest {
     }
 
     @Test
-    fun syncAtUnlock_wrongPassword_surfacesError() = runBlocking {
+    fun syncAtUnlock_onAWipedSession_surfacesError() = runBlocking {
         val (model, monitor) = buildOnMain()
         instrumentation.runOnMainSync { monitor.start() }
 
-        model.syncAtUnlock("definitely-the-wrong-password".toByteArray())
+        session!!.wipe() // a lock between open and the pass: the bridge refuses the handles
+        model.syncAtUnlock()
 
-        assertNotNull("wrong password surfaces a VaultSyncError", model.lastError.value)
+        assertNotNull("a wiped session surfaces a VaultSyncError", model.lastError.value)
         assertFalse(
             "a failed pass does not reach Synced, was ${model.badge.value}",
             model.badge.value is SyncBadgeState.Synced,

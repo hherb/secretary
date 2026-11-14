@@ -29,20 +29,18 @@ describe('syncOutcomeMessage', () => {
     });
   });
 
-  it('collapses the two refreshed applied/merged arms to one success message', () => {
-    const arms: SyncOutcome[] = [{ kind: 'appliedAutomatically' }, { kind: 'mergedClean' }];
+  it('collapses the three applied/merged arms to one success message', () => {
+    const arms: SyncOutcome[] = [
+      { kind: 'appliedAutomatically' },
+      { kind: 'silentMerge' },
+      { kind: 'mergedClean' }
+    ];
     for (const o of arms) {
       expect(syncOutcomeMessage(o)).toEqual({
         kind: 'success',
         text: 'Synced — your vault is up to date'
       });
     }
-  });
-
-  it('maps silentMerge to a warning, not a success (#730)', () => {
-    const m = syncOutcomeMessage({ kind: 'silentMerge' });
-    expect(m.kind).toBe('warning');
-    expect(m.text).toContain('Edits may be refused');
   });
 
   it('maps conflictsPending to a warning with the veto count interpolated', () => {
@@ -79,12 +77,10 @@ describe('syncOutcomeMessage', () => {
 });
 
 describe('syncChangedData', () => {
-  it('is true only for the two arms the backend refreshes after', () => {
+  it('is true for the three arms that write or apply a merge', () => {
     expect(syncChangedData({ kind: 'appliedAutomatically' })).toBe(true);
+    expect(syncChangedData({ kind: 'silentMerge' })).toBe(true);
     expect(syncChangedData({ kind: 'mergedClean' })).toBe(true);
-  });
-  it('is false after silentMerge, whose session is not refreshed (#730)', () => {
-    expect(syncChangedData({ kind: 'silentMerge' })).toBe(false);
   });
   it('is false for arms that write nothing', () => {
     expect(syncChangedData({ kind: 'nothingToDo' })).toBe(false);

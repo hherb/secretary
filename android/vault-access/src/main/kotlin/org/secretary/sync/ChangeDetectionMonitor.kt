@@ -9,8 +9,8 @@ import kotlin.time.Duration
  * deliver their callbacks on the main thread, so all detector mutation is serialized
  * there with no extra locking (mirror of the iOS @MainActor ChangeDetectionMonitor).
  *
- * Detect-only: a raised signal never triggers a sync pass (no password in hand after
- * unlock). Acting on it (re-prompt / sync-at-unlock) is slice 4.
+ * Detect-only: a raised signal never triggers a sync pass; it only flips the badge. Auto-syncing
+ * on a folder change is #731.
  */
 class ChangeDetectionMonitor(
     private val detector: FolderChangeDetector,

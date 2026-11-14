@@ -50,8 +50,9 @@ pub fn refresh_manifest(
 
 /// Re-verify the vault folder with the session's identity and, only if that
 /// succeeds, replace the handle's manifest, envelope and owner card with what
-/// is on disk. Used after a password sync pass, and by a "Reload" after a
-/// write was refused with [`FfiVaultError::VaultChangedOnDisk`].
+/// is on disk. Used by a "Reload" after a write was refused with
+/// [`FfiVaultError::VaultChangedOnDisk`]; the session sync paths refresh
+/// through the same check themselves.
 ///
 /// The §10 rollback check runs against this device's highest-seen clock from
 /// the sync state in `state_dir`. A missing or empty state means no baseline,
@@ -94,14 +95,10 @@ pub fn sync_vault_with_session(
 /// manifest) or `ConflictsPending` (nothing was written; the commit call
 /// refreshes). The refresh runs while the pass's lockfile is still held.
 ///
-/// The refresh's §10 rollback baseline depends on the arm. On
-/// `AppliedAutomatically`, `MergedClean` and `NothingToDo` it is the pass's
-/// post-pass in-memory clock, which equals the disk clock the pass accepted or
-/// wrote, so a cloud re-delivery of an older manifest is refused. On
-/// `SilentMerge` it is the PRE-pass clock, the baseline the pass itself
-/// checked the disk against: the post-pass clock is the LUB of disk, the
-/// conflict copies and the prior clock, so it dominates the disk and would
-/// refuse the very manifest the pass just accepted.
+/// The refresh's §10 rollback baseline is the pass's post-pass in-memory clock,
+/// which equals the disk clock the pass accepted or wrote (since #730 a
+/// `SilentMerge` writes its merge too), so a cloud re-delivery of an older
+/// manifest is refused.
 ///
 /// The identity handle's lock is held across the pass and the refresh, so
 /// other calls on that identity wait for it. A `save_block` queued behind the
@@ -113,10 +110,7 @@ pub fn sync_vault_with_session(
 /// If the pass succeeds but the refresh fails (typically a block file the
 /// cloud drive has not delivered yet), this returns the refresh's `Err` and
 /// the handle is unchanged. Retrying is safe, in that nothing unverified is
-/// ever adopted: after `AppliedAutomatically` or `MergedClean` the repeat pass
-/// is `NothingToDo` and refreshes. After `SilentMerge` the persisted LUB clock
-/// dominates the disk, so the repeat pass reports `RollbackRejected` and does
-/// not refresh until the disk clock catches up (#730).
+/// ever adopted: the repeat pass is `NothingToDo` and refreshes.
 ///
 /// # Errors
 /// As [`crate::sync_vault_in`] (minus `WrongPasswordOrCorrupt`), plus
@@ -134,7 +128,7 @@ pub fn sync_vault_with_session_in(
         manifest,
         |folder, id, state| sync_pass_inspect(folder, id, state, now_ms),
         inspect_advanced,
-        inspect_baseline,
+        inspect_refreshes,
     )?;
     Ok(outcome.into())
 }
@@ -161,8 +155,8 @@ pub fn sync_commit_decisions_with_session(
 /// through the open session (call-2 of [`sync_vault_with_session_in`]; see
 /// [`crate::sync_commit_decisions_in`] for the token contract), then refresh
 /// `manifest` on the same outcomes and with the same guarantees as
-/// [`sync_vault_with_session_in`] (including the per-arm rollback baseline and
-/// the identity lock held across the pass). A refresh failure leaves the
+/// [`sync_vault_with_session_in`] (including the post-pass rollback baseline
+/// and the identity lock held across the pass). A refresh failure leaves the
 /// handle unchanged; retrying with [`sync_vault_with_session_in`] is safe.
 ///
 /// # Errors
@@ -186,22 +180,14 @@ pub fn sync_commit_decisions_with_session_in(
             sync_pass_commit_decisions(folder, id, state, expected, core_decisions, now_ms)
         },
         commit_advanced,
-        commit_baseline,
+        commit_refreshes,
     )?;
     commit_outcome_to_dto(outcome)
 }
 
-/// Which clock a session refresh checks the disk against (§10), per arm.
-enum Baseline {
-    /// The state clock loaded before the pass ran.
-    PrePass,
-    /// The pass's in-memory state clock after it ran.
-    PostPass,
-}
-
 /// Run `pass` under the lockfile with the session identity; if
-/// `baseline(&outcome)` is `Some`, re-verify the disk (still under the
-/// lockfile) against that clock and adopt it into `manifest`. See the module
+/// `refreshes(&outcome)`, re-verify the disk (still under the lockfile)
+/// against the post-pass clock (§10) and adopt it into `manifest`. See the module
 /// docs for the lock order.
 fn run_session_pass<O>(
     state_dir: &Path,
@@ -209,29 +195,18 @@ fn run_session_pass<O>(
     manifest: &OpenVaultManifest,
     pass: impl FnOnce(&Path, &CoreIdentity, &mut SyncState) -> Result<O, SyncError>,
     advanced: impl FnOnce(&O) -> bool,
-    baseline: impl FnOnce(&O) -> Option<Baseline>,
+    refreshes: impl FnOnce(&O) -> bool,
 ) -> Result<O, FfiVaultError> {
     let (folder, vault_uuid) = session_target(manifest)?;
     let (locked, verified) = identity
         .with_core(|id| -> Result<_, FfiVaultError> {
-            let mut pre_pass = Vec::new();
-            let locked = run_locked_pass(
-                state_dir,
-                vault_uuid,
-                |s| {
-                    pre_pass = s.highest_vector_clock_seen.clone();
-                    pass(&folder, id, s)
-                },
-                advanced,
-            )?;
-            let clock = match baseline(&locked.outcome) {
-                Some(Baseline::PrePass) => Some(pre_pass.as_slice()),
-                Some(Baseline::PostPass) => Some(locked.state.highest_vector_clock_seen.as_slice()),
-                None => None,
-            };
-            let verified = match clock {
-                Some(c) => Some(verify_vault_state(&folder, id, Some(c))?),
-                None => None,
+            let locked =
+                run_locked_pass(state_dir, vault_uuid, |s| pass(&folder, id, s), advanced)?;
+            let verified = if refreshes(&locked.outcome) {
+                let clock = locked.state.highest_vector_clock_seen.as_slice();
+                Some(verify_vault_state(&folder, id, Some(clock))?)
+            } else {
+                None
             };
             Ok((locked, verified))
         })
@@ -243,27 +218,22 @@ fn run_session_pass<O>(
     // The rest of `locked` drops here → lockfile released after the adopt.
 }
 
-/// Refresh baseline per inspect arm; `None` = do not refresh. See
-/// [`sync_vault_with_session_in`] for why `SilentMerge` uses the pre-pass clock.
-fn inspect_baseline(o: &InspectOutcome) -> Option<Baseline> {
-    match o {
-        InspectOutcome::AppliedAutomatically
-        | InspectOutcome::MergedClean
-        | InspectOutcome::NothingToDo => Some(Baseline::PostPass),
-        InspectOutcome::SilentMerge => Some(Baseline::PrePass),
-        InspectOutcome::RollbackRejected | InspectOutcome::ConflictsPending { .. } => None,
-    }
+/// Whether an inspect arm refreshes the handle. Not on `RollbackRejected`
+/// (that would adopt the rolled-back manifest) or `ConflictsPending` (nothing
+/// was written).
+fn inspect_refreshes(o: &InspectOutcome) -> bool {
+    !matches!(
+        o,
+        InspectOutcome::RollbackRejected | InspectOutcome::ConflictsPending { .. }
+    )
 }
 
-/// Refresh baseline per commit arm; same rule as [`inspect_baseline`].
-fn commit_baseline(o: &SyncPassOutcome) -> Option<Baseline> {
-    match o {
-        SyncPassOutcome::AppliedAutomatically
-        | SyncPassOutcome::MergedClean
-        | SyncPassOutcome::NothingToDo => Some(Baseline::PostPass),
-        SyncPassOutcome::SilentMerge => Some(Baseline::PrePass),
-        SyncPassOutcome::RollbackRejected | SyncPassOutcome::ConflictsPending { .. } => None,
-    }
+/// Whether a commit arm refreshes the handle; same rule as [`inspect_refreshes`].
+fn commit_refreshes(o: &SyncPassOutcome) -> bool {
+    !matches!(
+        o,
+        SyncPassOutcome::RollbackRejected | SyncPassOutcome::ConflictsPending { .. }
+    )
 }
 
 /// The session's vault folder and `vault_uuid`, read under one manifest lock.
@@ -291,3 +261,6 @@ fn handle_closed() -> FfiVaultError {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod silent_merge_tests;

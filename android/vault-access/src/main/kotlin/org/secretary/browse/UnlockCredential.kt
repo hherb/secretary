@@ -2,7 +2,7 @@ package org.secretary.browse
 
 /**
  * Which secret the user supplied at the unlock screen. A single sealed type carries the credential
- * so the `when` over it is the one place that decides how to open (and, in `:app`, how to sync).
+ * so the `when` over it is the one place that decides how to open.
  * The exhaustive match makes the recovery branch impossible to forget. Mirror of iOS
  * `UnlockViewModel.Mode { password, recovery }`.
  *

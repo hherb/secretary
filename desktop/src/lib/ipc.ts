@@ -508,14 +508,13 @@ export async function syncStatus(): Promise<SyncStatusDto> {
   return call<SyncStatusDto>('sync_status');
 }
 
-export async function syncNow(password: string): Promise<SyncOutcome> {
-  return call<SyncOutcome>('sync_now', { password });
+export async function syncNow(): Promise<SyncOutcome> {
+  return call<SyncOutcome>('sync_now');
 }
 
 export async function syncCommitDecisions(
-  password: string,
   decisions: VetoDecisionDto[],
   manifestHash: number[]
 ): Promise<SyncOutcome> {
-  return call<SyncOutcome>('sync_commit_decisions', { password, decisions, manifestHash });
+  return call<SyncOutcome>('sync_commit_decisions', { decisions, manifestHash });
 }

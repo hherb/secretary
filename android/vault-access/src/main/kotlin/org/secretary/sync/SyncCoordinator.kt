@@ -16,13 +16,12 @@ import kotlinx.coroutines.sync.withLock
  * All four methods share the mutex, so a [status]/[pendingConflict] read blocks behind an
  * in-flight pass — intended, since one coordinator drives one vault serially.
  *
- * Secret hygiene: the password is forwarded to the port per call and never retained. Only
- * the manifest-hash freshness token (not a secret) and conflict METADATA are stashed.
+ * Secret hygiene: no secret crosses this class; passes run through the open session. Only the
+ * manifest-hash freshness token (not a secret) and conflict METADATA are stashed.
  */
 class SyncCoordinator(
     private val port: VaultSyncPort,
     private val stateDir: String,
-    private val vaultFolder: String,
 ) {
     private val mutex = Mutex()
     private var stashedToken: ByteArray? = null
@@ -39,8 +38,8 @@ class SyncCoordinator(
      * Run one inspect pass. On [SyncOutcome.ConflictsPending] the token + conflict are
      * stashed for [resolve]; every other arm clears any prior stash.
      */
-    suspend fun runPass(password: ByteArray, nowMs: ULong): SyncOutcome = mutex.withLock {
-        val outcome = port.sync(stateDir, vaultFolder, password, nowMs)
+    suspend fun runPass(nowMs: ULong): SyncOutcome = mutex.withLock {
+        val outcome = port.sync(stateDir, nowMs)
         applyStash(outcome)
         outcome
     }
@@ -52,13 +51,9 @@ class SyncCoordinator(
      * error (e.g. [VaultSyncError.EvidenceStale]) propagates and PRESERVES the stash so the
      * caller can retry `resolve` without a fresh `runPass`.
      */
-    suspend fun resolve(
-        decisions: List<SyncVetoDecision>,
-        password: ByteArray,
-        nowMs: ULong,
-    ): SyncOutcome = mutex.withLock {
+    suspend fun resolve(decisions: List<SyncVetoDecision>, nowMs: ULong): SyncOutcome = mutex.withLock {
         val token = stashedToken ?: throw VaultSyncError.NoPendingConflict
-        val outcome = port.commitDecisions(stateDir, vaultFolder, password, decisions, token, nowMs)
+        val outcome = port.commitDecisions(stateDir, decisions, token, nowMs)
         applyStash(outcome)
         outcome
     }

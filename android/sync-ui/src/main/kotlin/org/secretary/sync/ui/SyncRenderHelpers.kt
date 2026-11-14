@@ -91,7 +91,7 @@ fun badgeIcon(state: SyncBadgeState): ImageVector = when (state) {
  *
  * This function is **pure** and exhaustive over every [VaultSyncError] arm — the `when`
  * has no `else` branch so that adding a new arm is a compile error, not a silent gap.
- * It is used by both the password sheet and the conflict sheet so the wording is consistent.
+ * It is used by both the sync screen's error line and the conflict sheet so the wording is consistent.
  *
  * **Intentional conflation:** [VaultSyncError.WrongPasswordOrCorrupt] uses a single message
  * per the threat model's anti-oracle rule (§13). Do NOT split the label.
@@ -106,4 +106,5 @@ fun syncErrorLabel(error: VaultSyncError): String = when (error) {
     is VaultSyncError.NoPendingConflict -> "Nothing to resolve."
     is VaultSyncError.InvalidArgument -> "Invalid sync request."
     is VaultSyncError.Failed -> "Sync failed."
+    is VaultSyncError.ReauthFailed -> "Couldn't authorize the sync: ${error.detail}."
 }

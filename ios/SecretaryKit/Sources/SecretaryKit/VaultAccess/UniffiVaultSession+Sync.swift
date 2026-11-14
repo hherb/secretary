@@ -13,8 +13,7 @@ import SecretaryVaultAccess
 /// The bridge refreshes the manifest handle itself on every outcome except
 /// `.rollbackRejected` / `.conflictsPending`. If the pass succeeded but the
 /// refresh failed it throws (mapped to `VaultSyncError`), the handle is
-/// unchanged, and a retry is safe (after a `.silentMerge` it may not recover;
-/// see `VaultSyncPort`, #730).
+/// unchanged, and a retry is safe (see `VaultSyncPort`).
 extension UniffiVaultSession: VaultSyncPort {
     private static let wipedError = VaultSyncError.failed("sync on a wiped session")
 

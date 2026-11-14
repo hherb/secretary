@@ -40,7 +40,8 @@ pub enum SyncOutcomeDto {
     NothingToDo,
     /// A fast-forward / single-writer advance was applied; state persisted.
     AppliedAutomatically,
-    /// Concurrent but non-diverging copies merged silently; state persisted.
+    /// Concurrent but no block diverged: a manifest-only merge was written;
+    /// state persisted.
     SilentMerge,
     /// Concurrent diverging copies merged cleanly with no vetoes; state persisted.
     MergedClean,

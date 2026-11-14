@@ -513,19 +513,17 @@ private fun toastBiometricFailure(context: Context, state: DeviceUnlockState) {
 }
 
 /**
- * Opens the vault for browsing with [credential], assembles the sync model+monitor, fires the
- * post-open sync action ([dispatchPostOpenSync]: password → background sync-at-unlock; recovery →
- * status refresh, since Android sync is password-keyed), and returns the Browse route. Runs on the
+ * Opens the vault for browsing with [credential], assembles the sync model+monitor, launches the
+ * background sync-at-unlock (for every credential: the pass runs through the open session, #733),
+ * and returns the Browse route. Runs on the
  * main `scope` (Argon2id hops to IO inside the open port; makeVaultSync inside [openBrowseWithSync]
  * requires main — satisfied here).
  *
  * Secret hygiene: the credential bytes are zeroized in a `finally` wrapping the whole body — on
  * every exit (success, open failure, early provisioning throw). Enroll (when [enrollAfter] is true)
  * runs BEFORE the finally so it can copy the password into the enclave before zeroize. Enroll
- * failure is non-fatal: it is logged and the successful Browse route is still returned. For the
- * password credential the background sync-at-unlock receives a COPY ([launchSyncAtUnlock]);
- * zeroizing the original here cannot corrupt that copy. The recovery credential hands no copy to a
- * background job, so its bytes are fully owned here.
+ * failure is non-fatal: it is logged and the successful Browse route is still returned. No
+ * credential bytes reach the background sync, so they are fully owned here.
  */
 private suspend fun unlockAndOpen(
     context: Context,
@@ -551,16 +549,14 @@ private suspend fun unlockAndOpen(
         val session = openBrowseWithSync(
             uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid, credential, writeReauthGate,
             makeGraceGate = makeGraceGate)
-        // Password → background sync-at-unlock from a COPY (deliberately outlives Browse disposal:
-        // it opens its own vault handle and never touches the browse session; binding it to the
-        // Browse scope would cancel the in-flight Argon2id on background). Recovery → status refresh
-        // only: Android sync is password-keyed, so a recovery session has no password to sync with;
-        // the user syncs manually via the badge re-prompt.
-        dispatchPostOpenSync(
-            credential,
-            onPassword = { pw -> launchSyncAtUnlock(scope, pw, session.sync::syncAtUnlock) },
-            onRecovery = { session.sync.refreshStatus() },
-        )
+        // Background sync-at-unlock through the open session, for every credential (#733), then the
+        // "synced N ago" label (the model never refreshes status itself). If Browse is disposed
+        // before the pass takes the session lock, the pass ends in lastError and writes nothing; a
+        // pass already in flight completes first, because wipe() waits on the same lock.
+        scope.launch {
+            session.sync.syncAtUnlock()
+            session.sync.refreshStatus()
+        }
         if (enrollAfter && credential is UnlockCredential.Password) {
             try {
                 coordinator.enroll(folder.path, vaultId, credential.secret)

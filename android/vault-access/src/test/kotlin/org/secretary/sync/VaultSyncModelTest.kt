@@ -1,15 +1,20 @@
 package org.secretary.sync
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.secretary.browse.DeviceUnlockError
+import org.secretary.browse.NoopReauthGate
+import org.secretary.browse.RecordingReauthGate
+import org.secretary.browse.WriteReauthGate
 
 class VaultSyncModelTest {
-    private val pw = byteArrayOf(9, 9, 9)
-
     private fun veto(uuid: String = "r1") =
         SyncVeto(uuid, "login", emptyList(), listOf("password"), 100uL, 200uL, "devhex")
 
@@ -19,11 +24,11 @@ class VaultSyncModelTest {
                 SyncStatus(hasState = statusWriteMs != null, deviceClocks = emptyList(), lastStateWriteMs = statusWriteMs),
             )
         }
-        val coordinator = SyncCoordinator(port, stateDir = "/state", vaultFolder = "/vault")
+        val coordinator = SyncCoordinator(port, stateDir = "/state")
         val clock = FakeWallClock(currentMs = 1_000uL)
         val hook = FakeSyncMonitorHook()
-        fun model(vaultUuid: ByteArray? = ByteArray(16) { 1 }) =
-            VaultSyncModel(coordinator, clock, hook, vaultUuid)
+        fun model(vaultUuid: ByteArray? = ByteArray(16) { 1 }, gate: WriteReauthGate = NoopReauthGate) =
+            VaultSyncModel(coordinator, clock, hook, vaultUuid, gate)
     }
 
     @Test
@@ -46,7 +51,7 @@ class VaultSyncModelTest {
         f.port.syncResults += Result.success(SyncOutcome.MergedClean)
         val m = f.model()
         m.pendingChangesRaised() // simulate a prior detected change
-        m.syncAtUnlock(pw)
+        m.syncAtUnlock()
         assertEquals(1, f.hook.muteCount)        // muted before the pass
         assertEquals(1, f.hook.acknowledgeCount) // acknowledged on the clean arm
         assertFalse(m.reviewNeeded.value)
@@ -63,9 +68,9 @@ class VaultSyncModelTest {
             SyncOutcome.ConflictsPending(listOf(veto()), emptyList(), byteArrayOf(7)),
         )
         val m = f.model()
-        m.syncAtUnlock(pw)
+        m.syncAtUnlock()
         assertTrue(m.reviewNeeded.value)
-        assertNull(m.pendingConflict.value)      // password dropped → no interactive conflict surfaced
+        assertNull(m.pendingConflict.value)      // silent path → no interactive conflict surfaced
         assertEquals(0, f.hook.acknowledgeCount) // not acknowledged (unresolved)
         assertEquals(SyncBadgeState.ReviewNeeded, m.badge.value)
     }
@@ -77,7 +82,7 @@ class VaultSyncModelTest {
             SyncOutcome.ConflictsPending(listOf(veto()), emptyList(), byteArrayOf(7)),
         )
         val m = f.model()
-        m.runInteractivePass(pw)
+        m.runInteractivePass()
         assertEquals(PendingConflict(listOf(veto()), emptyList()), m.pendingConflict.value)
         assertTrue(m.reviewNeeded.value)
         assertEquals(SyncBadgeState.ReviewNeeded, m.badge.value)
@@ -88,7 +93,7 @@ class VaultSyncModelTest {
         val f = Fixture()
         f.port.syncResults += Result.success(SyncOutcome.AppliedAutomatically)
         val m = f.model()
-        m.runInteractivePass(pw)
+        m.runInteractivePass()
         assertNull(m.pendingConflict.value)
         assertFalse(m.reviewNeeded.value)
         assertEquals(1, f.hook.acknowledgeCount)
@@ -103,8 +108,8 @@ class VaultSyncModelTest {
         )
         f.port.commitResults += Result.success(SyncOutcome.MergedClean)
         val m = f.model()
-        m.runInteractivePass(pw)
-        m.resolve(listOf(SyncVetoDecision("r1", true)), pw)
+        m.runInteractivePass()
+        m.resolve(listOf(SyncVetoDecision("r1", true)))
         assertNull(m.pendingConflict.value)
         assertFalse(m.reviewNeeded.value)
         assertNull(m.lastError.value)
@@ -120,8 +125,8 @@ class VaultSyncModelTest {
         )
         f.port.commitResults += Result.failure(VaultSyncError.EvidenceStale)
         val m = f.model()
-        m.runInteractivePass(pw)
-        m.resolve(listOf(SyncVetoDecision("r1", true)), pw)
+        m.runInteractivePass()
+        m.resolve(listOf(SyncVetoDecision("r1", true)))
         assertEquals(PendingConflict(listOf(veto()), emptyList()), m.pendingConflict.value) // kept for retry
         assertEquals(VaultSyncError.EvidenceStale, m.lastError.value)
     }
@@ -131,7 +136,7 @@ class VaultSyncModelTest {
         val f = Fixture()
         f.port.syncResults += Result.failure(VaultSyncError.WrongPasswordOrCorrupt)
         val m = f.model()
-        m.syncAtUnlock(pw)
+        m.syncAtUnlock()
         assertEquals(VaultSyncError.WrongPasswordOrCorrupt, m.lastError.value)
         assertEquals(0, f.hook.acknowledgeCount)
     }
@@ -143,7 +148,7 @@ class VaultSyncModelTest {
             SyncOutcome.ConflictsPending(listOf(veto()), emptyList(), byteArrayOf(7)),
         )
         val m = f.model()
-        m.runInteractivePass(pw)
+        m.runInteractivePass()
         m.cancelConflict()
         assertNull(m.pendingConflict.value)               // sheet closed
         assertTrue(m.reviewNeeded.value)                  // still nagging
@@ -166,5 +171,106 @@ class VaultSyncModelTest {
         m.refreshStatus()
         assertTrue(f.port.statusCalls.isEmpty())
         assertEquals(SyncBadgeState.NeverSynced, m.badge.value)
+    }
+
+    // --- write re-auth gate (#733): Sync now and Apply are gated, sync-at-unlock is not ---
+
+    @Test
+    fun interactivePassAsksTheGateThenSyncs() = runTest {
+        val f = Fixture()
+        f.port.syncResults += Result.success(SyncOutcome.NothingToDo)
+        val gate = RecordingReauthGate()
+        f.model(gate = gate).runInteractivePass()
+        assertEquals(listOf("Confirm syncing this vault"), gate.reasons)
+        assertEquals(1, f.port.syncCalls.size)
+    }
+
+    @Test
+    fun cancelledGateRunsNoPassAndShowsNoError() = runTest {
+        val f = Fixture()
+        val m = f.model(gate = RecordingReauthGate(DeviceUnlockError.UserCancelled))
+        m.runInteractivePass()
+        assertTrue(f.port.syncCalls.isEmpty())
+        assertNull(m.lastError.value)
+        assertEquals(0, f.hook.muteCount)
+    }
+
+    @Test
+    fun failedGateRunsNoPassAndSurfacesReauthFailed() = runTest {
+        val f = Fixture()
+        val m = f.model(gate = RecordingReauthGate(DeviceUnlockError.BiometryLockout))
+        m.runInteractivePass()
+        assertTrue(f.port.syncCalls.isEmpty())
+        assertTrue(m.lastError.value is VaultSyncError.ReauthFailed)
+    }
+
+    @Test
+    fun cancelledGateOnResolveCommitsNothingAndKeepsTheConflict() = runTest {
+        val f = Fixture()
+        f.port.syncResults += Result.success(
+            SyncOutcome.ConflictsPending(listOf(veto()), emptyList(), byteArrayOf(1)),
+        )
+        val gate = object : WriteReauthGate {
+            var calls = 0
+            override suspend fun authorizeWrite(reason: String) {
+                if (calls++ > 0) throw DeviceUnlockError.UserCancelled // Sync now passes, Apply cancels
+            }
+        }
+        val m = f.model(gate = gate)
+        m.runInteractivePass()
+        m.resolve(listOf(SyncVetoDecision("r1", true)))
+        assertTrue(f.port.commitCalls.isEmpty())
+        assertEquals(PendingConflict(listOf(veto()), emptyList()), m.pendingConflict.value)
+    }
+
+    @Test
+    fun cancelledRetryClearsAnEarlierError() = runTest {
+        val f = Fixture()
+        val gate = object : WriteReauthGate {
+            var calls = 0
+            override suspend fun authorizeWrite(reason: String) {
+                throw if (calls++ == 0) DeviceUnlockError.BiometryLockout else DeviceUnlockError.UserCancelled
+            }
+        }
+        val m = f.model(gate = gate)
+        m.runInteractivePass()
+        assertTrue(m.lastError.value is VaultSyncError.ReauthFailed)
+        m.runInteractivePass() // the user taps again and backs out of the prompt
+        assertNull(m.lastError.value)
+    }
+
+    @Test
+    fun aSecondTapWhileThePromptIsUpIsDropped() = runTest {
+        val f = Fixture()
+        f.port.syncResults += Result.success(SyncOutcome.NothingToDo)
+        f.port.syncResults += Result.success(SyncOutcome.NothingToDo)
+        val release = CompletableDeferred<Unit>()
+        val gate = object : WriteReauthGate {
+            var calls = 0
+            override suspend fun authorizeWrite(reason: String) {
+                calls++
+                release.await()
+            }
+        }
+        val m = f.model(gate = gate)
+        val first = launch { m.runInteractivePass() }
+        runCurrent() // first tap is now suspended in the prompt
+        m.runInteractivePass() // second tap returns at once
+        release.complete(Unit)
+        first.join()
+        assertEquals(1, gate.calls)
+        assertEquals(1, f.port.syncCalls.size)
+        m.runInteractivePass() // and the guard is released afterwards
+        assertEquals(2, f.port.syncCalls.size)
+    }
+
+    @Test
+    fun syncAtUnlockIsNotGated() = runTest {
+        val f = Fixture()
+        f.port.syncResults += Result.success(SyncOutcome.NothingToDo)
+        val gate = RecordingReauthGate(DeviceUnlockError.UserCancelled)
+        f.model(gate = gate).syncAtUnlock()
+        assertTrue(gate.reasons.isEmpty())
+        assertEquals(1, f.port.syncCalls.size)
     }
 }

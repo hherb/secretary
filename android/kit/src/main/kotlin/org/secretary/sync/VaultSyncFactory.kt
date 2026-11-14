@@ -2,6 +2,7 @@ package org.secretary.sync
 
 import android.os.Looper
 import org.secretary.browse.UniffiVaultSession
+import org.secretary.browse.WriteReauthGate
 import java.io.File
 
 /**
@@ -18,26 +19,24 @@ import java.io.File
  * weak back-reference is needed. The caller owns the monitor's lifecycle: `start()` on unlock,
  * `stop()` on lock/background.
  *
- * @param session the open session to refresh after a password sync pass, or null (#101).
+ * @param session the open session every pass runs through (#733).
  * @param vaultUuid the open vault's UUID, or null to suppress status reads until it is known.
+ * @param gate the write re-auth gate "Sync now" and conflict Apply pass through.
  * @return the model and the monitor; the caller starts/stops the monitor and calls
- *   [VaultSyncModel.syncAtUnlock] once the unlock password is in hand.
+ *   [VaultSyncModel.syncAtUnlock] after unlock.
  */
 fun makeVaultSync(
     folder: File,
     stateDir: File,
     vaultUuid: ByteArray?,
-    session: UniffiVaultSession? = null,
+    session: UniffiVaultSession,
+    gate: WriteReauthGate, // no default: see VaultSyncModel's gate
     wallClock: WallClock = SystemWallClock(),
 ): Pair<VaultSyncModel, ChangeDetectionMonitor> {
     check(Looper.myLooper() == Looper.getMainLooper()) {
         "makeVaultSync must be called on the main thread"
     }
-    val coordinator = SyncCoordinator(
-        port = UniffiVaultSyncPort(refreshSession = session?.let { it::refreshFromDisk }),
-        stateDir = stateDir.path,
-        vaultFolder = folder.path,
-    )
+    val coordinator = SyncCoordinator(port = UniffiVaultSyncPort(session), stateDir = stateDir.path)
     lateinit var model: VaultSyncModel
     val monitor = makeChangeMonitor(folder) { model.pendingChangesRaised() }
     model = VaultSyncModel(
@@ -45,6 +44,7 @@ fun makeVaultSync(
         wallClock = wallClock,
         monitorHook = MonitorSyncHook(monitor),
         vaultUuid = vaultUuid,
+        gate = gate,
     )
     return model to monitor
 }
