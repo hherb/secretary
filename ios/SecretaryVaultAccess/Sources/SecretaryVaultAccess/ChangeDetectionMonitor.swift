@@ -6,8 +6,8 @@ import Foundation
 /// real conformers deliver their callbacks on the main actor, so all detector
 /// mutation is serialized there with no extra locking.
 ///
-/// Detect-only: a raised signal never triggers a sync pass (no password in hand
-/// after unlock). Acting on it (re-prompt / sync-at-unlock) is slice 3.
+/// Detect-only: a raised signal never triggers a sync pass by itself (auto-sync
+/// on a folder change is #731).
 @MainActor
 public final class ChangeDetectionMonitor {
     private var detector: FolderChangeDetector
