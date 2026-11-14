@@ -43,17 +43,24 @@ export type SyncOutcome =
 export type NoticeKind = 'success' | 'warning' | 'error';
 export type SyncMessage = { kind: NoticeKind; text: string };
 
-/** Map a sync outcome to its inline notice. The three "changes applied
- *  safely" arms collapse to one success message — the distinction isn't
+/** Map a sync outcome to its inline notice. The two "changes applied
+ *  and loaded" arms collapse to one success message — the distinction isn't
  *  user-actionable (spec §4.6). */
 export function syncOutcomeMessage(outcome: SyncOutcome): SyncMessage {
   switch (outcome.kind) {
     case 'nothingToDo':
       return { kind: 'success', text: 'Already up to date' };
     case 'appliedAutomatically':
-    case 'silentMerge':
     case 'mergedClean':
       return { kind: 'success', text: 'Synced — your vault is up to date' };
+    case 'silentMerge':
+      // Not a success: the backend cannot refresh the session after a
+      // SilentMerge (#730), so edits are refused until a later sync catches
+      // up. Say so rather than invite a "sync again" loop.
+      return {
+        kind: 'warning',
+        text: "Merged with another device, but this window couldn't load the result. Edits may be refused until a later sync catches up."
+      };
     case 'conflictsPending': {
       // Fallback only — the resolution dialog (Task 12) normally handles
       // these; this notice shows just if the dialog can't open.
@@ -75,9 +82,11 @@ export function syncOutcomeMessage(outcome: SyncOutcome): SyncMessage {
 export function syncChangedData(outcome: SyncOutcome): boolean {
   switch (outcome.kind) {
     case 'appliedAutomatically':
-    case 'silentMerge':
     case 'mergedClean':
       return true;
+    // The session is not refreshed after a SilentMerge (#730), so a reload
+    // would only re-read the stale handle.
+    case 'silentMerge':
     case 'nothingToDo':
     case 'conflictsPending':
     case 'rollbackRejected':

@@ -1,9 +1,11 @@
 //! Sync IPC commands (D.1.14): `sync_status` (read) + `sync_now` (mutation).
 //! Thin delegates to the bridge `sync_status` / `sync_vault` (D.1.13), in the
 //! same `#[tauri::command]` + testable `*_impl` split as the other command
-//! modules. `sync_now` re-opens a core identity from a fresh password (the
-//! bridge surface takes a password, not the session identity) — the password
-//! rides the zeroize-typed `Password` and is dropped at `_impl` end.
+//! modules. `sync_now` still re-opens a core identity from a fresh password
+//! through the bridge's password surface, although the bridge now also has
+//! session variants (`sync_vault_with_session*`); moving onto those is #732.
+//! The password rides the zeroize-typed `Password` and is dropped at `_impl`
+//! end.
 
 use std::path::Path;
 use std::sync::Mutex;
