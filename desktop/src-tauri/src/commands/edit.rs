@@ -79,7 +79,8 @@ fn dto_to_record_content(dto: RecordInputDto) -> Result<RecordContent, AppError>
 }
 
 /// Map a bridge save error to a typed `AppError`. `BlockNotFound`/`RecordNotFound`
-/// surface precisely; everything else (crypto/IO) is `RecordSaveFailed`.
+/// surface precisely, as does `VaultChangedOnDisk` (#101); everything else
+/// (crypto/IO) is `RecordSaveFailed`.
 fn map_save_error(e: FfiVaultError) -> AppError {
     match e {
         FfiVaultError::BlockNotFound { uuid_hex } => AppError::BlockNotFound {
@@ -88,6 +89,8 @@ fn map_save_error(e: FfiVaultError) -> AppError {
         FfiVaultError::RecordNotFound { uuid_hex } => AppError::RecordNotFound {
             record_uuid_hex: uuid_hex.into_string(),
         },
+        // #101: keep the stale-session refusal typed so the shared copy shows.
+        FfiVaultError::VaultChangedOnDisk => AppError::VaultChangedOnDisk,
         other => {
             tracing::warn!(?other, "record save failed");
             AppError::RecordSaveFailed {
@@ -398,6 +401,15 @@ mod tests {
                 text: text.to_string(),
             },
         }
+    }
+
+    #[test]
+    fn map_save_error_keeps_vault_changed_on_disk_typed() {
+        // #101: the renderer shows the shared "changed on another device" copy.
+        assert!(matches!(
+            map_save_error(FfiVaultError::VaultChangedOnDisk),
+            AppError::VaultChangedOnDisk
+        ));
     }
 
     #[test]
