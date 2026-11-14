@@ -104,8 +104,8 @@ fn derive_outcome(
 }
 
 /// Post-merge LUB for the advancing arms: fold `merge_vector_clocks` over the
-/// disk clock + every copy clock + the prior local-seen. Mirrors
-/// `silent_merge_clock` (cli/src/pipeline.rs) for the SilentMerge arm.
+/// disk clock + every copy clock + the prior local-seen. Mirrors the clock
+/// `cli/src/pipeline/passes.rs::commit_merge` writes on both merge arms (#730).
 ///
 /// For NothingToDo (Equal case), disk == local so the LUB is disk itself;
 /// production writes nothing on that arm, but the post-clock check here is a

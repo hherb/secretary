@@ -8,9 +8,8 @@ import Foundation
 /// handle from disk, so the next write sees the merged state. It never refreshes
 /// on `.rollbackRejected` or `.conflictsPending`. If the pass succeeded but the
 /// refresh failed (typically iCloud still delivering block files), the call
-/// THROWS and the handle is unchanged. Retrying is safe, but it does not always
-/// recover: after a `.silentMerge` the persisted clock dominates the disk, so the
-/// repeat pass is `.rollbackRejected` and does not refresh (#730).
+/// THROWS and the handle is unchanged. Retrying is safe: the repeat pass is
+/// `.nothingToDo` and refreshes (a `.silentMerge` writes its merge since #730).
 ///
 /// `sync`/`commitDecisions` do disk I/O and crypto, so the real conformer offloads
 /// them off the calling actor (`SecretaryKit.runOffMainActor`). `status` is a

@@ -73,7 +73,8 @@ public enum SyncOutcome: Equatable, Sendable {
     case nothingToDo
     /// Disk strictly dominates local. State advanced; no vault write.
     case appliedAutomatically
-    /// Concurrent but no surviving block divergence. State advanced; no write.
+    /// Concurrent but no surviving block divergence: a manifest-only merge was
+    /// written (#730). State advanced.
     case silentMerge
     /// Concurrent, diverging, zero vetoes → merged result committed.
     case mergedClean
