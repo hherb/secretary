@@ -19,8 +19,8 @@ use secretary_core::crypto::sig::{Ed25519Secret, MlDsa65Secret};
 use secretary_core::vault::{
     auto_purge_expired, decode_manifest_file, empty_trash, encode_manifest_file,
     format_uuid_hyphenated, purge_block, repair_vault, restore_block, revoke_block_recipient,
-    share_block, trash_block, BlockUuid, DeviceUuid, OpenVault, RecipientUuid, RepairPolicy,
-    Unlocker,
+    share_block, trash_block, verify_vault_state, BlockUuid, DeviceUuid, OpenVault, RecipientUuid,
+    RepairPolicy, Unlocker, VaultError, VectorClockEntry,
 };
 use secretary_test_utils::core_test_data_dir;
 use stale_session_guard_helpers::{external_card, save, snapshot_tree, uuid, Fixture, T0};
@@ -294,4 +294,72 @@ fn manifest_envelope_round_trips_byte_identically() {
         checked >= 2,
         "expected golden_vault_001 and _002, checked {checked}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// `verify_vault_state`: the post-unlock half of `open_vault`, shared with the
+// merge commit and the bridge's session refresh (#101, design spec §5.1).
+// ---------------------------------------------------------------------------
+
+fn unlock(f: &Fixture) -> secretary_core::unlock::UnlockedIdentity {
+    let toml = fs::read(f.folder().join("vault.toml")).unwrap();
+    let bundle = fs::read(f.folder().join("identity.bundle.enc")).unwrap();
+    secretary_core::unlock::open_with_password(&toml, &bundle, &f.pw).unwrap()
+}
+
+#[test]
+fn verify_vault_state_matches_open_vault() {
+    let f = Fixture::new();
+    let open = f.open();
+    let state = verify_vault_state(f.folder(), &unlock(&f), None).unwrap();
+    assert_eq!(state.manifest, open.manifest);
+    assert_eq!(
+        encode_manifest_file(&state.manifest_file).unwrap(),
+        encode_manifest_file(&open.manifest_file).unwrap()
+    );
+    assert_eq!(
+        state.owner_card.to_canonical_cbor().unwrap(),
+        open.owner_card.to_canonical_cbor().unwrap()
+    );
+}
+
+#[test]
+fn verify_vault_state_rejects_tampered_block_fingerprint() {
+    let f = Fixture::new();
+    let block_uuid = f.open().manifest.blocks[0].block_uuid;
+    let path = f
+        .folder()
+        .join("blocks")
+        .join(format!("{}.cbor.enc", format_uuid_hyphenated(&block_uuid)));
+    let mut bytes = fs::read(&path).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0x01;
+    fs::write(&path, bytes).unwrap();
+    match verify_vault_state(f.folder(), &unlock(&f), None) {
+        Err(VaultError::BlockFingerprintMismatch {
+            block_uuid: got, ..
+        }) => {
+            assert_eq!(got, block_uuid)
+        }
+        other => panic!("expected BlockFingerprintMismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn verify_vault_state_refuses_rollback() {
+    let f = Fixture::new();
+    // Bump every counter and add a random device: strictly dominates the
+    // on-disk manifest clock.
+    let mut local = f.open().manifest.vector_clock;
+    for e in &mut local {
+        e.counter += 1;
+    }
+    local.push(VectorClockEntry {
+        device_uuid: uuid(),
+        counter: 1,
+    });
+    match verify_vault_state(f.folder(), &unlock(&f), Some(&local)) {
+        Err(VaultError::Rollback { local_clock, .. }) => assert_eq!(local_clock, local),
+        other => panic!("expected Rollback, got {other:?}"),
+    }
 }
