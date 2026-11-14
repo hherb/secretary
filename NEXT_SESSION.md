@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-14-session-sync-shipped.md
+docs/handoffs/2026-11-15-silent-merge-commit-shipped.md
