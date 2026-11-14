@@ -50,8 +50,9 @@ pub fn refresh_manifest(
 
 /// Re-verify the vault folder with the session's identity and, only if that
 /// succeeds, replace the handle's manifest, envelope and owner card with what
-/// is on disk. Used after a password sync pass, and by a "Reload" after a
-/// write was refused with [`FfiVaultError::VaultChangedOnDisk`].
+/// is on disk. Used by a "Reload" after a write was refused with
+/// [`FfiVaultError::VaultChangedOnDisk`]; the session sync paths refresh
+/// through the same check themselves.
 ///
 /// The §10 rollback check runs against this device's highest-seen clock from
 /// the sync state in `state_dir`. A missing or empty state means no baseline,

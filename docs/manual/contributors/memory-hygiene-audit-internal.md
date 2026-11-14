@@ -2030,9 +2030,11 @@ site:
   passes drop the password parameter, `cli/src/main.rs` drops the
   password right after unlocking, and the `secretary-sync` daemon no
   longer holds it for the life of the process. This removes a
-  long-lived secret rather than adding a wipe site. It does not touch
-  the desktop and Android password sync passes, which still carry a
-  password per call (#732, #733).
+  long-lived secret rather than adding a wipe site. #732 and #733 then
+  moved the desktop and Android apps onto session sync, so no platform
+  app carries a password into a sync pass. The password-keyed
+  `sync_vault` / `sync_commit_decisions` entry points remain exported
+  through uniffi and pyo3, but no app calls them.
 
 The pattern from this memo's "Stack-residue gaps fixed" table is now
 the cross-codebase expectation. New work that introduces a fresh

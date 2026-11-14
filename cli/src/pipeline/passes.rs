@@ -243,14 +243,16 @@ pub fn sync_pass_inspect(
 /// non-diverging arm — `NothingToDo`, `AppliedAutomatically`, or
 /// `SilentMerge` — this returns that arm directly and the caller's
 /// `decisions` are **silently dropped** (the merge that produced the
-/// veto no longer exists in the same shape). This is CRDT-correct: on
-/// those arms the disk's vector clock has moved to a state that already
+/// veto no longer exists in the same shape). This is CRDT-correct. On
+/// `NothingToDo` / `AppliedAutomatically` the disk's vector clock already
 /// subsumes the local one, so adopting it is the right resolution
-/// regardless of what the operator chose in the now-stale modal — but it
-/// does mean a `KeepLocal` choice can be overridden by an incoming
-/// dominating update that carries the tombstone. Nothing *incorrect* is
-/// written; the modal's intent is simply moot. A caller that needs the
-/// operator's choice to be authoritative must re-inspect and re-prompt.
+/// regardless of what the operator chose in the now-stale modal. On
+/// `SilentMerge` the clocks are still concurrent but no block diverges, so
+/// the arm writes a manifest-only merge (#730) and there is no veto left to
+/// decide. Either way a `KeepLocal` choice can be overridden by an incoming
+/// update that carries the tombstone. Nothing *incorrect* is written; the
+/// modal's intent is simply moot. A caller that needs the operator's choice
+/// to be authoritative must re-inspect and re-prompt.
 ///
 /// # Decision coverage
 /// `decisions` must exactly cover the **recomputed** veto set:
