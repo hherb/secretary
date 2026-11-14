@@ -32,9 +32,14 @@ struct MacMoveTargetPicker: View {
                 }
             }
             if let error = viewModel.error {
-                Text(error.localizedDescription)
-                    .font(.footnote).foregroundStyle(.red)
-                    .padding(.horizontal)
+                if error == .vaultChangedOnDisk {
+                    MacReloadNotice(browseViewModel: viewModel, onReloaded: onCancel)
+                        .padding(.horizontal)
+                } else {
+                    Text(error.localizedDescription)
+                        .font(.footnote).foregroundStyle(.red)
+                        .padding(.horizontal)
+                }
             }
             Divider()
             HStack {
@@ -70,8 +75,13 @@ struct MacBlockNameSheet: View {
                     .font(.footnote).foregroundStyle(.red)
             }
             if let error = viewModel.error {
-                Text(error.localizedDescription)
-                    .font(.footnote).foregroundStyle(.red)
+                if error == .vaultChangedOnDisk {
+                    MacReloadNotice(browseViewModel: viewModel,
+                                    onReloaded: { viewModel.cancelBlockNameDialog() })
+                } else {
+                    Text(error.localizedDescription)
+                        .font(.footnote).foregroundStyle(.red)
+                }
             }
             HStack {
                 Button("Cancel", role: .cancel) { viewModel.cancelBlockNameDialog() }

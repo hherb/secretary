@@ -20,7 +20,6 @@ struct MacBrowseView: View {
     let deviceSlotPort: DeviceSlotPort
 
     @State private var selectedBlockHex: String?
-    @State private var reloadFailure: String?
     @State private var selectedRecordHex: String?
     @State private var isActive = true
     /// Identity of the `NSWindow` hosting this view, resolved once it is shown.
@@ -250,21 +249,11 @@ struct MacBrowseView: View {
         }
         .overlay(alignment: .bottom) {
             if let error = viewModel.error {
-                VStack(spacing: 4) {
-                    Text(reloadFailure ?? error.localizedDescription)
-                        .foregroundStyle(.red)
-                    // Interim until the Mac sync slice lands; remove this button then (#101).
+                Group {
                     if error == .vaultChangedOnDisk {
-                        Button {
-                            do {
-                                viewModel.reloadFromDisk(stateDir: try defaultSyncStateDir().path)
-                                reloadFailure = nil
-                            } catch {
-                                reloadFailure = "Could not locate the sync state folder."
-                            }
-                        } label: {
-                            Text("Reload")
-                        }
+                        MacReloadNotice(browseViewModel: viewModel)
+                    } else {
+                        Text(error.localizedDescription).foregroundStyle(.red)
                     }
                 }
                 .padding(8)
@@ -274,6 +263,7 @@ struct MacBrowseView: View {
         .sheet(item: $editSession) { session in
             MacRecordEditView(
                 viewModel: session.editVM,
+                browseViewModel: viewModel,
                 title: session.title,
                 onDone: {
                     editSession = nil
@@ -331,6 +321,7 @@ struct MacBrowseView: View {
             MacSettingsView(
                 viewModel: item.vm,
                 deviceViewModel: item.deviceVM,
+                browseViewModel: viewModel,
                 onDone: { settingsSheet = nil },
                 onForgotten: {
                     // Dismiss BEFORE locking. `VaultBrowseViewModel.lock()` cannot see
@@ -353,7 +344,7 @@ struct MacBrowseView: View {
         // another way. loadBlocks() re-reads only `blocks`; it leaves the current
         // selection + records pane untouched.
         .sheet(item: $trashSheet, onDismiss: { viewModel.loadBlocks() }) { item in
-            MacTrashView(viewModel: item.vm, onDone: { trashSheet = nil })
+            MacTrashView(viewModel: item.vm, browseViewModel: viewModel, onDone: { trashSheet = nil })
         }
         // Capture the hosting window's identity (once it is non-nil) so the
         // willClose handler can scope its wipe to this exact window. Closure form

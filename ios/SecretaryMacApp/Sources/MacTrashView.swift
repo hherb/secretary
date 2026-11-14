@@ -11,14 +11,18 @@ import SecretaryVaultAccessUI
 @MainActor
 struct MacTrashView: View {
     @StateObject private var viewModel: TrashViewModel
+    /// The owning browse VM, for Reload on a `.vaultChangedOnDisk` refusal (#101).
+    let browseViewModel: VaultBrowseViewModel
     let onDone: () -> Void
 
     @State private var pendingPurge: TrashedBlockInfo?
     @State private var pendingEmpty = false
     @State private var showRetention = false
 
-    init(viewModel: TrashViewModel, onDone: @escaping () -> Void) {
+    init(viewModel: TrashViewModel, browseViewModel: VaultBrowseViewModel,
+         onDone: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: viewModel)
+        self.browseViewModel = browseViewModel
         self.onDone = onDone
     }
 
@@ -59,10 +63,16 @@ struct MacTrashView: View {
                 }
             }
             if let error = viewModel.error {
-                Text(error.localizedDescription)
-                    .font(.footnote).foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
+                Group {
+                    if error == .vaultChangedOnDisk {
+                        MacReloadNotice(browseViewModel: browseViewModel, onReloaded: onDone)
+                    } else {
+                        Text(error.localizedDescription)
+                            .font(.footnote).foregroundStyle(.red)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
             }
             Divider()
             HStack {

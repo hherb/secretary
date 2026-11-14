@@ -2,6 +2,7 @@ import XCTest
 @testable import SecretaryKit
 import SecretaryVaultAccess
 import SecretaryVaultAccessTesting
+import SecretaryVaultAccessUI
 
 /// `UniffiVaultSession`'s `VaultSyncPort` conformance (#101): sync through the
 /// open session's own handles, no password.
@@ -71,17 +72,55 @@ final class UniffiVaultSessionSyncTests: XCTestCase {
         let a = try openSession()
         let b = try openSession()
         defer { a.wipe(); b.wipe() }
-        let stateB = tmp.appendingPathComponent("state-b", isDirectory: true)
-        try FileManager.default.createDirectory(at: stateB, withIntermediateDirectories: true)
 
         let bBlock = try b.createBlock(blockName: "FromB")
         XCTAssertThrowsError(try a.createBlock(blockName: "FromA")) { error in
             XCTAssertEqual(error as? VaultAccessError, .vaultChangedOnDisk)
         }
+        XCTAssertFalse(a.blockSummaries().contains { $0.uuid == bBlock },
+                       "A's handle still holds the pre-B manifest before the refresh")
 
         try a.refreshFromDisk(stateDir: stateDir.path)
         XCTAssertTrue(a.blockSummaries().contains { $0.uuid == bBlock })
         XCTAssertNoThrow(try a.createBlock(blockName: "FromA"))
+    }
+
+    /// The macOS record-edit Reload flow (#101, I2), at the view-model layer the
+    /// Mac sheet drives (the Mac app target has no test target): a record-edit
+    /// save is refused because another writer changed the vault, the owning
+    /// browse VM's `reloadFromDisk` refreshes the shared session, and a retry
+    /// through a fresh edit VM (the sheet is dismissed on Reload) succeeds.
+    @MainActor
+    func testRefusedRecordEditSaveThenReloadThenRetrySucceeds() async throws {
+        let a = try openSession()
+        let b = try openSession()
+        defer { a.wipe(); b.wipe() }
+        let browse = VaultBrowseViewModel(session: a, gate: FakeWriteReauthGate())
+        browse.loadBlocks()
+        let block = try XCTUnwrap(browse.blocks.first)
+        browse.selectBlock(block)
+        _ = try b.createBlock(blockName: "FromB-\(UUID().uuidString)")
+
+        let refused = try XCTUnwrap(browse.makeEditViewModel(mode: .add))
+        fill(refused)
+        await refused.commit()
+        XCTAssertEqual(refused.error, .vaultChangedOnDisk)
+        XCTAssertFalse(refused.committed)
+
+        browse.reloadFromDisk(stateDir: stateDir.path)
+        XCTAssertNil(browse.error)
+
+        let retry = try XCTUnwrap(browse.makeEditViewModel(mode: .add))
+        fill(retry)
+        await retry.commit()
+        XCTAssertNil(retry.error)
+        XCTAssertTrue(retry.committed, "the retry after Reload writes")
+    }
+
+    @MainActor
+    private func fill(_ vm: RecordEditViewModel) {
+        vm.recordType = "login"
+        vm.fields = [EditableField(name: "username", kind: .text, rawText: UUID().uuidString)]
     }
 
     func testWipedSessionShortCircuitsSyncCommitAndRefresh() async throws {
