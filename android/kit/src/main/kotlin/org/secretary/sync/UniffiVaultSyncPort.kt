@@ -15,8 +15,9 @@ import uniffi.secretary.syncVault
 /**
  * The real [VaultSyncPort] over the generated `uniffi.secretary` sync calls. This is the only
  * [VaultSyncPort] implementation that invokes the bindings (the pure DTO/error mappers reference
- * the generated types too, but only as translators). A faithful Kotlin mirror of iOS
- * `UniffiVaultSyncPort.swift`.
+ * the generated types too, but only as translators). It mirrors the iOS password port that
+ * #101 removed; iOS now syncs through the open session (`UniffiVaultSession+Sync.swift`), which is
+ * where Android goes in #733.
  *
  * [sync] and [commitDecisions] re-open the vault from the password (full Argon2id), so they run
  * on [ioDispatcher] (default [Dispatchers.IO]) to keep the caller responsive; [status] is a cheap
@@ -74,10 +75,16 @@ class UniffiVaultSyncPort(
     // sync refreshes against the pre-pass clock). Not after Rollback/Conflicts: nothing written.
     private fun refreshIfNeeded(stateDir: String, outcome: SyncOutcomeDto) {
         val refresh = refreshSession ?: return
-        if (outcome == SyncOutcomeDto.NothingToDo ||
-            outcome == SyncOutcomeDto.AppliedAutomatically ||
-            outcome == SyncOutcomeDto.MergedClean
-        ) callMappingErrors { refresh(stateDir) }
+        // Exhaustive on purpose (no else): a new outcome must decide here.
+        val needed = when (outcome) {
+            SyncOutcomeDto.NothingToDo,
+            SyncOutcomeDto.AppliedAutomatically,
+            SyncOutcomeDto.MergedClean -> true
+            SyncOutcomeDto.SilentMerge,
+            SyncOutcomeDto.RollbackRejected,
+            is SyncOutcomeDto.ConflictsPending -> false
+        }
+        if (needed) callMappingErrors { refresh(stateDir) }
     }
 }
 
