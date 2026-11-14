@@ -546,6 +546,10 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // fold in B.1 before the device-slot FFI surface existed).
             VE::DeviceSlotNotFound => FfiVaultError::DeviceSlotNotFound,
 
+            // #101: a manifest writer found the on-disk manifest is no longer
+            // the envelope this session loaded, and refused before writing.
+            VE::ManifestChangedOnDisk => FfiVaultError::VaultChangedOnDisk,
+
             // #350/#374: open_vault detected crash residue — an on-disk
             // block whose bytes do not BLAKE3-hash to the manifest's
             // committed fingerprint. Promoted OUT of the CorruptVault fold

@@ -233,6 +233,8 @@ fn guard_new_recipient_no_substitution(
 /// decision at the share-mapper boundary.
 fn map_core_vault_error_share(e: VaultError) -> FfiVaultError {
     match &e {
+        // #101: stale-session guard refused before any write.
+        VaultError::ManifestChangedOnDisk => FfiVaultError::VaultChangedOnDisk,
         e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
             detail: detail::gated(e),
         },

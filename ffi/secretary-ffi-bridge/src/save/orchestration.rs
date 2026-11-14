@@ -163,6 +163,8 @@ pub fn save_block(
 /// `SaveCryptoFailure` is the right surface.
 pub(crate) fn map_core_vault_error(e: VaultError) -> FfiVaultError {
     match &e {
+        // #101: stale-session guard refused before any write.
+        VaultError::ManifestChangedOnDisk => FfiVaultError::VaultChangedOnDisk,
         e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
             detail: detail::gated(e),
         },

@@ -147,6 +147,8 @@ pub fn purge_block(
 /// than a silent fold to `SaveCryptoFailure`.
 fn map_core_vault_error_purge(e: VaultError) -> FfiVaultError {
     match &e {
+        // #101: stale-session guard refused before any write.
+        VaultError::ManifestChangedOnDisk => FfiVaultError::VaultChangedOnDisk,
         e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
             detail: detail::gated(e),
         },
@@ -329,6 +331,8 @@ pub fn empty_trash(
 /// than a silent fold to `SaveCryptoFailure`.
 fn map_core_vault_error_empty_trash(e: VaultError) -> FfiVaultError {
     match &e {
+        // #101: stale-session guard refused before any write.
+        VaultError::ManifestChangedOnDisk => FfiVaultError::VaultChangedOnDisk,
         e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
             detail: detail::gated(e),
         },

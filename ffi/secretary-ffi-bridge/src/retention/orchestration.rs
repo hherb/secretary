@@ -186,6 +186,8 @@ pub fn auto_purge_expired(
 /// Adding a new `core::VaultError` variant becomes a compile error here.
 fn map_core_vault_error_retention(e: VaultError) -> FfiVaultError {
     match &e {
+        // #101: stale-session guard refused before any write.
+        VaultError::ManifestChangedOnDisk => FfiVaultError::VaultChangedOnDisk,
         e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
             detail: detail::gated(e),
         },

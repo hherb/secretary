@@ -17,6 +17,7 @@ use crate::vault::orchestrators::{
     resign_and_write_manifest, scan_verified_contact_cards, tick_clock, unlock_vault_identity,
     OpenVault, Unlocker, BLOCKS_SUBDIR,
 };
+use crate::vault::session_state::ensure_manifest_unchanged_on_disk;
 use crate::vault::{VaultError, VectorClockEntry};
 
 use super::classify::{
@@ -308,6 +309,9 @@ pub fn repair_vault(
     // owner Ed25519 secret + zeroize the stack copy, fresh AEAD nonce,
     // hybrid-sign, atomic-write. Same manifest verify-before-decrypt open
     // guarantees the rewritten envelope.
+    // #101: another process may have written the manifest since the read
+    // above; refuse rather than overwrite it.
+    ensure_manifest_unchanged_on_disk(folder, &manifest_file)?;
     let new_manifest_file = resign_and_write_manifest(
         folder,
         &manifest,

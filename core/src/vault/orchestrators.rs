@@ -41,6 +41,7 @@ use crate::unlock::{
 use crate::vault::trash_relocation::relocate_and_log;
 
 use super::ids::{BlockUuid, DeviceUuid, RecipientUuid};
+use super::session_state::ensure_manifest_unchanged_on_disk;
 use super::{block, io, manifest};
 use super::{
     BlockEntry, BlockHeader, BlockPlaintext, KdfParamsRef, Manifest, ManifestFile, ManifestHeader,
@@ -1125,6 +1126,8 @@ pub fn save_block(
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<(), VaultError> {
+    ensure_manifest_unchanged_on_disk(folder, &open.manifest_file)?; // #101
+
     // Determine whether this is an update (preserve created_at_ms and
     // continue the per-block clock from the existing manifest entry) or
     // a fresh insert (created_at_ms = now_ms, empty starting clock).
@@ -1738,6 +1741,8 @@ pub fn share_block(
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<(), VaultError> {
+    ensure_manifest_unchanged_on_disk(folder, &open.manifest_file)?; // #101
+
     // Unwrap the block-id newtype once; the body addresses the block by raw
     // bytes (manifest scan, on-disk path). `device_uuid` stays a `DeviceUuid`
     // and flows typed into the re-key engine.
@@ -1948,6 +1953,8 @@ pub fn revoke_block_recipient(
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<(), VaultError> {
+    ensure_manifest_unchanged_on_disk(folder, &open.manifest_file)?; // #101
+
     // Unwrap the id newtypes once; the body addresses the block / revoke target
     // by raw bytes (manifest scan, set filter, owner check). The three roles
     // (`block_uuid`, `revoked_recipient_uuid`, `device_uuid`) are distinct types
@@ -2149,6 +2156,8 @@ pub fn trash_block(
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<(), VaultError> {
+    ensure_manifest_unchanged_on_disk(folder, &open.manifest_file)?; // #101
+
     // Step 1: locate the block.
     let entry_idx = open
         .manifest
@@ -2391,6 +2400,8 @@ pub fn restore_block(
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<(), VaultError> {
+    ensure_manifest_unchanged_on_disk(folder, &open.manifest_file)?; // #101
+
     // Step 1: live-collision check. Restore on a UUID that is currently
     // live in manifest.blocks would produce a duplicate entry; the
     // caller MUST trash the live copy first.

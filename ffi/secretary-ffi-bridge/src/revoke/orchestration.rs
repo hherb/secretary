@@ -181,6 +181,8 @@ pub fn revoke_block(
 /// decision at the revoke-mapper boundary.
 fn map_core_vault_error_revoke(e: VaultError) -> FfiVaultError {
     match &e {
+        // #101: stale-session guard refused before any write.
+        VaultError::ManifestChangedOnDisk => FfiVaultError::VaultChangedOnDisk,
         e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
             detail: detail::gated(e),
         },
