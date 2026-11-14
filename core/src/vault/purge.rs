@@ -177,6 +177,7 @@ pub fn purge_block(
     // #101: refuse before ANY file op, including the re-purge branch's
     // residual-file removal, if another session moved the manifest.
     ensure_manifest_unchanged_on_disk(folder, &open.manifest_file)?;
+
     // Step 1: locate the TrashEntry.
     let idx = open
         .manifest
@@ -297,6 +298,7 @@ pub(crate) fn purge_batch_commit(
 ) -> Result<(usize, usize), VaultError> {
     // #101: refuse before ANY file write if another session moved the manifest.
     ensure_manifest_unchanged_on_disk(folder, &open.manifest_file)?;
+
     let mut staged = open.manifest.clone();
     for &idx in target_indices {
         staged.trash[idx].purged_at_ms = Some(now_ms);
