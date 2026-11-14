@@ -80,11 +80,9 @@ pub fn sync_vault_in(
     // 3. Load the SyncState (missing file ⇒ empty state).
     let mut state = load(state_dir, vault_uuid).map_err(map_state_error)?;
 
-    // 4. Run the inspect pass. It re-opens the vault commit-side, so
-    //    it needs `&password` AND the by-ref identity.
+    // 4. Run the inspect pass. It re-verifies the vault from the by-ref identity.
     let outcome: InspectOutcome =
-        sync_pass_inspect(vault_folder, &identity, &password, &mut state, now_ms)
-            .map_err(map_sync_error)?;
+        sync_pass_inspect(vault_folder, &identity, &mut state, now_ms).map_err(map_sync_error)?;
 
     // 5. Persist ONLY on the advancing arms. NothingToDo / RollbackRejected /
     //    ConflictsPending leave `state` byte-identical and write nothing.
@@ -197,12 +195,11 @@ pub fn sync_commit_decisions_in(
     let _guard = LockfileGuard::acquire(state_dir, vault_uuid).map_err(map_state_error)?;
     let mut state = load(state_dir, vault_uuid).map_err(map_state_error)?;
 
-    // 5. Run the commit pass. It re-opens the vault commit-side and re-verifies
-    //    the freshness token, returning EvidenceStale if the disk moved.
+    // 5. Run the commit pass. It re-verifies the vault commit-side from `identity`
+    //    and re-checks the freshness token, returning EvidenceStale if the disk moved.
     let outcome = sync_pass_commit_decisions(
         vault_folder,
         &identity,
-        &password,
         &mut state,
         expected,
         core_decisions,

@@ -93,7 +93,7 @@ pub fn sync_as_merger(
                     })
                     .collect(),
             };
-            commit_with_decisions(shared, baseline.password(), draft, decisions, now_ms)
+            commit_with_decisions(shared, &identity, draft, decisions, now_ms)
                 .expect("commit_with_decisions")
         }
         other => panic!("merger expected ConcurrentDetected, got {other:?}"),

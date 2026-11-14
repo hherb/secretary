@@ -100,20 +100,13 @@ const TEST_NOW_MS: u64 = 0;
 /// becomes the disk clock so the next call returns `NothingToDo`.
 #[test]
 fn run_one_returns_applied_automatically_on_fresh_state() {
-    let (_tmp, vault_dir, identity, password, vault_uuid) = stage_and_unlock_golden();
+    let (_tmp, vault_dir, identity, _password, vault_uuid) = stage_and_unlock_golden();
     let mut state = SyncState::empty(vault_uuid);
     let mut ux = AutoKeepLocalVetoUx;
 
     let pre_clock = state.highest_vector_clock_seen.clone();
-    let outcome = run_one(
-        &vault_dir,
-        &identity,
-        &password,
-        &mut state,
-        &mut ux,
-        TEST_NOW_MS,
-    )
-    .expect("run_one must succeed on golden vault");
+    let outcome = run_one(&vault_dir, &identity, &mut state, &mut ux, TEST_NOW_MS)
+        .expect("run_one must succeed on golden vault");
 
     assert_eq!(outcome, RunOutcome::AppliedAutomatically);
     assert_ne!(
@@ -133,31 +126,17 @@ fn run_one_returns_applied_automatically_on_fresh_state() {
 /// matches disk, a re-sync is a no-op with zero state mutation.
 #[test]
 fn run_one_returns_nothing_to_do_on_second_call() {
-    let (_tmp, vault_dir, identity, password, vault_uuid) = stage_and_unlock_golden();
+    let (_tmp, vault_dir, identity, _password, vault_uuid) = stage_and_unlock_golden();
     let mut state = SyncState::empty(vault_uuid);
     let mut ux = AutoKeepLocalVetoUx;
 
-    let first = run_one(
-        &vault_dir,
-        &identity,
-        &password,
-        &mut state,
-        &mut ux,
-        TEST_NOW_MS,
-    )
-    .expect("first run_one must succeed");
+    let first = run_one(&vault_dir, &identity, &mut state, &mut ux, TEST_NOW_MS)
+        .expect("first run_one must succeed");
     assert_eq!(first, RunOutcome::AppliedAutomatically);
 
     let clock_after_first = state.highest_vector_clock_seen.clone();
-    let second = run_one(
-        &vault_dir,
-        &identity,
-        &password,
-        &mut state,
-        &mut ux,
-        TEST_NOW_MS,
-    )
-    .expect("second run_one must succeed");
+    let second = run_one(&vault_dir, &identity, &mut state, &mut ux, TEST_NOW_MS)
+        .expect("second run_one must succeed");
     assert_eq!(second, RunOutcome::NothingToDo);
     assert_eq!(
         state.highest_vector_clock_seen, clock_after_first,
@@ -174,20 +153,13 @@ fn run_one_returns_nothing_to_do_on_second_call() {
 /// no persistence step accidentally records the older disk view.
 #[test]
 fn run_one_returns_rollback_rejected_when_state_dominates() {
-    let (_tmp, vault_dir, identity, password, vault_uuid) = stage_and_unlock_golden();
+    let (_tmp, vault_dir, identity, _password, vault_uuid) = stage_and_unlock_golden();
 
     // First, advance state to disk's clock so we know what's there.
     let mut state = SyncState::empty(vault_uuid);
     let mut ux = AutoKeepLocalVetoUx;
-    let first = run_one(
-        &vault_dir,
-        &identity,
-        &password,
-        &mut state,
-        &mut ux,
-        TEST_NOW_MS,
-    )
-    .expect("first run_one must succeed");
+    let first = run_one(&vault_dir, &identity, &mut state, &mut ux, TEST_NOW_MS)
+        .expect("first run_one must succeed");
     assert_eq!(first, RunOutcome::AppliedAutomatically);
 
     // Inject a synthetic entry with a higher counter on a DIFFERENT
@@ -216,7 +188,6 @@ fn run_one_returns_rollback_rejected_when_state_dominates() {
     let outcome = run_one(
         &vault_dir,
         &identity,
-        &password,
         &mut dominating_state,
         &mut ux,
         TEST_NOW_MS,
@@ -236,18 +207,11 @@ fn run_one_returns_rollback_rejected_when_state_dominates() {
 /// non-interactive impl as part of the public API contract.
 #[test]
 fn run_one_threads_autokeeplocal_through_dyn_boundary() {
-    let (_tmp, vault_dir, identity, password, vault_uuid) = stage_and_unlock_golden();
+    let (_tmp, vault_dir, identity, _password, vault_uuid) = stage_and_unlock_golden();
     let mut state = SyncState::empty(vault_uuid);
     let mut ux = AutoKeepLocalVetoUx;
     let ux_ref: &mut dyn secretary_cli::veto::VetoUx = &mut ux;
-    let outcome = run_one(
-        &vault_dir,
-        &identity,
-        &password,
-        &mut state,
-        ux_ref,
-        TEST_NOW_MS,
-    )
-    .expect("run_one with dyn-trait UX must succeed");
+    let outcome = run_one(&vault_dir, &identity, &mut state, ux_ref, TEST_NOW_MS)
+        .expect("run_one with dyn-trait UX must succeed");
     assert_eq!(outcome, RunOutcome::AppliedAutomatically);
 }

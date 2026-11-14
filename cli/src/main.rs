@@ -83,6 +83,9 @@ fn run(cli: Cli) -> ExitCode {
         eprintln!("warning: log subscriber init failed: {e}");
     }
 
+    // The password lives only until `open_with_password` returns; it is
+    // dropped (and wiped) right after and never reaches the dispatch
+    // below or the daemon loop.
     let password = match read_password(common) {
         Ok(p) => p,
         Err(e) => return fail_generic(format_args!("unlock read failed: {e}")),
@@ -99,6 +102,7 @@ fn run(cli: Cli) -> ExitCode {
         Ok(i) => i,
         Err(e) => return fail_generic(format_args!("vault unlock failed: {e}")),
     };
+    drop(password);
     let vault_uuid = match parse_vault_uuid(&vault_toml_bytes) {
         Ok(u) => u,
         Err(e) => return fail_generic(format_args!("decode vault.toml failed: {e}")),
@@ -141,12 +145,11 @@ fn run(cli: Cli) -> ExitCode {
             run_args,
             vault,
             &identity,
-            &password,
             &mut state,
             &state_dir,
             interactive,
         ),
-        None => dispatch_once_subcommand(vault, &identity, &password, &mut state, interactive),
+        None => dispatch_once_subcommand(vault, &identity, &mut state, interactive),
     };
 
     let exit_code = match state::save(&state_dir, &state) {
@@ -247,17 +250,16 @@ fn fail_generic(msg: std::fmt::Arguments<'_>) -> ExitCode {
 fn dispatch_once_subcommand(
     vault: &Path,
     identity: &UnlockedIdentity,
-    password: &SecretBytes,
     state: &mut SyncState,
     interactive: bool,
 ) -> ExitCode {
     let now = now_ms();
     let result = if interactive {
         let mut ux = TtyVetoUx::new(io::BufReader::new(io::stdin()), io::stderr());
-        run_one(vault, identity, password, state, &mut ux, now)
+        run_one(vault, identity, state, &mut ux, now)
     } else {
         let mut ux = AutoKeepLocalVetoUx;
-        run_one(vault, identity, password, state, &mut ux, now)
+        run_one(vault, identity, state, &mut ux, now)
     };
     match result {
         Ok(outcome) => once_ok_exit_code(outcome),
@@ -287,7 +289,6 @@ fn dispatch_run_subcommand(
     run_args: &RunArgs,
     vault: &Path,
     identity: &UnlockedIdentity,
-    password: &SecretBytes,
     state: &mut SyncState,
     state_dir: &Path,
     interactive: bool,
@@ -312,7 +313,6 @@ fn dispatch_run_subcommand(
         daemon::run_against_vault(
             vault,
             identity,
-            password,
             state,
             &mut ux,
             state_dir,
@@ -324,7 +324,6 @@ fn dispatch_run_subcommand(
         daemon::run_against_vault(
             vault,
             identity,
-            password,
             state,
             &mut ux,
             state_dir,

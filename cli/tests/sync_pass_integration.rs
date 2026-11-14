@@ -97,22 +97,22 @@ fn stage_and_unlock_golden() -> (
 
 #[test]
 fn sync_pass_returns_applied_automatically_on_fresh_state() {
-    let (_tmp, vault_dir, identity, password, vault_uuid) = stage_and_unlock_golden();
+    let (_tmp, vault_dir, identity, _password, vault_uuid) = stage_and_unlock_golden();
     let mut state = SyncState::empty(vault_uuid);
-    let outcome = sync_pass_pause_on_conflict(&vault_dir, &identity, &password, &mut state, 0)
-        .expect("sync pass");
+    let outcome =
+        sync_pass_pause_on_conflict(&vault_dir, &identity, &mut state, 0).expect("sync pass");
     assert_eq!(outcome, SyncPassOutcome::AppliedAutomatically);
     assert!(!state.highest_vector_clock_seen.is_empty());
 }
 
 #[test]
 fn sync_pass_returns_nothing_to_do_on_second_call() {
-    let (_tmp, vault_dir, identity, password, vault_uuid) = stage_and_unlock_golden();
+    let (_tmp, vault_dir, identity, _password, vault_uuid) = stage_and_unlock_golden();
     let mut state = SyncState::empty(vault_uuid);
-    sync_pass_pause_on_conflict(&vault_dir, &identity, &password, &mut state, 0).expect("first");
+    sync_pass_pause_on_conflict(&vault_dir, &identity, &mut state, 0).expect("first");
     let before = state.clone();
-    let outcome = sync_pass_pause_on_conflict(&vault_dir, &identity, &password, &mut state, 0)
-        .expect("second");
+    let outcome =
+        sync_pass_pause_on_conflict(&vault_dir, &identity, &mut state, 0).expect("second");
     assert_eq!(outcome, SyncPassOutcome::NothingToDo);
     assert_eq!(state, before);
 }
@@ -538,7 +538,7 @@ fn stage_concurrent_collision_vault() -> (
 /// block is unchanged.
 #[test]
 fn sync_pass_pauses_on_tombstone_veto_without_writing() {
-    let (_tmp, vault_dir, identity, password, vault_uuid, block_uuid) =
+    let (_tmp, vault_dir, identity, _password, vault_uuid, block_uuid) =
         stage_concurrent_veto_vault();
 
     // Local clock references a device absent from both disk manifests so
@@ -553,7 +553,7 @@ fn sync_pass_pauses_on_tombstone_veto_without_writing() {
     let block_path = block_file_path(&vault_dir, &block_uuid);
     let block_bytes_before = fs::read(&block_path).expect("read canonical block pre-pass");
 
-    let outcome = sync_pass_pause_on_conflict(&vault_dir, &identity, &password, &mut state, 0)
+    let outcome = sync_pass_pause_on_conflict(&vault_dir, &identity, &mut state, 0)
         .expect("sync pass must return Ok (pause is not an error)");
 
     match outcome {
@@ -624,7 +624,7 @@ fn collect_files(folder: &Path, out: &mut Vec<PathBuf>) {
 /// bridge/desktop layer with a non-tombstone concurrent-edit fixture.
 #[test]
 fn inspect_returns_veto_detail_and_leaves_disk_untouched() {
-    let (_tmp, vault_dir, identity, password, vault_uuid, _block_uuid) =
+    let (_tmp, vault_dir, identity, _password, vault_uuid, _block_uuid) =
         stage_concurrent_veto_vault();
 
     // Local clock references a device absent from both disk manifests so
@@ -638,7 +638,7 @@ fn inspect_returns_veto_detail_and_leaves_disk_untouched() {
 
     let before = hash_dir(&vault_dir);
 
-    let outcome = sync_pass_inspect(&vault_dir, &identity, &password, &mut state, 0)
+    let outcome = sync_pass_inspect(&vault_dir, &identity, &mut state, 0)
         .expect("inspect must return Ok (a pending conflict is not an error)");
 
     match outcome {
@@ -765,29 +765,22 @@ fn concurrent_state(vault_uuid: [u8; 16]) -> SyncState {
 /// conflict copies were consumed and the canonical record stayed live).
 #[test]
 fn commit_decisions_keep_local_keeps_record_live() {
-    let (_tmp, vault_folder, identity, password, vault_uuid, _block_uuid) =
+    let (_tmp, vault_folder, identity, _password, vault_uuid, _block_uuid) =
         stage_concurrent_veto_vault();
     let mut state = concurrent_state(vault_uuid);
 
     // Read the veto set + token from a clone of the state so the real
     // `state` stays at its pre-commit value to commit against below.
     let mut probe_state = state.clone();
-    let (vetoes, manifest_hash) = match sync_pass_inspect(
-        &vault_folder,
-        &identity,
-        &password,
-        &mut probe_state,
-        0,
-    )
-    .unwrap()
-    {
-        InspectOutcome::ConflictsPending {
-            vetoes,
-            manifest_hash,
-            ..
-        } => (vetoes, manifest_hash),
-        other => panic!("expected ConflictsPending, got {other:?}"),
-    };
+    let (vetoes, manifest_hash) =
+        match sync_pass_inspect(&vault_folder, &identity, &mut probe_state, 0).unwrap() {
+            InspectOutcome::ConflictsPending {
+                vetoes,
+                manifest_hash,
+                ..
+            } => (vetoes, manifest_hash),
+            other => panic!("expected ConflictsPending, got {other:?}"),
+        };
     let decisions: Vec<VetoDecision> = vetoes
         .iter()
         .map(|v| VetoDecision::KeepLocal {
@@ -798,7 +791,6 @@ fn commit_decisions_keep_local_keeps_record_live() {
     let outcome = sync_pass_commit_decisions(
         &vault_folder,
         &identity,
-        &password,
         &mut state,
         manifest_hash,
         decisions,
@@ -809,7 +801,7 @@ fn commit_decisions_keep_local_keeps_record_live() {
 
     // After committing the merge the conflict copies are consumed; a
     // fresh inspect against the advanced state no longer raises a veto.
-    let follow_up = sync_pass_inspect(&vault_folder, &identity, &password, &mut state, 2)
+    let follow_up = sync_pass_inspect(&vault_folder, &identity, &mut state, 2)
         .expect("follow-up inspect must return Ok");
     assert!(
         !matches!(follow_up, InspectOutcome::ConflictsPending { .. }),
@@ -824,27 +816,20 @@ fn commit_decisions_keep_local_keeps_record_live() {
 /// call-1 and call-2 without depending on the exact on-disk layout.
 #[test]
 fn commit_decisions_stale_token_is_rejected() {
-    let (_tmp, vault_folder, identity, password, vault_uuid, _block_uuid) =
+    let (_tmp, vault_folder, identity, _password, vault_uuid, _block_uuid) =
         stage_concurrent_veto_vault();
     let mut state = concurrent_state(vault_uuid);
 
     let mut probe_state = state.clone();
-    let (vetoes, manifest_hash) = match sync_pass_inspect(
-        &vault_folder,
-        &identity,
-        &password,
-        &mut probe_state,
-        0,
-    )
-    .unwrap()
-    {
-        InspectOutcome::ConflictsPending {
-            vetoes,
-            manifest_hash,
-            ..
-        } => (vetoes, manifest_hash),
-        other => panic!("expected ConflictsPending, got {other:?}"),
-    };
+    let (vetoes, manifest_hash) =
+        match sync_pass_inspect(&vault_folder, &identity, &mut probe_state, 0).unwrap() {
+            InspectOutcome::ConflictsPending {
+                vetoes,
+                manifest_hash,
+                ..
+            } => (vetoes, manifest_hash),
+            other => panic!("expected ConflictsPending, got {other:?}"),
+        };
     let decisions: Vec<VetoDecision> = vetoes
         .iter()
         .map(|v| VetoDecision::AcceptTombstone {
@@ -857,16 +842,8 @@ fn commit_decisions_stale_token_is_rejected() {
     bad.0[0] ^= 0xff;
     let before = hash_dir(&vault_folder);
 
-    let err = sync_pass_commit_decisions(
-        &vault_folder,
-        &identity,
-        &password,
-        &mut state,
-        bad,
-        decisions,
-        1,
-    )
-    .unwrap_err();
+    let err = sync_pass_commit_decisions(&vault_folder, &identity, &mut state, bad, decisions, 1)
+        .unwrap_err();
     assert!(matches!(err, SyncError::EvidenceStale), "got {err:?}");
     assert_eq!(hash_dir(&vault_folder), before, "no write on stale token");
 }
@@ -940,22 +917,15 @@ fn commit_decisions_real_concurrent_manifest_rewrite_is_rejected() {
 
     // Call-1: obtain the GENUINE freshness token + veto set.
     let mut probe_state = state.clone();
-    let (vetoes, genuine_token) = match sync_pass_inspect(
-        &vault_folder,
-        &identity,
-        &password,
-        &mut probe_state,
-        0,
-    )
-    .unwrap()
-    {
-        InspectOutcome::ConflictsPending {
-            vetoes,
-            manifest_hash,
-            ..
-        } => (vetoes, manifest_hash),
-        other => panic!("expected ConflictsPending, got {other:?}"),
-    };
+    let (vetoes, genuine_token) =
+        match sync_pass_inspect(&vault_folder, &identity, &mut probe_state, 0).unwrap() {
+            InspectOutcome::ConflictsPending {
+                vetoes,
+                manifest_hash,
+                ..
+            } => (vetoes, manifest_hash),
+            other => panic!("expected ConflictsPending, got {other:?}"),
+        };
     let decisions: Vec<VetoDecision> = vetoes
         .iter()
         .map(|v| VetoDecision::AcceptTombstone {
@@ -972,7 +942,6 @@ fn commit_decisions_real_concurrent_manifest_rewrite_is_rejected() {
     let err = sync_pass_commit_decisions(
         &vault_folder,
         &identity,
-        &password,
         &mut state,
         genuine_token,
         decisions,
@@ -1070,7 +1039,7 @@ fn stage_smoke_vault() {
     // ConflictsPending arm writes nothing and advances no state, so this does
     // not consume the conflict copies or disturb the seeded state file.
     let mut reloaded = load(&state_dir, vault_uuid).expect("reload seeded state");
-    let veto_count = match sync_pass_inspect(&dest, &identity, &password, &mut reloaded, 0)
+    let veto_count = match sync_pass_inspect(&dest, &identity, &mut reloaded, 0)
         .expect("inspect on the staged vault")
     {
         InspectOutcome::ConflictsPending { vetoes, .. } => vetoes.len(),
@@ -1112,7 +1081,7 @@ fn stage_smoke_vault() {
 #[test]
 #[ignore = "fixture generator; run with --ignored generate_sync_conflict_fixture --nocapture"]
 fn generate_sync_conflict_fixture() {
-    let (_tmp, vault_dir, identity, password, vault_uuid, _block_uuid) =
+    let (_tmp, vault_dir, identity, _password, vault_uuid, _block_uuid) =
         stage_concurrent_veto_vault();
 
     // Seeded local clock: a device absent from both disk manifests -> the
@@ -1126,9 +1095,7 @@ fn generate_sync_conflict_fixture() {
     // Self-validate: the fixture must actually pause on a veto, else it is
     // not a valid ConflictsPending fixture. Inspect writes nothing.
     let mut probe = state.clone();
-    match sync_pass_inspect(&vault_dir, &identity, &password, &mut probe, 0)
-        .expect("inspect must return Ok")
-    {
+    match sync_pass_inspect(&vault_dir, &identity, &mut probe, 0).expect("inspect must return Ok") {
         InspectOutcome::ConflictsPending { vetoes, .. } => {
             assert!(!vetoes.is_empty(), "fixture must yield >=1 veto");
         }

@@ -204,7 +204,7 @@ fn commit_with_decisions_stale_manifest_with_diverging_blocks_writes_no_block_fi
     let block_before = std::fs::read(&block_path).expect("read diverging block before commit");
 
     // Step 5: the doomed commit.
-    let err = commit_with_decisions(&folder, &password, draft, Vec::new(), COMMIT_NOW_MS)
+    let err = commit_with_decisions(&folder, &identity, draft, Vec::new(), COMMIT_NOW_MS)
         .expect_err("commit_with_decisions must reject a stale draft.manifest_hash");
     assert!(
         matches!(err, secretary_core::sync::SyncError::EvidenceStale),

@@ -22,7 +22,7 @@
 //! recovery is a distinct concern from veto handling.
 
 use secretary_core::sync::{
-    commit_with_decisions, prepare_merge, sync_once, SyncOutcome, SyncState,
+    commit_with_decisions, prepare_merge, sync_once, SyncError, SyncOutcome, SyncState,
 };
 use secretary_core::unlock::open_with_password;
 use secretary_core::vault::block::VectorClockEntry;
@@ -200,7 +200,7 @@ fn partial_commit_recovers_via_idempotent_re_run() {
         "non-conflicting records must produce no vetoes (got {} vetoes in v1 draft)",
         draft_v1.vetoes.len(),
     );
-    let state_v1 = commit_with_decisions(&folder, &password, draft_v1, Vec::new(), COMMIT_NOW_MS)
+    let state_v1 = commit_with_decisions(&folder, &identity, draft_v1, Vec::new(), COMMIT_NOW_MS)
         .expect("commit_with_decisions v1");
 
     // Step 3: capture post-commit block + manifest bytes and the merged
@@ -259,7 +259,7 @@ fn partial_commit_recovers_via_idempotent_re_run() {
     };
     let draft_v2 =
         prepare_merge(&folder, &identity, &bundle_v2, &plan_v2).expect("prepare_merge v2");
-    let state_v2 = commit_with_decisions(&folder, &password, draft_v2, Vec::new(), COMMIT_NOW_MS)
+    let state_v2 = commit_with_decisions(&folder, &identity, draft_v2, Vec::new(), COMMIT_NOW_MS)
         .expect("commit_with_decisions v2");
 
     // Step 8: SyncState idempotence — the merged vector clocks are
@@ -295,4 +295,94 @@ fn partial_commit_recovers_via_idempotent_re_run() {
     // Step 10: the recovered vault opens cleanly.
     let _open =
         open_vault(&folder, Unlocker::Password(&password), None).expect("recovered open_vault");
+}
+
+/// The unlocked-identity commit keeps the D6 gate: a block file whose bytes
+/// no longer match the manifest's committed fingerprint aborts the commit
+/// with `BlockFingerprintMismatch` before any write. Tampering happens AFTER
+/// `prepare_merge` so only the commit's own re-verification can catch it.
+#[test]
+fn identity_commit_aborts_on_tampered_block_fingerprint() {
+    let (probe_folder, _probe_tmp) = sync_helpers::fresh_vault_with_clock(Vec::new());
+    let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&probe_folder);
+    let canonical_block_clock = vec![VectorClockEntry {
+        device_uuid: CANONICAL_DEVICE_UUID,
+        counter: 1,
+    }];
+    let sibling_block_clock = vec![VectorClockEntry {
+        device_uuid: SIBLING_DEVICE_UUID,
+        counter: 1,
+    }];
+    let (folder, _tmp) = sync_helpers::fresh_vault_two_concurrent_blocks(
+        block_uuid,
+        vec![sync_helpers::live_record(
+            CANONICAL_RECORD_UUID,
+            CANONICAL_DEVICE_UUID,
+            CANONICAL_LAST_MOD_MS,
+            "canonical",
+        )],
+        canonical_block_clock.clone(),
+        canonical_block_clock,
+        vec![sync_helpers::live_record(
+            SIBLING_RECORD_UUID,
+            SIBLING_DEVICE_UUID,
+            SIBLING_LAST_MOD_MS,
+            "sibling",
+        )],
+        sibling_block_clock.clone(),
+        sibling_block_clock,
+        SIBLING_MANIFEST_FILENAME,
+        SIBLING_BLOCK_SUFFIX,
+        COMMIT_NOW_MS,
+    );
+
+    let password = fixtures::golden_vault_001_password();
+    let vt_bytes = std::fs::read(folder.join("vault.toml")).expect("read vault.toml");
+    let bundle_bytes =
+        std::fs::read(folder.join("identity.bundle.enc")).expect("read identity bundle");
+    let identity =
+        open_with_password(&vt_bytes, &bundle_bytes, &password).expect("open_with_password");
+    let state_pre = SyncState::new(
+        extract_vault_uuid(&folder),
+        vec![VectorClockEntry {
+            device_uuid: LOCAL_DEVICE_UUID,
+            counter: 1,
+        }],
+    )
+    .expect("SyncState::new");
+
+    let (bundle, plan) = match sync_once(&folder, &identity, &state_pre, 0u64).expect("sync_once") {
+        SyncOutcome::ConcurrentDetected { bundle, plan, .. } => (bundle, plan),
+        other => panic!("expected ConcurrentDetected, got {other:?}"),
+    };
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+
+    // Flip one byte in the manifest-listed block file.
+    let block_path = sync_helpers::block_file_path(&folder, &block_uuid);
+    let mut block_bytes = std::fs::read(&block_path).expect("read block");
+    let mid = block_bytes.len() / 2;
+    block_bytes[mid] ^= 0x01;
+    std::fs::write(&block_path, &block_bytes).expect("write tampered block");
+    let manifest_path = folder.join(sync_helpers::MANIFEST_FILENAME);
+    let manifest_before = std::fs::read(&manifest_path).expect("read manifest");
+
+    let err = commit_with_decisions(&folder, &identity, draft, Vec::new(), COMMIT_NOW_MS)
+        .expect_err("a tampered block must abort the commit");
+    assert!(
+        matches!(
+            err,
+            SyncError::Vault(VaultError::BlockFingerprintMismatch { .. })
+        ),
+        "expected BlockFingerprintMismatch, got {err:?}",
+    );
+    assert_eq!(
+        std::fs::read(&manifest_path).expect("re-read manifest"),
+        manifest_before,
+        "manifest must be untouched on abort",
+    );
+    assert_eq!(
+        std::fs::read(&block_path).expect("re-read block"),
+        block_bytes,
+        "block must be untouched on abort",
+    );
 }
