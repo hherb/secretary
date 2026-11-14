@@ -110,6 +110,18 @@ impl UnlockedIdentity {
         // Sensitive<...> ZeroizeOnDrop runs for every secret field.
     }
 
+    /// Bridge-internal: run `f` on the wrapped core identity under this
+    /// handle's lock, or return `None` if the handle has been wiped. The
+    /// identity is borrowed, never copied, so no secret leaves its
+    /// zeroize-on-drop slots. Holds the lock for the whole of `f`; `f` must
+    /// not lock this handle again. Used by the session sync calls (#101).
+    pub(crate) fn with_core<R>(
+        &self,
+        f: impl FnOnce(&secretary_core::unlock::UnlockedIdentity) -> R,
+    ) -> Option<R> {
+        lock_or_recover(&self.inner).as_ref().map(f)
+    }
+
     /// Bridge-internal accessor returning fresh clones of the X25519 +
     /// ML-KEM-768 reader secret keys for `core::block::decrypt_block`.
     /// Public-key material is supplied separately via the manifest's

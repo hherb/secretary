@@ -7,7 +7,6 @@
 
 use std::path::Path;
 
-use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::sync::{
     commit_with_decisions, prepare_merge, sync_once, ManifestHash, SyncError, SyncOutcome,
     SyncState, VaultBundle, VetoDecision,
@@ -19,10 +18,10 @@ use secretary_core::vault::merge_vector_clocks;
 use super::outcomes::{InspectOutcome, RunOutcome, SyncPassOutcome};
 use crate::veto::VetoUx;
 
-/// Run one sync attempt against `vault_folder` using `identity` for
-/// reads, `password` for the commit-side re-open, and `state` as both
-/// input ("what clock have we already seen?") and output (mutated in
-/// place when the disk-side clock advances).
+/// Run one sync attempt against `vault_folder`. `identity` serves the
+/// reads and the commit-side re-verification. `state` is both input
+/// ("what clock have we already seen?") and output (mutated in place
+/// when the disk-side clock advances).
 ///
 /// `veto_ux` is invoked exactly on the
 /// [`SyncOutcome::ConcurrentDetected`] arm with a non-empty diff plan.
@@ -74,7 +73,6 @@ use crate::veto::VetoUx;
 pub fn run_one(
     vault_folder: &Path,
     identity: &UnlockedIdentity,
-    password: &SecretBytes,
     state: &mut SyncState,
     veto_ux: &mut dyn VetoUx,
     now_ms: u64,
@@ -113,7 +111,7 @@ pub fn run_one(
             let vetoes_count = draft.vetoes.len();
             let decisions = veto_ux.decide(&draft.vetoes);
             let new_state =
-                commit_with_decisions(vault_folder, password, draft, decisions, now_ms)?;
+                commit_with_decisions(vault_folder, identity, draft, decisions, now_ms)?;
             *state = new_state;
             Ok(RunOutcome::MergedAndCommitted {
                 vetoes_resolved: vetoes_count,
@@ -138,7 +136,6 @@ pub fn run_one(
 pub fn sync_pass_pause_on_conflict(
     vault_folder: &Path,
     identity: &UnlockedIdentity,
-    password: &SecretBytes,
     state: &mut SyncState,
     now_ms: u64,
 ) -> Result<SyncPassOutcome, SyncError> {
@@ -173,7 +170,7 @@ pub fn sync_pass_pause_on_conflict(
                 });
             }
             let new_state =
-                commit_with_decisions(vault_folder, password, draft, Vec::new(), now_ms)?;
+                commit_with_decisions(vault_folder, identity, draft, Vec::new(), now_ms)?;
             *state = new_state;
             Ok(SyncPassOutcome::MergedClean)
         }
@@ -202,7 +199,6 @@ pub fn sync_pass_pause_on_conflict(
 pub fn sync_pass_inspect(
     vault_folder: &Path,
     identity: &UnlockedIdentity,
-    password: &SecretBytes,
     state: &mut SyncState,
     now_ms: u64,
 ) -> Result<InspectOutcome, SyncError> {
@@ -242,7 +238,7 @@ pub fn sync_pass_inspect(
                 });
             }
             let new_state =
-                commit_with_decisions(vault_folder, password, draft, Vec::new(), now_ms)?;
+                commit_with_decisions(vault_folder, identity, draft, Vec::new(), now_ms)?;
             *state = new_state;
             Ok(InspectOutcome::MergedClean)
         }
@@ -310,7 +306,6 @@ pub fn sync_pass_inspect(
 pub fn sync_pass_commit_decisions(
     vault_folder: &Path,
     identity: &UnlockedIdentity,
-    password: &SecretBytes,
     state: &mut SyncState,
     expected_manifest_hash: ManifestHash,
     decisions: Vec<VetoDecision>,
@@ -348,7 +343,7 @@ pub fn sync_pass_commit_decisions(
             }
             let draft = prepare_merge(vault_folder, identity, &bundle, &plan)?;
             let new_state =
-                commit_with_decisions(vault_folder, password, draft, decisions, now_ms)?;
+                commit_with_decisions(vault_folder, identity, draft, decisions, now_ms)?;
             *state = new_state;
             Ok(SyncPassOutcome::MergedClean)
         }

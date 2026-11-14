@@ -341,7 +341,7 @@ fn commit_with_decisions_empty_vetoes_writes_merged_state() {
         "Task 11 fixture has no per-block divergence",
     );
 
-    let new_state = commit_with_decisions(&folder, &password, draft, Vec::new(), 1_000_000)
+    let new_state = commit_with_decisions(&folder, &identity, draft, Vec::new(), 1_000_000)
         .expect("commit_with_decisions");
 
     // Post-commit clock carries both manifests' device entries.
@@ -473,7 +473,7 @@ fn commit_with_decisions_stale_manifest_hash_aborts_with_no_disk_writes() {
     let bytes_before_commit = std::fs::read(&manifest_path).expect("read manifest before commit");
     let hash_before = secretary_core::sync::compute_manifest_hash(&bytes_before_commit);
 
-    let err = commit_with_decisions(&folder, &password, draft, Vec::new(), 1_000_000)
+    let err = commit_with_decisions(&folder, &identity, draft, Vec::new(), 1_000_000)
         .expect_err("commit_with_decisions must reject a stale draft.manifest_hash");
     assert!(
         matches!(err, secretary_core::sync::SyncError::EvidenceStale),

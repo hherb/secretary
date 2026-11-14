@@ -3,12 +3,18 @@ import Foundation
 import Combine
 import SecretaryVaultAccess
 
-/// Drives the iOS sync UI: the status badge, sync-at-unlock, the re-prompt sync,
-/// and conflict resolution. Host-testable — holds only the pure `SyncCoordinator`,
-/// an injected `WallClock`, the (optional) 16-byte vault UUID for status, and an
-/// optional `SyncMonitorHook`. It NEVER stores a password: each password arrives
-/// as a method argument for a single in-flight call. `@MainActor` (publishes UI
-/// state); the CPU-heavy Argon2id pass is offloaded by the port, so the VM only
+/// Drives the iOS sync UI: the status badge, sync-at-unlock, "Sync now", and
+/// conflict resolution. Host-testable — holds only the pure `SyncCoordinator`,
+/// an injected `WallClock`, the write re-auth gate, the (optional) 16-byte vault
+/// UUID for status, and an optional `SyncMonitorHook`. It holds no secret: the
+/// port syncs through the open session (#101), for every session kind.
+///
+/// Gating: `syncNow` and `resolve` ask `gate.authorizeWrite` first, because a pass
+/// can write the vault. `syncAtUnlock` is deliberately NOT gated — the user
+/// authenticated at that instant, and the password path does not seed the grace
+/// window, so gating it would raise a Face ID prompt right after a typed password.
+///
+/// `@MainActor` (publishes UI state); the port offloads the pass, so the VM only
 /// suspends, never blocks, the main actor.
 @MainActor
 public final class VaultSyncViewModel: ObservableObject {
@@ -17,36 +23,72 @@ public final class VaultSyncViewModel: ObservableObject {
     @Published public private(set) var reviewNeeded = false
     @Published public private(set) var pendingConflict: PendingConflict?
     @Published public private(set) var lastError: VaultSyncError?
-    @Published public var passwordSheetPresented = false
+    /// The last pass came back `.rollbackRejected`: the vault on disk is older
+    /// than this device has seen, so nothing was applied. A pass outcome, not an
+    /// error, so it lives beside `lastError` rather than in it. Cleared when the
+    /// next pass starts.
+    @Published public private(set) var rollbackRejected = false
     @Published public var conflictSheetPresented = false
 
     private var pendingChanges = false
     private var lastStatus: SyncStatus?
 
+    /// One reason for both gated entry points: each runs a pass that may write.
+    static let gateReason = "Confirm syncing this vault"
+
     private let coordinator: SyncCoordinator
     private let wallClock: WallClock
+    private let gate: WriteReauthGate
     private let vaultUuid: [UInt8]?
     // Strongly owned: no retain cycle — the factory's VMBox.vm back-reference is
     // already `weak`, so the vm → hook direction must be strong to keep the hook alive.
     private var monitor: SyncMonitorHook?
+    // Strongly owned for the same reason: in production this closure is its only
+    // reference, so a weak hold would make the browse reload silently no-op.
+    private let onVaultChanged: (@MainActor () -> Void)?
 
     public init(coordinator: SyncCoordinator, wallClock: WallClock,
-                vaultUuid: [UInt8]? = nil, monitor: SyncMonitorHook? = nil) {
+                gate: WriteReauthGate,
+                vaultUuid: [UInt8]? = nil, monitor: SyncMonitorHook? = nil,
+                onVaultChanged: (@MainActor () -> Void)? = nil) {
         self.coordinator = coordinator
         self.wallClock = wallClock
+        self.gate = gate
         self.vaultUuid = vaultUuid
         self.monitor = monitor
+        self.onVaultChanged = onVaultChanged
     }
 
-    // MARK: - Trigger 1: sync-at-unlock (silent; password already in hand)
+    // MARK: - Trigger 1: sync-at-unlock (silent, never gated)
 
-    /// Run one pass with the just-used password. Auto arms update the badge
-    /// silently; `conflictsPending` only flips `reviewNeeded` (no sheet, password
-    /// dropped — resolution defers to the interactive path).
-    public func syncAtUnlock(password: [UInt8]) async {
-        await runPass(password: password) { [weak self] outcome in
+    /// Run one pass right after unlock. Auto arms update the badge silently;
+    /// `conflictsPending` only flips `reviewNeeded` (no sheet — resolution defers
+    /// to "Sync now").
+    public func syncAtUnlock() async {
+        await runPass { [weak self] outcome in
             guard let self else { return }
             if case .conflictsPending = outcome { self.reviewNeeded = true }
+        }
+    }
+
+    // MARK: - Trigger 2: "Sync now" (gated)
+
+    /// Entry point for the badge tap / "Sync now". Asks the re-auth gate, then
+    /// runs a pass. A refusal sets `.reauthFailed` and runs no pass. On
+    /// `conflictsPending` the conflict sheet opens; on any other arm it is cleared.
+    public func syncNow() async {
+        guard await authorized() else { return }
+        await runPass { [weak self] outcome in
+            guard let self else { return }
+            if case let .conflictsPending(vetoes, collisions, _) = outcome {
+                self.pendingConflict = PendingConflict(vetoes: vetoes, collisions: collisions)
+                self.reviewNeeded = true
+                self.conflictSheetPresented = true
+            } else {
+                self.reviewNeeded = false
+                self.conflictSheetPresented = false
+                self.pendingConflict = nil
+            }
         }
     }
 
@@ -57,18 +99,47 @@ public final class VaultSyncViewModel: ObservableObject {
                                hasPendingConflict: reviewNeeded, status: lastStatus)
     }
 
+    /// Ask the gate. `isSyncing` is held across the await so a second tap while
+    /// the prompt is up is dropped rather than prompting twice; it is released
+    /// before returning, with no suspension point before the caller's pass sets it
+    /// again. Returns false (and sets `.reauthFailed`) on refusal.
+    private func authorized() async -> Bool {
+        guard !isSyncing else { return false }
+        isSyncing = true
+        defer { isSyncing = false }
+        do {
+            try await gate.authorizeWrite(reason: Self.gateReason)
+            return true
+        } catch {
+            lastError = .reauthFailed(foldDiagnostic(error))
+            return false
+        }
+    }
+
+    /// Fire `onVaultChanged` unless the outcome left the session untouched.
+    /// The session sync refreshes the handle on every other arm, `.silentMerge`
+    /// included, so the browse list must reload to show it. Also records
+    /// whether the pass was `.rollbackRejected`, since every pass ends here.
+    private func notifyIfChanged(_ outcome: SyncOutcome) {
+        rollbackRejected = outcome == .rollbackRejected
+        switch outcome {
+        case .rollbackRejected, .conflictsPending: return
+        default: onVaultChanged?()
+        }
+    }
+
     /// Shared pass runner: mute self-writes, flip `isSyncing`, run, route the
     /// outcome through `onSuccess`, acknowledge on success, refresh status.
-    private func runPass(password: [UInt8],
-                         onSuccess: (SyncOutcome) -> Void) async {
+    private func runPass(onSuccess: (SyncOutcome) -> Void) async {
         isSyncing = true
         lastError = nil
+        rollbackRejected = false
         recomputeBadge()
         monitor?.muteSelfWrite()
         do {
-            let outcome = try await coordinator.runPass(password: password,
-                                                        nowMs: wallClock.nowMs())
+            let outcome = try await coordinator.runPass(nowMs: wallClock.nowMs())
             onSuccess(outcome)
+            notifyIfChanged(outcome)
             monitor?.acknowledge()
             pendingChanges = false
             await refreshStatus()
@@ -89,49 +160,22 @@ public final class VaultSyncViewModel: ObservableObject {
         recomputeBadge()
     }
 
-    // MARK: - Trigger 2: interactive re-prompt sync
+    // MARK: - Trigger 3: resolve conflict (gated)
 
-    /// Open the password sheet (entry point for badge tap / "Sync now").
-    public func beginInteractiveSync() {
-        passwordSheetPresented = true
-    }
-
-    /// Run a pass with the re-prompted password. On `conflictsPending`, dismiss the
-    /// password sheet and present the conflict sheet (which re-prompts for its own
-    /// short-lived password on Apply — no secret is threaded across the two sheets);
-    /// on any clean arm, dismiss and clear; on failure, keep the password sheet open
-    /// for retry.
-    public func runInteractivePass(password: [UInt8]) async {
-        await runPass(password: password) { [weak self] outcome in
-            guard let self else { return }
-            if case let .conflictsPending(vetoes, collisions, _) = outcome {
-                self.pendingConflict = PendingConflict(vetoes: vetoes, collisions: collisions)
-                self.reviewNeeded = true
-                self.passwordSheetPresented = false
-                self.conflictSheetPresented = true
-            } else {
-                self.reviewNeeded = false
-                self.passwordSheetPresented = false
-                self.conflictSheetPresented = false
-                self.pendingConflict = nil
-            }
-        }
-    }
-
-    // MARK: - Trigger 3: resolve conflict
-
-    /// Commit the user's per-record decisions for the pending conflict. On any
-    /// non-conflict result, dismiss + clear; on `evidenceStale` /
-    /// `decisionsIncomplete`, keep the sheet open (the coordinator preserves the
-    /// stash) so the user can re-apply.
-    public func resolve(decisions: [SyncVetoDecision], password: [UInt8]) async {
+    /// Commit the user's per-record decisions for the pending conflict, after the
+    /// re-auth gate. A refusal sets `.reauthFailed`, commits nothing, and leaves
+    /// the sheet open. On any non-conflict result, dismiss + clear; on
+    /// `evidenceStale` / `decisionsIncomplete`, keep the sheet open (the
+    /// coordinator preserves the stash) so the user can re-apply.
+    public func resolve(decisions: [SyncVetoDecision]) async {
+        guard await authorized() else { return }
         isSyncing = true
         lastError = nil
+        rollbackRejected = false
         recomputeBadge()
         monitor?.muteSelfWrite()
         do {
             let outcome = try await coordinator.resolve(decisions: decisions,
-                                                        password: password,
                                                         nowMs: wallClock.nowMs())
             if case let .conflictsPending(vetoes, collisions, _) = outcome {
                 pendingConflict = PendingConflict(vetoes: vetoes, collisions: collisions)
@@ -140,6 +184,7 @@ public final class VaultSyncViewModel: ObservableObject {
                 pendingConflict = nil
                 reviewNeeded = false
             }
+            notifyIfChanged(outcome)
             monitor?.acknowledge()
             pendingChanges = false
             await refreshStatus()
@@ -150,11 +195,6 @@ public final class VaultSyncViewModel: ObservableObject {
         }
         isSyncing = false
         recomputeBadge()
-    }
-
-    /// Dismiss the password sheet (Cancel).
-    public func dismissPasswordSheet() {
-        passwordSheetPresented = false
     }
 
     /// Dismiss the conflict sheet without committing. Keeps `reviewNeeded` so the
@@ -170,6 +210,8 @@ public final class VaultSyncViewModel: ObservableObject {
     /// badge simply keeps its prior last-synced label).
     public func refreshStatus() async {
         guard let vaultUuid else { return }
-        lastStatus = try? await coordinator.status(vaultUuid: vaultUuid)
+        if let status = try? await coordinator.status(vaultUuid: vaultUuid) {
+            lastStatus = status
+        }
     }
 }

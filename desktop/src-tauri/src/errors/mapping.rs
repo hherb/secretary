@@ -158,6 +158,7 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
         // distinguish "couldn't apply your choices, retry" from a generic sync
         // failure and re-open the conflict resolver.
         FfiVaultError::SyncDecisionsIncomplete => AppError::SyncDecisionsIncomplete,
+        FfiVaultError::VaultChangedOnDisk => AppError::VaultChangedOnDisk,
 
         // ADR 0009 (B.2) device-slot errors: promoted to typed AppError variants
         // so the desktop UI can render the appropriate affordance when B.2's

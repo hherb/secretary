@@ -41,6 +41,7 @@ use crate::unlock::{
 use crate::vault::trash_relocation::relocate_and_log;
 
 use super::ids::{BlockUuid, DeviceUuid, RecipientUuid};
+use super::session_state::{ensure_manifest_unchanged_on_disk, verify_vault_state_with_toml};
 use super::{block, io, manifest};
 use super::{
     BlockEntry, BlockHeader, BlockPlaintext, KdfParamsRef, Manifest, ManifestFile, ManifestHeader,
@@ -567,50 +568,18 @@ pub fn open_vault(
     // Steps 1-2: read vault.toml + identity.bundle.enc and unlock.
     let (vault_toml_bytes, unlocked) = unlock_vault_identity(folder, unlocker)?;
 
-    // Steps 3-8: read manifest envelope, load + verify owner card,
-    // verify + decrypt manifest, sanity-check body↔envelope and
-    // body↔vault.toml, optional rollback check. Shared with
-    // `read_vault_manifest` so a caller that already holds an
-    // UnlockedIdentity does not re-run Argon2 just to inspect the
-    // manifest body.
-    //
-    // `_manifest_envelope_bytes` (raw on-disk bytes of `manifest.cbor.enc`)
-    // is discarded here — `open_vault` doesn't need them. The C.1.1a
-    // sync_once Concurrent path uses them via `read_vault_manifest_full`
-    // to compute the freshness `ManifestHash` without re-reading the file
-    // (see #80).
-    let (owner_card, manifest_body, manifest_file, _manifest_envelope_bytes) =
-        read_and_verify_manifest(folder, &vault_toml_bytes, &unlocked, local_highest_clock)?;
-
-    // C.1.1b D6: verify each on-disk block file's BLAKE3 fingerprint
-    // matches `BlockEntry.fingerprint` in the (now-authenticated)
-    // manifest. Closes the partial-commit window where a
-    // `commit_with_decisions` crash between block writes and the
-    // manifest write would leave a mismatched on-disk state. The
-    // mismatch surfaces as `VaultError::BlockFingerprintMismatch` —
-    // recovery is to re-run `sync_once → prepare_merge →
-    // commit_with_decisions`, which is convergent under CRDT
-    // idempotence.
-    verify_block_fingerprints(folder, &manifest_body)?;
-
-    // #350: best-effort completion of trash renames interrupted between
-    // trash_block's manifest commit and its physical move. Rename-only
-    // and gated on the signed TrashEntry.fingerprint — see
-    // repair::complete_pending_trash_renames.
-    super::repair::complete_pending_trash_renames(folder, &manifest_body);
-
-    // #399: best-effort removal of local trash/ files for entries the
-    // signed manifest already marks purged — this is what propagates a
-    // purge across the owner's devices via manifest file sync. Gated on
-    // "not live in manifest.blocks" so a concurrent restore always wins.
-    super::repair::sweep_purged_trash_files(folder, &manifest_body);
+    // Steps 3-8 + block fingerprints + trash sweeps: shared with the merge
+    // commit and the session refresh (#101). The identity moves into
+    // `OpenVault` below; only public material comes back.
+    let state =
+        verify_vault_state_with_toml(folder, &vault_toml_bytes, &unlocked, local_highest_clock)?;
 
     Ok(OpenVault {
         identity_block_key: unlocked.identity_block_key,
         identity: unlocked.identity,
-        owner_card,
-        manifest: manifest_body,
-        manifest_file,
+        owner_card: state.owner_card,
+        manifest: state.manifest,
+        manifest_file: state.manifest_file,
     })
 }
 
@@ -704,8 +673,9 @@ pub(crate) fn read_vault_manifest_full(
 /// generic [`VaultError::Io`] with a static context string that does
 /// not carry the failing block's UUID.
 ///
-/// `pub(crate)` because it is only invoked from [`open_vault`];
-/// external callers go via `open_vault`'s typed error surface.
+/// `pub(crate)` because it is only invoked from
+/// [`crate::vault::verify_vault_state`] (and so [`open_vault`]); external
+/// callers go via their typed error surface.
 pub(crate) fn verify_block_fingerprints(
     folder: &Path,
     manifest: &Manifest,
@@ -1125,6 +1095,8 @@ pub fn save_block(
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<(), VaultError> {
+    ensure_manifest_unchanged_on_disk(folder, &open.manifest_file)?; // #101
+
     // Determine whether this is an update (preserve created_at_ms and
     // continue the per-block clock from the existing manifest entry) or
     // a fresh insert (created_at_ms = now_ms, empty starting clock).
@@ -1738,6 +1710,8 @@ pub fn share_block(
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<(), VaultError> {
+    ensure_manifest_unchanged_on_disk(folder, &open.manifest_file)?; // #101
+
     // Unwrap the block-id newtype once; the body addresses the block by raw
     // bytes (manifest scan, on-disk path). `device_uuid` stays a `DeviceUuid`
     // and flows typed into the re-key engine.
@@ -1948,6 +1922,8 @@ pub fn revoke_block_recipient(
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<(), VaultError> {
+    ensure_manifest_unchanged_on_disk(folder, &open.manifest_file)?; // #101
+
     // Unwrap the id newtypes once; the body addresses the block / revoke target
     // by raw bytes (manifest scan, set filter, owner check). The three roles
     // (`block_uuid`, `revoked_recipient_uuid`, `device_uuid`) are distinct types
@@ -2149,6 +2125,8 @@ pub fn trash_block(
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<(), VaultError> {
+    ensure_manifest_unchanged_on_disk(folder, &open.manifest_file)?; // #101
+
     // Step 1: locate the block.
     let entry_idx = open
         .manifest
@@ -2391,6 +2369,8 @@ pub fn restore_block(
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<(), VaultError> {
+    ensure_manifest_unchanged_on_disk(folder, &open.manifest_file)?; // #101
+
     // Step 1: live-collision check. Restore on a UUID that is currently
     // live in manifest.blocks would produce a duplicate entry; the
     // caller MUST trash the live copy first.

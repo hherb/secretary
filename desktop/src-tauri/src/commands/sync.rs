@@ -1,18 +1,24 @@
 //! Sync IPC commands (D.1.14): `sync_status` (read) + `sync_now` (mutation).
 //! Thin delegates to the bridge `sync_status` / `sync_vault` (D.1.13), in the
 //! same `#[tauri::command]` + testable `*_impl` split as the other command
-//! modules. `sync_now` re-opens a core identity from a fresh password (the
-//! bridge surface takes a password, not the session identity) — the password
-//! rides the zeroize-typed `Password` and is dropped at `_impl` end.
+//! modules. `sync_now` still re-opens a core identity from a fresh password
+//! through the bridge's password surface, although the bridge now also has
+//! session variants (`sync_vault_with_session*`); moving onto those is #732.
+//! The password rides the zeroize-typed `Password` and is dropped at `_impl`
+//! end.
 
+use std::path::Path;
 use std::sync::Mutex;
 
 use tauri::State;
 
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_ffi_bridge::{
-    sync_commit_decisions as bridge_sync_commit_decisions, sync_status as bridge_sync_status,
-    sync_vault as bridge_sync_vault,
+    refresh_manifest as bridge_refresh_manifest, refresh_manifest_in as bridge_refresh_manifest_in,
+    sync_commit_decisions as bridge_sync_commit_decisions,
+    sync_commit_decisions_in as bridge_sync_commit_decisions_in, sync_status as bridge_sync_status,
+    sync_vault as bridge_sync_vault, sync_vault_in as bridge_sync_vault_in,
+    SyncOutcomeDto as BridgeOutcome,
 };
 
 use crate::auto_lock::now_ms;
@@ -57,14 +63,65 @@ pub fn sync_now_impl(
     password: &Password,
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, AppError> {
+    sync_now_core(state, None, password, now_ms)
+}
+
+/// [`sync_now_impl`] against an explicit sync-state directory (hermetic tests).
+pub fn sync_now_in_impl(
+    state: &Mutex<VaultSession>,
+    state_dir: &Path,
+    password: &Password,
+    now_ms: u64,
+) -> Result<SyncOutcomeDto, AppError> {
+    sync_now_core(state, Some(state_dir), password, now_ms)
+}
+
+/// Whether the session's handle must be re-read after a pass with this outcome.
+///
+/// Not after `SilentMerge`: the password pass persists a clock that always
+/// dominates the disk (#730), so a refresh there would fail as a rollback.
+/// That leaves the user at a dead end: the handle stays stale, so the next
+/// write is refused (`VaultChangedOnDisk`); a repeat sync is
+/// `RollbackRejected` (#730) and does not refresh; and a lock-and-reopen is
+/// refused as a rollback (#730). The user is stuck until the disk clock
+/// catches up or #730 / #732 / #733 land. iOS is unaffected: its session
+/// sync refreshes against the pre-pass clock.
+///
+/// Exhaustive on purpose (no `_` arm): a new outcome must decide here.
+fn needs_refresh(outcome: &BridgeOutcome) -> bool {
+    match outcome {
+        BridgeOutcome::NothingToDo
+        | BridgeOutcome::AppliedAutomatically
+        | BridgeOutcome::MergedClean => true,
+        // The dead end described above (#730).
+        BridgeOutcome::SilentMerge => false,
+        // Nothing was written.
+        BridgeOutcome::ConflictsPending { .. } | BridgeOutcome::RollbackRejected => false,
+    }
+}
+
+fn sync_now_core(
+    state: &Mutex<VaultSession>,
+    state_dir: Option<&Path>,
+    password: &Password,
+    now_ms: u64,
+) -> Result<SyncOutcomeDto, AppError> {
     let session = lock_session(state)?;
     session.with_unlocked(|u| {
-        let outcome = bridge_sync_vault(
-            &u.vault_folder,
-            SecretBytes::from(password.expose()),
-            now_ms,
-        )
+        let pw = SecretBytes::from(password.expose());
+        let outcome = match state_dir {
+            Some(d) => bridge_sync_vault_in(d, &u.vault_folder, pw, now_ms),
+            None => bridge_sync_vault(&u.vault_folder, pw, now_ms),
+        }
         .map_err(map_ffi_error)?;
+        if needs_refresh(&outcome) {
+            // The pass wrote through its own open; re-read so our next write is not refused.
+            match state_dir {
+                Some(d) => bridge_refresh_manifest_in(d, &u.identity, &u.manifest),
+                None => bridge_refresh_manifest(&u.identity, &u.manifest),
+            }
+            .map_err(map_ffi_error)?;
+        }
         Ok(SyncOutcomeDto::from(outcome))
     })
 }
@@ -91,6 +148,36 @@ pub fn sync_commit_decisions_impl(
     manifest_hash: Vec<u8>,
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, AppError> {
+    sync_commit_core(state, None, password, decisions, manifest_hash, now_ms)
+}
+
+/// [`sync_commit_decisions_impl`] against an explicit sync-state directory.
+pub fn sync_commit_decisions_in_impl(
+    state: &Mutex<VaultSession>,
+    state_dir: &Path,
+    password: &Password,
+    decisions: Vec<VetoDecisionDto>,
+    manifest_hash: Vec<u8>,
+    now_ms: u64,
+) -> Result<SyncOutcomeDto, AppError> {
+    sync_commit_core(
+        state,
+        Some(state_dir),
+        password,
+        decisions,
+        manifest_hash,
+        now_ms,
+    )
+}
+
+fn sync_commit_core(
+    state: &Mutex<VaultSession>,
+    state_dir: Option<&Path>,
+    password: &Password,
+    decisions: Vec<VetoDecisionDto>,
+    manifest_hash: Vec<u8>,
+    now_ms: u64,
+) -> Result<SyncOutcomeDto, AppError> {
     let bridge_decisions: Vec<secretary_ffi_bridge::VetoDecisionDto> = decisions
         .into_iter()
         .map(|d| secretary_ffi_bridge::VetoDecisionDto {
@@ -100,14 +187,33 @@ pub fn sync_commit_decisions_impl(
         .collect();
     let session = lock_session(state)?;
     session.with_unlocked(|u| {
-        let outcome = bridge_sync_commit_decisions(
-            &u.vault_folder,
-            SecretBytes::from(password.expose()),
-            bridge_decisions,
-            manifest_hash,
-            now_ms,
-        )
+        let pw = SecretBytes::from(password.expose());
+        let outcome = match state_dir {
+            Some(d) => bridge_sync_commit_decisions_in(
+                d,
+                &u.vault_folder,
+                pw,
+                bridge_decisions,
+                manifest_hash,
+                now_ms,
+            ),
+            None => bridge_sync_commit_decisions(
+                &u.vault_folder,
+                pw,
+                bridge_decisions,
+                manifest_hash,
+                now_ms,
+            ),
+        }
         .map_err(map_ffi_error)?;
+        if needs_refresh(&outcome) {
+            // Same rule as `sync_now_core` (#730).
+            match state_dir {
+                Some(d) => bridge_refresh_manifest_in(d, &u.identity, &u.manifest),
+                None => bridge_refresh_manifest(&u.identity, &u.manifest),
+            }
+            .map_err(map_ffi_error)?;
+        }
         Ok(SyncOutcomeDto::from(outcome))
     })
 }

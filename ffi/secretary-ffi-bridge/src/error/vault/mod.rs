@@ -330,6 +330,12 @@ pub enum FfiVaultError {
     #[error("sync decisions did not cover the pending conflicts")]
     SyncDecisionsIncomplete,
 
+    /// The vault's manifest changed on disk since this session opened it (a
+    /// sync or another device wrote it); a manifest write was refused so it
+    /// cannot overwrite that state. Nothing was written. Sync, then retry.
+    #[error("the vault changed on disk since it was opened; sync, then retry")]
+    VaultChangedOnDisk,
+
     /// ADR 0009 (B.2): the requested device slot (`devices/<uuid>.wrap`) does
     /// not exist. Returned by `open_with_device_secret` / `remove_device_slot`.
     /// Benign "unknown device" caller condition, not a data-integrity failure.
@@ -539,6 +545,10 @@ impl From<secretary_core::vault::VaultError> for FfiVaultError {
             // ADR 0009 (B.2): promoted to its own variant (was a CorruptVault
             // fold in B.1 before the device-slot FFI surface existed).
             VE::DeviceSlotNotFound => FfiVaultError::DeviceSlotNotFound,
+
+            // #101: a manifest writer found the on-disk manifest is no longer
+            // the envelope this session loaded, and refused before writing.
+            VE::ManifestChangedOnDisk => FfiVaultError::VaultChangedOnDisk,
 
             // #350/#374: open_vault detected crash residue — an on-disk
             // block whose bytes do not BLAKE3-hash to the manifest's

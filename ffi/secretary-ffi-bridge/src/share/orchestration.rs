@@ -231,8 +231,10 @@ fn guard_new_recipient_no_substitution(
 /// `core::VaultError` variant becomes a *compile* error here rather than
 /// silently folding to `SaveCryptoFailure`, forcing a deliberate routing
 /// decision at the share-mapper boundary.
-fn map_core_vault_error_share(e: VaultError) -> FfiVaultError {
+pub(crate) fn map_core_vault_error_share(e: VaultError) -> FfiVaultError {
     match &e {
+        // #101: stale-session guard refused before any write.
+        VaultError::ManifestChangedOnDisk => FfiVaultError::VaultChangedOnDisk,
         e @ VaultError::Io { .. } => FfiVaultError::FolderInvalid {
             detail: detail::gated(e),
         },

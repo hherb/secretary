@@ -9,7 +9,9 @@ import Foundation
 /// variant (wrong password is indistinguishable from a tampered vault). Do NOT
 /// split it into a "wrong credential" case — that reintroduces the oracle.
 public enum VaultSyncError: Error, Equatable {
-    /// Password re-open during the pass failed: wrong password OR corruption.
+    /// Identity re-open failed: wrong password OR corruption. Kept because
+    /// `mapVaultSyncError` still maps the FFI `WrongPasswordOrCorrupt` arm; the
+    /// session sync path never produces it.
     case wrongPasswordOrCorrupt
     /// Another sync pass already holds the per-vault lock.
     case inProgress
@@ -28,4 +30,8 @@ public enum VaultSyncError: Error, Equatable {
     /// `resolve` was called without a prior `conflictsPending` pass. Raised
     /// entirely Swift-side; no FFI call is made.
     case noPendingConflict
+    /// "Sync now" / Apply was refused by the write re-auth gate (cancelled or
+    /// failed biometric / password confirmation). No pass ran. Carries a
+    /// diagnostic label only. Raised entirely Swift-side.
+    case reauthFailed(String)
 }

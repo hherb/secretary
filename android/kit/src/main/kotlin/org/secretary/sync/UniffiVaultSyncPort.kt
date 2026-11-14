@@ -15,8 +15,9 @@ import uniffi.secretary.syncVault
 /**
  * The real [VaultSyncPort] over the generated `uniffi.secretary` sync calls. This is the only
  * [VaultSyncPort] implementation that invokes the bindings (the pure DTO/error mappers reference
- * the generated types too, but only as translators). A faithful Kotlin mirror of iOS
- * `UniffiVaultSyncPort.swift`.
+ * the generated types too, but only as translators). It mirrors the iOS password port that
+ * #101 removed; iOS now syncs through the open session (`UniffiVaultSession+Sync.swift`), which is
+ * where Android goes in #733.
  *
  * [sync] and [commitDecisions] re-open the vault from the password (full Argon2id), so they run
  * on [ioDispatcher] (default [Dispatchers.IO]) to keep the caller responsive; [status] is a cheap
@@ -32,6 +33,8 @@ class UniffiVaultSyncPort(
     // (stateDir, vaultFolder, password, decisions, manifestHash, nowMs) -> outcome
     private val commitFn: (String, String, java.nio.ByteBuffer, List<VetoDecisionDto>, ByteArray, ULong) -> SyncOutcomeDto =
         ::syncCommitDecisions,
+    // Re-reads the open session after a pass (#101); null when there is no session to refresh.
+    private val refreshSession: ((String) -> Unit)? = null,
 ) : VaultSyncPort {
 
     override suspend fun status(stateDir: String, vaultUuid: ByteArray): SyncStatus =
@@ -45,7 +48,7 @@ class UniffiVaultSyncPort(
     ): SyncOutcome = withContext(ioDispatcher) {
         mapOutcome(callMappingErrors {
             withDirectSecret(password) { pw -> syncFn(stateDir, vaultFolder, pw, nowMs) }
-        })
+        }.also { refreshIfNeeded(stateDir, it) })
     }
 
     override suspend fun commitDecisions(
@@ -61,7 +64,27 @@ class UniffiVaultSyncPort(
             withDirectSecret(password) { pw ->
                 commitFn(stateDir, vaultFolder, pw, dtoDecisions, manifestHash, nowMs)
             }
-        })
+        }.also { refreshIfNeeded(stateDir, it) })
+    }
+
+    // Not after SilentMerge: the password pass persists a clock that always dominates the disk
+    // (#730), so a refresh there would fail as a rollback. That is a dead end: the handle stays
+    // stale, so the next write is refused (VaultChangedOnDisk); a repeat sync is RollbackRejected
+    // (#730) and does not refresh; a lock-and-reopen is refused as a rollback (#730). The user is
+    // stuck until the disk clock catches up or #730/#732/#733 land. iOS is unaffected (its session
+    // sync refreshes against the pre-pass clock). Not after Rollback/Conflicts: nothing written.
+    private fun refreshIfNeeded(stateDir: String, outcome: SyncOutcomeDto) {
+        val refresh = refreshSession ?: return
+        // Exhaustive on purpose (no else): a new outcome must decide here.
+        val needed = when (outcome) {
+            SyncOutcomeDto.NothingToDo,
+            SyncOutcomeDto.AppliedAutomatically,
+            SyncOutcomeDto.MergedClean -> true
+            SyncOutcomeDto.SilentMerge,
+            SyncOutcomeDto.RollbackRejected,
+            is SyncOutcomeDto.ConflictsPending -> false
+        }
+        if (needed) callMappingErrors { refresh(stateDir) }
     }
 }
 

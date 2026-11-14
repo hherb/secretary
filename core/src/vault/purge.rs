@@ -20,6 +20,7 @@ use crate::vault::orchestrators::{
     format_uuid_hyphenated, resign_and_write_manifest, tick_clock, BLOCK_FILE_EXTENSION,
     TRASH_SUBDIR,
 };
+use crate::vault::session_state::ensure_manifest_unchanged_on_disk;
 use crate::vault::{OpenVault, VaultError};
 
 /// Pure classification over a block file's cleartext §6.2 recipient
@@ -173,6 +174,10 @@ pub fn purge_block(
     now_ms: u64,
     rng: &mut (impl RngCore + CryptoRng),
 ) -> Result<PurgeReport, VaultError> {
+    // #101: refuse before ANY file op, including the re-purge branch's
+    // residual-file removal, if another session moved the manifest.
+    ensure_manifest_unchanged_on_disk(folder, &open.manifest_file)?;
+
     // Step 1: locate the TrashEntry.
     let idx = open
         .manifest
@@ -291,6 +296,9 @@ pub(crate) fn purge_batch_commit(
     rng: &mut (impl RngCore + CryptoRng),
     context: &'static str,
 ) -> Result<(usize, usize), VaultError> {
+    // #101: refuse before ANY file write if another session moved the manifest.
+    ensure_manifest_unchanged_on_disk(folder, &open.manifest_file)?;
+
     let mut staged = open.manifest.clone();
     for &idx in target_indices {
         staged.trash[idx].purged_at_ms = Some(now_ms);

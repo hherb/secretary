@@ -1,6 +1,7 @@
 //! `commit_with_decisions` — disk-mutation half of the C.1.1b merge
-//! commit path. Re-opens the vault, re-checks the manifest envelope
-//! hash for TOCTOU freshness, applies decisions via
+//! commit path. Re-verifies the on-disk vault from the caller's
+//! already-unlocked identity (no KDF re-run), re-checks the manifest
+//! envelope hash for TOCTOU freshness, applies decisions via
 //! [`super::apply_decisions`], re-encrypts every diverging block with a
 //! fresh AEAD nonce, builds + signs a new manifest, and atomically
 //! writes block-first manifest-last per design doc §D6 / option (d).
@@ -22,23 +23,28 @@ use zeroize::Zeroize;
 use crate::crypto::aead;
 use crate::crypto::hash::hash as blake3_hash;
 use crate::crypto::kem::MlKem768Public;
-use crate::crypto::secret::{SecretBytes, Sensitive};
+use crate::crypto::secret::Sensitive;
 use crate::crypto::sig::{Ed25519Secret, MlDsa65Secret};
+use crate::identity::card::ContactCard;
 use crate::identity::fingerprint::fingerprint;
 use crate::sync::bundle::compute_manifest_hash;
 use crate::sync::commit::apply_decisions;
 use crate::sync::draft::{DraftMerge, RecordId, VetoDecision};
 use crate::sync::error::SyncError;
 use crate::sync::state::SyncState;
+use crate::unlock::bundle::IdentityBundle;
+use crate::unlock::UnlockedIdentity;
 use crate::vault::block::VectorClockEntry;
 use crate::vault::io::write_atomic;
+use crate::vault::manifest::Manifest;
 use crate::vault::orchestrators::{
-    format_uuid_hyphenated, open_vault, BLOCKS_SUBDIR, BLOCK_FILE_EXTENSION, MANIFEST_FILENAME,
+    format_uuid_hyphenated, BLOCKS_SUBDIR, BLOCK_FILE_EXTENSION, MANIFEST_FILENAME,
 };
 use crate::vault::record::Record;
+use crate::vault::verify_vault_state;
 use crate::vault::{
     encode_block_file, encode_manifest_file, encrypt_block, sign_manifest, BlockHeader,
-    BlockPlaintext, ManifestHeader, RecipientPublicKeys, Unlocker, FILE_KIND_BLOCK,
+    BlockPlaintext, ManifestHeader, RecipientPublicKeys, FILE_KIND_BLOCK,
 };
 
 /// Block plaintext `block_version` for v1 (§6.3). v1 is the only value
@@ -51,8 +57,10 @@ const SCHEMA_VERSION_V1: u32 = 1;
 
 /// Atomic commit of a merged + decided vault state.
 ///
-/// Re-opens the vault (verifies the manifest hybrid signature and runs
-/// `verify_block_fingerprints` per design §D6), re-hashes the on-disk
+/// Re-verifies the vault from the already-unlocked `identity` via
+/// [`verify_vault_state`] (manifest hybrid signature, owner-card key
+/// binding, KDF cross-check, and `verify_block_fingerprints` per design
+/// §D6; no password, no Argon2id), re-hashes the on-disk
 /// manifest envelope for TOCTOU freshness against `draft.manifest_hash`,
 /// applies the caller's [`VetoDecision`] slice via `apply_decisions`,
 /// re-encrypts every diverging block with a fresh AEAD nonce and BLAKE3-
@@ -75,8 +83,8 @@ const SCHEMA_VERSION_V1: u32 = 1;
 /// - [`SyncError::InvalidArgument`] — structural mismatch between
 ///   `draft` and the on-disk manifest (a `block_uuid` in
 ///   `draft.plan.diverging_blocks` missing from `draft.per_block_clocks`
-///   / `draft.per_block_records` or from the cached `open.manifest`).
-/// - [`SyncError::Vault`] — wraps any `open_vault`, AEAD encrypt,
+///   / `draft.per_block_records` or from the verified on-disk manifest).
+/// - [`SyncError::Vault`] — wraps any re-verification, AEAD encrypt,
 ///   encoding, signing, or `write_atomic` failure.
 ///
 /// # Crash recovery (design §D6 / option (d))
@@ -90,25 +98,24 @@ const SCHEMA_VERSION_V1: u32 = 1;
 /// final state.
 pub fn commit_with_decisions(
     vault_folder: &Path,
-    password: &SecretBytes,
+    identity: &UnlockedIdentity,
     draft: DraftMerge,
     decisions: Vec<VetoDecision>,
     now_ms: u64,
 ) -> Result<SyncState, SyncError> {
-    // Step 1: re-open the vault. open_vault re-verifies the manifest
-    // signature AND runs verify_block_fingerprints (D6 gate) so a
-    // commit-in-progress crash from a prior call surfaces as
-    // VaultError::BlockFingerprintMismatch here rather than producing a
-    // silently inconsistent state.
-    let open =
-        open_vault(vault_folder, Unlocker::Password(password), None).map_err(SyncError::Vault)?;
+    // Step 1: re-verify the vault from the unlocked identity.
+    // verify_vault_state re-verifies the manifest signature AND runs
+    // verify_block_fingerprints (D6 gate) so a commit-in-progress crash
+    // from a prior call surfaces as VaultError::BlockFingerprintMismatch
+    // here rather than producing a silently inconsistent state.
+    let verified = verify_vault_state(vault_folder, identity, None).map_err(SyncError::Vault)?;
 
     // Step 2: TOCTOU freshness re-check. Read the manifest envelope
     // bytes off disk, BLAKE3-hash them, compare with the hash captured
-    // by prepare_merge. open_vault already authenticated the on-disk
-    // bytes; this raw re-read can race a concurrent writer between
-    // step 1's open and this call, but either way we hash whatever the
-    // current bytes are and compare.
+    // by prepare_merge. verify_vault_state already authenticated the
+    // on-disk bytes; this raw re-read can race a concurrent writer
+    // between step 1's verify and this call, but either way we hash
+    // whatever the current bytes are and compare.
     let manifest_path = vault_folder.join(MANIFEST_FILENAME);
     let envelope_bytes = std::fs::read(&manifest_path).map_err(|e| {
         SyncError::Vault(crate::vault::VaultError::Io {
@@ -128,7 +135,7 @@ pub fn commit_with_decisions(
     // Step 4: derive owner sender + recipient keys once. The golden
     // single-owner v1 model means author == recipient; the recipient
     // list contains exactly the owner, mirroring save_block / share_block.
-    let bag = OwnerKeyBag::derive(&open)?;
+    let bag = OwnerKeyBag::derive(&identity.identity, &verified.owner_card)?;
 
     // Step 5: per-affected-block re-encrypt + atomic write. Block-first
     // ordering — the manifest write is the commit point (D6).
@@ -138,7 +145,7 @@ pub fn commit_with_decisions(
         let new_entry = rewrite_one_block(
             vault_folder,
             &mut rng,
-            &open,
+            &verified.manifest,
             &bag,
             *block_uuid,
             &draft,
@@ -151,7 +158,7 @@ pub fn commit_with_decisions(
     // Step 6: build the new manifest body. Copy the cached manifest,
     // replace top-level vector_clock, update each affected block's
     // BlockEntry with the new fingerprint + per-block clock + last_mod_ms.
-    let mut new_manifest = open.manifest.clone();
+    let mut new_manifest = verified.manifest.clone();
     new_manifest.vector_clock = draft.post_merge_clock.clone();
     for entry in new_manifest.blocks.iter_mut() {
         if let Some(new) = new_block_entries.get(&entry.block_uuid) {
@@ -181,15 +188,15 @@ pub fn commit_with_decisions(
     // header preserves vault_uuid + created_at_ms from the prior
     // envelope; only last_mod_ms advances.
     let new_header = ManifestHeader {
-        vault_uuid: open.manifest_file.header.vault_uuid,
-        created_at_ms: open.manifest_file.header.created_at_ms,
+        vault_uuid: verified.manifest_file.header.vault_uuid,
+        created_at_ms: verified.manifest_file.header.created_at_ms,
         last_mod_ms: now_ms,
     };
     let aead_nonce = aead::random_nonce(&mut rng);
     let new_manifest_file = sign_manifest(
         new_header,
         &new_manifest,
-        &open.identity_block_key,
+        &identity.identity_block_key,
         &aead_nonce,
         bag.owner_fp,
         &bag.owner_ed_sk,
@@ -235,29 +242,27 @@ struct OwnerKeyBag {
 }
 
 impl OwnerKeyBag {
-    /// Derive the owner sender + recipient keys from an already-opened
-    /// vault handle. Mirrors `save_block`'s step-4 owner-key setup. The
-    /// stack copy of the Ed25519 SK is zeroized immediately after
-    /// wrapping in [`Sensitive`] (`[u8; 32]: Copy` move-residue pattern,
-    /// per CLAUDE.md memory hygiene).
-    fn derive(open: &crate::vault::OpenVault) -> Result<Self, SyncError> {
-        let owner_card_bytes = open
-            .owner_card
+    /// Derive the owner sender + recipient keys from the unlocked identity
+    /// bundle and the verified owner card. Mirrors `save_block`'s step-4
+    /// owner-key setup. The stack copy of the Ed25519 SK is zeroized
+    /// immediately after wrapping in [`Sensitive`] (`[u8; 32]: Copy`
+    /// move-residue pattern, per CLAUDE.md memory hygiene).
+    fn derive(bundle: &IdentityBundle, owner_card: &ContactCard) -> Result<Self, SyncError> {
+        let owner_card_bytes = owner_card
             .to_canonical_cbor()
             .map_err(crate::vault::VaultError::from)?;
         let owner_fp = fingerprint(&owner_card_bytes);
-        let owner_pk_bundle = open
-            .owner_card
+        let owner_pk_bundle = owner_card
             .pk_bundle_bytes()
             .map_err(crate::vault::VaultError::from)?;
-        let mut ed_sk_bytes = *open.identity.ed25519_sk.expose();
+        let mut ed_sk_bytes = *bundle.ed25519_sk.expose();
         let owner_ed_sk: Ed25519Secret = Sensitive::new(ed_sk_bytes);
         ed_sk_bytes.zeroize();
-        let owner_pq_sk = MlDsa65Secret::from_bytes(open.identity.ml_dsa_65_sk.expose())
+        let owner_pq_sk = MlDsa65Secret::from_bytes(bundle.ml_dsa_65_sk.expose())
             .map_err(crate::vault::VaultError::from)?;
         // KemError → BlockError → VaultError per the existing
         // conversion chain (BlockError::Kem `#[from] KemError`).
-        let owner_ml_kem_pk = MlKem768Public::from_bytes(&open.owner_card.ml_kem_768_pk)
+        let owner_ml_kem_pk = MlKem768Public::from_bytes(&owner_card.ml_kem_768_pk)
             .map_err(|e| crate::vault::VaultError::from(crate::vault::BlockError::from(e)))?;
         Ok(Self {
             owner_fp,
@@ -265,7 +270,7 @@ impl OwnerKeyBag {
             owner_ed_sk,
             owner_pq_sk,
             owner_ml_kem_pk,
-            x25519_pk: open.owner_card.x25519_pk,
+            x25519_pk: owner_card.x25519_pk,
         })
     }
 
@@ -297,7 +302,7 @@ struct NewBlockEntry {
 fn rewrite_one_block(
     vault_folder: &Path,
     rng: &mut OsRng,
-    open: &crate::vault::OpenVault,
+    manifest: &Manifest,
     bag: &OwnerKeyBag,
     block_uuid: [u8; 16],
     draft: &DraftMerge,
@@ -325,8 +330,7 @@ fn rewrite_one_block(
         .cloned()
         .collect();
 
-    let existing_entry = open
-        .manifest
+    let existing_entry = manifest
         .blocks
         .iter()
         .find(|b| b.block_uuid == block_uuid)
@@ -339,7 +343,7 @@ fn rewrite_one_block(
         format_version: crate::version::FORMAT_VERSION,
         suite_id: crate::version::SUITE_ID,
         file_kind: FILE_KIND_BLOCK,
-        vault_uuid: open.manifest.vault_uuid,
+        vault_uuid: manifest.vault_uuid,
         block_uuid,
         created_at_ms: existing_entry.created_at_ms,
         last_mod_ms: now_ms,

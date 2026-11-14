@@ -189,9 +189,10 @@ pub use settings::{
 };
 pub use share::share_block;
 pub use sync::{
-    sync_commit_decisions, sync_commit_decisions_in, sync_status, sync_status_in, sync_vault,
-    sync_vault_in, CollisionDto, DeviceClockDto, SyncOutcomeDto, SyncStatusDto, VetoDecisionDto,
-    VetoDto,
+    refresh_manifest, refresh_manifest_in, sync_commit_decisions, sync_commit_decisions_in,
+    sync_commit_decisions_with_session, sync_commit_decisions_with_session_in, sync_status,
+    sync_status_in, sync_vault, sync_vault_in, sync_vault_with_session, sync_vault_with_session_in,
+    CollisionDto, DeviceClockDto, SyncOutcomeDto, SyncStatusDto, VetoDecisionDto, VetoDto,
 };
 pub use trash::{list_trashed_blocks, trash_block, TrashedBlock};
 pub use unlock::{open_with_password, open_with_recovery};

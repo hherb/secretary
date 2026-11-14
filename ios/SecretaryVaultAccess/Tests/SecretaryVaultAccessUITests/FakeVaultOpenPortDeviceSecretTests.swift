@@ -15,6 +15,7 @@ final class FakeVaultOpenPortDeviceSecretTests: XCTestCase {
         func renameBlock(blockUuid: [UInt8], newName: String) throws {}
         func moveRecord(sourceBlockUuid: [UInt8], targetBlockUuid: [UInt8],
                         sourceRecordUuid: [UInt8]) throws -> [UInt8] { [] }
+        func refreshFromDisk(stateDir: String) throws {}
         func wipe() {}
     }
 

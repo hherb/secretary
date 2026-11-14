@@ -114,32 +114,6 @@ private struct RootView: View {
                             }
                         },
                         onUnlocked: { session, password in
-                            let folder = URL(fileURLWithPath:
-                                String(decoding: scoped.pathData, as: UTF8.self))
-                            // App-sandbox dir creation effectively never fails; if it
-                            // does, fall back to a (ephemeral) temp dir so unlock still
-                            // proceeds — sync state just won't persist across launches.
-                            let stateDir: URL
-                            do {
-                                stateDir = try defaultSyncStateDir()
-                            } catch {
-                                stateDir = FileManager.default.temporaryDirectory
-                                appLog.error("sync state dir unavailable, using temp: \(diagnosticDetail(error), privacy: .public)")
-                            }
-                            let (syncVM, monitor) = makeVaultSync(
-                                session: session, folder: folder, stateDir: stateDir)
-                            // A failed watcher start leaves detection advisory-blind
-                            // (the badge falls back to manual "Sync now"); not fatal.
-                            do {
-                                try monitor.start()
-                            } catch {
-                                appLog.error("folder-change monitor failed to start: \(diagnosticDetail(error), privacy: .public)")
-                            }
-                            if let password {
-                                Task { await syncVM.syncAtUnlock(password: password) }
-                            } else {
-                                Task { await syncVM.refreshStatus() }
-                            }
                             if rememberDevice, let password {
                                 // Enroll runs a second Argon2id password-open
                                 // (addDeviceSlot) — offload off the main actor so
@@ -173,8 +147,8 @@ private struct RootView: View {
                                                 // Best-effort wipe of our copy once
                                                 // enroll has consumed it (#453). Genuine
                                                 // best-effort, NOT a guarantee: this
-                                                // buffer COW-shares with the concurrent
-                                                // `syncAtUnlock` task above, so while that
+                                                // buffer COW-shares with the captured
+                                                // `password` constant, so while that
                                                 // share is live `zeroize` COW-copies and
                                                 // clears only a throwaway — it bites the
                                                 // real bytes only in the window where this
@@ -210,10 +184,7 @@ private struct RootView: View {
                             let gate = makeRetargetableReauthGate(
                                 session: session, vaultPath: scoped.pathData,
                                 biometricUnlock: false)   // password open: initialAuthAt nil (#284)
-                            route = .browse(VaultBrowseViewModel(session: session, gate: gate,
-                                                                 trashPort: session as? TrashPort,
-                                                                 settingsPort: session as? SettingsPort),
-                                            syncVM, monitor, scoped)
+                            enterBrowse(session: session, gate: gate, scoped: scoped)
                         })
                 case .browse(let browseModel, let syncVM, let monitor, let scoped):
                     VaultBrowseScreen(
@@ -288,10 +259,9 @@ private struct RootView: View {
         route = .unlock(scoped)
     }
 
-    /// Builds sync + monitor exactly like the password path (`onUnlocked` above),
-    /// then routes to `.browse` with the gate `DeviceUnlockOpen` already seeded
-    /// at the unlock instant (#284). No sync password on the device path (there
-    /// is no user-entered secret to derive one from).
+    /// Routes a biometric open to `.browse` with the gate `DeviceUnlockOpen`
+    /// already seeded at the unlock instant (#284). Sync needs no password (#101),
+    /// so this path syncs at unlock exactly like the password one.
     @MainActor
     private func handleBiometricResult(_ result: DeviceUnlockOpenResult,
                                        scoped: ScopedVaultPath) async {
@@ -301,27 +271,44 @@ private struct RootView: View {
         case .failed(let message):
             biometricUnlockError = message           // surface typed message (#341)
         case .opened(let session, let gate):
-            let folder = URL(fileURLWithPath:
-                String(decoding: scoped.pathData, as: UTF8.self))
-            let stateDir: URL
-            do {
-                stateDir = try defaultSyncStateDir()
-            } catch {
-                stateDir = FileManager.default.temporaryDirectory
-                appLog.error("sync state dir unavailable, using temp: \(diagnosticDetail(error), privacy: .public)")
-            }
-            let (syncVM, monitor) = makeVaultSync(session: session, folder: folder, stateDir: stateDir)
-            do {
-                try monitor.start()
-            } catch {
-                appLog.error("folder-change monitor failed to start: \(diagnosticDetail(error), privacy: .public)")
-            }
-            Task { await syncVM.refreshStatus() }    // no sync password on the device path
-            route = .browse(VaultBrowseViewModel(session: session, gate: gate,
-                                                 trashPort: session as? TrashPort,
-                                                 settingsPort: session as? SettingsPort),
-                            syncVM, monitor, scoped)
+            enterBrowse(session: session, gate: gate, scoped: scoped)
         }
+    }
+
+    /// Shared by both unlock paths: build the browse VM, then sync + monitor with
+    /// the SAME gate (so "Sync now" / Apply share the writers' grace window) and a
+    /// reload hook, start the watcher, run sync-at-unlock (never gated), and route
+    /// to `.browse`.
+    @MainActor
+    private func enterBrowse(session: VaultSession, gate: WriteReauthGate,
+                             scoped: ScopedVaultPath) {
+        let folder = URL(fileURLWithPath: String(decoding: scoped.pathData, as: UTF8.self))
+        // App-sandbox dir creation effectively never fails; if it does, fall back to
+        // an (ephemeral) temp dir so unlock still proceeds — sync state just won't
+        // persist across launches.
+        let stateDir: URL
+        do {
+            stateDir = try defaultSyncStateDir()
+        } catch {
+            stateDir = FileManager.default.temporaryDirectory
+            appLog.error("sync state dir unavailable, using temp: \(diagnosticDetail(error), privacy: .public)")
+        }
+        let browseVM = VaultBrowseViewModel(session: session, gate: gate,
+                                            trashPort: session as? TrashPort,
+                                            settingsPort: session as? SettingsPort)
+        // Strong capture is fine: the browse VM never references the sync VM.
+        let (syncVM, monitor) = makeVaultSync(
+            session: session, folder: folder, stateDir: stateDir, gate: gate,
+            onVaultChanged: { browseVM.sessionRefreshed() })
+        // A failed watcher start leaves detection advisory-blind (the badge falls
+        // back to manual "Sync now"); not fatal.
+        do {
+            try monitor.start()
+        } catch {
+            appLog.error("folder-change monitor failed to start: \(diagnosticDetail(error), privacy: .public)")
+        }
+        Task { await syncVM.syncAtUnlock() }
+        route = .browse(browseVM, syncVM, monitor, scoped)
     }
 }
 

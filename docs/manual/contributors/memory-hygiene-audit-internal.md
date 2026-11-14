@@ -2022,6 +2022,18 @@ site:
   into a `SecretBytes` and feeds it directly to the core unlock
   entry points without intermediate plaintext.
 
+  **Password lifetime shrank with session sync (#101).** The sync merge
+  commit (`commit_with_decisions`) now takes the already-unlocked
+  identity instead of a password, so it no longer re-opens the vault:
+  there is no second Argon2id and no second KEK derivation, and no
+  second copy of the password or KEK exists for the commit. The CLI
+  passes drop the password parameter, `cli/src/main.rs` drops the
+  password right after unlocking, and the `secretary-sync` daemon no
+  longer holds it for the life of the process. This removes a
+  long-lived secret rather than adding a wipe site. It does not touch
+  the desktop and Android password sync passes, which still carry a
+  password per call (#732, #733).
+
 The pattern from this memo's "Stack-residue gaps fixed" table is now
 the cross-codebase expectation. New work that introduces a fresh
 `Sensitive::new(stack_var)` site without the accompanying

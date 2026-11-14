@@ -1,6 +1,7 @@
 package org.secretary.sync
 
 import android.os.Looper
+import org.secretary.browse.UniffiVaultSession
 import java.io.File
 
 /**
@@ -17,6 +18,7 @@ import java.io.File
  * weak back-reference is needed. The caller owns the monitor's lifecycle: `start()` on unlock,
  * `stop()` on lock/background.
  *
+ * @param session the open session to refresh after a password sync pass, or null (#101).
  * @param vaultUuid the open vault's UUID, or null to suppress status reads until it is known.
  * @return the model and the monitor; the caller starts/stops the monitor and calls
  *   [VaultSyncModel.syncAtUnlock] once the unlock password is in hand.
@@ -25,13 +27,14 @@ fun makeVaultSync(
     folder: File,
     stateDir: File,
     vaultUuid: ByteArray?,
+    session: UniffiVaultSession? = null,
     wallClock: WallClock = SystemWallClock(),
 ): Pair<VaultSyncModel, ChangeDetectionMonitor> {
     check(Looper.myLooper() == Looper.getMainLooper()) {
         "makeVaultSync must be called on the main thread"
     }
     val coordinator = SyncCoordinator(
-        port = UniffiVaultSyncPort(),
+        port = UniffiVaultSyncPort(refreshSession = session?.let { it::refreshFromDisk }),
         stateDir = stateDir.path,
         vaultFolder = folder.path,
     )

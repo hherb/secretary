@@ -10,7 +10,7 @@ import uniffi.secretary.VetoDto
  * Pure DTO→domain mappers for the uniffi sync surface. The arms map 1:1 to the
  * `SyncOutcomeDto` definition in `ffi/secretary-ffi-uniffi/src/secretary.udl`; if that
  * surface changes, update both these functions and the `SyncOutcome` domain arms.
- * A faithful transcription of iOS `UniffiVaultSyncPort.swift`'s `mapOutcome`/`mapStatus`.
+ * A faithful transcription of iOS `UniffiVaultSession+Sync.swift`'s `mapOutcome`/`mapStatus`.
  */
 internal fun mapOutcome(dto: SyncOutcomeDto): SyncOutcome = when (dto) {
     is SyncOutcomeDto.NothingToDo -> SyncOutcome.NothingToDo

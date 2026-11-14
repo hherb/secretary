@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-14-split-manifest-decode-shipped.md
+docs/handoffs/2026-11-14-session-sync-shipped.md

@@ -6,6 +6,7 @@
 //! before a caller builds a [`FfiApprovedWidening`] set.
 
 mod orchestration;
+pub(crate) use orchestration::baseline_provider;
 pub use orchestration::{
     repair_vault_with_device_secret, repair_vault_with_password, repair_vault_with_recovery,
 };

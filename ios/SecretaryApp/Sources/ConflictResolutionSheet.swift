@@ -4,15 +4,15 @@ import SecretaryVaultAccess
 import SecretaryVaultAccessUI
 
 /// Metadata-only conflict resolution. One row per veto with Keep-mine (default) /
-/// Accept-delete; a read-only disclosure lists auto-merged collisions. Apply
-/// re-prompts for the password (short-lived) and commits the decisions.
+/// Accept-delete; a read-only disclosure lists auto-merged collisions. Apply goes
+/// through the write re-auth gate (inside `resolve`) and commits the decisions
+/// through the open session — no password field (#101).
 struct ConflictResolutionSheet: View {
     @ObservedObject var model: VaultSyncViewModel
     let conflict: PendingConflict
 
     /// Per-record choice; true = keep local (default, no data loss).
     @State private var keepLocal: [String: Bool] = [:]
-    @State private var password = ""
 
     var body: some View {
         NavigationStack {
@@ -46,14 +46,10 @@ struct ConflictResolutionSheet: View {
                         }
                     }
                 }
-                Section("Master password") {
-                    SecureField("password", text: $password)
-                        .secretaryVaultPasswordInput()
-                }
                 if let err = model.lastError {
                     Section("Error") {
-                        Text(String(describing: err))
-                            .font(.footnote.monospaced()).foregroundStyle(.red)
+                        Text(syncErrorMessage(err))
+                            .font(.footnote).foregroundStyle(.red)
                     }
                 }
             }
@@ -62,7 +58,7 @@ struct ConflictResolutionSheet: View {
             .overlay { if model.isSyncing { ProgressView() } }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { password = ""; model.cancelConflict() }
+                    Button("Cancel") { model.cancelConflict() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Apply") {
@@ -70,11 +66,9 @@ struct ConflictResolutionSheet: View {
                             SyncVetoDecision(recordUuidHex: $0.recordUuidHex,
                                              keepLocal: keepLocal[$0.recordUuidHex] ?? true)
                         }
-                        let pw = Array(password.utf8)
-                        password = ""
-                        Task { await model.resolve(decisions: decisions, password: pw) }
+                        Task { await model.resolve(decisions: decisions) }
                     }
-                    .disabled(model.isSyncing || password.isEmpty)
+                    .disabled(model.isSyncing)
                 }
             }
         }

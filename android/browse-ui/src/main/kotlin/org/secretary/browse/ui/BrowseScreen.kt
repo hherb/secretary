@@ -29,6 +29,7 @@ import org.secretary.browse.RecordSummaryView
 import org.secretary.browse.RevealPolicy
 import org.secretary.browse.RevealableField
 import org.secretary.browse.RevealedValue
+import org.secretary.browse.VAULT_CHANGED_ON_DISK_MESSAGE
 import org.secretary.browse.VaultBrowseError
 
 /** Milliseconds per second — auto-hide policy is expressed in seconds; Compose delay takes millis. */
@@ -331,6 +332,8 @@ private fun FieldRow(
 private fun ErrorBanner(error: VaultBrowseError) {
     val text = if (error is VaultBrowseError.ReauthFailed) {
         "Couldn't authorize the change: ${error.detail}"
+    } else if (error is VaultBrowseError.VaultChangedOnDisk) {
+        VAULT_CHANGED_ON_DISK_MESSAGE
     } else {
         "Couldn't read the vault: ${error::class.simpleName}"
     }

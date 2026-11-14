@@ -13,6 +13,14 @@ class SettingsErrorMessageTest {
     }
 
     @Test
+    fun vaultChangedOnDisk_usesTheSharedSyncCopy() {
+        assertEquals(
+            "This vault changed on another device since you opened it. Sync, then try again.",
+            settingsErrorMessage(VaultBrowseError.VaultChangedOnDisk),
+        )
+    }
+
+    @Test
     fun genericLoadOrSaveError_usesNeutralUpdateCopy_notSave() {
         // A hard read error surfaced from load() must NOT read "save" (the #421 bug).
         val msg = settingsErrorMessage(VaultBrowseError.CorruptVault("boom"))

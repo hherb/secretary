@@ -55,7 +55,19 @@ public final class VaultBrowseViewModel: ObservableObject {
 
     public var vaultUuidHex: String { session.vaultUuidHex }
 
-    public func loadBlocks() { blocks = session.blockSummaries() }
+    public func loadBlocks() {
+        blocks = session.blockSummaries()
+    }
+
+    /// The session's manifest was refreshed from disk (a sync pass changed it, or
+    /// Reload). Only a real refresh lifts a refused-write message (#101): a plain
+    /// `loadBlocks` re-reads the same stale handle, and the next write would still
+    /// be refused. Other errors stay. Then reload the block list and the open block.
+    public func sessionRefreshed() {
+        if error == .vaultChangedOnDisk { error = nil }
+        loadBlocks()
+        refresh()
+    }
 
     public func selectBlock(_ block: BlockSummary) {
         selectedBlockUuid = block.uuid
@@ -114,6 +126,27 @@ public final class VaultBrowseViewModel: ObservableObject {
     public func refresh() {
         guard let blockUuid = selectedBlockUuid else { return }
         reload(blockUuid: blockUuid)
+    }
+
+    /// Re-read the manifest from disk into the session (#101), then reload the
+    /// block list and the open block. A refused refresh (e.g. a rollback) maps
+    /// into `error` and reloads nothing, so the UI keeps showing what it had.
+    /// Returns whether the refresh landed, so a caller dismisses a sheet only
+    /// on success.
+    @discardableResult
+    public func reloadFromDisk(stateDir: String) -> Bool {
+        do {
+            try session.refreshFromDisk(stateDir: stateDir)
+        } catch let e as VaultAccessError {
+            error = e
+            return false
+        } catch {
+            self.error = .other(foldDiagnostic(error))
+            return false
+        }
+        error = nil
+        sessionRefreshed()
+        return true
     }
 
     /// Re-auth, then run a guarded write. The `isWriting` guard is set BEFORE

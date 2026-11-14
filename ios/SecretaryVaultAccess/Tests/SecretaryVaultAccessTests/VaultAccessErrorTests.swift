@@ -31,7 +31,7 @@ final class VaultAccessErrorTests: XCTestCase {
         .wrongPasswordOrCorrupt, .wrongMnemonicOrCorrupt, .invalidMnemonic("bad words"),
         .wrongDeviceSecretOrCorrupt, .vaultMismatch, .corruptVault("blk"),
         .blockNotFound("blk"), .recordNotFound("rec"), .invalidArgument("arg"),
-        .folderInvalid("/path"), .reauthFailed("cancelled"), .other("boom"),
+        .folderInvalid("/path"), .vaultChangedOnDisk, .reauthFailed("cancelled"), .other("boom"),
     ]
 
     // #454: every case must surface a friendly, non-nil `errorDescription`, so a
@@ -80,6 +80,14 @@ final class VaultAccessErrorTests: XCTestCase {
             XCTAssertFalse(desc.contains(sentinel),
                            "case \(e) leaked its diagnostic payload into user-facing copy")
         }
+    }
+
+    // The refused-write copy is shared verbatim with Android and desktop (#101);
+    // pin the exact text so the platforms cannot drift apart.
+    func testVaultChangedOnDiskCopyIsVerbatim() {
+        XCTAssertEqual(
+            VaultAccessError.vaultChangedOnDisk.errorDescription,
+            "This vault changed on another device since you opened it. Sync, then try again.")
     }
 
     // Anti-oracle invariant (crypto-design): the three folded "…OrCorrupt" cases must

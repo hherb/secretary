@@ -177,6 +177,9 @@ pub enum AppError {
     #[error("Some conflicts weren't resolved")]
     SyncDecisionsIncomplete,
 
+    #[error("This vault changed on another device since you opened it. Sync, then try again.")]
+    VaultChangedOnDisk,
+
     #[error("Sync failed")]
     SyncFailed {
         #[serde(skip_serializing)]

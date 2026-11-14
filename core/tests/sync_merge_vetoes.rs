@@ -236,10 +236,9 @@ fn commit_with_decisions_keep_local_overrides_peer_tombstone() {
         "veto must target the live record",
     );
 
-    let password = fixtures::golden_vault_001_password();
     let new_state = commit_with_decisions(
         &folder,
-        &password,
+        &identity,
         draft,
         vec![VetoDecision::KeepLocal {
             record_id: VETO_RECORD_UUID,
@@ -322,10 +321,9 @@ fn commit_with_decisions_accept_tombstone_finalizes_peer_delete() {
         "fixture must produce exactly one veto for the per-block-divergent record",
     );
 
-    let password = fixtures::golden_vault_001_password();
     commit_with_decisions(
         &folder,
-        &password,
+        &identity,
         draft,
         vec![VetoDecision::AcceptTombstone {
             record_id: VETO_RECORD_UUID,
@@ -399,8 +397,7 @@ fn commit_with_decisions_missing_veto_decision_aborts_with_typed_error() {
     let block_path = sync_helpers::block_file_path(&folder, &block_uuid);
     let block_bytes_before = std::fs::read(&block_path).expect("read canonical block pre-commit");
 
-    let password = fixtures::golden_vault_001_password();
-    let err = commit_with_decisions(&folder, &password, draft, Vec::new(), COMMIT_NOW_MS)
+    let err = commit_with_decisions(&folder, &identity, draft, Vec::new(), COMMIT_NOW_MS)
         .expect_err(
             "commit_with_decisions must reject an empty decisions vec when vetoes are non-empty",
         );
@@ -464,10 +461,9 @@ fn commit_with_decisions_unknown_veto_decision_aborts_with_typed_error() {
     let block_bytes_before = std::fs::read(&block_path).expect("read canonical block pre-commit");
 
     let stray_record_id: [u8; 16] = [0xFF; 16];
-    let password = fixtures::golden_vault_001_password();
     let err = commit_with_decisions(
         &folder,
-        &password,
+        &identity,
         draft,
         vec![
             VetoDecision::KeepLocal {

@@ -32,7 +32,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::sync::{SyncError, SyncState};
 use secretary_core::unlock::UnlockedIdentity;
 use secretary_core::vault::block::VectorClockEntry;
@@ -336,7 +335,6 @@ pub const READY_NOT_READY_WARN_THRESHOLD: u32 = 5;
 pub fn run_against_vault(
     vault_folder: &Path,
     identity: &UnlockedIdentity,
-    password: &SecretBytes,
     state: &mut SyncState,
     veto_ux: &mut dyn VetoUx,
     state_dir: &Path,
@@ -381,7 +379,7 @@ pub fn run_against_vault(
                     return;
                 }
             }
-            let result = run_one(vault_folder, identity, password, state, veto_ux, now_ms());
+            let result = run_one(vault_folder, identity, state, veto_ux, now_ms());
             let mut save = |s: &SyncState| state::save(state_dir, s);
             after_sync(result, state, &mut save);
         },

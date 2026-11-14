@@ -14,6 +14,8 @@ import SecretaryVaultAccessUI
 struct MacSettingsView: View {
     @StateObject private var viewModel: SettingsViewModel
     @StateObject private var deviceViewModel: DeviceSlotViewModel
+    /// The owning browse VM, for Reload on a `.vaultChangedOnDisk` refusal (#101).
+    let browseViewModel: VaultBrowseViewModel
     let onDone: () -> Void
     /// Called after a successful "Forget This Mac". The parent dismisses this sheet
     /// and then locks: clearing the enclave key makes the write-reauth gate a
@@ -34,10 +36,12 @@ struct MacSettingsView: View {
 
     init(viewModel: SettingsViewModel,
          deviceViewModel: DeviceSlotViewModel,
+         browseViewModel: VaultBrowseViewModel,
          onDone: @escaping () -> Void,
          onForgotten: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: viewModel)
         _deviceViewModel = StateObject(wrappedValue: deviceViewModel)
+        self.browseViewModel = browseViewModel
         self.onDone = onDone
         self.onForgotten = onForgotten
     }
@@ -62,7 +66,11 @@ struct MacSettingsView: View {
                         Text(banner.text).font(.footnote).foregroundStyle(.secondary)
                     }
                     if let error = viewModel.error {
-                        Text(settingsErrorMessage(error)).font(.footnote).foregroundStyle(.red)
+                        if error == .vaultChangedOnDisk {
+                            MacReloadNotice(browseViewModel: browseViewModel, onReloaded: onDone)
+                        } else {
+                            Text(settingsErrorMessage(error)).font(.footnote).foregroundStyle(.red)
+                        }
                     }
                 }
                 Section {

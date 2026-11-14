@@ -2,14 +2,14 @@ import Foundation
 import SecretaryVaultAccess
 
 /// `TrashPort` conformance for `UniffiVaultSession`. Reuses the internal
-/// `write`/`readTrash`/`readTrashInfallible`/`writeTrashReturning`/`deviceUuid`/
+/// `write`/`readMapped`/`readTrashInfallible`/`writeTrashReturning`/`deviceUuid`/
 /// `mapVaultAccessError` helpers so trash writes get the same device-uuid/now
 /// resolution, wiped-guard, and error mapping as every other write. Only block
 /// names + counts cross this boundary — no record plaintext (guaranteed by the
 /// bridge; this adapter never calls a decrypt/read-record FFI function).
 extension UniffiVaultSession: TrashPort {
     public func listTrashedBlocks() throws -> [TrashedBlockInfo] {
-        try readTrash {
+        try readMapped {
             try SecretaryKit.listTrashedBlocks(identity: identity, manifest: manifest)
                 .map { b in
                     TrashedBlockInfo(blockUuid: [UInt8](b.blockUuid),

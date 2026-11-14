@@ -36,9 +36,9 @@ use crate::session::VaultSession;
 
 /// Map a bridge record-delete error to a typed `AppError`. Mirrors
 /// `edit::map_save_error`: `BlockNotFound` / `RecordNotFound` surface
-/// precisely so the editor can react (e.g. the record was deleted under it);
-/// everything else (crypto / IO / save-tail) folds to `RecordSaveFailed`
-/// after a `tracing::warn!`.
+/// precisely so the editor can react (e.g. the record was deleted under it),
+/// as does `VaultChangedOnDisk` (#101); everything else (crypto / IO /
+/// save-tail) folds to `RecordSaveFailed` after a `tracing::warn!`.
 fn map_record_delete_error(e: FfiVaultError) -> AppError {
     match e {
         FfiVaultError::BlockNotFound { uuid_hex } => AppError::BlockNotFound {
@@ -47,6 +47,8 @@ fn map_record_delete_error(e: FfiVaultError) -> AppError {
         FfiVaultError::RecordNotFound { uuid_hex } => AppError::RecordNotFound {
             record_uuid_hex: uuid_hex.into_string(),
         },
+        // #101: keep the stale-session refusal typed so the shared copy shows.
+        FfiVaultError::VaultChangedOnDisk => AppError::VaultChangedOnDisk,
         other => {
             tracing::warn!(?other, "record tombstone/resurrect failed");
             AppError::RecordSaveFailed {
@@ -241,4 +243,18 @@ pub fn list_trashed_blocks_impl(
             })
             .collect())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_record_delete_error_keeps_vault_changed_on_disk_typed() {
+        // #101: the renderer shows the shared "changed on another device" copy.
+        assert!(matches!(
+            map_record_delete_error(FfiVaultError::VaultChangedOnDisk),
+            AppError::VaultChangedOnDisk
+        ));
+    }
 }

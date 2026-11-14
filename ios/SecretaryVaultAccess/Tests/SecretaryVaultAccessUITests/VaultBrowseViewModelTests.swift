@@ -96,4 +96,96 @@ final class VaultBrowseViewModelTests: XCTestCase {
         vm.loadBlocks()
         XCTAssertTrue(vm.hasMoveTargets)
     }
+
+    // MARK: - session sync (#101)
+
+    func testReloadFromDiskReloadsBlocks() throws {
+        var reveals = 0
+        let (session, block, _) = makeSession { reveals += 1 }
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
+        vm.loadBlocks(); vm.selectBlock(block)
+        let merged = BlockSummary(uuid: [8], name: "Merged", createdAtMs: 3, lastModMs: 4)
+        session.blocksAfterRefresh = [block, merged]
+        let readsBefore = session.readCount
+
+        XCTAssertTrue(vm.reloadFromDisk(stateDir: "/state"))
+
+        XCTAssertEqual(session.refreshCount, 1)
+        XCTAssertEqual(session.lastRefreshStateDir, "/state")
+        XCTAssertEqual(vm.blocks, [block, merged])
+        XCTAssertEqual(session.readCount, readsBefore + 1, "open block re-read")
+        XCTAssertNil(vm.error)
+    }
+
+    func testReloadFromDiskFailureSurfacesErrorAndKeepsBlocks() {
+        let (session, block, _) = makeSession {}
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
+        vm.loadBlocks()
+        session.blocksAfterRefresh = []
+        session.failNextRefresh = .corruptVault("rollback")
+
+        XCTAssertFalse(vm.reloadFromDisk(stateDir: "/state"),
+                       "a refused refresh must report failure so a sheet stays open")
+
+        XCTAssertEqual(vm.error, .corruptVault("rollback"))
+        XCTAssertEqual(vm.blocks, [block], "a refused refresh must not reload")
+    }
+
+    func testVaultChangedOnDiskErrorSurfacesOnWrite() async {
+        let (session, _, _) = makeSession {}
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
+        vm.loadBlocks()
+        session.failNextWrite = .vaultChangedOnDisk
+        vm.startCreateBlock()
+
+        await vm.confirmBlockName("Archive")
+
+        XCTAssertEqual(vm.error, .vaultChangedOnDisk)
+        XCTAssertEqual(vm.blockNameDialog, .create, "refused write keeps the dialog open")
+    }
+
+    func testReloadFromDiskClearsStaleVaultChangedOnDiskWithNoBlockSelected() async {
+        let (session, _, _) = makeSession {}
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
+        vm.loadBlocks()
+        session.failNextWrite = .vaultChangedOnDisk
+        vm.startCreateBlock()
+        await vm.confirmBlockName("Archive")
+        XCTAssertEqual(vm.error, .vaultChangedOnDisk)
+
+        vm.reloadFromDisk(stateDir: "/state")
+
+        XCTAssertNil(vm.error, "a successful reload must drop the refused-write message")
+    }
+
+    func testLoadBlocksDoesNotClearVaultChangedOnDisk() async {
+        let (session, _, _) = makeSession {}
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
+        vm.loadBlocks()
+        session.failNextWrite = .vaultChangedOnDisk
+        vm.startCreateBlock()
+        await vm.confirmBlockName("Archive")
+
+        vm.loadBlocks()
+
+        XCTAssertEqual(vm.error, .vaultChangedOnDisk,
+                       "a plain re-read of the stale handle must keep the warning (M2)")
+    }
+
+    func testSessionRefreshedClearsOnlyVaultChangedOnDisk() async {
+        let (session, _, _) = makeSession {}
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
+        vm.loadBlocks()
+        session.failNextWrite = .vaultChangedOnDisk
+        vm.startCreateBlock()
+        await vm.confirmBlockName("Archive")
+        vm.sessionRefreshed()
+        XCTAssertNil(vm.error)
+
+        session.failNextWrite = .corruptVault("x")
+        vm.startCreateBlock()
+        await vm.confirmBlockName("Archive")
+        vm.sessionRefreshed()
+        XCTAssertEqual(vm.error, .corruptVault("x"), "unrelated errors stay visible")
+    }
 }

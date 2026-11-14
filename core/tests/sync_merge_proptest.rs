@@ -100,9 +100,9 @@ proptest! {
             draft.vetoes.len(),
         );
 
-        let password = fixtures::golden_vault_001_password();
+        let _password = fixtures::golden_vault_001_password();
         let new_state =
-            commit_with_decisions(&folder, &password, draft, Vec::new(), COMMIT_NOW_MS)
+            commit_with_decisions(&folder, &identity, draft, Vec::new(), COMMIT_NOW_MS)
                 .expect("commit_with_decisions");
 
         // Re-run sync_once with the returned SyncState. Equal →
@@ -173,9 +173,9 @@ proptest! {
                 "no_veto_fixture must produce zero vetoes (got {})",
                 draft.vetoes.len(),
             );
-            let password = fixtures::golden_vault_001_password();
+            let _password = fixtures::golden_vault_001_password();
             let new_state =
-                commit_with_decisions(folder, &password, draft, Vec::new(), COMMIT_NOW_MS)
+                commit_with_decisions(folder, &identity, draft, Vec::new(), COMMIT_NOW_MS)
                     .expect("commit_with_decisions");
             let records = read_canonical_block_records(folder, block_uuid);
             let block_path = sync_helpers::block_file_path(folder, &block_uuid);
@@ -244,7 +244,7 @@ proptest! {
         let (folder_b, _tmp_b, _block_uuid_b) =
             build_two_veto_fixture(counter_canonical, counter_sibling);
 
-        let password = fixtures::golden_vault_001_password();
+        let _password = fixtures::golden_vault_001_password();
         let decision_a = make_decision(RECORD_A_UUID, keep_local_a);
         let decision_b = make_decision(RECORD_B_UUID, keep_local_b);
 
@@ -264,7 +264,7 @@ proptest! {
                 draft.vetoes.len(),
             );
             let new_state =
-                commit_with_decisions(folder, &password, draft, decisions, COMMIT_NOW_MS)
+                commit_with_decisions(folder, &identity, draft, decisions, COMMIT_NOW_MS)
                     .expect("commit_with_decisions");
             let records = read_canonical_block_records(folder, block_uuid);
             (new_state, records)
@@ -331,7 +331,7 @@ proptest! {
 
         let (bundle, plan) = drive_sync_once_concurrent(&folder);
         let identity = open_identity(&folder);
-        let password = fixtures::golden_vault_001_password();
+        let _password = fixtures::golden_vault_001_password();
 
         let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
         prop_assert_eq!(
@@ -351,7 +351,7 @@ proptest! {
             decisions.push(VetoDecision::KeepLocal { record_id: [*seed; 16] });
         }
 
-        let result = commit_with_decisions(&folder, &password, draft, decisions, COMMIT_NOW_MS);
+        let result = commit_with_decisions(&folder, &identity, draft, decisions, COMMIT_NOW_MS);
 
         if !include_match {
             // Matching decision omitted → Missing fires on

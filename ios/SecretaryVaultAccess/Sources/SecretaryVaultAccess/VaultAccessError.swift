@@ -30,6 +30,9 @@ public enum VaultAccessError: Error, Equatable {
     case invalidArgument(String)
     /// Vault folder missing or unreadable.
     case folderInvalid(String)
+    /// The vault changed on disk since it was opened; the write was refused.
+    /// Sync, then retry.
+    case vaultChangedOnDisk
     /// Biometric re-auth before a write failed or was cancelled. Carries a short
     /// human label derived from the underlying `DeviceUnlockError`. The write was
     /// NOT performed. Local to this Swift enum — NOT a Rust-bridge `FfiVaultError`.
@@ -77,6 +80,8 @@ extension VaultAccessError: LocalizedError {
             return "That value isn’t valid."
         case .folderInvalid:
             return "That folder isn’t a Secretary vault."
+        case .vaultChangedOnDisk:
+            return "This vault changed on another device since you opened it. Sync, then try again."
         case .reauthFailed:
             return "Re-authentication didn’t complete, so the change wasn’t saved."
         case .other:

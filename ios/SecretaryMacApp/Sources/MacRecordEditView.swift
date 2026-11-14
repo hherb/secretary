@@ -16,13 +16,16 @@ import SecretaryVaultAccessUI
 @MainActor
 struct MacRecordEditView: View {
     @StateObject private var viewModel: RecordEditViewModel
+    /// The owning browse VM, for Reload on a `.vaultChangedOnDisk` refusal (#101).
+    let browseViewModel: VaultBrowseViewModel
     let title: String
     let onDone: () -> Void
     let onCancel: () -> Void
 
-    init(viewModel: RecordEditViewModel, title: String,
+    init(viewModel: RecordEditViewModel, browseViewModel: VaultBrowseViewModel, title: String,
          onDone: @escaping () -> Void, onCancel: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: viewModel)
+        self.browseViewModel = browseViewModel
         self.title = title
         self.onDone = onDone
         self.onCancel = onCancel
@@ -70,9 +73,13 @@ struct MacRecordEditView: View {
                 }
                 if let err = viewModel.error {
                     Section("Error") {
-                        Text(err.localizedDescription)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
+                        if err == .vaultChangedOnDisk {
+                            MacReloadNotice(browseViewModel: browseViewModel, onReloaded: onCancel)
+                        } else {
+                            Text(err.localizedDescription)
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
                     }
                 }
             }

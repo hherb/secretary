@@ -7,12 +7,13 @@ import org.secretary.browse.SettingsModel
 import org.secretary.browse.SettingsPort
 import org.secretary.browse.TrashBrowseModel
 import org.secretary.browse.TrashPort
+import org.secretary.browse.UniffiVaultSession
 import org.secretary.browse.UnlockCredential
 import org.secretary.browse.VaultBrowseError
-import org.secretary.browse.hexToBytesPublic
 import org.secretary.browse.VaultBrowseModel
 import org.secretary.browse.VaultOpenPort
 import org.secretary.browse.WriteReauthGate
+import org.secretary.browse.hexToBytesPublic
 import org.secretary.browse.openWithCredential
 import org.secretary.browse.ui.SettingsBrowseViewModel
 import org.secretary.browse.ui.TrashBrowseViewModel
@@ -106,7 +107,7 @@ suspend fun openBrowseWithSync(
         gate.seed(now) // just unlocked → open the grace window
     }
     browseModel.loadBlocks()
-    val (syncModel, monitor) = makeVaultSync(folder, stateDir, effectiveUuid)
+    val (syncModel, monitor) = makeVaultSync(folder, stateDir, effectiveUuid, session as? UniffiVaultSession)
     // Built from the SAME already-open session + gate the browse write path uses — no second FFI
     // open. `session` is the real UniffiVaultSession in production (and in every androidTest caller),
     // which conforms to TrashPort + SettingsPort; the safe casts are null only for a non-conforming

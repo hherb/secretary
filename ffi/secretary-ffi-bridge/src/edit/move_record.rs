@@ -11,6 +11,12 @@
 //!
 //! Both writes go through the shared [`super::save_plaintext`] tail
 //! (which re-signs the manifest and ticks the block clock on each save).
+//!
+//! The two writes are separate manifest writes, so the stale-session guard
+//! (#101) checks each one. If another device writes the manifest between
+//! them, the copy lands and the tombstone is refused with
+//! [`FfiVaultError::VaultChangedOnDisk`], leaving the record in both blocks.
+//! Nothing is lost; the user syncs and deletes the source again.
 
 use std::collections::BTreeMap;
 

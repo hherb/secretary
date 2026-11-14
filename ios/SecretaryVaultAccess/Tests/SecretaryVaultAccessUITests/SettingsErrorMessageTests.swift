@@ -25,6 +25,14 @@ final class SettingsErrorMessageTests: XCTestCase {
             "Couldn’t update settings. Please try again.")
     }
 
+    // A settings save refused because the vault changed on disk must say how to
+    // recover, not "try again" (#101): a retry fails until the session is refreshed.
+    func testVaultChangedOnDiskUsesSharedSyncCopy() {
+        XCTAssertEqual(
+            settingsErrorMessage(.vaultChangedOnDisk),
+            "This vault changed on another device since you opened it. Sync, then try again.")
+    }
+
     // Unparseable input never reaches the view model, so this copy has no
     // VaultAccessError to map — it is a fixed string, pinned here so both Settings
     // screens keep saying the same thing. "Each" not "Both": it fires when EITHER

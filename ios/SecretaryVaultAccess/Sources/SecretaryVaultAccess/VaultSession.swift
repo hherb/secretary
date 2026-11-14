@@ -47,6 +47,10 @@ public protocol VaultSession: AnyObject, Sendable {
     @discardableResult
     func moveRecord(sourceBlockUuid: [UInt8], targetBlockUuid: [UInt8],
                     sourceRecordUuid: [UInt8]) throws -> [UInt8]
+    /// Re-read the manifest from disk into this session's handle, so it reflects
+    /// changes another device made (#101). Guarded against rollback by the sync
+    /// state in `stateDir`; a refused refresh throws and leaves the handle as it was.
+    func refreshFromDisk(stateDir: String) throws
     /// Release ALL secret material held by this session. Idempotent.
     func wipe()
 }

@@ -75,7 +75,7 @@ struct VaultBrowseScreen: View {
         ToolbarItem(placement: .topBarLeading) {
             SyncBadgeView(state: syncModel.badge,
                           nowMs: UInt64(Date().timeIntervalSince1970 * 1_000),
-                          onTap: { syncModel.beginInteractiveSync() })
+                          onTap: { Task { await syncModel.syncNow() } })
         }
         // Manual lock: wipe the session, release the scope, and return to the vault
         // selection screen — the same `onLock` RootView threads for the "Forget This
@@ -185,6 +185,24 @@ struct VaultBrowseScreen: View {
         if let error = viewModel.error {
             Section("Error") {
                 Text(error.localizedDescription).font(.footnote).foregroundStyle(.red)
+                // A write refused because another device changed the vault: sync
+                // (which refreshes the session), then the user retries (#101).
+                if error == .vaultChangedOnDisk {
+                    Button("Sync now") { Task { await syncModel.syncNow() } }
+                        .disabled(syncModel.isSyncing)
+                        .accessibilityIdentifier("sync-now-after-changed-on-disk")
+                }
+            }
+        }
+        if let syncError = syncModel.lastError {
+            Section("Sync") {
+                Text(syncErrorMessage(syncError))
+                    .font(.footnote).foregroundStyle(.red)
+            }
+        } else if syncModel.rollbackRejected {
+            Section("Sync") {
+                Text(syncRollbackRejectedMessage)
+                    .font(.footnote).foregroundStyle(.red)
             }
         }
     }
@@ -224,9 +242,6 @@ struct VaultBrowseScreen: View {
                         viewModel.refresh()
                     }
                 )
-            }
-            .sheet(isPresented: $syncModel.passwordSheetPresented) {
-                SyncPasswordSheet(model: syncModel)
             }
             .sheet(isPresented: $syncModel.conflictSheetPresented) {
                 if let conflict = syncModel.pendingConflict {

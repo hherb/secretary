@@ -98,6 +98,13 @@ describe('userMessageFor', () => {
     const msg = userMessageFor({ code: 'settings_unknown_version' });
     expect(msg.detail).toContain('newer Secretary build');
   });
+
+  it('vault_changed_on_disk carries the verbatim shared copy (#101)', () => {
+    expect(userMessageFor({ code: 'vault_changed_on_disk' })).toEqual({
+      title: 'The vault changed on another device',
+      actionHint: 'This vault changed on another device since you opened it. Sync, then try again.'
+    });
+  });
 });
 
 describe('userMessageForWarning', () => {
@@ -293,6 +300,7 @@ describe('error code allowlists', () => {
       'sync_state_corrupt',
       'sync_failed',
       'sync_decisions_incomplete',
+      'vault_changed_on_disk',
       'invalid_argument',
       'vault_needs_repair',
       'repair_rejected',

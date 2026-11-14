@@ -80,5 +80,8 @@ pub(crate) mod detail;
 pub mod unlock;
 pub mod vault;
 
+#[cfg(test)]
+mod changed_on_disk_tests;
+
 pub use unlock::FfiUnlockError;
 pub use vault::FfiVaultError;

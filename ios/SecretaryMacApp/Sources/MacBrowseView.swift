@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import SecretaryKit
 import SecretaryVaultAccess
 import SecretaryVaultAccessUI
 
@@ -248,13 +249,21 @@ struct MacBrowseView: View {
         }
         .overlay(alignment: .bottom) {
             if let error = viewModel.error {
-                Text(error.localizedDescription).foregroundStyle(.red).padding(8)
+                Group {
+                    if error == .vaultChangedOnDisk {
+                        MacReloadNotice(browseViewModel: viewModel)
+                    } else {
+                        Text(error.localizedDescription).foregroundStyle(.red)
+                    }
+                }
+                .padding(8)
             }
         }
         .onAppear { viewModel.loadBlocks() }
         .sheet(item: $editSession) { session in
             MacRecordEditView(
                 viewModel: session.editVM,
+                browseViewModel: viewModel,
                 title: session.title,
                 onDone: {
                     editSession = nil
@@ -312,6 +321,7 @@ struct MacBrowseView: View {
             MacSettingsView(
                 viewModel: item.vm,
                 deviceViewModel: item.deviceVM,
+                browseViewModel: viewModel,
                 onDone: { settingsSheet = nil },
                 onForgotten: {
                     // Dismiss BEFORE locking. `VaultBrowseViewModel.lock()` cannot see
@@ -334,7 +344,7 @@ struct MacBrowseView: View {
         // another way. loadBlocks() re-reads only `blocks`; it leaves the current
         // selection + records pane untouched.
         .sheet(item: $trashSheet, onDismiss: { viewModel.loadBlocks() }) { item in
-            MacTrashView(viewModel: item.vm, onDone: { trashSheet = nil })
+            MacTrashView(viewModel: item.vm, browseViewModel: viewModel, onDone: { trashSheet = nil })
         }
         // Capture the hosting window's identity (once it is non-nil) so the
         // willClose handler can scope its wipe to this exact window. Closure form

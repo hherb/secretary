@@ -37,6 +37,7 @@ mod record_walk_tests;
 mod repair;
 pub mod retention;
 mod rule_tokens;
+pub(crate) mod session_state;
 pub mod trash_merge;
 pub(crate) mod trash_relocation;
 
@@ -72,6 +73,7 @@ pub use retention::{
     auto_purge_expired, expired_trash_entries, ExpiredEntry, RetentionPurgeReport,
     DEFAULT_RETENTION_WINDOW_MS,
 };
+pub use session_state::{verify_vault_state, VerifiedVaultState};
 pub use trash_merge::{merge_trash_entry, merge_trash_lists, resolve_live_vs_trash};
 // Cross-target test-hook re-exports: integration tests in `tests/*.rs`
 // (and the C.1.1a conflict-copy scanner internally) reuse the
@@ -432,6 +434,14 @@ pub enum VaultError {
         block_uuid: [u8; 16],
         detail: String,
     },
+
+    /// A manifest-writing operation was refused because `manifest.cbor.enc`
+    /// on disk is no longer the envelope this [`OpenVault`] last loaded or
+    /// wrote (#101): another open, or the cloud client, wrote a newer
+    /// manifest. Writing anyway would silently revert that write. Nothing
+    /// was written; the caller must reopen (or sync) and retry.
+    #[error("the vault manifest changed on disk since this session loaded it")]
+    ManifestChangedOnDisk,
 }
 
 #[cfg(test)]

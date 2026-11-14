@@ -140,3 +140,17 @@ def test_commit_decisions_incomplete_raises(tmp_path: Path) -> None:
             bytes(pending.manifest_hash),
             NOW_MS,
         )
+
+
+def test_session_sync_surface_is_exported() -> None:
+    """#101: the stale-write refusal and the three session-sync functions."""
+    import secretary_ffi_py
+
+    assert issubclass(secretary_ffi_py.VaultChangedOnDisk, Exception)
+    assert secretary_ffi_py.VaultChangedOnDisk is not VaultSyncFailed
+    for name in (
+        "sync_vault_with_session",
+        "sync_commit_decisions_with_session",
+        "refresh_manifest",
+    ):
+        assert callable(getattr(secretary_ffi_py, name)), name

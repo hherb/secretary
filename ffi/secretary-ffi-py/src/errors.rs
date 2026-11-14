@@ -68,6 +68,8 @@ create_exception!(secretary_ffi_py, VaultSyncFailed, PyException);
 // Interactive conflict-resolution commit path — decisions did not cover the
 // recomputed veto set. Mirrors the bridge's FfiVaultError::SyncDecisionsIncomplete.
 create_exception!(secretary_ffi_py, VaultSyncDecisionsIncomplete, PyException);
+// A manifest write was refused: the vault changed on disk since it was opened.
+create_exception!(secretary_ffi_py, VaultChangedOnDisk, PyException);
 // ADR 0009 (B.2) device-slot error surface — 3 typed exception classes
 // mirroring the bridge's new FfiVaultError device variants.
 create_exception!(secretary_ffi_py, VaultDeviceSlotNotFound, PyException);
@@ -192,6 +194,7 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::SyncEvidenceStale => VaultSyncEvidenceStale::new_err(e.to_string()),
         FfiVaultError::SyncInProgress => VaultSyncInProgress::new_err(e.to_string()),
         FfiVaultError::SyncFailed { .. } => VaultSyncFailed::new_err(e.to_string()),
+        FfiVaultError::VaultChangedOnDisk => VaultChangedOnDisk::new_err(e.to_string()),
         FfiVaultError::SyncDecisionsIncomplete => {
             VaultSyncDecisionsIncomplete::new_err(e.to_string())
         }

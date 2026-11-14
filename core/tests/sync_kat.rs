@@ -283,8 +283,8 @@ fn replay_concurrent_merge_apply_decisions(name: &str, v: &ConcurrentMergeApplyD
     );
 
     let decisions: Vec<VetoDecision> = v.decisions.iter().map(decision_from_json).collect();
-    let password = fixtures::golden_vault_001_password();
-    let new_state = commit_with_decisions(&folder, &password, draft, decisions, COMMIT_NOW_MS)
+    let _password = fixtures::golden_vault_001_password();
+    let new_state = commit_with_decisions(&folder, &identity, draft, decisions, COMMIT_NOW_MS)
         .unwrap_or_else(|e| panic!("vector {name} commit_with_decisions failed: {e}"));
 
     if let Some(expected_count) = v.expected_post_commit_canonical_records_count {
@@ -361,9 +361,9 @@ fn replay_evidence_stale(name: &str, v: &EvidenceStaleVector) {
         .unwrap_or_else(|e| panic!("vector {name} read manifest pre-commit failed: {e}"));
     let hash_before = compute_manifest_hash(&bytes_before);
 
-    let password = fixtures::golden_vault_001_password();
+    let _password = fixtures::golden_vault_001_password();
     let err =
-        commit_with_decisions(&folder, &password, draft, Vec::new(), COMMIT_NOW_MS).unwrap_err();
+        commit_with_decisions(&folder, &identity, draft, Vec::new(), COMMIT_NOW_MS).unwrap_err();
     assert!(
         matches!(err, SyncError::EvidenceStale),
         "vector {name} expected SyncError::EvidenceStale, got {err:?}",

@@ -11,31 +11,32 @@ import uniffi.secretary.OpenVaultOutput
 import uniffi.secretary.Record
 import uniffi.secretary.UnlockedIdentity
 import uniffi.secretary.VaultException
+import uniffi.secretary.appendRecord as ffiAppendRecord
+import uniffi.secretary.autoPurgeExpired as ffiAutoPurgeExpired
+import uniffi.secretary.createBlock as ffiCreateBlock
+import uniffi.secretary.defaultRetentionWindowMs as ffiDefaultRetentionWindowMs
+import uniffi.secretary.editRecord as ffiEditRecord
+import uniffi.secretary.emptyTrash as ffiEmptyTrash
+import uniffi.secretary.expiredTrashEntries as ffiExpiredTrashEntries
+import uniffi.secretary.listTrashedBlocks as ffiListTrashedBlocks
+import uniffi.secretary.moveRecord as ffiMoveRecord
 import uniffi.secretary.openVaultWithPassword
 import uniffi.secretary.openVaultWithRecovery
 import uniffi.secretary.openWithDeviceSecret as ffiOpenWithDeviceSecret
-import uniffi.secretary.readBlock as ffiReadBlock
-import uniffi.secretary.resurrectRecord as ffiResurrectRecord
-import uniffi.secretary.tombstoneRecord as ffiTombstoneRecord
-import uniffi.secretary.appendRecord as ffiAppendRecord
-import uniffi.secretary.editRecord as ffiEditRecord
-import uniffi.secretary.createBlock as ffiCreateBlock
-import uniffi.secretary.renameBlock as ffiRenameBlock
-import uniffi.secretary.moveRecord as ffiMoveRecord
-import uniffi.secretary.listTrashedBlocks as ffiListTrashedBlocks
-import uniffi.secretary.expiredTrashEntries as ffiExpiredTrashEntries
-import uniffi.secretary.defaultRetentionWindowMs as ffiDefaultRetentionWindowMs
-import uniffi.secretary.restoreBlock as ffiRestoreBlock
 import uniffi.secretary.purgeBlock as ffiPurgeBlock
-import uniffi.secretary.emptyTrash as ffiEmptyTrash
-import uniffi.secretary.autoPurgeExpired as ffiAutoPurgeExpired
+import uniffi.secretary.readBlock as ffiReadBlock
 import uniffi.secretary.readSettings as ffiReadSettings
-import uniffi.secretary.writeSettings as ffiWriteSettings
-import uniffi.secretary.retentionWindowMinMs as ffiRetentionWindowMinMs
-import uniffi.secretary.retentionWindowMaxMs as ffiRetentionWindowMaxMs
 import uniffi.secretary.reauthWindowDefaultMs as ffiReauthWindowDefaultMs
-import uniffi.secretary.reauthWindowMinMs as ffiReauthWindowMinMs
 import uniffi.secretary.reauthWindowMaxMs as ffiReauthWindowMaxMs
+import uniffi.secretary.reauthWindowMinMs as ffiReauthWindowMinMs
+import uniffi.secretary.refreshManifest as ffiRefreshManifest
+import uniffi.secretary.renameBlock as ffiRenameBlock
+import uniffi.secretary.restoreBlock as ffiRestoreBlock
+import uniffi.secretary.resurrectRecord as ffiResurrectRecord
+import uniffi.secretary.retentionWindowMaxMs as ffiRetentionWindowMaxMs
+import uniffi.secretary.retentionWindowMinMs as ffiRetentionWindowMinMs
+import uniffi.secretary.tombstoneRecord as ffiTombstoneRecord
+import uniffi.secretary.writeSettings as ffiWriteSettings
 import java.security.SecureRandom
 
 /**
@@ -143,6 +144,17 @@ class UniffiVaultSession(
     private var currentBlock: BlockReadOutput? = null
 
     override fun vaultUuidHex(): String = vaultUuidHexValue
+
+    /** Re-read the vault folder into this session's handles after a password sync pass wrote it
+     *  through a separate open; without this the next write is refused as VaultChangedOnDisk (#101).
+     *  Takes [sessionLock] like every other handle access; a no-op once [wiped]. On error the
+     *  bridge leaves the handles unchanged, so the raw [VaultException] propagates for the caller
+     *  to map. */
+    fun refreshFromDisk(stateDir: String) {
+        synchronized(sessionLock) {
+            if (!wiped) ffiRefreshManifest(stateDir, identity, manifest)
+        }
+    }
 
     override fun blockSummaries(): List<BlockSummaryView> =
         synchronized(sessionLock) {
