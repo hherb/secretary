@@ -299,7 +299,7 @@ private struct RootView: View {
         // Strong capture is fine: the browse VM never references the sync VM.
         let (syncVM, monitor) = makeVaultSync(
             session: session, folder: folder, stateDir: stateDir, gate: gate,
-            onVaultChanged: { browseVM.loadBlocks(); browseVM.refresh() })
+            onVaultChanged: { browseVM.sessionRefreshed() })
         // A failed watcher start leaves detection advisory-blind (the badge falls
         // back to manual "Sync now"); not fatal.
         do {

@@ -57,8 +57,16 @@ public final class VaultBrowseViewModel: ObservableObject {
 
     public func loadBlocks() {
         blocks = session.blockSummaries()
-        // A fresh read supersedes a refused-write message (#101); other errors stay.
+    }
+
+    /// The session's manifest was refreshed from disk (a sync pass changed it, or
+    /// Reload). Only a real refresh lifts a refused-write message (#101): a plain
+    /// `loadBlocks` re-reads the same stale handle, and the next write would still
+    /// be refused. Other errors stay. Then reload the block list and the open block.
+    public func sessionRefreshed() {
         if error == .vaultChangedOnDisk { error = nil }
+        loadBlocks()
+        refresh()
     }
 
     public func selectBlock(_ block: BlockSummary) {
@@ -134,8 +142,7 @@ public final class VaultBrowseViewModel: ObservableObject {
             return
         }
         error = nil
-        loadBlocks()
-        refresh()
+        sessionRefreshed()
     }
 
     /// Re-auth, then run a guarded write. The `isWriting` guard is set BEFORE

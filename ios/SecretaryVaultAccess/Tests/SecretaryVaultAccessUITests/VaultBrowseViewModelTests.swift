@@ -157,20 +157,34 @@ final class VaultBrowseViewModelTests: XCTestCase {
         XCTAssertNil(vm.error, "a successful reload must drop the refused-write message")
     }
 
-    func testLoadBlocksClearsOnlyVaultChangedOnDisk() async {
+    func testLoadBlocksDoesNotClearVaultChangedOnDisk() async {
         let (session, _, _) = makeSession {}
         let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
         vm.loadBlocks()
         session.failNextWrite = .vaultChangedOnDisk
         vm.startCreateBlock()
         await vm.confirmBlockName("Archive")
+
         vm.loadBlocks()
+
+        XCTAssertEqual(vm.error, .vaultChangedOnDisk,
+                       "a plain re-read of the stale handle must keep the warning (M2)")
+    }
+
+    func testSessionRefreshedClearsOnlyVaultChangedOnDisk() async {
+        let (session, _, _) = makeSession {}
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
+        vm.loadBlocks()
+        session.failNextWrite = .vaultChangedOnDisk
+        vm.startCreateBlock()
+        await vm.confirmBlockName("Archive")
+        vm.sessionRefreshed()
         XCTAssertNil(vm.error)
 
         session.failNextWrite = .corruptVault("x")
         vm.startCreateBlock()
         await vm.confirmBlockName("Archive")
-        vm.loadBlocks()
+        vm.sessionRefreshed()
         XCTAssertEqual(vm.error, .corruptVault("x"), "unrelated errors stay visible")
     }
 }
