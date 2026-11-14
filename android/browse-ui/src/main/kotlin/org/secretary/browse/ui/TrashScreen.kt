@@ -38,6 +38,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.secretary.browse.PurgeNotice
 import org.secretary.browse.PurgeSeverity
 import org.secretary.browse.TrashedBlockInfo
+import org.secretary.browse.VAULT_CHANGED_ON_DISK_MESSAGE
 import org.secretary.browse.VaultBrowseError
 import org.secretary.browse.emptyTrashConfirmBody
 import org.secretary.browse.formatTrashedWhen
@@ -174,7 +175,7 @@ fun TrashScreen(viewModel: TrashBrowseViewModel, onBack: () -> Unit) {
 private fun TrashErrorBanner(error: VaultBrowseError) {
     val text = when (error) {
         is VaultBrowseError.ReauthFailed -> "Couldn't authorize the change: ${error.detail}"
-        is VaultBrowseError.VaultChangedOnDisk -> error.message.orEmpty()
+        is VaultBrowseError.VaultChangedOnDisk -> VAULT_CHANGED_ON_DISK_MESSAGE
         else -> "Trash operation failed: ${error::class.simpleName}"
     }
     Text(

@@ -2,6 +2,11 @@ package org.secretary.browse
 
 import org.secretary.diagnostics.SecretFreeThrowable
 
+/** The user-facing copy for [VaultBrowseError.VaultChangedOnDisk]. A `const` so a banner renders it
+ *  directly rather than reading a throwable's `message` (log-hygiene rule B1, #472). */
+const val VAULT_CHANGED_ON_DISK_MESSAGE =
+    "This vault changed on another device since you opened it. Sync, then try again."
+
 /**
  * Errors raised by the vault open/browse surface. Throwable (mirrors [org.secretary.sync.VaultSyncError])
  * so the coordinator can `catch (e: VaultBrowseError)`. Deliberately SEPARATE from `VaultSyncError`:
@@ -128,8 +133,7 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
     data class CorruptVault(val detail: String) : VaultBrowseError(detail)
 
     /** The vault changed on disk since it was opened; the write was refused. Sync, then retry. */
-    data object VaultChangedOnDisk :
-        VaultBrowseError("This vault changed on another device since you opened it. Sync, then try again.")
+    data object VaultChangedOnDisk : VaultBrowseError(VAULT_CHANGED_ON_DISK_MESSAGE)
 
     /** The supplied folder path is not a readable vault folder. */
     data class FolderInvalid(val detail: String) : VaultBrowseError(detail)
