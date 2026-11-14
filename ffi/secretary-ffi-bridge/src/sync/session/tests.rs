@@ -384,3 +384,74 @@ fn conflicts_pending_does_not_refresh() {
     assert!(has_block(&out, &other_block), "commit refreshes");
     write_block(&out).expect("write after commit");
 }
+
+/// The session refresh after an `AppliedAutomatically` pass checks the disk
+/// against the pass's POST-pass clock (§10). Here the disk is rolled back to
+/// the session's own older, owner-signed manifest between the pass and the
+/// refresh. Refreshing with no baseline, or with the (empty) pre-pass clock,
+/// would adopt that older manifest; the post-pass clock refuses it.
+#[test]
+fn session_refresh_checks_the_disk_against_the_post_pass_clock() {
+    let (tmp, session) = open_writable_golden_001();
+    let manifest_path = folder_of(&tmp).join("manifest.cbor.enc");
+    let older = std::fs::read(&manifest_path).expect("session's manifest envelope");
+    let other = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD).expect("second open");
+    let other_block = write_block(&other).expect("other writer saves a block");
+    let state_dir = TempDir::new().unwrap();
+    let before = session.manifest.manifest_body();
+
+    let err = run_session_pass(
+        state_dir.path(),
+        &session.identity,
+        &session.manifest,
+        |folder, id, state| {
+            let outcome = sync_pass_inspect(folder, id, state, 2_000)?;
+            assert!(
+                matches!(outcome, InspectOutcome::AppliedAutomatically),
+                "fresh state fast-forwards"
+            );
+            std::fs::write(folder.join("manifest.cbor.enc"), &older).expect("roll back");
+            Ok(outcome)
+        },
+        inspect_advanced,
+        inspect_baseline,
+    )
+    .expect_err("a rolled-back disk must not be adopted");
+    assert!(
+        matches!(err, FfiVaultError::CorruptVault { .. }),
+        "got {err:?}"
+    );
+    assert_eq!(session.manifest.manifest_body(), before, "handle unchanged");
+    assert!(!has_block(&session, &other_block));
+}
+
+/// `refresh_manifest_in` (the desktop and Android path after a password sync)
+/// runs open's block-fingerprint check, not just the manifest verify: a
+/// tampered block file fails the refresh and leaves the handle, so writes stay
+/// refused. Control: with the block restored the same refresh succeeds.
+#[test]
+fn refresh_refuses_a_tampered_block_and_keeps_handle() {
+    let (tmp, session, other_block) = session_and_other_writer();
+    let path = block_path(&folder_of(&tmp), &other_block);
+    let good = std::fs::read(&path).expect("other writer's block file");
+    let mut bad = good.clone();
+    let last = bad.len() - 1;
+    bad[last] ^= 0x01;
+    std::fs::write(&path, &bad).unwrap();
+    let state_dir = TempDir::new().unwrap();
+    let before = session.manifest.manifest_body();
+
+    refresh_manifest_in(state_dir.path(), &session.identity, &session.manifest)
+        .expect_err("a tampered block must fail the refresh");
+    assert_eq!(session.manifest.manifest_body(), before, "handle unchanged");
+    let err = write_block(&session).unwrap_err();
+    assert!(
+        matches!(err, FfiVaultError::VaultChangedOnDisk),
+        "got {err:?}"
+    );
+
+    std::fs::write(&path, &good).unwrap();
+    refresh_manifest_in(state_dir.path(), &session.identity, &session.manifest)
+        .expect("refresh succeeds once the block is intact");
+    assert!(has_block(&session, &other_block));
+}

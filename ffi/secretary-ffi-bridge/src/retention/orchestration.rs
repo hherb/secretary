@@ -184,7 +184,7 @@ pub fn auto_purge_expired(
 /// `map_core_vault_error_empty_trash`: retention takes no `block_uuid`, so
 /// `BlockNotInTrash` cannot fire and folds to the crypto/encoding umbrella.
 /// Adding a new `core::VaultError` variant becomes a compile error here.
-fn map_core_vault_error_retention(e: VaultError) -> FfiVaultError {
+pub(crate) fn map_core_vault_error_retention(e: VaultError) -> FfiVaultError {
     match &e {
         // #101: stale-session guard refused before any write.
         VaultError::ManifestChangedOnDisk => FfiVaultError::VaultChangedOnDisk,

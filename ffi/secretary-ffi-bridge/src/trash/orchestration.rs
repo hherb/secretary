@@ -98,7 +98,7 @@ pub fn trash_block(
 /// Exhaustive (no `_ =>` catchall) per issue #40. Adding a new
 /// `core::VaultError` variant becomes a *compile* error here rather
 /// than a silent fold to `SaveCryptoFailure`.
-fn map_core_vault_error_trash(e: VaultError) -> FfiVaultError {
+pub(crate) fn map_core_vault_error_trash(e: VaultError) -> FfiVaultError {
     match &e {
         // #101: stale-session guard refused before any write.
         VaultError::ManifestChangedOnDisk => FfiVaultError::VaultChangedOnDisk,

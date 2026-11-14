@@ -97,7 +97,7 @@ pub fn restore_block(
 /// `BlockNotInTrash`, `BlockPurged`, `RestoreVerificationFailed`,
 /// `MissingRecipientCard`); the rest fold to `SaveCryptoFailure` as
 /// the umbrella variant.
-fn map_core_vault_error_restore(e: VaultError) -> FfiVaultError {
+pub(crate) fn map_core_vault_error_restore(e: VaultError) -> FfiVaultError {
     match &e {
         // #101: stale-session guard refused before any write.
         VaultError::ManifestChangedOnDisk => FfiVaultError::VaultChangedOnDisk,

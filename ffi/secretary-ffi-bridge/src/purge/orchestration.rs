@@ -145,7 +145,7 @@ pub fn purge_block(
 /// Exhaustive (no `_ =>` catchall) per issue #40. Adding a new
 /// `core::VaultError` variant becomes a *compile* error here rather
 /// than a silent fold to `SaveCryptoFailure`.
-fn map_core_vault_error_purge(e: VaultError) -> FfiVaultError {
+pub(crate) fn map_core_vault_error_purge(e: VaultError) -> FfiVaultError {
     match &e {
         // #101: stale-session guard refused before any write.
         VaultError::ManifestChangedOnDisk => FfiVaultError::VaultChangedOnDisk,
@@ -329,7 +329,7 @@ pub fn empty_trash(
 /// Exhaustive (no `_ =>` catchall) per issue #40. Adding a new
 /// `core::VaultError` variant becomes a *compile* error here rather
 /// than a silent fold to `SaveCryptoFailure`.
-fn map_core_vault_error_empty_trash(e: VaultError) -> FfiVaultError {
+pub(crate) fn map_core_vault_error_empty_trash(e: VaultError) -> FfiVaultError {
     match &e {
         // #101: stale-session guard refused before any write.
         VaultError::ManifestChangedOnDisk => FfiVaultError::VaultChangedOnDisk,
