@@ -27,7 +27,9 @@ use std::sync::Mutex;
 use secretary_desktop::commands::{
     browse, create, delete, edit, lock, presence, reauth, recent, settings, sync, unlock, vault,
 };
-use secretary_desktop::dtos::{FieldInputDto, FieldValueDto, RecordInputDto, SettingsInput};
+use secretary_desktop::dtos::{
+    FieldInputDto, FieldValueDto, RecordInputDto, SettingsInput, SyncOutcomeDto, VetoDecisionDto,
+};
 use secretary_desktop::errors::AppError;
 use secretary_desktop::path_auth::{canonicalize_for_auth, PathPurpose};
 use secretary_desktop::secret_arg::Password;
@@ -2622,29 +2624,67 @@ fn stage_three_pane_smoke_vault() {
     println!("  NOTE: throwaway vault, throwaway password — never the committed fixture.\n");
 }
 
+/// A password-unlocked session over `vault` (approved first).
+fn unlocked_over(vault: &std::path::Path) -> (Mutex<VaultSession>, TempDir) {
+    let (state, dev) = fresh_state();
+    state.lock().unwrap().approve_path(
+        PathPurpose::VaultFolder,
+        canonicalize_for_auth(vault).unwrap(),
+    );
+    unlock::unlock_with_password_impl(&state, vault.to_str().unwrap(), &golden_vault_password())
+        .expect("unlock");
+    (state, dev)
+}
+
 #[test]
 fn sync_now_refreshes_session_so_next_write_succeeds() {
     let (_vault_dir, vault) = ephemeral_golden_copy();
     let state_dir = tempfile::tempdir().unwrap();
-    let open = || {
-        let (state, dev) = fresh_state();
-        state.lock().unwrap().approve_path(
-            PathPurpose::VaultFolder,
-            canonicalize_for_auth(&vault).unwrap(),
-        );
-        unlock::unlock_with_password_impl(
-            &state,
-            vault.to_str().unwrap(),
-            &golden_vault_password(),
-        )
-        .expect("unlock");
-        (state, dev)
-    };
-    let (a, _da) = open();
-    let (b, _db) = open();
+    let (a, _da) = unlocked_over(&vault);
+    let (b, _db) = unlocked_over(&vault);
     // Another open writes, leaving A's in-memory manifest stale.
     edit::create_block_impl(&b, "Other").expect("b writes");
     let pw = Password::from_bytes(&golden_vault_password());
     sync::sync_now_in_impl(&a, state_dir.path(), &pw, 1).expect("sync");
     edit::create_block_impl(&a, "Mine").expect("write after sync must not be refused");
+}
+
+/// The commit half of a paused pass refreshes too (mirrors the bridge's
+/// `conflicts_pending_does_not_refresh`).
+#[test]
+fn sync_commit_decisions_refreshes_session_so_next_write_succeeds() {
+    let fixture = golden_vault_path()
+        .parent()
+        .expect("core/tests/data")
+        .join("sync_conflict_fixture");
+    let vault_dir = secretary_test_utils::copy_dir_to_tempdir(&fixture.join("vault"));
+    let state_dir = secretary_test_utils::copy_dir_to_tempdir(&fixture.join("state"));
+    let (a, _da) = unlocked_over(vault_dir.path());
+    let (b, _db) = unlocked_over(vault_dir.path());
+    edit::create_block_impl(&b, "Other").expect("b writes");
+    let pw = Password::from_bytes(&golden_vault_password());
+    let outcome = sync::sync_now_in_impl(&a, state_dir.path(), &pw, 1).expect("inspect");
+    let SyncOutcomeDto::ConflictsPending {
+        vetoes,
+        manifest_hash,
+        ..
+    } = outcome
+    else {
+        panic!("expected ConflictsPending, got {outcome:?}");
+    };
+    let decisions = vetoes
+        .iter()
+        .map(|v| VetoDecisionDto {
+            record_uuid_hex: v.record_uuid_hex.clone(),
+            keep_local: true,
+        })
+        .collect();
+    let outcome =
+        sync::sync_commit_decisions_in_impl(&a, state_dir.path(), &pw, decisions, manifest_hash, 2)
+            .expect("commit");
+    assert!(
+        matches!(outcome, SyncOutcomeDto::MergedClean),
+        "{outcome:?}"
+    );
+    edit::create_block_impl(&a, "Mine").expect("write after commit must not be refused");
 }

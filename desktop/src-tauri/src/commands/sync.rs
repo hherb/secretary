@@ -84,13 +84,18 @@ pub fn sync_now_in_impl(
 /// refused as a rollback (#730). The user is stuck until the disk clock
 /// catches up or #730 / #732 / #733 land. iOS is unaffected: its session
 /// sync refreshes against the pre-pass clock.
+///
+/// Exhaustive on purpose (no `_` arm): a new outcome must decide here.
 fn needs_refresh(outcome: &BridgeOutcome) -> bool {
-    matches!(
-        outcome,
+    match outcome {
         BridgeOutcome::NothingToDo
-            | BridgeOutcome::AppliedAutomatically
-            | BridgeOutcome::MergedClean
-    )
+        | BridgeOutcome::AppliedAutomatically
+        | BridgeOutcome::MergedClean => true,
+        // The dead end described above (#730).
+        BridgeOutcome::SilentMerge => false,
+        // Nothing was written.
+        BridgeOutcome::ConflictsPending { .. } | BridgeOutcome::RollbackRejected => false,
+    }
 }
 
 fn sync_now_core(

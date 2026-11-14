@@ -11,32 +11,32 @@ import uniffi.secretary.OpenVaultOutput
 import uniffi.secretary.Record
 import uniffi.secretary.UnlockedIdentity
 import uniffi.secretary.VaultException
+import uniffi.secretary.appendRecord as ffiAppendRecord
+import uniffi.secretary.autoPurgeExpired as ffiAutoPurgeExpired
+import uniffi.secretary.createBlock as ffiCreateBlock
+import uniffi.secretary.defaultRetentionWindowMs as ffiDefaultRetentionWindowMs
+import uniffi.secretary.editRecord as ffiEditRecord
+import uniffi.secretary.emptyTrash as ffiEmptyTrash
+import uniffi.secretary.expiredTrashEntries as ffiExpiredTrashEntries
+import uniffi.secretary.listTrashedBlocks as ffiListTrashedBlocks
+import uniffi.secretary.moveRecord as ffiMoveRecord
 import uniffi.secretary.openVaultWithPassword
-import uniffi.secretary.refreshManifest as ffiRefreshManifest
 import uniffi.secretary.openVaultWithRecovery
 import uniffi.secretary.openWithDeviceSecret as ffiOpenWithDeviceSecret
-import uniffi.secretary.readBlock as ffiReadBlock
-import uniffi.secretary.resurrectRecord as ffiResurrectRecord
-import uniffi.secretary.tombstoneRecord as ffiTombstoneRecord
-import uniffi.secretary.appendRecord as ffiAppendRecord
-import uniffi.secretary.editRecord as ffiEditRecord
-import uniffi.secretary.createBlock as ffiCreateBlock
-import uniffi.secretary.renameBlock as ffiRenameBlock
-import uniffi.secretary.moveRecord as ffiMoveRecord
-import uniffi.secretary.listTrashedBlocks as ffiListTrashedBlocks
-import uniffi.secretary.expiredTrashEntries as ffiExpiredTrashEntries
-import uniffi.secretary.defaultRetentionWindowMs as ffiDefaultRetentionWindowMs
-import uniffi.secretary.restoreBlock as ffiRestoreBlock
 import uniffi.secretary.purgeBlock as ffiPurgeBlock
-import uniffi.secretary.emptyTrash as ffiEmptyTrash
-import uniffi.secretary.autoPurgeExpired as ffiAutoPurgeExpired
+import uniffi.secretary.readBlock as ffiReadBlock
 import uniffi.secretary.readSettings as ffiReadSettings
-import uniffi.secretary.writeSettings as ffiWriteSettings
-import uniffi.secretary.retentionWindowMinMs as ffiRetentionWindowMinMs
-import uniffi.secretary.retentionWindowMaxMs as ffiRetentionWindowMaxMs
 import uniffi.secretary.reauthWindowDefaultMs as ffiReauthWindowDefaultMs
-import uniffi.secretary.reauthWindowMinMs as ffiReauthWindowMinMs
 import uniffi.secretary.reauthWindowMaxMs as ffiReauthWindowMaxMs
+import uniffi.secretary.reauthWindowMinMs as ffiReauthWindowMinMs
+import uniffi.secretary.refreshManifest as ffiRefreshManifest
+import uniffi.secretary.renameBlock as ffiRenameBlock
+import uniffi.secretary.restoreBlock as ffiRestoreBlock
+import uniffi.secretary.resurrectRecord as ffiResurrectRecord
+import uniffi.secretary.retentionWindowMaxMs as ffiRetentionWindowMaxMs
+import uniffi.secretary.retentionWindowMinMs as ffiRetentionWindowMinMs
+import uniffi.secretary.tombstoneRecord as ffiTombstoneRecord
+import uniffi.secretary.writeSettings as ffiWriteSettings
 import java.security.SecureRandom
 
 /**
