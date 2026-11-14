@@ -20,6 +20,13 @@ public final class FakeVaultSession: VaultSession, @unchecked Sendable {
     public private(set) var lastIncludeDeleted = false
     /// Test seam: when set, the NEXT create/rename/move throws this once, then clears.
     public var failNextWrite: VaultAccessError?
+    /// Spies + seams for `refreshFromDisk`: `blocksAfterRefresh` (if set) becomes
+    /// the block list, modelling a manifest another device advanced;
+    /// `failNextRefresh` makes the next refresh throw once and change nothing.
+    public private(set) var refreshCount = 0
+    public private(set) var lastRefreshStateDir: String?
+    public var blocksAfterRefresh: [BlockSummary]?
+    public var failNextRefresh: VaultAccessError?
 
     public init(vaultUuidHex: String,
                 blocks: [BlockSummary],
@@ -102,6 +109,13 @@ public final class FakeVaultSession: VaultSession, @unchecked Sendable {
             uuid: newUuid, type: src.type, tags: src.tags, fields: src.fields, tombstone: false))
         setTombstone(sourceBlockUuid, idx, true)
         return newUuid
+    }
+
+    public func refreshFromDisk(stateDir: String) throws {
+        refreshCount += 1
+        lastRefreshStateDir = stateDir
+        if let e = failNextRefresh { failNextRefresh = nil; throw e }
+        if let b = blocksAfterRefresh { blocks = b }
     }
 
     public func wipe() { wipeCount += 1 }

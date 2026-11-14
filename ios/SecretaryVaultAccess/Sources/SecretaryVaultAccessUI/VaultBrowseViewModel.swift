@@ -116,6 +116,23 @@ public final class VaultBrowseViewModel: ObservableObject {
         reload(blockUuid: blockUuid)
     }
 
+    /// Re-read the manifest from disk into the session (#101), then reload the
+    /// block list and the open block. A refused refresh (e.g. a rollback) maps
+    /// into `error` and reloads nothing, so the UI keeps showing what it had.
+    public func reloadFromDisk(stateDir: String) {
+        do {
+            try session.refreshFromDisk(stateDir: stateDir)
+        } catch let e as VaultAccessError {
+            error = e
+            return
+        } catch {
+            self.error = .other(foldDiagnostic(error))
+            return
+        }
+        loadBlocks()
+        refresh()
+    }
+
     /// Re-auth, then run a guarded write. The `isWriting` guard is set BEFORE
     /// the gate await, so a second action arriving while the biometric prompt is
     /// suspended is rejected here (no second prompt, no second write) rather than

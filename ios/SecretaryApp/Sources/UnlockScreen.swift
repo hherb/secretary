@@ -5,7 +5,8 @@ import SecretaryVaultAccessUI
 
 /// Password / recovery-phrase unlock. Thin shell: renders `viewModel.state` and
 /// forwards the entered secret. On `.unlocked` it calls `onUnlocked(session, password)`
-/// where `password` is non-nil only for `.password` mode (recovery has no usable sync password).
+/// where `password` is non-nil only for `.password` mode; it is used only for the
+/// optional "remember this device" enrollment (sync needs no password, #101).
 struct UnlockScreen: View {
     @StateObject private var viewModel: UnlockViewModel
     /// Shown only when this device is enrolled for biometric unlock of a vault.

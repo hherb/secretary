@@ -6,12 +6,14 @@ import SecretaryVaultAccess
 /// for the same single-thread reason as `FakeBiometricAuthorizer`.
 public final class FakeWriteReauthGate: WriteReauthGate, @unchecked Sendable {
     public private(set) var authorizeCount = 0
+    public private(set) var lastReason: String?
     public var failNext: VaultAccessError?
 
     public init() {}
 
     public func authorizeWrite(reason: String) async throws {
         authorizeCount += 1
+        lastReason = reason
         if let e = failNext { failNext = nil; throw e }
     }
 }

@@ -39,7 +39,7 @@ public final class UniffiVaultSession: VaultSession, @unchecked Sendable {
     // INVARIANT: widening these to `internal` trades away the file-scoped
     // guarantee that once enforced lock-serialized access. Any new same-module
     // read/write of `identity`/`manifest` MUST go through a lock-guarded helper
-    // (`readTrash`/`readTrashInfallible`/`write`/`writeTrash*`) — never touch
+    // (`readTrash`/`readTrashInfallible`/`write`/`writeTrash*`/`withLiveHandles`) — never touch
     // the raw handles outside `lock.withLock`, or the `wipe()` race the lock
     // exists to close reopens.
     internal let identity: UnlockedIdentity
@@ -344,6 +344,17 @@ public final class UniffiVaultSession: VaultSession, @unchecked Sendable {
         _ body: (_ deviceUuid: [UInt8], _ nowMs: UInt64) throws -> Void
     ) throws {
         try write(body)
+    }
+
+    /// Run `body` against the live handles under the lock with the wiped-guard,
+    /// throwing `onWiped` instead when the session is closed. Errors from `body`
+    /// pass through UNMAPPED: the sync extension (`+Sync.swift`) maps them onto
+    /// `VaultSyncError`, a different surface from `mapVaultAccessError`'s.
+    internal func withLiveHandles<T>(onWiped: Error, _ body: () throws -> T) throws -> T {
+        try lock.withLock {
+            if wiped { throw onWiped }
+            return try body()
+        }
     }
 
     /// `nowMs()` exposed for the infallible-read preview path

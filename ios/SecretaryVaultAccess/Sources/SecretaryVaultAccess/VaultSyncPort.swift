@@ -1,27 +1,25 @@
 import Foundation
 
-/// Runs sync operations over the (FFI) sync surface. Implementations throw
-/// `VaultSyncError`.
+/// Runs sync operations over the (FFI) sync surface, through the OPEN session
+/// (#101): no password and no folder cross this boundary, so a Face ID session
+/// syncs exactly like a password one. Implementations throw `VaultSyncError`.
 ///
-/// All methods are `async` because the real `sync`/`commitDecisions` re-open the
-/// identity from the password and pay the full Argon2id cost; the real adapter
-/// offloads them off the calling actor (see `SecretaryKit.runOffMainActor`) so a
-/// `@MainActor` caller stays responsive. `status` is a cheap disk read and the
-/// real adapter runs its FFI call inline (no `runOffMainActor`); "inline" means
-/// on the adapter's own async executor, not the caller's — driven through
-/// `SyncCoordinator` (a plain `actor`, not `@MainActor`) it executes on the
-/// cooperative pool, so even the synchronous read never lands on the main thread.
-/// `async` is also kept for protocol uniformity.
+/// After an advancing pass the real conformer has already refreshed the session's
+/// manifest handle from disk, so the next write sees the merged state. It never
+/// refreshes on `.rollbackRejected` or `.conflictsPending`. If the pass succeeded
+/// but the refresh failed (typically iCloud still delivering block files), the
+/// call THROWS and the handle is unchanged; retrying is safe, since a repeat pass
+/// is `.nothingToDo` and then refreshes.
 ///
-/// `password` is passed per call and never retained by callers.
+/// `sync`/`commitDecisions` do disk I/O and crypto, so the real conformer offloads
+/// them off the calling actor (`SecretaryKit.runOffMainActor`). `status` is a
+/// cheap disk read run inline on the conformer's own executor.
 ///
 /// `Sendable` because the `SyncCoordinator` actor holds a conformer and reaches
 /// it across its actor boundary on every `async` call (#231).
 public protocol VaultSyncPort: Sendable {
     func status(stateDir: String, vaultUuid: [UInt8]) async throws -> SyncStatus
-    func sync(stateDir: String, vaultFolder: String,
-              password: [UInt8], nowMs: UInt64) async throws -> SyncOutcome
-    func commitDecisions(stateDir: String, vaultFolder: String,
-                         password: [UInt8], decisions: [SyncVetoDecision],
+    func sync(stateDir: String, nowMs: UInt64) async throws -> SyncOutcome
+    func commitDecisions(stateDir: String, decisions: [SyncVetoDecision],
                          manifestHash: [UInt8], nowMs: UInt64) async throws -> SyncOutcome
 }
