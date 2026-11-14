@@ -1,13 +1,31 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ConflictResolutionDialog from '../src/components/ConflictResolutionDialog.svelte';
 import * as ipc from '../src/lib/ipc';
+import {
+  __setWriteGuardTestSeam,
+  ReauthCancelled,
+  resetReauthGuard
+} from '../src/lib/writeGuard';
 
 vi.mock('../src/lib/ipc', async (orig) => ({
   ...(await orig<typeof ipc>()),
   syncCommitDecisions: vi.fn()
 }));
 const mockCommit = vi.mocked(ipc.syncCommitDecisions);
+
+const PASS_THROUGH_SEAM = {
+  readSettings: () => ({ enabled: false, windowMs: 0 }),
+  now: () => 0,
+  biometricPrefEnabled: () => false,
+  tryBiometric: () => Promise.resolve('unavailable' as const),
+  prompt: () => Promise.resolve()
+};
+const CANCELLING_SEAM = {
+  ...PASS_THROUGH_SEAM,
+  readSettings: () => ({ enabled: true, windowMs: 0 }),
+  prompt: () => Promise.reject(ReauthCancelled)
+};
 
 const veto = (id: string) => ({
   recordUuidHex: id,
@@ -23,7 +41,6 @@ const baseProps = (over: Record<string, unknown> = {}) => ({
   vetoes: [veto('0a')],
   collisions: [] as { recordUuidHex: string; fieldNames: string[] }[],
   manifestHash: [1, 2, 3],
-  password: 'pw',
   onResolved: vi.fn(),
   onCancel: vi.fn(),
   ...over
@@ -36,7 +53,20 @@ function renderDialog(over: Record<string, unknown> = {}) {
 }
 
 describe('ConflictResolutionDialog.svelte', () => {
-  beforeEach(() => mockCommit.mockReset());
+  beforeEach(() => {
+    mockCommit.mockReset();
+    __setWriteGuardTestSeam(PASS_THROUGH_SEAM);
+  });
+  afterEach(() => resetReauthGuard());
+
+  it('Apply commits nothing when the re-auth prompt is cancelled', async () => {
+    __setWriteGuardTestSeam(CANCELLING_SEAM);
+    const { getByRole, onResolved } = renderDialog();
+    await fireEvent.click(getByRole('button', { name: /apply & finish sync/i }));
+    await Promise.resolve();
+    expect(mockCommit).not.toHaveBeenCalled();
+    expect(onResolved).not.toHaveBeenCalled();
+  });
 
   it('renders one card per veto showing the formatVetoSummary label', () => {
     const { getAllByText } = renderDialog();
@@ -49,7 +79,7 @@ describe('ConflictResolutionDialog.svelte', () => {
     const { getByRole, onResolved } = renderDialog();
     await fireEvent.click(getByRole('button', { name: /apply & finish sync/i }));
     await waitFor(() =>
-      expect(mockCommit).toHaveBeenCalledWith('pw', [{ recordUuidHex: '0a', keepLocal: true }], [1, 2, 3])
+      expect(mockCommit).toHaveBeenCalledWith([{ recordUuidHex: '0a', keepLocal: true }], [1, 2, 3])
     );
     expect(onResolved).toHaveBeenCalledWith({ kind: 'mergedClean' });
   });
@@ -72,7 +102,7 @@ describe('ConflictResolutionDialog.svelte', () => {
     await fireEvent.click(getByRole('button', { name: /accept delete/i }));
     await fireEvent.click(getByRole('button', { name: /apply & finish sync/i }));
     await waitFor(() =>
-      expect(mockCommit).toHaveBeenCalledWith('pw', [{ recordUuidHex: '0a', keepLocal: false }], [1, 2, 3])
+      expect(mockCommit).toHaveBeenCalledWith([{ recordUuidHex: '0a', keepLocal: false }], [1, 2, 3])
     );
   });
 

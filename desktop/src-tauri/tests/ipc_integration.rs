@@ -32,7 +32,6 @@ use secretary_desktop::dtos::{
 };
 use secretary_desktop::errors::AppError;
 use secretary_desktop::path_auth::{canonicalize_for_auth, PathPurpose};
-use secretary_desktop::secret_arg::Password;
 use secretary_desktop::session::VaultSession;
 use secretary_desktop::settings::{load_from_vault, save_to_vault, Settings};
 use tempfile::TempDir;
@@ -2080,16 +2079,14 @@ fn sync_status_on_locked_session_yields_not_unlocked() {
 #[test]
 fn sync_now_on_locked_session_yields_not_unlocked() {
     let (state, _device_dir) = fresh_state();
-    let pw = Password::from_bytes(b"unused while locked");
-    let err = sync::sync_now_impl(&state, &pw, 0).expect_err("locked session must error");
+    let err = sync::sync_now_impl(&state, 0).expect_err("locked session must error");
     assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
 }
 
 #[test]
 fn sync_commit_decisions_impl_requires_unlock() {
     let (state, _device_dir) = fresh_state();
-    let pw = Password::from_bytes(b"unused while locked");
-    let err = sync::sync_commit_decisions_impl(&state, &pw, Vec::new(), Vec::new(), 0)
+    let err = sync::sync_commit_decisions_impl(&state, Vec::new(), Vec::new(), 0)
         .expect_err("locked session must error");
     assert!(matches!(err, AppError::NotUnlocked), "got {err:?}");
 }
@@ -2644,9 +2641,45 @@ fn sync_now_refreshes_session_so_next_write_succeeds() {
     let (b, _db) = unlocked_over(&vault);
     // Another open writes, leaving A's in-memory manifest stale.
     edit::create_block_impl(&b, "Other").expect("b writes");
-    let pw = Password::from_bytes(&golden_vault_password());
-    sync::sync_now_in_impl(&a, state_dir.path(), &pw, 1).expect("sync");
+    sync::sync_now_in_impl(&a, state_dir.path(), 1).expect("sync");
     edit::create_block_impl(&a, "Mine").expect("write after sync must not be refused");
+}
+
+/// Seed `state_dir` with a clock concurrent with `vault`'s disk clock: one
+/// entry for a device the disk has never seen, and none of the disk's.
+fn seed_concurrent_state(state_dir: &std::path::Path, vault: &std::path::Path) {
+    let out = secretary_ffi_bridge::open_vault_with_password(vault, &golden_vault_password())
+        .expect("open to read the vault uuid");
+    let vault_uuid: [u8; 16] = out.manifest.vault_uuid().try_into().unwrap();
+    let clock = vec![secretary_core::vault::VectorClockEntry {
+        device_uuid: rand::random(),
+        counter: 2,
+    }];
+    let state = secretary_core::sync::SyncState::new(vault_uuid, clock).expect("canonical clock");
+    secretary_cli::state::save(state_dir, &state).expect("seed state");
+}
+
+/// #732 acceptance: after a `SilentMerge` pass (concurrent clocks, no block
+/// diverged) the session is refreshed like any other, so a repeat sync has
+/// nothing to do and the next write succeeds. Before #730/#732 the repeat
+/// sync was `RollbackRejected` and the write was refused.
+#[test]
+fn sync_now_after_a_silent_merge_lets_the_next_write_succeed() {
+    let (_vault_dir, vault) = ephemeral_golden_copy();
+    let state_dir = tempfile::tempdir().unwrap();
+    let (a, _da) = unlocked_over(&vault);
+    let (b, _db) = unlocked_over(&vault);
+    edit::create_block_impl(&b, "Other").expect("b writes");
+    seed_concurrent_state(state_dir.path(), &vault);
+
+    let outcome = sync::sync_now_in_impl(&a, state_dir.path(), 1).expect("sync");
+    assert!(
+        matches!(outcome, SyncOutcomeDto::SilentMerge),
+        "{outcome:?}"
+    );
+    let again = sync::sync_now_in_impl(&a, state_dir.path(), 2).expect("repeat sync");
+    assert!(matches!(again, SyncOutcomeDto::NothingToDo), "{again:?}");
+    edit::create_block_impl(&a, "Mine").expect("write after a silent merge must not be refused");
 }
 
 /// The commit half of a paused pass refreshes too (mirrors the bridge's
@@ -2662,8 +2695,7 @@ fn sync_commit_decisions_refreshes_session_so_next_write_succeeds() {
     let (a, _da) = unlocked_over(vault_dir.path());
     let (b, _db) = unlocked_over(vault_dir.path());
     edit::create_block_impl(&b, "Other").expect("b writes");
-    let pw = Password::from_bytes(&golden_vault_password());
-    let outcome = sync::sync_now_in_impl(&a, state_dir.path(), &pw, 1).expect("inspect");
+    let outcome = sync::sync_now_in_impl(&a, state_dir.path(), 1).expect("inspect");
     let SyncOutcomeDto::ConflictsPending {
         vetoes,
         manifest_hash,
@@ -2680,7 +2712,7 @@ fn sync_commit_decisions_refreshes_session_so_next_write_succeeds() {
         })
         .collect();
     let outcome =
-        sync::sync_commit_decisions_in_impl(&a, state_dir.path(), &pw, decisions, manifest_hash, 2)
+        sync::sync_commit_decisions_in_impl(&a, state_dir.path(), decisions, manifest_hash, 2)
             .expect("commit");
     assert!(
         matches!(outcome, SyncOutcomeDto::MergedClean),

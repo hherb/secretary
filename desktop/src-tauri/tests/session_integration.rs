@@ -508,7 +508,7 @@ fn unlock_retains_vault_folder_on_the_unlocked_session() {
 
     assert_eq!(
         retained, folder,
-        "unlock() must retain the vault folder on the UnlockedSession so \
-         sync_now can pass it to the bridge sync_vault"
+        "unlock() must retain the vault folder on the UnlockedSession (re-auth \
+         and purge residue checks read it)"
     );
 }

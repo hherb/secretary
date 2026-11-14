@@ -232,10 +232,10 @@ describe('ipc.ts — sync wrappers', () => {
     expect(dto).toEqual({ hasState: true, lastStateWriteMs: 123 });
   });
 
-  it('syncNow invokes sync_now with the password arg', async () => {
+  it('syncNow invokes sync_now with no password (it syncs through the session, #732)', async () => {
     invokeMock.mockResolvedValue({ kind: 'nothingToDo' });
-    const outcome = await syncNow('hunter2');
-    expect(invokeMock).toHaveBeenCalledWith('sync_now', { password: 'hunter2' });
+    const outcome = await syncNow();
+    expect(invokeMock).toHaveBeenCalledWith('sync_now', undefined);
     expect(outcome).toEqual({ kind: 'nothingToDo' });
   });
 
@@ -243,14 +243,13 @@ describe('ipc.ts — sync wrappers', () => {
     // `...Once` (not the persistent `mockRejectedValue`) avoids a Vitest
     // unhandled-rejection that fails this test even though `call` catches it.
     invokeMock.mockRejectedValueOnce({ code: 'sync_in_progress' });
-    await expect(syncNow('hunter2')).rejects.toMatchObject({ code: 'sync_in_progress' });
+    await expect(syncNow()).rejects.toMatchObject({ code: 'sync_in_progress' });
   });
 
   it('syncCommitDecisions invokes the command with decisions + token', async () => {
     invokeMock.mockResolvedValueOnce({ kind: 'mergedClean' });
-    const out = await syncCommitDecisions('pw', [{ recordUuidHex: '0a', keepLocal: true }], [1, 2, 3]);
+    const out = await syncCommitDecisions([{ recordUuidHex: '0a', keepLocal: true }], [1, 2, 3]);
     expect(invokeMock).toHaveBeenCalledWith('sync_commit_decisions', {
-      password: 'pw',
       decisions: [{ recordUuidHex: '0a', keepLocal: true }],
       manifestHash: [1, 2, 3]
     });

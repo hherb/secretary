@@ -43,9 +43,8 @@ pub struct UnlockedSession {
     /// also retained here so Task 4's IPC layer can surface them to the
     /// frontend as a banner without an extra vault read.
     pub pending_warnings: Vec<AppWarning>,
-    /// Absolute path the vault was opened from. Needed by `sync_now` to call
-    /// the bridge `sync_vault`, which takes a folder path (a different entry
-    /// point than the manifest handle). Plain value, no secret material — the
+    /// Absolute path the vault was opened from (re-auth, purge residue
+    /// checks). Plain value, no secret material — the
     /// `Drop` order (manifest.wipe → identity.wipe) is unaffected.
     pub vault_folder: PathBuf,
 }
