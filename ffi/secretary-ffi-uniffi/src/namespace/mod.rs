@@ -33,7 +33,10 @@ pub use repair::{
 };
 
 mod sync;
-pub use sync::{sync_commit_decisions, sync_status, sync_vault};
+pub use sync::{
+    refresh_manifest, sync_commit_decisions, sync_commit_decisions_with_session, sync_status,
+    sync_vault, sync_vault_with_session,
+};
 
 /// Unlock a vault using its master password. uniffi-projected.
 ///

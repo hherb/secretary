@@ -1,13 +1,19 @@
 //! uniffi namespace fns for the sync surface (#187) — `sync_status`,
-//! `sync_vault`, `sync_commit_decisions` plus the bridge→uniffi DTO
+//! `sync_vault`, `sync_commit_decisions`, the session variants and
+//! `refresh_manifest` (#101), plus the bridge→uniffi DTO
 //! converters. Extracted from `namespace/mod.rs` to keep that file under
 //! the 500-line guideline; the logic lives in `secretary-ffi-bridge` and
 //! this layer only adapts argument types and translates bridge errors.
 
+use std::path::Path;
+use std::sync::Arc;
+
 use crate::errors::VaultError;
+use crate::wrappers::identity::UnlockedIdentity;
 use crate::wrappers::sync::{
     CollisionDto, DeviceClockDto, SyncOutcomeDto, SyncStatusDto, VetoDecisionDto, VetoDto,
 };
+use crate::wrappers::vault::OpenVaultManifest;
 
 /// Read-only sync status for a vault. uniffi-projected (#187).
 ///
@@ -72,15 +78,7 @@ pub fn sync_commit_decisions(
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, VaultError> {
     use secretary_core::crypto::secret::SecretBytes;
-    // Field-by-field rather than a From impl: the orphan rule forbids
-    // `impl From<uniffi DTO> for the foreign bridge DTO` in this crate.
-    let bridge_decisions = decisions
-        .into_iter()
-        .map(|d| secretary_ffi_bridge::VetoDecisionDto {
-            record_uuid_hex: d.record_uuid_hex,
-            keep_local: d.keep_local,
-        })
-        .collect();
+    let bridge_decisions = decisions_to_bridge(decisions);
     // `[ByRef] bytes` (#307): the borrowed `password` is foreign-owned
     // (the adapter scrubs it); SecretBytes owns the single Rust-side copy
     // and its ZeroizeOnDrop wipes that allocation when the bridge `_in`
@@ -95,6 +93,81 @@ pub fn sync_commit_decisions(
     )
     .map(sync_outcome_from_bridge)
     .map_err(VaultError::from)
+}
+
+/// Re-verify the vault folder with the open session and adopt it into
+/// `manifest`. uniffi-projected (#101). On error the handle is unchanged.
+///
+/// # Errors
+/// See the bridge `refresh_manifest_in` docs (`CorruptVault` for a wiped
+/// handle or a rolled-back manifest, block-file errors, ...).
+pub fn refresh_manifest(
+    state_dir: String,
+    identity: Arc<UnlockedIdentity>,
+    manifest: Arc<OpenVaultManifest>,
+) -> Result<(), VaultError> {
+    secretary_ffi_bridge::refresh_manifest_in(Path::new(&state_dir), &identity.0, &manifest.0)
+        .map_err(VaultError::from)
+}
+
+/// One sync pass through the open session (no password), then a refresh of
+/// `manifest`. uniffi-projected (#101).
+///
+/// # Errors
+/// See the bridge `sync_vault_with_session_in` docs.
+pub fn sync_vault_with_session(
+    state_dir: String,
+    identity: Arc<UnlockedIdentity>,
+    manifest: Arc<OpenVaultManifest>,
+    now_ms: u64,
+) -> Result<SyncOutcomeDto, VaultError> {
+    secretary_ffi_bridge::sync_vault_with_session_in(
+        Path::new(&state_dir),
+        &identity.0,
+        &manifest.0,
+        now_ms,
+    )
+    .map(sync_outcome_from_bridge)
+    .map_err(VaultError::from)
+}
+
+/// Commit veto decisions through the open session, then refresh `manifest`.
+/// uniffi-projected (#101).
+///
+/// # Errors
+/// See the bridge `sync_commit_decisions_with_session_in` docs.
+pub fn sync_commit_decisions_with_session(
+    state_dir: String,
+    identity: Arc<UnlockedIdentity>,
+    manifest: Arc<OpenVaultManifest>,
+    decisions: Vec<VetoDecisionDto>,
+    manifest_hash: Vec<u8>,
+    now_ms: u64,
+) -> Result<SyncOutcomeDto, VaultError> {
+    secretary_ffi_bridge::sync_commit_decisions_with_session_in(
+        Path::new(&state_dir),
+        &identity.0,
+        &manifest.0,
+        decisions_to_bridge(decisions),
+        manifest_hash,
+        now_ms,
+    )
+    .map(sync_outcome_from_bridge)
+    .map_err(VaultError::from)
+}
+
+/// Field-by-field rather than a From impl: the orphan rule forbids
+/// `impl From<uniffi DTO> for the foreign bridge DTO` in this crate.
+fn decisions_to_bridge(
+    decisions: Vec<VetoDecisionDto>,
+) -> Vec<secretary_ffi_bridge::VetoDecisionDto> {
+    decisions
+        .into_iter()
+        .map(|d| secretary_ffi_bridge::VetoDecisionDto {
+            record_uuid_hex: d.record_uuid_hex,
+            keep_local: d.keep_local,
+        })
+        .collect()
 }
 
 /// Convert the bridge `SyncStatusDto` to the uniffi value type.

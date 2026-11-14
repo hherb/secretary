@@ -104,7 +104,8 @@ use save::{save_block, BlockInput, FieldInput, FieldInputValue, RecordInput};
 use settings::{read_settings, write_settings, Settings};
 use share::share_block;
 use sync::{
-    sync_commit_decisions, sync_status, sync_vault, CollisionDto, DeviceClockDto, SyncOutcomeDto,
+    refresh_manifest, sync_commit_decisions, sync_commit_decisions_with_session, sync_status,
+    sync_vault, sync_vault_with_session, CollisionDto, DeviceClockDto, SyncOutcomeDto,
     SyncStatusDto, VetoDecisionDto, VetoDto,
 };
 use trash::{list_trashed_blocks, trash_block, TrashedBlock};
@@ -389,6 +390,10 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sync_status, m)?)?;
     m.add_function(wrap_pyfunction!(sync_vault, m)?)?;
     m.add_function(wrap_pyfunction!(sync_commit_decisions, m)?)?;
+    // #101 session sync + refresh.
+    m.add_function(wrap_pyfunction!(refresh_manifest, m)?)?;
+    m.add_function(wrap_pyfunction!(sync_vault_with_session, m)?)?;
+    m.add_function(wrap_pyfunction!(sync_commit_decisions_with_session, m)?)?;
 
     // #374 repair_vault error surface — 2 typed exception classes mirroring
     // the bridge's new FfiVaultError variants (crash-residue "offer Repair"

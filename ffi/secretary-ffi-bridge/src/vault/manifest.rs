@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use secretary_core::crypto::secret::Sensitive;
 use secretary_core::identity::card::ContactCard;
-use secretary_core::vault::{Manifest, ManifestFile};
+use secretary_core::vault::{Manifest, ManifestFile, VerifiedVaultState};
 
 use crate::error::detail;
 use crate::error::FfiVaultError;
@@ -404,6 +404,22 @@ impl OpenVaultManifest {
         let inner = guard.as_mut().ok_or(ReplaceManifestError::HandleWiped)?;
         inner.manifest = new_manifest;
         inner.manifest_file = new_manifest_file;
+        Ok(())
+    }
+
+    /// Bridge-internal: adopt a freshly re-verified disk state (#101) —
+    /// manifest body, envelope and owner card under one lock. The IBK and
+    /// vault folder are unchanged. Callers pass only an `Ok` result of
+    /// `verify_vault_state`, so an `Err` refresh never reaches the handle.
+    pub(crate) fn replace_verified_state(
+        &self,
+        s: VerifiedVaultState,
+    ) -> Result<(), ReplaceManifestError> {
+        let mut guard = lock_or_recover(&self.inner);
+        let inner = guard.as_mut().ok_or(ReplaceManifestError::HandleWiped)?;
+        inner.manifest = s.manifest;
+        inner.manifest_file = s.manifest_file;
+        inner.owner_card = s.owner_card;
         Ok(())
     }
 

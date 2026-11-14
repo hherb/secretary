@@ -1,4 +1,5 @@
-//! PyO3 sync surface (#187): the three sync functions + their DTOs,
+//! PyO3 sync surface (#187): the sync functions (plus the #101 session
+//! variants and `refresh_manifest`) and their DTOs,
 //! mirroring `secretary_ffi_bridge::sync`. Output DTOs are frozen read-only
 //! pyclasses; `SyncOutcomeDto` exposes a `kind` discriminant + payload
 //! getters (populated only for the ConflictsPending arm) — matching the
@@ -13,6 +14,8 @@ use pyo3::prelude::*;
 use secretary_core::crypto::secret::SecretBytes;
 
 use crate::errors::{ffi_vault_error_to_pyerr, uuid_array_or_value_error};
+use crate::identity::UnlockedIdentity;
+use crate::vault::OpenVaultManifest;
 
 // `Clone` is required because this DTO is nested inside a `get_all` `Vec`
 // getter (`SyncStatusDto.device_clocks`), which hands Python a clone of the
@@ -259,18 +262,95 @@ pub(crate) fn sync_commit_decisions(
     manifest_hash: Vec<u8>,
     now_ms: u64,
 ) -> PyResult<SyncOutcomeDto> {
-    let bridge_decisions = decisions
+    secretary_ffi_bridge::sync_commit_decisions_in(
+        &state_dir,
+        &vault_folder,
+        SecretBytes::new(password),
+        decisions_to_bridge(decisions),
+        manifest_hash,
+        now_ms,
+    )
+    .map(outcome_from_bridge)
+    .map_err(ffi_vault_error_to_pyerr)
+}
+
+fn decisions_to_bridge(
+    decisions: Vec<VetoDecisionDto>,
+) -> Vec<secretary_ffi_bridge::VetoDecisionDto> {
+    decisions
         .into_iter()
         .map(|d| secretary_ffi_bridge::VetoDecisionDto {
             record_uuid_hex: d.record_uuid_hex,
             keep_local: d.keep_local,
         })
-        .collect();
-    secretary_ffi_bridge::sync_commit_decisions_in(
+        .collect()
+}
+
+/// Re-verify the vault folder with the open session and adopt it into
+/// `manifest`. (#101) On error the handle is unchanged; a retry is safe.
+///
+/// The §10 rollback check uses this device's highest-seen clock from the
+/// sync state in `state_dir`.
+///
+/// # Raises
+///
+/// - `VaultCorruptVault` — a handle was closed, or the disk manifest is older than
+///   this device has seen, or it fails verification.
+/// - Any other vault error from re-verifying the folder (e.g. a block file
+///   not yet delivered by the cloud drive).
+#[pyfunction]
+pub(crate) fn refresh_manifest(
+    state_dir: PathBuf,
+    identity: &UnlockedIdentity,
+    manifest: &OpenVaultManifest,
+) -> PyResult<()> {
+    secretary_ffi_bridge::refresh_manifest_in(&state_dir, &identity.0, &manifest.0)
+        .map_err(ffi_vault_error_to_pyerr)
+}
+
+/// One sync pass through the open session (no password), then a refresh of
+/// `manifest` on every outcome but `RollbackRejected` / `ConflictsPending`.
+/// (#101) If the pass succeeds but the refresh fails, the refresh's error is
+/// raised and the handle is unchanged; a retry is safe.
+///
+/// # Raises
+///
+/// As `sync_vault` (minus the wrong-password case), plus `VaultCorruptVault` for a
+/// closed handle and any `refresh_manifest` error.
+#[pyfunction]
+pub(crate) fn sync_vault_with_session(
+    state_dir: PathBuf,
+    identity: &UnlockedIdentity,
+    manifest: &OpenVaultManifest,
+    now_ms: u64,
+) -> PyResult<SyncOutcomeDto> {
+    secretary_ffi_bridge::sync_vault_with_session_in(&state_dir, &identity.0, &manifest.0, now_ms)
+        .map(outcome_from_bridge)
+        .map_err(ffi_vault_error_to_pyerr)
+}
+
+/// Commit veto decisions for a paused pass through the open session, then
+/// refresh `manifest`. (#101) Same token contract as `sync_commit_decisions`.
+///
+/// # Raises
+///
+/// As `sync_commit_decisions` (minus the wrong-password case), plus
+/// `VaultCorruptVault` for a closed handle and any `refresh_manifest` error.
+#[pyfunction]
+#[allow(clippy::needless_pass_by_value)] // owned Vec<u8> for bytes ∪ bytearray accept
+pub(crate) fn sync_commit_decisions_with_session(
+    state_dir: PathBuf,
+    identity: &UnlockedIdentity,
+    manifest: &OpenVaultManifest,
+    decisions: Vec<VetoDecisionDto>,
+    manifest_hash: Vec<u8>,
+    now_ms: u64,
+) -> PyResult<SyncOutcomeDto> {
+    secretary_ffi_bridge::sync_commit_decisions_with_session_in(
         &state_dir,
-        &vault_folder,
-        SecretBytes::new(password),
-        bridge_decisions,
+        &identity.0,
+        &manifest.0,
+        decisions_to_bridge(decisions),
         manifest_hash,
         now_ms,
     )
