@@ -61,6 +61,63 @@ No spec edit was needed.
 - pyo3 pytest (#501, #738).
 - No manual GUI pass on desktop or Android.
 
+### (1b) Final-review fix round (`/finalcheck`)
+
+Four review passes ran on the PR: code, silent failures, tests and
+comments. None found a critical issue. Fixed in the fix-round commit:
+
+- **CLI tests.**
+  - `run_one_silent_merge_writes_the_merge_and_the_next_pass_is_nothing_to_do`
+    (`cli/tests/pipeline_integration.rs`) covers the daemon's path, which no
+    test reached before.
+  - `commit_decisions_keep_local_keeps_record_live` now asserts the clock fold
+    on the MergedClean path.
+  - Both are mutation-proven with `scripts/mutate.py`, each row
+    `RED_AS_EXPECTED`: removing the `run_one` silent-merge write, and dropping
+    the fold in `commit_merge`.
+- **Desktop.**
+  - Error notices no longer auto-dismiss after 5 s.
+  - A records reload that fails after a committed sync now says so, instead
+    of reporting the sync as failed.
+  - The gate tests now wait for the prompt to settle before asserting; before
+    this they could pass vacuously. Dropping the `return` after
+    `ReauthCancelled` reds both cancel tests.
+  - New tests: accept-then-sync and non-cancel gate failure.
+  - The `secretary-cli` dev-dependency now sets `default-features = false`.
+- **Android.**
+  - A cancelled re-auth clears a stale error.
+  - A second tap while the prompt is up is dropped. Mutation-proven: removing
+    the guard reds the new test.
+  - `VaultSyncModel` / `makeVaultSync` no longer default the gate to
+    `NoopReauthGate`, so a call site that forgets it does not compile.
+  - Both session sync methods have a `wiped` guard.
+  - Sync-at-unlock now refreshes the status label afterwards. Before, a
+    biometric or recovery unlock showed "Never synced".
+  - `ReauthFailed` has a row in `syncErrorLabel_coversEveryArm`.
+- **Docs.**
+  - Stale comments in about 12 files.
+  - README/ROADMAP rows annotated where #732/#733 made them false.
+  - The memory-hygiene memo's line about password sync passes.
+- **Filed:**
+  - **#746**: a device that ran a pre-#730 SilentMerge stays locked out.
+    Manual remedy: delete that vault's sync-state file. Needs a decision.
+  - **#747**: CLI SilentMerge test gaps.
+  - **#748**: Android sync UI test gaps.
+  - The "Sync failed" after a committed merge whose refresh failed is
+    already **#740**.
+- **Gates after the fix round, each exit 0:**
+  - `cargo fmt --check`, both clippy runs, rustdoc, `cargo build --release`
+    and `cargo test --release --workspace` (all 104 result lines: 0 failed).
+  - Hygiene guards, each with its self-test: Android log, test-support
+    placement, lean binding, payload, secret-slot.
+  - `pnpm test` (789), `svelte-check` and `eslint`.
+  - Gradle unit tests for `:vault-access`, `:sync-ui`, `:kit` and `:app`,
+    plus every androidTest compile.
+  - On `Medium_Phone_API_36.1`: kit 25/25 and sync-ui 12/12. App: 5 tests
+    across `MakeVaultSyncSmokeTest`, `OpenBrowseWithSyncSmokeTest`,
+    `OpenWithRecoverySmokeTest` and `BlockCrudRoundTripUiTest`.
+  - `conformance.py` was not rerun: no Python, spec or fixture changed.
+
 ## (2) What is next
 
 1. **Merge this PR.** Acceptance: all 25 required checks green.
@@ -77,6 +134,8 @@ No spec edit was needed.
    refresh message; **#740** / **#741** / **#742** from the #101 review.
    Before working #741 (Android refresh wiring untested), check whether it
    still applies: the code it was about is deleted.
+   **#746** (pre-#730 stuck devices) needs a user decision first;
+   **#747** / **#748** test gaps from the final review.
 5. **#737 / #729** size caps; **#738** pyo3 retention test; **#731**
    auto-sync on folder change; **#743** the pre-existing UI test failure.
 6. Carried over: #649, #683, the nested non-map sweep, #677, #668 / #693
