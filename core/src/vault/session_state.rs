@@ -28,7 +28,14 @@ pub struct VerifiedVaultState {
 /// §5.1): everything [`open_vault`] does after the identity unlock, in the
 /// same order, so open, the merge commit and a session refresh cannot drift.
 ///
-/// Reads `vault.toml`, then runs `verify_vault_state_with_toml`.
+/// Reads `vault.toml`, then runs `verify_vault_state_with_toml`. The re-read
+/// serves only the §4.3 step 6 cross-check of `vault.toml [kdf]` against the
+/// signed manifest body (`VaultError::KdfParamsMismatch`); this function
+/// compares no `vault.toml` field other than `[kdf]` (its `vault_uuid` check
+/// is the manifest header against the body). The identity's binding to this
+/// folder is NOT established here: it comes from the unlock that produced
+/// `identity` plus the manifest's AEAD under that identity's IBK, which
+/// fails for any other vault's manifest.
 ///
 /// [`open_vault`]: crate::vault::open_vault
 pub fn verify_vault_state(

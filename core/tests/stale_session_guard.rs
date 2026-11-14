@@ -387,6 +387,23 @@ fn verify_vault_state_rejects_tampered_block_fingerprint() {
     }
 }
 
+/// §4.3 step 6: a `vault.toml [kdf]` edited after the unlock no longer
+/// matches the signed manifest body.
+#[test]
+fn verify_vault_state_rejects_tampered_vault_toml_kdf() {
+    let f = Fixture::new();
+    let identity = unlock(&f);
+    let path = f.folder().join("vault.toml");
+    let toml = fs::read_to_string(&path).unwrap();
+    let tampered = toml.replace("memory_kib = 8192", "memory_kib = 16384");
+    assert_ne!(tampered, toml, "fixture must carry memory_kib = 8192");
+    fs::write(&path, tampered).unwrap();
+    match verify_vault_state(f.folder(), &identity, None) {
+        Err(VaultError::KdfParamsMismatch) => {}
+        other => panic!("expected KdfParamsMismatch, got {other:?}"),
+    }
+}
+
 #[test]
 fn verify_vault_state_refuses_rollback() {
     let f = Fixture::new();
