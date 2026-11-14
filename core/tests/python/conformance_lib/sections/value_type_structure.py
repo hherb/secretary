@@ -163,7 +163,7 @@ def sanctioned_module_issues() -> list[str]:
 #: red the same scenario, but only because it reads each file DIRECTLY; a
 #: symlinked subtree (#510) shrinks check 3's `rglob` while leaving check 4
 #: green. Re-measure rather than quoting: `ls codec/*.py | wc -l` minus one.
-MIN_SCANNED_CODEC_MODULES = 18
+MIN_SCANNED_CODEC_MODULES = 20
 
 
 def scanned_module_count() -> int:

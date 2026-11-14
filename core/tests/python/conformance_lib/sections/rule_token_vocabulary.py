@@ -30,7 +30,7 @@ stays untokened only at nested positions;
 `codec/manifest_schema.py` (9, FOUR of them the NESTED twins of top-level
 sites that DID get a typed class -- non-text key at `:148`/`:244` and
 missing required field at `:163`/`:269`, two per entry-map parser), and
-`codec/manifest_encode.py` (3), which is imported at `manifest_decode.py:17`
+`codec/manifest_encode.py` (3), which is imported at `manifest_decode.py:18`
 and CALLED for the §4.3 step-4 re-encode, so its refusals are on the decode
 path even though it is an encoder.  FOUR of the eighteen vocabulary rows
 have no Python producer at all (`malformed_cbor` gained one in #641):
