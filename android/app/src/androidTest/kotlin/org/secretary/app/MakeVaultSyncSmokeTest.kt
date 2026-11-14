@@ -20,6 +20,7 @@ import org.secretary.sync.SyncBadgeState
 import org.secretary.sync.VaultSyncModel
 import org.secretary.sync.makeVaultSync
 import java.io.File
+import org.secretary.browse.NoopReauthGate
 
 /**
  * The first on-device exercise of the FULL app wiring: production provisioning → makeVaultSync
@@ -65,7 +66,7 @@ class MakeVaultSyncSmokeTest {
         session = opened
         lateinit var pair: Pair<VaultSyncModel, ChangeDetectionMonitor>
         instrumentation.runOnMainSync {
-            pair = makeVaultSync(folder, stateDir, uuid, opened)
+            pair = makeVaultSync(folder, stateDir, uuid, opened, NoopReauthGate)
         }
         return pair
     }

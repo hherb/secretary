@@ -20,7 +20,6 @@ class FakeVaultSyncPort : VaultSyncPort {
     val commitCalls: MutableList<CommitCall> = mutableListOf()
     val statusCalls: MutableList<ByteArray> = mutableListOf()
 
-    // Field-access only; never ==-compared, so the ByteArray fields' referential equals/hashCode are unused.
     data class SyncCall(
         val stateDir: String,
         val nowMs: ULong,

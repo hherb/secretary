@@ -21,10 +21,11 @@ import java.io.File
  * assembled stack — not just the raw port.
  *
  * Scope: this proves the native surface works end-to-end (load → marshal → outcome arm → state
- * persistence), asserting the SyncOutcome and hasState only. Record-level content fidelity through
- * a merge is not asserted here — a single-device golden vault can only fast-forward, never merge
- * or veto; content round-trip + the ConflictsPending/commitDecisions path need a seeded concurrent
- * state and are future coverage.
+ * persistence), asserting the SyncOutcome and hasState only. A single golden vault can only
+ * fast-forward; [silentMerge_thenRepeatPass_thenWrite_onDevice] stages two working copies to reach
+ * the SilentMerge arm (#730). Record-level content fidelity through a merge and the
+ * ConflictsPending/commitDecisions path are not covered here (see
+ * TwoWorkingCopiesConflictInstrumentedTest for the conflict surface).
  */
 @RunWith(AndroidJUnit4::class)
 class SyncRoundTripInstrumentedTest {

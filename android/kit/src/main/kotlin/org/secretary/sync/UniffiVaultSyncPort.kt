@@ -20,9 +20,9 @@ import uniffi.secretary.syncStatus
  * [sync] and [commitDecisions] do disk I/O and crypto, so they run on [ioDispatcher] (default
  * [Dispatchers.IO]); [status] is a cheap disk read and runs inline.
  *
- * The three FFI functions are injectable seams so the adapter's wiring is host-testable with
- * fakes (no native library loaded). Production builds it from a session with the secondary
- * constructor.
+ * The three calls (one FFI function, two session methods) are injectable seams so the adapter's
+ * wiring is host-testable with fakes (no native library loaded). Production builds it from a
+ * session with the secondary constructor.
  */
 class UniffiVaultSyncPort(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,

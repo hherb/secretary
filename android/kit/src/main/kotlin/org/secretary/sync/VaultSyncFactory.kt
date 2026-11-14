@@ -1,7 +1,6 @@
 package org.secretary.sync
 
 import android.os.Looper
-import org.secretary.browse.NoopReauthGate
 import org.secretary.browse.UniffiVaultSession
 import org.secretary.browse.WriteReauthGate
 import java.io.File
@@ -31,7 +30,7 @@ fun makeVaultSync(
     stateDir: File,
     vaultUuid: ByteArray?,
     session: UniffiVaultSession,
-    gate: WriteReauthGate = NoopReauthGate,
+    gate: WriteReauthGate, // no default: see VaultSyncModel's gate
     wallClock: WallClock = SystemWallClock(),
 ): Pair<VaultSyncModel, ChangeDetectionMonitor> {
     check(Looper.myLooper() == Looper.getMainLooper()) {

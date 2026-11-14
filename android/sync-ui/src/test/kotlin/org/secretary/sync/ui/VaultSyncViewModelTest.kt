@@ -21,6 +21,7 @@ import org.secretary.sync.SyncOutcome
 import org.secretary.sync.SyncVeto
 import org.secretary.sync.SyncVetoDecision
 import org.secretary.sync.VaultSyncModel
+import org.secretary.browse.NoopReauthGate
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class VaultSyncViewModelTest {
@@ -32,7 +33,7 @@ class VaultSyncViewModelTest {
     private fun viewModel(outcome: SyncOutcome): VaultSyncViewModel {
         val port = ScriptedSyncPort(outcome)
         val coordinator = SyncCoordinator(port, stateDir = "s")
-        val model = VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null)
+        val model = VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null, gate = NoopReauthGate)
         return VaultSyncViewModel(model)
     }
 
@@ -40,7 +41,7 @@ class VaultSyncViewModelTest {
     fun beginInteractiveSync_runsOnePassAndForwardsBadge() = runTest(dispatcher) {
         val port = ScriptedSyncPort(SyncOutcome.MergedClean)
         val coordinator = SyncCoordinator(port, stateDir = "s")
-        val model = VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null)
+        val model = VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null, gate = NoopReauthGate)
         val vm = VaultSyncViewModel(model)
 
         vm.beginInteractiveSync()
@@ -63,7 +64,7 @@ class VaultSyncViewModelTest {
         )
         val port = ScriptedSyncPort(syncOutcome = conflict, commitOutcome = SyncOutcome.MergedClean)
         val coordinator = SyncCoordinator(port, stateDir = "s")
-        val model = VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null)
+        val model = VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null, gate = NoopReauthGate)
         val vm = VaultSyncViewModel(model)
 
         vm.beginInteractiveSync()

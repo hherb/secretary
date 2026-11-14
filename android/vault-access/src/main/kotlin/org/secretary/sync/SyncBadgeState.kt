@@ -28,7 +28,7 @@ sealed interface SyncBadgeState {
  * Precedence (highest first): syncing → review → changes → synced → never. The single
  * [reviewNeeded] input collapses the two ways a review can be pending (the model supplies
  * `reviewNeededFlag || pendingConflict != null`): the sync-at-unlock path raises the flag
- * with no stashed conflict (password dropped), while the interactive path stashes one.
+ * with no stashed conflict (no sheet on the silent path), while the interactive path stashes one.
  */
 fun syncBadgeState(
     inProgress: Boolean,

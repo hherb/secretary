@@ -4,7 +4,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.secretary.browse.DeviceUnlockError
-import org.secretary.browse.NoopReauthGate
 import org.secretary.browse.WriteReauthGate
 import org.secretary.browse.reauthFailedMessage
 
@@ -39,7 +38,8 @@ class VaultSyncModel(
     private val wallClock: WallClock,
     private val monitorHook: SyncMonitorHook,
     private val vaultUuid: ByteArray?,
-    private val gate: WriteReauthGate = NoopReauthGate,
+    // No default: a forgotten gate would let "Sync now" and Apply through unprompted (#733).
+    private val gate: WriteReauthGate,
 ) {
     private val _badge = MutableStateFlow<SyncBadgeState>(SyncBadgeState.NeverSynced)
     val badge: StateFlow<SyncBadgeState> = _badge.asStateFlow()
@@ -58,6 +58,7 @@ class VaultSyncModel(
 
     private var pendingChanges: Boolean = false
     private var lastStatus: SyncStatus? = null
+    private var interactiveBusy: Boolean = false
 
     /** The change monitor's onChange seam: a debounced remote change was detected. */
     fun pendingChangesRaised() {
@@ -71,14 +72,14 @@ class VaultSyncModel(
     }
 
     /** Interactive pass ("Sync now"), gated: a conflict surfaces a [pendingConflict] for the sheet. */
-    suspend fun runInteractivePass() {
-        if (!authorized("Confirm syncing this vault")) return
+    suspend fun runInteractivePass() = exclusive {
+        if (!authorized("Confirm syncing this vault")) return@exclusive
         runPass { outcome -> surfaceConflict(outcome) }
     }
 
     /** Commit the user's veto decisions for the paused conflict, gated like a write. */
-    suspend fun resolve(decisions: List<SyncVetoDecision>) {
-        if (!authorized("Confirm applying your sync choices")) return
+    suspend fun resolve(decisions: List<SyncVetoDecision>) = exclusive {
+        if (!authorized("Confirm applying your sync choices")) return@exclusive
         guardedPass {
             when (val outcome = coordinator.resolve(decisions, wallClock.nowMs())) {
                 is SyncOutcome.ConflictsPending -> surfaceConflict(outcome) // re-stashed; keep sheet open
@@ -114,12 +115,29 @@ class VaultSyncModel(
         try {
             gate.authorizeWrite(reason)
         } catch (e: DeviceUnlockError.UserCancelled) {
+            _lastError.value = null // the user retried and backed out; an older error is stale
             return false
         } catch (e: DeviceUnlockError) {
             _lastError.value = VaultSyncError.ReauthFailed(reauthFailedMessage(e))
             return false
         }
         return true
+    }
+
+    /**
+     * Run one gated action at a time. The re-auth prompt suspends before [isSyncing] goes true, so
+     * without this a second tap on "Sync now" or Apply while the prompt is up would queue a second
+     * pass (or a second resolve against an already-emptied stash). Main-thread confined, so a plain
+     * flag suffices; a tap that arrives while busy is dropped.
+     */
+    private suspend fun exclusive(action: suspend () -> Unit) {
+        if (interactiveBusy) return
+        interactiveBusy = true
+        try {
+            action()
+        } finally {
+            interactiveBusy = false
+        }
     }
 
     /** Shared pass body: mute -> run -> dispatch the ConflictsPending arm to [onConflict], else clean. */

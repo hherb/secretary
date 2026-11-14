@@ -50,7 +50,8 @@ data class BrowseSession(
  *
  * Does NOT zeroize the credential bytes and does NOT launch sync-at-unlock — the caller owns both.
  * AppRoot zeroizes the credential bytes unconditionally (in its `finally` block). Sync needs no
- * credential: every pass runs through the opened session (#733), behind the same [gate].
+ * credential: every pass runs through the opened session (#733). Sync now and conflict Apply sit
+ * behind the same [gate]; sync-at-unlock is ungated.
  *
  * [onCommit] is invoked by the browse model after every successful committed write (Task 7's seam):
  * the cloud path wires it to `coordinator.afterCommit()` so a commit is flushed working→cloud. The
@@ -64,6 +65,8 @@ data class BrowseSession(
  *
  * @throws the typed open errors from [VaultOpenPort] (e.g. WrongPasswordOrCorrupt /
  *   WrongRecoveryOrCorrupt / InvalidRecoveryPhrase) — the caller catches and returns to Unlock.
+ * @throws IllegalArgumentException if [openPort] returns a session that is not a
+ *   [UniffiVaultSession] (sync runs through the real session's handles).
  */
 suspend fun openBrowseWithSync(
     openPort: VaultOpenPort,
@@ -110,10 +113,11 @@ suspend fun openBrowseWithSync(
     val syncSession = requireNotNull(session as? UniffiVaultSession) { "sync runs through the real session" }
     val (syncModel, monitor) = makeVaultSync(folder, stateDir, effectiveUuid, syncSession, gate)
     // Built from the SAME already-open session + gate the browse write path uses — no second FFI
-    // open. `session` is the real UniffiVaultSession in production (and in every androidTest caller),
-    // which conforms to TrashPort + SettingsPort; the safe casts are null only for a non-conforming
-    // fake session (e.g. a host-test double), which leaves `trash`/`settings` null. TrashBrowseModel
-    // gets the settings port so its retention preview/commit read the per-vault window.
+    // open. The requireNotNull above has already pinned `session` to the real UniffiVaultSession,
+    // which conforms to TrashPort + SettingsPort, so the TrashPort / SettingsPort safe casts always
+    // succeed today; they stay safe casts so a future session type degrades to no trash/settings
+    // rather than crashing. TrashBrowseModel gets the settings port so its retention preview/commit
+    // read the per-vault window.
     val trashVm = (session as? TrashPort)?.let { TrashBrowseViewModel(TrashBrowseModel(it, gate, settingsPort)) }
     // The Settings screen needs the shared retargetable gate + the same makeGraceGate factory (used
     // both at open above and for the save-time retarget) so a grace change retargets THIS gate.

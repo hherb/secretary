@@ -14,6 +14,7 @@ import org.secretary.sync.SyncCoordinator
 import org.secretary.sync.SyncOutcome
 import org.secretary.sync.SyncVeto
 import org.secretary.sync.VaultSyncModel
+import org.secretary.browse.NoopReauthGate
 
 @RunWith(AndroidJUnit4::class)
 class SyncScreenUiTest {
@@ -37,7 +38,7 @@ class SyncScreenUiTest {
         // First interactive pass surfaces a conflict; the resolve commit comes back clean.
         val port = ScriptedSyncPort(syncOutcome = conflict, commitOutcome = SyncOutcome.MergedClean)
         val coordinator = SyncCoordinator(port, stateDir = "s")
-        return VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null)
+        return VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null, gate = NoopReauthGate)
     }
 
     /**

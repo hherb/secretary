@@ -1,8 +1,8 @@
 package org.secretary.sync
 
 /**
- * The seam over the FFI sync surface. `UniffiVaultSyncPort` (`:kit`) is the ONLY type that
- * imports the generated `uniffi.secretary` bindings; everything above this interface is pure and
+ * The seam over the FFI sync surface. `UniffiVaultSyncPort` (`:kit`) is its only implementation
+ * over the generated `uniffi.secretary` bindings; everything above this interface is pure and
  * host-tested with a fake.
  *
  * Every pass runs through the OPEN session (#733, as iOS since #101): no password and no folder

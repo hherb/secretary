@@ -71,6 +71,7 @@ class SyncRenderHelpersTest {
             VaultSyncError.NoPendingConflict to "Nothing to resolve.",
             VaultSyncError.InvalidArgument("x") to "Invalid sync request.",
             VaultSyncError.Failed("x") to "Sync failed.",
+            VaultSyncError.ReauthFailed("x") to "Couldn't authorize the sync: x.",
         )
         cases.forEach { (error, expected) -> assertEquals(expected, syncErrorLabel(error)) }
     }

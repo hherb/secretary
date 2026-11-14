@@ -1,5 +1,8 @@
 package org.secretary.sync
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -218,6 +221,47 @@ class VaultSyncModelTest {
         m.resolve(listOf(SyncVetoDecision("r1", true)))
         assertTrue(f.port.commitCalls.isEmpty())
         assertEquals(PendingConflict(listOf(veto()), emptyList()), m.pendingConflict.value)
+    }
+
+    @Test
+    fun cancelledRetryClearsAnEarlierError() = runTest {
+        val f = Fixture()
+        val gate = object : WriteReauthGate {
+            var calls = 0
+            override suspend fun authorizeWrite(reason: String) {
+                throw if (calls++ == 0) DeviceUnlockError.BiometryLockout else DeviceUnlockError.UserCancelled
+            }
+        }
+        val m = f.model(gate = gate)
+        m.runInteractivePass()
+        assertTrue(m.lastError.value is VaultSyncError.ReauthFailed)
+        m.runInteractivePass() // the user taps again and backs out of the prompt
+        assertNull(m.lastError.value)
+    }
+
+    @Test
+    fun aSecondTapWhileThePromptIsUpIsDropped() = runTest {
+        val f = Fixture()
+        f.port.syncResults += Result.success(SyncOutcome.NothingToDo)
+        f.port.syncResults += Result.success(SyncOutcome.NothingToDo)
+        val release = CompletableDeferred<Unit>()
+        val gate = object : WriteReauthGate {
+            var calls = 0
+            override suspend fun authorizeWrite(reason: String) {
+                calls++
+                release.await()
+            }
+        }
+        val m = f.model(gate = gate)
+        val first = launch { m.runInteractivePass() }
+        runCurrent() // first tap is now suspended in the prompt
+        m.runInteractivePass() // second tap returns at once
+        release.complete(Unit)
+        first.join()
+        assertEquals(1, gate.calls)
+        assertEquals(1, f.port.syncCalls.size)
+        m.runInteractivePass() // and the guard is released afterwards
+        assertEquals(2, f.port.syncCalls.size)
     }
 
     @Test

@@ -549,9 +549,14 @@ private suspend fun unlockAndOpen(
         val session = openBrowseWithSync(
             uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid, credential, writeReauthGate,
             makeGraceGate = makeGraceGate)
-        // Background sync-at-unlock through the open session, for every credential (#733). If Browse
-        // is disposed mid-pass the session is wiped and the pass ends in lastError, writing nothing.
-        scope.launch { session.sync.syncAtUnlock() }
+        // Background sync-at-unlock through the open session, for every credential (#733), then the
+        // "synced N ago" label (the model never refreshes status itself). If Browse is disposed
+        // before the pass takes the session lock, the pass ends in lastError and writes nothing; a
+        // pass already in flight completes first, because wipe() waits on the same lock.
+        scope.launch {
+            session.sync.syncAtUnlock()
+            session.sync.refreshStatus()
+        }
         if (enrollAfter && credential is UnlockCredential.Password) {
             try {
                 coordinator.enroll(folder.path, vaultId, credential.secret)
