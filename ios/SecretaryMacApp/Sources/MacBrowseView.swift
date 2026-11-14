@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import SecretaryKit
 import SecretaryVaultAccess
 import SecretaryVaultAccessUI
 
@@ -19,6 +20,7 @@ struct MacBrowseView: View {
     let deviceSlotPort: DeviceSlotPort
 
     @State private var selectedBlockHex: String?
+    @State private var reloadFailure: String?
     @State private var selectedRecordHex: String?
     @State private var isActive = true
     /// Identity of the `NSWindow` hosting this view, resolved once it is shown.
@@ -248,7 +250,24 @@ struct MacBrowseView: View {
         }
         .overlay(alignment: .bottom) {
             if let error = viewModel.error {
-                Text(error.localizedDescription).foregroundStyle(.red).padding(8)
+                VStack(spacing: 4) {
+                    Text(reloadFailure ?? error.localizedDescription)
+                        .foregroundStyle(.red)
+                    // Interim until the Mac sync slice lands; remove this button then (#101).
+                    if error == .vaultChangedOnDisk {
+                        Button {
+                            do {
+                                viewModel.reloadFromDisk(stateDir: try defaultSyncStateDir().path)
+                                reloadFailure = nil
+                            } catch {
+                                reloadFailure = "Could not locate the sync state folder."
+                            }
+                        } label: {
+                            Text("Reload")
+                        }
+                    }
+                }
+                .padding(8)
             }
         }
         .onAppear { viewModel.loadBlocks() }

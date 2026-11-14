@@ -55,7 +55,11 @@ public final class VaultBrowseViewModel: ObservableObject {
 
     public var vaultUuidHex: String { session.vaultUuidHex }
 
-    public func loadBlocks() { blocks = session.blockSummaries() }
+    public func loadBlocks() {
+        blocks = session.blockSummaries()
+        // A fresh read supersedes a refused-write message (#101); other errors stay.
+        if error == .vaultChangedOnDisk { error = nil }
+    }
 
     public func selectBlock(_ block: BlockSummary) {
         selectedBlockUuid = block.uuid
@@ -129,6 +133,7 @@ public final class VaultBrowseViewModel: ObservableObject {
             self.error = .other(foldDiagnostic(error))
             return
         }
+        error = nil
         loadBlocks()
         refresh()
     }

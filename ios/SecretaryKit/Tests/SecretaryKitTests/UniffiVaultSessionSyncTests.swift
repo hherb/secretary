@@ -65,6 +65,25 @@ final class UniffiVaultSessionSyncTests: XCTestCase {
         XCTAssertFalse(session.blockSummaries().isEmpty)
     }
 
+    /// Replaces the manual GUI check for the macOS Reload action (#101): a second
+    /// writer makes A's write refuse, and `refreshFromDisk` adopts B's change.
+    func testReloadFromDiskAdoptsAnotherWritersChange() throws {
+        let a = try openSession()
+        let b = try openSession()
+        defer { a.wipe(); b.wipe() }
+        let stateB = tmp.appendingPathComponent("state-b", isDirectory: true)
+        try FileManager.default.createDirectory(at: stateB, withIntermediateDirectories: true)
+
+        let bBlock = try b.createBlock(blockName: "FromB")
+        XCTAssertThrowsError(try a.createBlock(blockName: "FromA")) { error in
+            XCTAssertEqual(error as? VaultAccessError, .vaultChangedOnDisk)
+        }
+
+        try a.refreshFromDisk(stateDir: stateDir.path)
+        XCTAssertTrue(a.blockSummaries().contains { $0.uuid == bBlock })
+        XCTAssertNoThrow(try a.createBlock(blockName: "FromA"))
+    }
+
     func testWipedSessionShortCircuitsSyncCommitAndRefresh() async throws {
         let session = try openSession()
         session.wipe()

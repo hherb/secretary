@@ -142,4 +142,35 @@ final class VaultBrowseViewModelTests: XCTestCase {
         XCTAssertEqual(vm.error, .vaultChangedOnDisk)
         XCTAssertEqual(vm.blockNameDialog, .create, "refused write keeps the dialog open")
     }
+
+    func testReloadFromDiskClearsStaleVaultChangedOnDiskWithNoBlockSelected() async {
+        let (session, _, _) = makeSession {}
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
+        vm.loadBlocks()
+        session.failNextWrite = .vaultChangedOnDisk
+        vm.startCreateBlock()
+        await vm.confirmBlockName("Archive")
+        XCTAssertEqual(vm.error, .vaultChangedOnDisk)
+
+        vm.reloadFromDisk(stateDir: "/state")
+
+        XCTAssertNil(vm.error, "a successful reload must drop the refused-write message")
+    }
+
+    func testLoadBlocksClearsOnlyVaultChangedOnDisk() async {
+        let (session, _, _) = makeSession {}
+        let vm = VaultBrowseViewModel(session: session, gate: FakeWriteReauthGate())
+        vm.loadBlocks()
+        session.failNextWrite = .vaultChangedOnDisk
+        vm.startCreateBlock()
+        await vm.confirmBlockName("Archive")
+        vm.loadBlocks()
+        XCTAssertNil(vm.error)
+
+        session.failNextWrite = .corruptVault("x")
+        vm.startCreateBlock()
+        await vm.confirmBlockName("Archive")
+        vm.loadBlocks()
+        XCTAssertEqual(vm.error, .corruptVault("x"), "unrelated errors stay visible")
+    }
 }
