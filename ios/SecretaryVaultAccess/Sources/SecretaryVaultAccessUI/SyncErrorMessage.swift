@@ -31,3 +31,9 @@ public func syncErrorMessage(_ e: VaultSyncError) -> String {
         return "Sync wasn’t authorized."
     }
 }
+
+/// Shown when a pass comes back `.rollbackRejected`. Neutral on cause on purpose:
+/// a peer replaying an old vault and this device's own SilentMerge record (#730)
+/// both produce it, and the app cannot tell them apart.
+public let syncRollbackRejectedMessage =
+    "Sync applied nothing: the vault in the folder is older than this device has seen."

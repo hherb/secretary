@@ -208,6 +208,30 @@ final class VaultSyncViewModelTests: XCTestCase {
         XCTAssertEqual(failed, 0, "a thrown pass changes nothing")
     }
 
+    func testRollbackRejectedIsSurfacedAndClearedByTheNextPass() async {
+        let port = FakeVaultSyncPort(syncResult: .success(.rollbackRejected))
+        let vm = makeVM(port: port)
+        await vm.syncNow()
+        XCTAssertTrue(vm.rollbackRejected, "a rejected pass must not look like a quiet success")
+        XCTAssertNil(vm.lastError)
+
+        port.syncResult = .success(.nothingToDo)
+        await vm.syncNow()
+        XCTAssertFalse(vm.rollbackRejected)
+    }
+
+    func testFailedStatusReadKeepsThePriorLastSyncedLabel() async {
+        let port = FakeVaultSyncPort(statusResult: .success(
+            SyncStatus(hasState: true, deviceClocks: [], lastStateWriteMs: 5)))
+        let vm = makeVM(port: port)
+        await vm.syncNow()
+        XCTAssertEqual(vm.badge, .synced(sinceMs: 5))
+
+        port.statusResult = .failure(.stateCorrupt("x"))
+        await vm.syncNow()
+        XCTAssertEqual(vm.badge, .synced(sinceMs: 5), "a failed status read keeps the label")
+    }
+
     func testOnVaultChangedFiresAfterCleanResolve() async {
         var changed = 0
         let (vm, _) = await vmWithStashedConflict(commitResult: .success(.mergedClean),

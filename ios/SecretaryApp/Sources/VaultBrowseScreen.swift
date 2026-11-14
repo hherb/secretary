@@ -199,6 +199,11 @@ struct VaultBrowseScreen: View {
                 Text(syncErrorMessage(syncError))
                     .font(.footnote).foregroundStyle(.red)
             }
+        } else if syncModel.rollbackRejected {
+            Section("Sync") {
+                Text(syncRollbackRejectedMessage)
+                    .font(.footnote).foregroundStyle(.red)
+            }
         }
     }
 

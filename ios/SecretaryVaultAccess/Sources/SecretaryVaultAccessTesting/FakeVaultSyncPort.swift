@@ -8,8 +8,10 @@ import SecretaryVaultAccess
 /// protocol. Safe because XCTest drives it serially through `await`; the
 /// assumption is stated, not hidden (#231).
 public final class FakeVaultSyncPort: VaultSyncPort, @unchecked Sendable {
-    private let statusResult: Result<SyncStatus, VaultSyncError>
-    private let syncResult: Result<SyncOutcome, VaultSyncError>
+    /// Settable so one test can fail a later status read.
+    public var statusResult: Result<SyncStatus, VaultSyncError>
+    /// Settable so one test can run two passes with different outcomes.
+    public var syncResult: Result<SyncOutcome, VaultSyncError>
     private let commitResult: Result<SyncOutcome, VaultSyncError>
 
     /// Spies for assertions.

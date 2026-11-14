@@ -23,6 +23,11 @@ public final class VaultSyncViewModel: ObservableObject {
     @Published public private(set) var reviewNeeded = false
     @Published public private(set) var pendingConflict: PendingConflict?
     @Published public private(set) var lastError: VaultSyncError?
+    /// The last pass came back `.rollbackRejected`: the vault on disk is older
+    /// than this device has seen, so nothing was applied. A pass outcome, not an
+    /// error, so it lives beside `lastError` rather than in it. Cleared when the
+    /// next pass starts.
+    @Published public private(set) var rollbackRejected = false
     @Published public var conflictSheetPresented = false
 
     private var pendingChanges = false
@@ -113,8 +118,10 @@ public final class VaultSyncViewModel: ObservableObject {
 
     /// Fire `onVaultChanged` unless the outcome left the session untouched.
     /// The session sync refreshes the handle on every other arm, `.silentMerge`
-    /// included, so the browse list must reload to show it.
+    /// included, so the browse list must reload to show it. Also records
+    /// whether the pass was `.rollbackRejected`, since every pass ends here.
     private func notifyIfChanged(_ outcome: SyncOutcome) {
+        rollbackRejected = outcome == .rollbackRejected
         switch outcome {
         case .rollbackRejected, .conflictsPending: return
         default: onVaultChanged?()
@@ -126,6 +133,7 @@ public final class VaultSyncViewModel: ObservableObject {
     private func runPass(onSuccess: (SyncOutcome) -> Void) async {
         isSyncing = true
         lastError = nil
+        rollbackRejected = false
         recomputeBadge()
         monitor?.muteSelfWrite()
         do {
@@ -163,6 +171,7 @@ public final class VaultSyncViewModel: ObservableObject {
         guard await authorized() else { return }
         isSyncing = true
         lastError = nil
+        rollbackRejected = false
         recomputeBadge()
         monitor?.muteSelfWrite()
         do {
@@ -201,6 +210,8 @@ public final class VaultSyncViewModel: ObservableObject {
     /// badge simply keeps its prior last-synced label).
     public func refreshStatus() async {
         guard let vaultUuid else { return }
-        lastStatus = try? await coordinator.status(vaultUuid: vaultUuid)
+        if let status = try? await coordinator.status(vaultUuid: vaultUuid) {
+            lastStatus = status
+        }
     }
 }
