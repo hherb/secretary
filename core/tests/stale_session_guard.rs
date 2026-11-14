@@ -422,3 +422,42 @@ fn verify_vault_state_refuses_rollback() {
         other => panic!("expected Rollback, got {other:?}"),
     }
 }
+
+/// The identity's binding to the folder comes from the manifest AEAD under
+/// that identity's IBK (`verify_vault_state`'s doc). `commit_with_decisions`
+/// and the bridge's session refresh both rely on it now that they take the
+/// caller's identity instead of re-opening the folder: another vault's
+/// identity must be refused, and nothing on disk may change.
+#[test]
+fn verify_vault_state_refuses_identity_from_another_vault() {
+    let f = Fixture::new();
+    let data = core_test_data_dir();
+    let inputs: serde_json::Value =
+        serde_json::from_slice(&fs::read(data.join("golden_vault_002_inputs.json")).unwrap())
+            .unwrap();
+    let pw = secretary_core::crypto::secret::SecretBytes::new(
+        inputs["password"].as_str().unwrap().as_bytes().to_vec(),
+    );
+    let other = data.join("golden_vault_002");
+    let foreign = secretary_core::unlock::open_with_password(
+        &fs::read(other.join("vault.toml")).unwrap(),
+        &fs::read(other.join("identity.bundle.enc")).unwrap(),
+        &pw,
+    )
+    .unwrap();
+    // Plant every vault-002 card, the foreign owner's included, so the refusal
+    // cannot come from a missing card file. The first check left is the
+    // manifest's author fingerprint; a peer who also forged that would still
+    // face the hybrid signature and the AEAD under the foreign keys.
+    for e in fs::read_dir(other.join("contacts")).unwrap() {
+        let e = e.unwrap();
+        fs::copy(e.path(), f.folder().join("contacts").join(e.file_name())).unwrap();
+    }
+    let before = snapshot_tree(f.folder());
+
+    match verify_vault_state(f.folder(), &foreign, None) {
+        Err(VaultError::ManifestAuthorMismatch) => {}
+        other => panic!("expected ManifestAuthorMismatch, got {other:?}"),
+    }
+    assert_eq!(snapshot_tree(f.folder()), before, "nothing on disk changed");
+}
