@@ -122,6 +122,10 @@ pub enum VaultError {
     /// recomputed veto set. Mirrors `FfiVaultError::SyncDecisionsIncomplete`.
     #[error("sync decisions did not cover the pending conflicts")]
     SyncDecisionsIncomplete,
+    /// A manifest write was refused: the vault changed on disk since it was
+    /// opened. Mirrors `FfiVaultError::VaultChangedOnDisk`.
+    #[error("the vault changed on disk since it was opened; sync, then retry")]
+    VaultChangedOnDisk,
 
     /// ADR 0009 (B.2): the requested device slot does not exist.
     /// Mirrors `FfiVaultError::DeviceSlotNotFound`.
@@ -225,6 +229,7 @@ impl From<FfiVaultError> for VaultError {
                 detail: detail::project(detail),
             },
             FfiVaultError::SyncDecisionsIncomplete => VaultError::SyncDecisionsIncomplete,
+            FfiVaultError::VaultChangedOnDisk => VaultError::VaultChangedOnDisk,
             FfiVaultError::DeviceSlotNotFound => VaultError::DeviceSlotNotFound,
             FfiVaultError::WrongDeviceSecretOrCorrupt => VaultError::WrongDeviceSecretOrCorrupt,
             FfiVaultError::DeviceUuidMismatch { detail } => VaultError::DeviceUuidMismatch {

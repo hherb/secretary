@@ -90,6 +90,14 @@ class BrowseMappingTest {
     }
 
     @Test
+    fun `maps VaultChangedOnDisk to its domain counterpart`() {
+        assertEquals(
+            VaultBrowseError.VaultChangedOnDisk,
+            mapVaultBrowseError(VaultException.VaultChangedOnDisk()),
+        )
+    }
+
+    @Test
     fun `maps the device-secret-relevant arms to their domain counterparts`() {
         assertEquals(
             VaultBrowseError.WrongDeviceSecretOrCorrupt,

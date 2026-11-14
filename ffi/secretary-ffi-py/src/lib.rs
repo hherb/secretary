@@ -77,14 +77,15 @@ use device::{
 use errors::{
     CorruptVault, InvalidMnemonic, VaultBlockNotFound, VaultBlockNotInTrash, VaultBlockPurged,
     VaultBlockUuidAlreadyLive, VaultCannotDeleteOwnerContact, VaultCannotRevokeOwner,
-    VaultCardDecodeFailure, VaultContactAlreadyExists, VaultContactNotFound, VaultCorruptVault,
-    VaultDeviceSlotNotFound, VaultDeviceUuidMismatch, VaultFolderInvalid, VaultFolderNotEmpty,
-    VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder, VaultMissingRecipientCard,
-    VaultNeedsRepair, VaultNotAuthor, VaultRecipientAlreadyPresent, VaultRecipientNotPresent,
-    VaultRecordNotFound, VaultRepairRejected, VaultSaveCryptoFailure, VaultSyncDecisionsIncomplete,
-    VaultSyncEvidenceStale, VaultSyncFailed, VaultSyncInProgress, VaultSyncStateCorrupt,
-    VaultSyncStateVaultMismatch, VaultWrongDeviceSecretOrCorrupt, VaultWrongMnemonicOrCorrupt,
-    VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
+    VaultCardDecodeFailure, VaultChangedOnDisk, VaultContactAlreadyExists, VaultContactNotFound,
+    VaultCorruptVault, VaultDeviceSlotNotFound, VaultDeviceUuidMismatch, VaultFolderInvalid,
+    VaultFolderNotEmpty, VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder,
+    VaultMissingRecipientCard, VaultNeedsRepair, VaultNotAuthor, VaultRecipientAlreadyPresent,
+    VaultRecipientNotPresent, VaultRecordNotFound, VaultRepairRejected, VaultSaveCryptoFailure,
+    VaultSyncDecisionsIncomplete, VaultSyncEvidenceStale, VaultSyncFailed, VaultSyncInProgress,
+    VaultSyncStateCorrupt, VaultSyncStateVaultMismatch, VaultWrongDeviceSecretOrCorrupt,
+    VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt,
+    WrongPasswordOrCorrupt,
 };
 use identity::UnlockedIdentity;
 use purge::{empty_trash, purge_block, EmptyTrashReport, PurgeReport};
@@ -351,6 +352,7 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         "VaultSyncDecisionsIncomplete",
         py.get_type::<VaultSyncDecisionsIncomplete>(),
     )?;
+    m.add("VaultChangedOnDisk", py.get_type::<VaultChangedOnDisk>())?;
 
     // ADR 0009 (B.2) device-slot error surface — 3 typed exception classes
     // mirroring the bridge's FfiVaultError device variants.

@@ -293,6 +293,7 @@ describe('error code allowlists', () => {
       'sync_state_corrupt',
       'sync_failed',
       'sync_decisions_incomplete',
+      'vault_changed_on_disk',
       'invalid_argument',
       'vault_needs_repair',
       'repair_rejected',

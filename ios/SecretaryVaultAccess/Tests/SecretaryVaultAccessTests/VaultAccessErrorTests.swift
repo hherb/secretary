@@ -31,7 +31,7 @@ final class VaultAccessErrorTests: XCTestCase {
         .wrongPasswordOrCorrupt, .wrongMnemonicOrCorrupt, .invalidMnemonic("bad words"),
         .wrongDeviceSecretOrCorrupt, .vaultMismatch, .corruptVault("blk"),
         .blockNotFound("blk"), .recordNotFound("rec"), .invalidArgument("arg"),
-        .folderInvalid("/path"), .reauthFailed("cancelled"), .other("boom"),
+        .folderInvalid("/path"), .vaultChangedOnDisk, .reauthFailed("cancelled"), .other("boom"),
     ]
 
     // #454: every case must surface a friendly, non-nil `errorDescription`, so a

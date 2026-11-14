@@ -48,6 +48,7 @@ export const APP_ERROR_CODES = [
   'sync_state_corrupt',
   'sync_failed',
   'sync_decisions_incomplete',
+  'vault_changed_on_disk',
   'invalid_argument',
   'vault_needs_repair',
   'repair_rejected',
@@ -101,6 +102,7 @@ export type AppError =
   | { code: 'sync_state_corrupt' }
   | { code: 'sync_failed' }
   | { code: 'sync_decisions_incomplete' }
+  | { code: 'vault_changed_on_disk' }
   | { code: 'vault_needs_repair'; block_uuid_hex: string }
   | { code: 'repair_rejected'; block_uuid_hex: string; detail: string }
   | { code: 'internal' };
@@ -288,6 +290,11 @@ export function userMessageFor(err: AppError): UserMessage {
       return {
         title: "Couldn't apply your choices",
         actionHint: 'Some conflicts weren’t resolved — please try syncing again.'
+      };
+    case 'vault_changed_on_disk':
+      return {
+        title: 'The vault changed on another device',
+        actionHint: 'This vault changed on another device since you opened it. Sync, then try again.'
       };
     case 'vault_needs_repair':
       // Handled as an affordance ("Repair now?") in Unlock.svelte, not a hard

@@ -22,6 +22,10 @@ final class VaultErrorMappingDeviceTests: XCTestCase {
         XCTAssertEqual(mapped, .corruptVault("x"))
     }
 
+    func testVaultChangedOnDiskMapsToVaultChangedOnDisk() {
+        XCTAssertEqual(mapVaultAccessError(.VaultChangedOnDisk), .vaultChangedOnDisk)
+    }
+
     // #374: the open path promotes crash residue out of CorruptVault into
     // these two dedicated arms. With no repair UI on iOS they must map back to
     // `.corruptVault` (pre-#374 classification), NOT slide into `.other`.

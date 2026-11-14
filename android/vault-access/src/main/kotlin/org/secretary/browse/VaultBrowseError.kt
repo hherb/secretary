@@ -127,6 +127,9 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
     /** The vault on disk is structurally corrupt. */
     data class CorruptVault(val detail: String) : VaultBrowseError(detail)
 
+    /** The vault changed on disk since it was opened; the write was refused. Sync, then retry. */
+    data object VaultChangedOnDisk : VaultBrowseError()
+
     /** The supplied folder path is not a readable vault folder. */
     data class FolderInvalid(val detail: String) : VaultBrowseError(detail)
 

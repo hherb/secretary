@@ -295,6 +295,18 @@ fn map_ffi_error_promotes_sync_decisions_incomplete() {
 }
 
 #[test]
+fn vault_changed_on_disk_serializes_code() {
+    let v = serde_json::to_value(AppError::VaultChangedOnDisk).unwrap();
+    assert_eq!(v, serde_json::json!({ "code": "vault_changed_on_disk" }));
+}
+
+#[test]
+fn map_ffi_error_promotes_vault_changed_on_disk() {
+    let mapped = map_ffi_error(FfiVaultError::VaultChangedOnDisk);
+    assert!(matches!(mapped, AppError::VaultChangedOnDisk));
+}
+
+#[test]
 fn invalid_argument_serializes_without_detail() {
     let err = AppError::InvalidArgument {
         detail: "source_block_uuid and target_block_uuid must differ".into(),

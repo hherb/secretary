@@ -37,6 +37,7 @@ func vaultErrorName(_ e: VaultError) -> String {
     case .SyncInProgress: return "SyncInProgress"
     case .SyncFailed: return "SyncFailed"
     case .SyncDecisionsIncomplete: return "SyncDecisionsIncomplete"
+    case .VaultChangedOnDisk: return "VaultChangedOnDisk"
     case .DeviceSlotNotFound: return "DeviceSlotNotFound"
     case .WrongDeviceSecretOrCorrupt: return "WrongDeviceSecretOrCorrupt"
     case .DeviceUuidMismatch: return "DeviceUuidMismatch"
