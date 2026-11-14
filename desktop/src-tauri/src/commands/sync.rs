@@ -75,8 +75,15 @@ pub fn sync_now_in_impl(
 }
 
 /// Whether the session's handle must be re-read after a pass with this outcome.
+///
 /// Not after `SilentMerge`: the password pass persists a clock that always
 /// dominates the disk (#730), so a refresh there would fail as a rollback.
+/// That leaves the user at a dead end: the handle stays stale, so the next
+/// write is refused (`VaultChangedOnDisk`); a repeat sync is
+/// `RollbackRejected` (#730) and does not refresh; and a lock-and-reopen is
+/// refused as a rollback (#730). The user is stuck until the disk clock
+/// catches up or #730 / #732 / #733 land. iOS is unaffected: its session
+/// sync refreshes against the pre-pass clock.
 fn needs_refresh(outcome: &BridgeOutcome) -> bool {
     matches!(
         outcome,

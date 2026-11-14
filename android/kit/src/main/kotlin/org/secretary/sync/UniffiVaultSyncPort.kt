@@ -67,7 +67,11 @@ class UniffiVaultSyncPort(
     }
 
     // Not after SilentMerge: the password pass persists a clock that always dominates the disk
-    // (#730), so a refresh there would fail as a rollback. Not after Rollback/Conflicts: nothing written.
+    // (#730), so a refresh there would fail as a rollback. That is a dead end: the handle stays
+    // stale, so the next write is refused (VaultChangedOnDisk); a repeat sync is RollbackRejected
+    // (#730) and does not refresh; a lock-and-reopen is refused as a rollback (#730). The user is
+    // stuck until the disk clock catches up or #730/#732/#733 land. iOS is unaffected (its session
+    // sync refreshes against the pre-pass clock). Not after Rollback/Conflicts: nothing written.
     private fun refreshIfNeeded(stateDir: String, outcome: SyncOutcomeDto) {
         val refresh = refreshSession ?: return
         if (outcome == SyncOutcomeDto.NothingToDo ||
