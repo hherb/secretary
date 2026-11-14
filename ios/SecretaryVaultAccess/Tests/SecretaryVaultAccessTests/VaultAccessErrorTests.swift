@@ -82,6 +82,14 @@ final class VaultAccessErrorTests: XCTestCase {
         }
     }
 
+    // The refused-write copy is shared verbatim with Android and desktop (#101);
+    // pin the exact text so the platforms cannot drift apart.
+    func testVaultChangedOnDiskCopyIsVerbatim() {
+        XCTAssertEqual(
+            VaultAccessError.vaultChangedOnDisk.errorDescription,
+            "This vault changed on another device since you opened it. Sync, then try again.")
+    }
+
     // Anti-oracle invariant (crypto-design): the three folded "…OrCorrupt" cases must
     // NEVER present the credential as definitively wrong — the vault-damage possibility
     // stays visible in every one, so the message can never be read as a wrong-credential

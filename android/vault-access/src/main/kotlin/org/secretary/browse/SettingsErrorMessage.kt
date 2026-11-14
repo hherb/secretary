@@ -13,5 +13,7 @@ package org.secretary.browse
  */
 fun settingsErrorMessage(error: VaultBrowseError): String = when (error) {
     is VaultBrowseError.ReauthFailed -> "Couldn't authorize the change: ${error.detail}"
+    // A retry fails until the session is refreshed, so say how (#101).
+    is VaultBrowseError.VaultChangedOnDisk -> VAULT_CHANGED_ON_DISK_MESSAGE
     else -> "Couldn't update settings: ${error::class.simpleName}"
 }

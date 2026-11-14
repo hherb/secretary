@@ -16,6 +16,10 @@ public func settingsErrorMessage(_ e: VaultAccessError) -> String {
         return "Re-authentication didn’t complete — settings were not saved."
     case .invalidArgument:
         return "That value is out of range — settings were not saved."
+    case .vaultChangedOnDisk:
+        // A retry can never succeed until the session is refreshed, so use the
+        // shared copy that says how (#101). The Mac renders its Reload notice instead.
+        return VaultAccessError.vaultChangedOnDisk.errorDescription ?? ""
     default:
         return "Couldn’t update settings. Please try again."
     }
