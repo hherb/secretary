@@ -53,16 +53,9 @@ fn golden_vault_password() -> SecretBytes {
 /// Stage a fresh writable copy of `golden_vault_001/` into a tempdir
 /// and unlock it. Returns the tempdir (keep alive for the test's
 /// lifetime), the vault folder path inside it, the unlocked identity,
-/// the password (for `commit_with_decisions` if the test path reaches
-/// it), and the vault's UUID (so the test can build a matching
+/// and the vault's UUID (so the test can build a matching
 /// [`SyncState`]).
-fn stage_and_unlock_golden() -> (
-    tempfile::TempDir,
-    PathBuf,
-    UnlockedIdentity,
-    SecretBytes,
-    [u8; 16],
-) {
+fn stage_and_unlock_golden() -> (tempfile::TempDir, PathBuf, UnlockedIdentity, [u8; 16]) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let vault_dir = tmp.path().join(GOLDEN_VAULT_DIRNAME);
     let golden_src = core_test_data_dir().join(GOLDEN_VAULT_DIRNAME);
@@ -82,7 +75,7 @@ fn stage_and_unlock_golden() -> (
     // the same vault.toml the unlock path already authenticated.
     let vt_str = std::str::from_utf8(&vault_toml_bytes).expect("vault.toml utf-8");
     let vt = vault_toml::decode(vt_str).expect("decode vault.toml");
-    (tmp, vault_dir, identity, password, vt.vault_uuid)
+    (tmp, vault_dir, identity, vt.vault_uuid)
 }
 
 /// `now_ms = 0` is the C.1-era convention for callers that don't need
@@ -100,7 +93,7 @@ const TEST_NOW_MS: u64 = 0;
 /// becomes the disk clock so the next call returns `NothingToDo`.
 #[test]
 fn run_one_returns_applied_automatically_on_fresh_state() {
-    let (_tmp, vault_dir, identity, _password, vault_uuid) = stage_and_unlock_golden();
+    let (_tmp, vault_dir, identity, vault_uuid) = stage_and_unlock_golden();
     let mut state = SyncState::empty(vault_uuid);
     let mut ux = AutoKeepLocalVetoUx;
 
@@ -126,7 +119,7 @@ fn run_one_returns_applied_automatically_on_fresh_state() {
 /// matches disk, a re-sync is a no-op with zero state mutation.
 #[test]
 fn run_one_returns_nothing_to_do_on_second_call() {
-    let (_tmp, vault_dir, identity, _password, vault_uuid) = stage_and_unlock_golden();
+    let (_tmp, vault_dir, identity, vault_uuid) = stage_and_unlock_golden();
     let mut state = SyncState::empty(vault_uuid);
     let mut ux = AutoKeepLocalVetoUx;
 
@@ -153,7 +146,7 @@ fn run_one_returns_nothing_to_do_on_second_call() {
 /// no persistence step accidentally records the older disk view.
 #[test]
 fn run_one_returns_rollback_rejected_when_state_dominates() {
-    let (_tmp, vault_dir, identity, _password, vault_uuid) = stage_and_unlock_golden();
+    let (_tmp, vault_dir, identity, vault_uuid) = stage_and_unlock_golden();
 
     // First, advance state to disk's clock so we know what's there.
     let mut state = SyncState::empty(vault_uuid);
@@ -207,7 +200,7 @@ fn run_one_returns_rollback_rejected_when_state_dominates() {
 /// non-interactive impl as part of the public API contract.
 #[test]
 fn run_one_threads_autokeeplocal_through_dyn_boundary() {
-    let (_tmp, vault_dir, identity, _password, vault_uuid) = stage_and_unlock_golden();
+    let (_tmp, vault_dir, identity, vault_uuid) = stage_and_unlock_golden();
     let mut state = SyncState::empty(vault_uuid);
     let mut ux = AutoKeepLocalVetoUx;
     let ux_ref: &mut dyn secretary_cli::veto::VetoUx = &mut ux;

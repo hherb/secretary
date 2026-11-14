@@ -112,10 +112,10 @@ pub fn commit_with_decisions(
 
     // Step 2: TOCTOU freshness re-check. Read the manifest envelope
     // bytes off disk, BLAKE3-hash them, compare with the hash captured
-    // by prepare_merge. verify_vault_state already authenticated the on-disk
-    // bytes; this raw re-read can race a concurrent writer between
-    // step 1's verify and this call, but either way we hash whatever the
-    // current bytes are and compare.
+    // by prepare_merge. verify_vault_state already authenticated the
+    // on-disk bytes; this raw re-read can race a concurrent writer
+    // between step 1's verify and this call, but either way we hash
+    // whatever the current bytes are and compare.
     let manifest_path = vault_folder.join(MANIFEST_FILENAME);
     let envelope_bytes = std::fs::read(&manifest_path).map_err(|e| {
         SyncError::Vault(crate::vault::VaultError::Io {
@@ -243,8 +243,8 @@ struct OwnerKeyBag {
 
 impl OwnerKeyBag {
     /// Derive the owner sender + recipient keys from the unlocked identity
-    /// bundle and the verified owner card. Mirrors `save_block`'s step-4 owner-key setup. The
-    /// stack copy of the Ed25519 SK is zeroized immediately after
+    /// bundle and the verified owner card. Mirrors `save_block`'s step-4
+    /// owner-key setup. The stack copy of the Ed25519 SK is zeroized immediately after
     /// wrapping in [`Sensitive`] (`[u8; 32]: Copy` move-residue pattern,
     /// per CLAUDE.md memory hygiene).
     fn derive(bundle: &IdentityBundle, owner_card: &ContactCard) -> Result<Self, SyncError> {

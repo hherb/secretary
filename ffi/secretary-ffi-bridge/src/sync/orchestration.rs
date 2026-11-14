@@ -54,10 +54,8 @@ pub fn sync_vault_in(
 ) -> Result<SyncOutcomeDto, FfiVaultError> {
     // 1. Open the vault → owned core::UnlockedIdentity + vault_uuid. We keep
     //    the whole `core::vault::OpenVault` (`core_out`) alive for the pass so
-    //    we can borrow `&core_out.identity_block_key`/`&core_out.identity` —
-    //    rather than splitting into the two FFI handles. `open_vault` BORROWS
-    //    `&password`, so we still own `password` afterwards and can pass `&`
-    //    of it to the pass below. `?` on the `From<VaultError>` yields
+    //    we can borrow `&core_out.identity_block_key`/`&core_out.identity`.
+    //    The pass takes no password. `?` on the `From<VaultError>` yields
     //    `WrongPasswordOrCorrupt` for a bad password.
     let core_out =
         secretary_core::vault::open_vault(vault_folder, Unlocker::Password(&password), None)?;
