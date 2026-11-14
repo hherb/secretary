@@ -131,18 +131,22 @@ public final class VaultBrowseViewModel: ObservableObject {
     /// Re-read the manifest from disk into the session (#101), then reload the
     /// block list and the open block. A refused refresh (e.g. a rollback) maps
     /// into `error` and reloads nothing, so the UI keeps showing what it had.
-    public func reloadFromDisk(stateDir: String) {
+    /// Returns whether the refresh landed, so a caller dismisses a sheet only
+    /// on success.
+    @discardableResult
+    public func reloadFromDisk(stateDir: String) -> Bool {
         do {
             try session.refreshFromDisk(stateDir: stateDir)
         } catch let e as VaultAccessError {
             error = e
-            return
+            return false
         } catch {
             self.error = .other(foldDiagnostic(error))
-            return
+            return false
         }
         error = nil
         sessionRefreshed()
+        return true
     }
 
     /// Re-auth, then run a guarded write. The `isWriting` guard is set BEFORE

@@ -108,7 +108,7 @@ final class VaultBrowseViewModelTests: XCTestCase {
         session.blocksAfterRefresh = [block, merged]
         let readsBefore = session.readCount
 
-        vm.reloadFromDisk(stateDir: "/state")
+        XCTAssertTrue(vm.reloadFromDisk(stateDir: "/state"))
 
         XCTAssertEqual(session.refreshCount, 1)
         XCTAssertEqual(session.lastRefreshStateDir, "/state")
@@ -124,7 +124,8 @@ final class VaultBrowseViewModelTests: XCTestCase {
         session.blocksAfterRefresh = []
         session.failNextRefresh = .corruptVault("rollback")
 
-        vm.reloadFromDisk(stateDir: "/state")
+        XCTAssertFalse(vm.reloadFromDisk(stateDir: "/state"),
+                       "a refused refresh must report failure so a sheet stays open")
 
         XCTAssertEqual(vm.error, .corruptVault("rollback"))
         XCTAssertEqual(vm.blocks, [block], "a refused refresh must not reload")
