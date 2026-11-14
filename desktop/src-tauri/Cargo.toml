@@ -158,5 +158,7 @@ tempfile = "=3.27.0"
 # Dev-only workspace crate; never on the runtime dependency tree.
 secretary-test-utils = { path = "../../test-utils" }
 # Seeds a sync-state file in the session-sync tests (#732), the only writer of
-# that format. Already in the runtime tree through the bridge, so no extra build.
-secretary-cli = { path = "../../cli" }
+# that format. Already in the runtime tree through the bridge; default features
+# off to match the bridge, so the test build does not pull in the daemon's
+# clap/notify stack.
+secretary-cli = { path = "../../cli", default-features = false }

@@ -37,6 +37,10 @@ const CANCELLING_SEAM = {
   prompt: () => Promise.reject(ReauthCancelled)
 };
 
+// Drain the microtask queue plus one macrotask turn, so an async click handler
+// that awaited a rejected promise has run to completion.
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 describe('SyncPill.svelte', () => {
   beforeEach(() => {
     mockStatus.mockReset();
@@ -56,13 +60,61 @@ describe('SyncPill.svelte', () => {
   });
 
   it('syncs nothing when the re-auth prompt is cancelled', async () => {
-    __setWriteGuardTestSeam(CANCELLING_SEAM);
+    const prompt = vi.fn(() => Promise.reject(ReauthCancelled));
+    __setWriteGuardTestSeam({ ...CANCELLING_SEAM, prompt });
     mockStatus.mockResolvedValue({ hasState: true, lastStateWriteMs: null });
     const { findByRole, queryByRole } = render(SyncPill);
     await fireEvent.click(await findByRole('button', { name: /sync/i }));
-    await waitFor(() => expect(mockStatus).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+    await settle(); // let the rejected prompt run through syncClicked to its end
     expect(mockSyncNow).not.toHaveBeenCalled();
     expect(queryByRole('alert')).toBeNull();
+  });
+
+  it('shows a failed re-auth (not a cancel) as an error and syncs nothing', async () => {
+    __setWriteGuardTestSeam({ ...CANCELLING_SEAM, prompt: () => Promise.reject({ code: 'internal' }) });
+    mockStatus.mockResolvedValue({ hasState: true, lastStateWriteMs: null });
+    const { findByRole } = render(SyncPill);
+    await fireEvent.click(await findByRole('button', { name: /sync/i }));
+    expect((await findByRole('alert')).textContent).not.toBe('');
+    expect(mockSyncNow).not.toHaveBeenCalled();
+  });
+
+  it('syncs after the re-auth prompt is accepted', async () => {
+    const prompt = vi.fn(() => Promise.resolve());
+    __setWriteGuardTestSeam({ ...CANCELLING_SEAM, prompt });
+    mockStatus.mockResolvedValue({ hasState: true, lastStateWriteMs: null });
+    mockSyncNow.mockResolvedValue({ kind: 'nothingToDo' });
+    const { findByRole } = render(SyncPill);
+    await fireEvent.click(await findByRole('button', { name: /sync/i }));
+    await waitFor(() => expect(mockSyncNow).toHaveBeenCalledTimes(1));
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(prompt.mock.invocationCallOrder[0]).toBeLessThan(mockSyncNow.mock.invocationCallOrder[0]);
+  });
+
+  it('keeps an error notice up past the success dismiss delay', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: false });
+    try {
+      mockStatus.mockResolvedValue({ hasState: true, lastStateWriteMs: null });
+      mockSyncNow.mockRejectedValueOnce({ code: 'vault_changed_on_disk' });
+      const { findByRole, queryByRole } = render(SyncPill);
+      await fireEvent.click(await findByRole('button', { name: /sync/i }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(queryByRole('alert')).not.toBeNull();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(queryByRole('alert')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports a failed records reload after a committed sync as that, not as a failed sync', async () => {
+    mockStatus.mockResolvedValue({ hasState: true, lastStateWriteMs: null });
+    mockSyncNow.mockResolvedValue({ kind: 'silentMerge' });
+    mockRefresh.mockRejectedValueOnce({ code: 'internal' });
+    const { findByRole } = render(SyncPill);
+    await fireEvent.click(await findByRole('button', { name: /sync/i }));
+    expect((await findByRole('alert')).textContent).toMatch(/^Synced, but the records could not reload/);
   });
 
   it('shows a sync failure as an error notice', async () => {

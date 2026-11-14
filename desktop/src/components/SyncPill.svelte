@@ -78,11 +78,17 @@
     }
   }
 
+  // Never rejects: the sync itself has already committed, so a failed records
+  // reload is reported as that, not as a failed sync.
   async function onSynced(outcome: SyncOutcome) {
     notice = syncOutcomeMessage(outcome);
     await loadStatus();
     if (syncChangedData(outcome)) {
-      await refreshManifest();
+      try {
+        await refreshManifest();
+      } catch (err) {
+        notice = { kind: 'error', text: `Synced, but the records could not reload: ${errorNotice(err).text}` };
+      }
     }
   }
 
@@ -95,11 +101,13 @@
     conflicts = null;
   }
 
-  // Auto-dismiss: when a notice appears, clear it after SYNC_NOTICE_DISMISS_MS.
-  // Re-runs whenever `notice` changes so a new notice resets the timer;
-  // returning clearTimeout ensures no late-firing set on unmount.
+  // Auto-dismiss: when a success notice appears, clear it after
+  // SYNC_NOTICE_DISMISS_MS. An error stays until the next click, so a failure
+  // the user looked away from is not lost. Re-runs whenever `notice` changes so
+  // a new notice resets the timer; returning clearTimeout ensures no
+  // late-firing set on unmount.
   $effect(() => {
-    if (notice === null) return;
+    if (notice === null || notice.kind === 'error') return;
     const timerId = setTimeout(() => { notice = null; }, SYNC_NOTICE_DISMISS_MS);
     return () => clearTimeout(timerId);
   });

@@ -60,12 +60,34 @@ describe('ConflictResolutionDialog.svelte', () => {
   afterEach(() => resetReauthGuard());
 
   it('Apply commits nothing when the re-auth prompt is cancelled', async () => {
-    __setWriteGuardTestSeam(CANCELLING_SEAM);
-    const { getByRole, onResolved } = renderDialog();
+    const prompt = vi.fn(() => Promise.reject(ReauthCancelled));
+    __setWriteGuardTestSeam({ ...CANCELLING_SEAM, prompt });
+    const { getByRole, queryByRole, onResolved } = renderDialog();
     await fireEvent.click(getByRole('button', { name: /apply & finish sync/i }));
-    await Promise.resolve();
+    await waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0)); // let apply() run to its end
     expect(mockCommit).not.toHaveBeenCalled();
     expect(onResolved).not.toHaveBeenCalled();
+    expect(queryByRole('alert')).toBeNull();
+  });
+
+  it('Apply shows a failed re-auth (not a cancel) inline and commits nothing', async () => {
+    __setWriteGuardTestSeam({ ...CANCELLING_SEAM, prompt: () => Promise.reject({ code: 'internal' }) });
+    const { getByRole, findByRole, onResolved } = renderDialog();
+    await fireEvent.click(getByRole('button', { name: /apply & finish sync/i }));
+    expect(await findByRole('alert')).toBeTruthy();
+    expect(mockCommit).not.toHaveBeenCalled();
+    expect(onResolved).not.toHaveBeenCalled();
+  });
+
+  it('Apply commits after the re-auth prompt is accepted', async () => {
+    const prompt = vi.fn(() => Promise.resolve());
+    __setWriteGuardTestSeam({ ...CANCELLING_SEAM, prompt });
+    mockCommit.mockResolvedValueOnce({ kind: 'mergedClean' });
+    const { getByRole, onResolved } = renderDialog();
+    await fireEvent.click(getByRole('button', { name: /apply & finish sync/i }));
+    await waitFor(() => expect(onResolved).toHaveBeenCalledWith({ kind: 'mergedClean' }));
+    expect(prompt.mock.invocationCallOrder[0]).toBeLessThan(mockCommit.mock.invocationCallOrder[0]);
   });
 
   it('renders one card per veto showing the formatVetoSummary label', () => {
