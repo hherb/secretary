@@ -2621,3 +2621,30 @@ fn stage_three_pane_smoke_vault() {
     println!("  blocks   : {block_count} ({record_count} records)");
     println!("  NOTE: throwaway vault, throwaway password — never the committed fixture.\n");
 }
+
+#[test]
+fn sync_now_refreshes_session_so_next_write_succeeds() {
+    let (_vault_dir, vault) = ephemeral_golden_copy();
+    let state_dir = tempfile::tempdir().unwrap();
+    let open = || {
+        let (state, dev) = fresh_state();
+        state.lock().unwrap().approve_path(
+            PathPurpose::VaultFolder,
+            canonicalize_for_auth(&vault).unwrap(),
+        );
+        unlock::unlock_with_password_impl(
+            &state,
+            vault.to_str().unwrap(),
+            &golden_vault_password(),
+        )
+        .expect("unlock");
+        (state, dev)
+    };
+    let (a, _da) = open();
+    let (b, _db) = open();
+    // Another open writes, leaving A's in-memory manifest stale.
+    edit::create_block_impl(&b, "Other").expect("b writes");
+    let pw = Password::from_bytes(&golden_vault_password());
+    sync::sync_now_in_impl(&a, state_dir.path(), &pw, 1).expect("sync");
+    edit::create_block_impl(&a, "Mine").expect("write after sync must not be refused");
+}

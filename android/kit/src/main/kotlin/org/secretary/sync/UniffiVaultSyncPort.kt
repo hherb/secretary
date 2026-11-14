@@ -32,6 +32,8 @@ class UniffiVaultSyncPort(
     // (stateDir, vaultFolder, password, decisions, manifestHash, nowMs) -> outcome
     private val commitFn: (String, String, java.nio.ByteBuffer, List<VetoDecisionDto>, ByteArray, ULong) -> SyncOutcomeDto =
         ::syncCommitDecisions,
+    // Re-reads the open session after a pass (#101); null when there is no session to refresh.
+    private val refreshSession: ((String) -> Unit)? = null,
 ) : VaultSyncPort {
 
     override suspend fun status(stateDir: String, vaultUuid: ByteArray): SyncStatus =
@@ -45,7 +47,7 @@ class UniffiVaultSyncPort(
     ): SyncOutcome = withContext(ioDispatcher) {
         mapOutcome(callMappingErrors {
             withDirectSecret(password) { pw -> syncFn(stateDir, vaultFolder, pw, nowMs) }
-        })
+        }.also { refreshIfNeeded(stateDir, it) })
     }
 
     override suspend fun commitDecisions(
@@ -61,7 +63,17 @@ class UniffiVaultSyncPort(
             withDirectSecret(password) { pw ->
                 commitFn(stateDir, vaultFolder, pw, dtoDecisions, manifestHash, nowMs)
             }
-        })
+        }.also { refreshIfNeeded(stateDir, it) })
+    }
+
+    // Not after SilentMerge: the password pass persists a clock that always dominates the disk
+    // (#730), so a refresh there would fail as a rollback. Not after Rollback/Conflicts: nothing written.
+    private fun refreshIfNeeded(stateDir: String, outcome: SyncOutcomeDto) {
+        val refresh = refreshSession ?: return
+        if (outcome == SyncOutcomeDto.NothingToDo ||
+            outcome == SyncOutcomeDto.AppliedAutomatically ||
+            outcome == SyncOutcomeDto.MergedClean
+        ) callMappingErrors { refresh(stateDir) }
     }
 }
 

@@ -140,4 +140,52 @@ class UniffiVaultSyncPortTest {
         }
         assertInstanceOf(VaultSyncError.EvidenceStale::class.java, thrown)
     }
+
+    private fun refreshCases(outcome: SyncOutcomeDto, expectRefresh: Boolean, viaCommit: Boolean) = runTest {
+        val refreshed = mutableListOf<String>()
+        val port = UniffiVaultSyncPort(
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+            statusFn = { _, _ -> error("unused") },
+            syncFn = { _, _, _, _ -> outcome },
+            commitFn = { _, _, _, _, _, _ -> outcome },
+            refreshSession = { refreshed += it },
+        )
+        if (viaCommit) port.commitDecisions("/s", "/v", byteArrayOf(1), emptyList(), byteArrayOf(2), 5uL)
+        else port.sync("/s", "/v", byteArrayOf(1), 5uL)
+        assertEquals(if (expectRefresh) listOf("/s") else emptyList<String>(), refreshed)
+    }
+
+    @Test
+    fun `refresh runs after MergedClean and AppliedAutomatically and NothingToDo`() {
+        refreshCases(SyncOutcomeDto.MergedClean, true, viaCommit = false)
+        refreshCases(SyncOutcomeDto.MergedClean, true, viaCommit = true)
+        refreshCases(SyncOutcomeDto.AppliedAutomatically, true, viaCommit = false)
+        refreshCases(SyncOutcomeDto.NothingToDo, true, viaCommit = true)
+    }
+
+    @Test
+    fun `refresh is skipped after SilentMerge RollbackRejected and ConflictsPending (#730)`() {
+        for (viaCommit in listOf(false, true)) {
+            refreshCases(SyncOutcomeDto.SilentMerge, false, viaCommit)
+            refreshCases(SyncOutcomeDto.RollbackRejected, false, viaCommit)
+            refreshCases(SyncOutcomeDto.ConflictsPending(emptyList(), emptyList(), ByteArray(32)), false, viaCommit)
+        }
+    }
+
+    @Test
+    fun `a refresh VaultException is mapped to VaultSyncError`() = runTest {
+        val port = UniffiVaultSyncPort(
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+            statusFn = { _, _ -> error("unused") },
+            syncFn = { _, _, _, _ -> SyncOutcomeDto.MergedClean },
+            commitFn = { _, _, _, _, _, _ -> error("unused") },
+            refreshSession = { throw VaultException.CorruptVault("x") },
+        )
+        try {
+            port.sync("/s", "/v", byteArrayOf(1), 5uL)
+            org.junit.jupiter.api.Assertions.fail<Unit>("expected VaultSyncError")
+        } catch (e: VaultSyncError) {
+            // mapped
+        }
+    }
 }

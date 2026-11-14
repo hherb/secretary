@@ -12,6 +12,7 @@ import uniffi.secretary.Record
 import uniffi.secretary.UnlockedIdentity
 import uniffi.secretary.VaultException
 import uniffi.secretary.openVaultWithPassword
+import uniffi.secretary.refreshManifest as ffiRefreshManifest
 import uniffi.secretary.openVaultWithRecovery
 import uniffi.secretary.openWithDeviceSecret as ffiOpenWithDeviceSecret
 import uniffi.secretary.readBlock as ffiReadBlock
@@ -143,6 +144,17 @@ class UniffiVaultSession(
     private var currentBlock: BlockReadOutput? = null
 
     override fun vaultUuidHex(): String = vaultUuidHexValue
+
+    /** Re-read the vault folder into this session's handles after a password sync pass wrote it
+     *  through a separate open; without this the next write is refused as VaultChangedOnDisk (#101).
+     *  Takes [sessionLock] like every other handle access; a no-op once [wiped]. On error the
+     *  bridge leaves the handles unchanged, so the raw [VaultException] propagates for the caller
+     *  to map. */
+    fun refreshFromDisk(stateDir: String) {
+        synchronized(sessionLock) {
+            if (!wiped) ffiRefreshManifest(stateDir, identity, manifest)
+        }
+    }
 
     override fun blockSummaries(): List<BlockSummaryView> =
         synchronized(sessionLock) {
