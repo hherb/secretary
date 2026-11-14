@@ -88,6 +88,16 @@ mod tests {
     }
 
     #[test]
+    fn vault_changed_on_disk_display_is_the_pinned_bridge_message() {
+        // #101: the platforms map this variant to their own user copy; the
+        // bridge message is what logs and the pyo3 exception carry.
+        assert_eq!(
+            FfiVaultError::VaultChangedOnDisk.to_string(),
+            "the vault changed on disk since it was opened; sync, then retry",
+        );
+    }
+
+    #[test]
     fn from_ffi_unlock_error_translates_each_variant_one_to_one() {
         // The private bridge-internal From<FfiUnlockError> arm. This is
         // reachable from FfiVaultError::from(VaultError::Unlock(...)) but
