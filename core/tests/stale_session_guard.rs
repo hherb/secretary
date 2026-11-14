@@ -265,10 +265,52 @@ fn own_write_chain_is_never_refused() {
     restore_block(folder, &mut h, a, device, T0 + 2, &mut OsRng).unwrap();
     trash_block(folder, &mut h, a, device, T0 + 3, &mut OsRng).unwrap();
     purge_block(folder, &mut h, a, device, T0 + 4, &mut OsRng).unwrap();
-    save(folder, &mut h, b, &[owner], T0 + 5).unwrap();
+    save(folder, &mut h, b, std::slice::from_ref(&owner), T0 + 5).unwrap();
     trash_block(folder, &mut h, b, device, T0 + 6, &mut OsRng).unwrap();
     let report = empty_trash(folder, &mut h, device, T0 + 7, &mut OsRng).unwrap();
     assert_eq!(report.purged_count, 1, "empty_trash must have written");
+
+    // Re-key writers and the retention purge, on the same handle.
+    let c = uuid();
+    let alice = external_card("Alice");
+    let (ed, pq) = owner_signing_keys(&h);
+    let (block_c, device_id) = (BlockUuid::new(c), DeviceUuid::new(device));
+    save(folder, &mut h, c, std::slice::from_ref(&owner), T0 + 8).unwrap();
+    share_block(
+        folder,
+        &mut h,
+        block_c,
+        &owner,
+        &ed,
+        &pq,
+        std::slice::from_ref(&owner),
+        &alice,
+        device_id,
+        T0 + 9,
+        &mut OsRng,
+    )
+    .unwrap();
+    revoke_block_recipient(
+        folder,
+        &mut h,
+        block_c,
+        &owner,
+        &ed,
+        &pq,
+        &[owner.clone(), alice.clone()],
+        RecipientUuid::new(alice.contact_uuid),
+        device_id,
+        T0 + 10,
+        &mut OsRng,
+    )
+    .unwrap();
+    trash_block(folder, &mut h, c, device, T0 + 11, &mut OsRng).unwrap();
+    // Window 1 ms, tombstoned at T0 + 11: expired at T0 + 20.
+    let report = auto_purge_expired(folder, &mut h, 1, T0 + 20, device, &mut OsRng).unwrap();
+    assert_eq!(
+        report.purged_count, 1,
+        "auto_purge_expired must have written"
+    );
 }
 
 /// The guard compares raw bytes against `encode_manifest_file(expected)`,
