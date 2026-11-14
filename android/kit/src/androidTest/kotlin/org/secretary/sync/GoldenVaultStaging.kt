@@ -2,7 +2,12 @@ package org.secretary.sync
 
 import android.content.Context
 import org.json.JSONObject
+import org.secretary.browse.DeviceUuidProvider
+import org.secretary.browse.UniffiVaultSession
+import org.secretary.browse.withDirectSecret
+import uniffi.secretary.openVaultWithPassword
 import java.io.File
+import java.security.SecureRandom
 
 /**
  * AndroidTest helper: stages a WRITABLE copy of golden_vault_001 from the test APK
@@ -24,6 +29,20 @@ object GoldenVaultStaging {
         val dest = File(context.cacheDir, "gv-${System.nanoTime()}/$VAULT_ASSET")
         copyAsset(context, VAULT_ASSET, dest)
         return dest
+    }
+
+    /** The published golden-vault KAT password — not a real secret, so not zeroized. */
+    val PASSWORD: ByteArray get() = "correct horse battery staple".toByteArray()
+
+    /** Open [folder] into a writable [UniffiVaultSession] (sync passes run through it, #733).
+     *  Writes stamp one random device UUID; the caller wipes the session. */
+    fun openSession(folder: File): UniffiVaultSession {
+        val out = withDirectSecret(PASSWORD) { pw -> openVaultWithPassword(folder.path.toByteArray(), pw) }
+        val device = ByteArray(UUID_BYTES).also { SecureRandom().nextBytes(it) }
+        val devices = object : DeviceUuidProvider {
+            override fun deviceUuid(vaultHex: String): ByteArray = device
+        }
+        return UniffiVaultSession(out, deviceUuids = devices)
     }
 
     /** A fresh empty sync-state dir under cacheDir. */

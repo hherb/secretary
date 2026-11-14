@@ -116,8 +116,7 @@ internal fun cloudCoordinator(
  * (logged + swallowed); the open already succeeded and Browse is still returned.
  *
  * Secret hygiene mirrors `unlockAndOpen`: the credential bytes are zeroized in a `finally` wrapping
- * the whole body (success or open failure). The password background sync-at-unlock copy is
- * independent of the zeroize here.
+ * the whole body (success or open failure). Sync needs no credential (it runs through the session).
  *
  * @throws the typed open errors from VaultOpenPort — the caller (Unlock handler) catches and routes
  *   back to Unlock carrying the same cloud target.

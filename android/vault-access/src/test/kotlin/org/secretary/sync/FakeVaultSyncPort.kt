@@ -23,16 +23,12 @@ class FakeVaultSyncPort : VaultSyncPort {
     // Field-access only; never ==-compared, so the ByteArray fields' referential equals/hashCode are unused.
     data class SyncCall(
         val stateDir: String,
-        val vaultFolder: String,
-        val password: ByteArray,
         val nowMs: ULong,
     )
 
     // Field-access only; never ==-compared, so the ByteArray fields' referential equals/hashCode are unused.
     data class CommitCall(
         val stateDir: String,
-        val vaultFolder: String,
-        val password: ByteArray,
         val decisions: List<SyncVetoDecision>,
         val manifestHash: ByteArray,
         val nowMs: ULong,
@@ -43,25 +39,18 @@ class FakeVaultSyncPort : VaultSyncPort {
         return statusResult.getOrThrow()
     }
 
-    override suspend fun sync(
-        stateDir: String,
-        vaultFolder: String,
-        password: ByteArray,
-        nowMs: ULong,
-    ): SyncOutcome {
-        syncCalls += SyncCall(stateDir, vaultFolder, password, nowMs)
+    override suspend fun sync(stateDir: String, nowMs: ULong): SyncOutcome {
+        syncCalls += SyncCall(stateDir, nowMs)
         return syncResults.removeFirst().getOrThrow()
     }
 
     override suspend fun commitDecisions(
         stateDir: String,
-        vaultFolder: String,
-        password: ByteArray,
         decisions: List<SyncVetoDecision>,
         manifestHash: ByteArray,
         nowMs: ULong,
     ): SyncOutcome {
-        commitCalls += CommitCall(stateDir, vaultFolder, password, decisions, manifestHash, nowMs)
+        commitCalls += CommitCall(stateDir, decisions, manifestHash, nowMs)
         return commitResults.removeFirst().getOrThrow()
     }
 }

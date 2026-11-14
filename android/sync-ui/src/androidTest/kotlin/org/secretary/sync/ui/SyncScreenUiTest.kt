@@ -4,9 +4,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Rule
 import org.junit.Test
@@ -38,35 +36,25 @@ class SyncScreenUiTest {
         )
         // First interactive pass surfaces a conflict; the resolve commit comes back clean.
         val port = ScriptedSyncPort(syncOutcome = conflict, commitOutcome = SyncOutcome.MergedClean)
-        val coordinator = SyncCoordinator(port, stateDir = "s", vaultFolder = "f")
+        val coordinator = SyncCoordinator(port, stateDir = "s")
         return VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null)
     }
 
     /**
-     * End-to-end flow: badge tap → password entry → conflict sheet appears → Apply resolves clean
-     * → conflict sheet closes. Exercises the full badge→password→conflict→resolve→sheet-closed
-     * path through a real [VaultSyncViewModel] backed by scripted fakes.
-     *
-     * The password sheet stays open only while [VaultSyncViewModel.passwordSheetVisible] is true.
-     * In this flow the interactive pass returns [SyncOutcome.ConflictsPending] (not an error), so
-     * `lastError` is null and the VM closes the password sheet before surfacing the conflict sheet.
+     * End-to-end flow: badge tap → conflict sheet appears → Apply resolves clean → conflict sheet
+     * closes. Exercises the badge→conflict→resolve→sheet-closed path through a real
+     * [VaultSyncViewModel] backed by scripted fakes (no password: session sync, #733).
      *
      * [ModalBottomSheet] has show/hide animations; extra [androidx.compose.ui.test.ComposeContentTestRule.waitForIdle]
      * calls are inserted at each animation boundary so the test does not race the transition.
      */
     @Test
-    fun badgeTap_password_conflict_resolve_endToEnd() {
+    fun badgeTap_conflict_resolve_endToEnd() {
         composeRule.setContent { SyncScreen(viewModel = VaultSyncViewModel(model())) }
 
-        // Badge starts at "Never synced"; tap opens the password sheet.
+        // Badge starts at "Never synced"; a tap runs the pass. The conflict sheet is a
+        // ModalBottomSheet so wait for idle twice — once for the coroutine, once for the animation.
         composeRule.onNodeWithTag(SYNC_BADGE_TAG).performClick()
-        composeRule.waitForIdle()
-        composeRule.onNodeWithTag(PASSWORD_FIELD_TAG).assertExists()   // password sheet appeared
-
-        // Type a password and submit. The sheet is a ModalBottomSheet so wait for idle twice —
-        // once for the coroutine to fire, once for the animation to settle.
-        composeRule.onNodeWithTag(PASSWORD_FIELD_TAG).performTextInput("pw")
-        composeRule.onNodeWithText("Sync").performClick()
         composeRule.waitForIdle()
         composeRule.waitForIdle()
         composeRule.onNodeWithTag(CONFLICT_APPLY_TAG).assertExists()   // conflict sheet appeared

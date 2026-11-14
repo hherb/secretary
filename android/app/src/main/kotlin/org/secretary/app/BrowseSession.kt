@@ -49,8 +49,8 @@ data class BrowseSession(
  * on main.
  *
  * Does NOT zeroize the credential bytes and does NOT launch sync-at-unlock — the caller owns both.
- * AppRoot zeroizes the credential bytes unconditionally (both credentials, in its `finally` block);
- * the copy handed to launchSyncAtUnlock is password-only (a recovery open has no password to sync with).
+ * AppRoot zeroizes the credential bytes unconditionally (in its `finally` block). Sync needs no
+ * credential: every pass runs through the opened session (#733), behind the same [gate].
  *
  * [onCommit] is invoked by the browse model after every successful committed write (Task 7's seam):
  * the cloud path wires it to `coordinator.afterCommit()` so a commit is flushed working→cloud. The
@@ -107,7 +107,8 @@ suspend fun openBrowseWithSync(
         gate.seed(now) // just unlocked → open the grace window
     }
     browseModel.loadBlocks()
-    val (syncModel, monitor) = makeVaultSync(folder, stateDir, effectiveUuid, session as? UniffiVaultSession)
+    val syncSession = requireNotNull(session as? UniffiVaultSession) { "sync runs through the real session" }
+    val (syncModel, monitor) = makeVaultSync(folder, stateDir, effectiveUuid, syncSession, gate)
     // Built from the SAME already-open session + gate the browse write path uses — no second FFI
     // open. `session` is the real UniffiVaultSession in production (and in every androidTest caller),
     // which conforms to TrashPort + SettingsPort; the safe casts are null only for a non-conforming

@@ -22,8 +22,8 @@ class UniffiVaultSyncPortTest {
                 seenDir = dir; seenUuid = uuid
                 SyncStatusDto(hasState = true, deviceClocks = emptyList(), lastStateWriteMs = null)
             },
-            syncFn = { _, _, _, _ -> error("syncFn should not be called in this test") },
-            commitFn = { _, _, _, _, _, _ -> error("commitFn should not be called in this test") },
+            syncFn = { _, _ -> error("syncFn should not be called in this test") },
+            commitFn = { _, _, _, _ -> error("commitFn should not be called in this test") },
         )
 
         val status = port.status(stateDir = "/s", vaultUuid = ByteArray(16) { 1 })
@@ -34,22 +34,21 @@ class UniffiVaultSyncPortTest {
     }
 
     @Test
-    fun `sync forwards password and maps the outcome`() = runTest {
-        var seenPassword: ByteArray? = null
+    fun `sync forwards its args and maps the outcome`() = runTest {
+        var seen: Pair<String, ULong>? = null
         val port = UniffiVaultSyncPort(
             ioDispatcher = StandardTestDispatcher(testScheduler),
             statusFn = { _, _ -> error("statusFn should not be called in this test") },
-            syncFn = { _, _, pw, _ ->
-                // #307: the secret now crosses as a direct ByteBuffer; copy it out to assert.
-                seenPassword = ByteArray(pw.remaining()).also { pw.duplicate().get(it) }
+            syncFn = { dir, now ->
+                seen = dir to now
                 SyncOutcomeDto.AppliedAutomatically
             },
-            commitFn = { _, _, _, _, _, _ -> error("commitFn should not be called in this test") },
+            commitFn = { _, _, _, _ -> error("commitFn should not be called in this test") },
         )
 
-        val outcome = port.sync("/s", "/v", byteArrayOf(7, 8, 9), nowMs = 5uL)
+        val outcome = port.sync("/s", nowMs = 5uL)
 
-        assertArrayEquals(byteArrayOf(7, 8, 9), seenPassword)
+        assertEquals("/s" to 5uL, seen)
         assertEquals(SyncOutcome.AppliedAutomatically, outcome)
     }
 
@@ -59,12 +58,12 @@ class UniffiVaultSyncPortTest {
         val port = UniffiVaultSyncPort(
             ioDispatcher = StandardTestDispatcher(testScheduler),
             statusFn = { _, _ -> error("statusFn should not be called in this test") },
-            syncFn = { _, _, _, _ -> error("syncFn should not be called in this test") },
-            commitFn = { _, _, _, decisions, _, _ -> seenDecisions = decisions; SyncOutcomeDto.MergedClean },
+            syncFn = { _, _ -> error("syncFn should not be called in this test") },
+            commitFn = { _, decisions, _, _ -> seenDecisions = decisions; SyncOutcomeDto.MergedClean },
         )
 
         val outcome = port.commitDecisions(
-            stateDir = "/s", vaultFolder = "/v", password = byteArrayOf(1),
+            stateDir = "/s",
             decisions = listOf(SyncVetoDecision("rec", keepLocal = true)),
             manifestHash = byteArrayOf(2), nowMs = 5uL,
         )
@@ -78,8 +77,8 @@ class UniffiVaultSyncPortTest {
         val port = UniffiVaultSyncPort(
             ioDispatcher = StandardTestDispatcher(testScheduler),
             statusFn = { _, _ -> error("statusFn should not be called in this test") },
-            syncFn = { _, _, _, _ -> throw VaultException.SyncInProgress() },
-            commitFn = { _, _, _, _, _, _ -> error("commitFn should not be called in this test") },
+            syncFn = { _, _ -> throw VaultException.SyncInProgress() },
+            commitFn = { _, _, _, _ -> error("commitFn should not be called in this test") },
         )
 
         // NOTE: deviates from the planned `assertThrows(...) { runBlocking { port.sync(...) } }`.
@@ -90,7 +89,7 @@ class UniffiVaultSyncPortTest {
         // await `sync` inside the `runTest` body (which advances the scheduler) and assert on the
         // caught exception. Same intent: a thrown VaultException maps to the domain VaultSyncError.
         val thrown = try {
-            port.sync("/s", "/v", byteArrayOf(1), nowMs = 0uL)
+            port.sync("/s", nowMs = 0uL)
             null
         } catch (e: VaultSyncError) {
             e
@@ -105,8 +104,8 @@ class UniffiVaultSyncPortTest {
         val port = UniffiVaultSyncPort(
             ioDispatcher = StandardTestDispatcher(testScheduler),
             statusFn = { _, _ -> throw VaultException.SyncStateCorrupt("boom") },
-            syncFn = { _, _, _, _ -> error("syncFn should not be called in this test") },
-            commitFn = { _, _, _, _, _, _ -> error("commitFn should not be called in this test") },
+            syncFn = { _, _ -> error("syncFn should not be called in this test") },
+            commitFn = { _, _, _, _ -> error("commitFn should not be called in this test") },
         )
 
         val thrown = try {
@@ -125,13 +124,13 @@ class UniffiVaultSyncPortTest {
         val port = UniffiVaultSyncPort(
             ioDispatcher = StandardTestDispatcher(testScheduler),
             statusFn = { _, _ -> error("statusFn should not be called in this test") },
-            syncFn = { _, _, _, _ -> error("syncFn should not be called in this test") },
-            commitFn = { _, _, _, _, _, _ -> throw VaultException.SyncEvidenceStale() },
+            syncFn = { _, _ -> error("syncFn should not be called in this test") },
+            commitFn = { _, _, _, _ -> throw VaultException.SyncEvidenceStale() },
         )
 
         val thrown = try {
             port.commitDecisions(
-                stateDir = "/s", vaultFolder = "/v", password = byteArrayOf(1),
+                stateDir = "/s",
                 decisions = emptyList(), manifestHash = byteArrayOf(2), nowMs = 0uL,
             )
             null
@@ -139,53 +138,5 @@ class UniffiVaultSyncPortTest {
             e
         }
         assertInstanceOf(VaultSyncError.EvidenceStale::class.java, thrown)
-    }
-
-    private fun refreshCases(outcome: SyncOutcomeDto, expectRefresh: Boolean, viaCommit: Boolean) = runTest {
-        val refreshed = mutableListOf<String>()
-        val port = UniffiVaultSyncPort(
-            ioDispatcher = StandardTestDispatcher(testScheduler),
-            statusFn = { _, _ -> error("unused") },
-            syncFn = { _, _, _, _ -> outcome },
-            commitFn = { _, _, _, _, _, _ -> outcome },
-            refreshSession = { refreshed += it },
-        )
-        if (viaCommit) port.commitDecisions("/s", "/v", byteArrayOf(1), emptyList(), byteArrayOf(2), 5uL)
-        else port.sync("/s", "/v", byteArrayOf(1), 5uL)
-        assertEquals(if (expectRefresh) listOf("/s") else emptyList<String>(), refreshed)
-    }
-
-    @Test
-    fun `refresh runs after MergedClean and AppliedAutomatically and NothingToDo`() {
-        refreshCases(SyncOutcomeDto.MergedClean, true, viaCommit = false)
-        refreshCases(SyncOutcomeDto.MergedClean, true, viaCommit = true)
-        refreshCases(SyncOutcomeDto.AppliedAutomatically, true, viaCommit = false)
-        refreshCases(SyncOutcomeDto.NothingToDo, true, viaCommit = true)
-    }
-
-    @Test
-    fun `refresh is skipped after SilentMerge RollbackRejected and ConflictsPending (#730)`() {
-        for (viaCommit in listOf(false, true)) {
-            refreshCases(SyncOutcomeDto.SilentMerge, false, viaCommit)
-            refreshCases(SyncOutcomeDto.RollbackRejected, false, viaCommit)
-            refreshCases(SyncOutcomeDto.ConflictsPending(emptyList(), emptyList(), ByteArray(32)), false, viaCommit)
-        }
-    }
-
-    @Test
-    fun `a refresh VaultException is mapped to VaultSyncError`() = runTest {
-        val port = UniffiVaultSyncPort(
-            ioDispatcher = StandardTestDispatcher(testScheduler),
-            statusFn = { _, _ -> error("unused") },
-            syncFn = { _, _, _, _ -> SyncOutcomeDto.MergedClean },
-            commitFn = { _, _, _, _, _, _ -> error("unused") },
-            refreshSession = { throw VaultException.CorruptVault("x") },
-        )
-        try {
-            port.sync("/s", "/v", byteArrayOf(1), 5uL)
-            org.junit.jupiter.api.Assertions.fail<Unit>("expected VaultSyncError")
-        } catch (e: VaultSyncError) {
-            // mapped
-        }
     }
 }

@@ -11,13 +11,11 @@ class FakeVaultSyncPortTest {
         val fake = FakeVaultSyncPort()
         fake.syncResults += Result.success(SyncOutcome.MergedClean)
 
-        val out = fake.sync("/state", "/vault", byteArrayOf(7), 42uL)
+        val out = fake.sync("/state", 42uL)
 
         assertEquals(SyncOutcome.MergedClean, out)
         val call = fake.syncCalls.single()
         assertEquals("/state", call.stateDir)
-        assertEquals("/vault", call.vaultFolder)
-        assertTrue(call.password.contentEquals(byteArrayOf(7)))
         assertEquals(42uL, call.nowMs)
     }
 
@@ -27,7 +25,7 @@ class FakeVaultSyncPortTest {
         fake.commitResults += Result.failure(VaultSyncError.EvidenceStale)
 
         val err = runCatching {
-            fake.commitDecisions("/s", "/v", byteArrayOf(), emptyList(), byteArrayOf(1), 1uL)
+            fake.commitDecisions("/s", emptyList(), byteArrayOf(1), 1uL)
         }.exceptionOrNull()
 
         assertTrue(err is VaultSyncError.EvidenceStale)

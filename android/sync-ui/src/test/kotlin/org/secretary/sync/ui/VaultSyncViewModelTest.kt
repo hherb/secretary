@@ -31,36 +31,24 @@ class VaultSyncViewModelTest {
 
     private fun viewModel(outcome: SyncOutcome): VaultSyncViewModel {
         val port = ScriptedSyncPort(outcome)
-        val coordinator = SyncCoordinator(port, stateDir = "s", vaultFolder = "f")
+        val coordinator = SyncCoordinator(port, stateDir = "s")
         val model = VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null)
         return VaultSyncViewModel(model)
     }
 
     @Test
-    fun beginInteractiveSync_showsPasswordSheet() {
-        val vm = viewModel(SyncOutcome.MergedClean)
-        assertFalse(vm.passwordSheetVisible.value)
-        vm.beginInteractiveSync()
-        assertTrue(vm.passwordSheetVisible.value)
-    }
-
-    @Test
-    fun submitPassword_cleanOutcome_hidesSheetAndForwardsBadge() = runTest(dispatcher) {
-        // Build with an inspectable port so we can assert password forwarding.
+    fun beginInteractiveSync_runsOnePassAndForwardsBadge() = runTest(dispatcher) {
         val port = ScriptedSyncPort(SyncOutcome.MergedClean)
-        val coordinator = SyncCoordinator(port, stateDir = "s", vaultFolder = "f")
+        val coordinator = SyncCoordinator(port, stateDir = "s")
         val model = VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null)
         val vm = VaultSyncViewModel(model)
 
         vm.beginInteractiveSync()
-        vm.submitPassword("pw".toByteArray())
         advanceUntilIdle()
-        assertFalse(vm.passwordSheetVisible.value)
+        assertEquals(1, port.syncCalls)
+        assertNull(vm.lastError.value)
         // A clean pass with no prior status leaves the badge at NeverSynced (status not refreshed).
         assertEquals(SyncBadgeState.NeverSynced, vm.badge.value)
-        // Assert the password bytes reached the port.
-        assertEquals(1, port.passwords.size)
-        assertEquals("pw".toByteArray().toList(), port.passwords[0].toList())
     }
 
     @Test
@@ -74,21 +62,19 @@ class VaultSyncViewModelTest {
             vetoes = listOf(veto), collisions = emptyList(), manifestHash = byteArrayOf(1, 2, 3),
         )
         val port = ScriptedSyncPort(syncOutcome = conflict, commitOutcome = SyncOutcome.MergedClean)
-        val coordinator = SyncCoordinator(port, stateDir = "s", vaultFolder = "f")
+        val coordinator = SyncCoordinator(port, stateDir = "s")
         val model = VaultSyncModel(coordinator, ZeroWallClock(), NoopMonitorHook, vaultUuid = null)
         val vm = VaultSyncViewModel(model)
 
         vm.beginInteractiveSync()
-        vm.submitPassword("pw".toByteArray())
         advanceUntilIdle()
-        // The interactive pass surfaced a conflict; the password sheet closed (no error).
-        assertFalse(vm.passwordSheetVisible.value)
         assertNotNull(vm.pendingConflict.value)
 
-        vm.resolve(listOf(SyncVetoDecision("aabb", true)), "pw".toByteArray())
+        vm.resolve(listOf(SyncVetoDecision("aabb", true)))
         advanceUntilIdle()
         // The clean commit cleared the conflict.
         assertEquals(null, vm.pendingConflict.value)
+        assertEquals(1, port.commitCalls)
     }
 
     @Test
@@ -96,18 +82,10 @@ class VaultSyncViewModelTest {
         val vm = viewModel(SyncOutcome.AppliedAutomatically)
 
         // Returns only after the silent pass settles (suspend, not fire-and-forget).
-        vm.syncAtUnlock("pw".toByteArray())
+        vm.syncAtUnlock()
 
         // A clean silent pass leaves no error and clears review state.
         assertNull(vm.lastError.value)
         assertFalse(vm.reviewNeeded.value)
-    }
-
-    @Test
-    fun dismissPasswordSheet_hidesIt() {
-        val vm = viewModel(SyncOutcome.MergedClean)
-        vm.beginInteractiveSync()
-        vm.dismissPasswordSheet()
-        assertFalse(vm.passwordSheetVisible.value)
     }
 }

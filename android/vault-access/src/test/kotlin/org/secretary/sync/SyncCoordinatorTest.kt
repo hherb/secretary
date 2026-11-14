@@ -10,10 +10,8 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class SyncCoordinatorTest {
-    private val pw = byteArrayOf(1, 2, 3)
-
     private fun coordinator(port: FakeVaultSyncPort) =
-        SyncCoordinator(port, stateDir = "/state", vaultFolder = "/vault")
+        SyncCoordinator(port, stateDir = "/state")
 
     @Test
     fun safeOutcomePassesThroughAndLeavesNoStash() = runTest {
@@ -21,11 +19,10 @@ class SyncCoordinatorTest {
         port.syncResults += Result.success(SyncOutcome.MergedClean)
         val c = coordinator(port)
 
-        assertEquals(SyncOutcome.MergedClean, c.runPass(pw, 100uL))
+        assertEquals(SyncOutcome.MergedClean, c.runPass(100uL))
         assertNull(c.pendingConflict())
         val call = port.syncCalls.single()
         assertEquals("/state", call.stateDir)
-        assertEquals("/vault", call.vaultFolder)
     }
 
     @Test
@@ -37,7 +34,7 @@ class SyncCoordinatorTest {
         )
         val c = coordinator(port)
 
-        val out = c.runPass(pw, 100uL)
+        val out = c.runPass(100uL)
 
         assertTrue(out is SyncOutcome.ConflictsPending)
         assertEquals(PendingConflict(listOf(veto), emptyList()), c.pendingConflict())
@@ -52,10 +49,10 @@ class SyncCoordinatorTest {
         )
         port.commitResults += Result.success(SyncOutcome.MergedClean)
         val c = coordinator(port)
-        c.runPass(pw, 100uL)
+        c.runPass(100uL)
 
         val decisions = listOf(SyncVetoDecision("r1", true))
-        assertEquals(SyncOutcome.MergedClean, c.resolve(decisions, pw, 200uL))
+        assertEquals(SyncOutcome.MergedClean, c.resolve(decisions, 200uL))
 
         val commit = port.commitCalls.single()
         assertTrue(commit.manifestHash.contentEquals(token))
@@ -68,7 +65,7 @@ class SyncCoordinatorTest {
         val port = FakeVaultSyncPort()
         val c = coordinator(port)
 
-        val err = runCatching { c.resolve(emptyList(), pw, 1uL) }.exceptionOrNull()
+        val err = runCatching { c.resolve(emptyList(), 1uL) }.exceptionOrNull()
 
         assertTrue(err is VaultSyncError.NoPendingConflict)
         assertTrue(port.commitCalls.isEmpty())
@@ -84,13 +81,13 @@ class SyncCoordinatorTest {
         port.commitResults += Result.failure(VaultSyncError.EvidenceStale)
         port.commitResults += Result.success(SyncOutcome.MergedClean)
         val c = coordinator(port)
-        c.runPass(pw, 1uL)
+        c.runPass(1uL)
 
-        val err = runCatching { c.resolve(emptyList(), pw, 2uL) }.exceptionOrNull()
+        val err = runCatching { c.resolve(emptyList(), 2uL) }.exceptionOrNull()
         assertTrue(err is VaultSyncError.EvidenceStale)
         assertNotNull(c.pendingConflict())
 
-        assertEquals(SyncOutcome.MergedClean, c.resolve(emptyList(), pw, 3uL))
+        assertEquals(SyncOutcome.MergedClean, c.resolve(emptyList(), 3uL))
         assertTrue(port.commitCalls.last().manifestHash.contentEquals(token))
         assertNull(c.pendingConflict())
     }
@@ -106,12 +103,12 @@ class SyncCoordinatorTest {
         )
         port.commitResults += Result.success(SyncOutcome.MergedClean)
         val c = coordinator(port)
-        c.runPass(pw, 1uL)
+        c.runPass(1uL)
 
-        val out = c.resolve(emptyList(), pw, 2uL)
+        val out = c.resolve(emptyList(), 2uL)
         assertTrue(out is SyncOutcome.ConflictsPending)
 
-        c.resolve(emptyList(), pw, 3uL)
+        c.resolve(emptyList(), 3uL)
         assertTrue(port.commitCalls.last().manifestHash.contentEquals(byteArrayOf(2)))
     }
 
@@ -128,17 +125,6 @@ class SyncCoordinatorTest {
     }
 
     @Test
-    fun passwordIsForwardedToPortNotAltered() = runTest {
-        val port = FakeVaultSyncPort()
-        port.syncResults += Result.success(SyncOutcome.NothingToDo)
-        val c = coordinator(port)
-
-        c.runPass(pw, 1uL)
-
-        assertTrue(port.syncCalls.single().password.contentEquals(pw))
-    }
-
-    @Test
     fun secondRunPassWithSafeArmClearsPriorStash() = runTest {
         val port = FakeVaultSyncPort()
         port.syncResults += Result.success(
@@ -147,10 +133,10 @@ class SyncCoordinatorTest {
         port.syncResults += Result.success(SyncOutcome.MergedClean)
         val c = coordinator(port)
 
-        c.runPass(pw, 1uL)
+        c.runPass(1uL)
         assertNotNull(c.pendingConflict())
 
-        assertEquals(SyncOutcome.MergedClean, c.runPass(pw, 2uL))
+        assertEquals(SyncOutcome.MergedClean, c.runPass(2uL))
         assertNull(c.pendingConflict())
     }
 
@@ -164,12 +150,7 @@ class SyncCoordinatorTest {
             override suspend fun status(stateDir: String, vaultUuid: ByteArray): SyncStatus =
                 throw UnsupportedOperationException()
 
-            override suspend fun sync(
-                stateDir: String,
-                vaultFolder: String,
-                password: ByteArray,
-                nowMs: ULong,
-            ): SyncOutcome {
+            override suspend fun sync(stateDir: String, nowMs: ULong): SyncOutcome {
                 insideSync++
                 entries++
                 maxConcurrentInside = maxOf(maxConcurrentInside, insideSync)
@@ -180,17 +161,15 @@ class SyncCoordinatorTest {
 
             override suspend fun commitDecisions(
                 stateDir: String,
-                vaultFolder: String,
-                password: ByteArray,
                 decisions: List<SyncVetoDecision>,
                 manifestHash: ByteArray,
                 nowMs: ULong,
             ): SyncOutcome = throw UnsupportedOperationException()
         }
-        val c = SyncCoordinator(gatedPort, "/state", "/vault")
+        val c = SyncCoordinator(gatedPort, "/state")
 
-        val a = launch { c.runPass(pw, 1uL) }
-        val b = launch { c.runPass(pw, 2uL) }
+        val a = launch { c.runPass(1uL) }
+        val b = launch { c.runPass(2uL) }
         // With the mutex held across the gated sync call, only the first coroutine can be
         // inside sync; the second is parked on the mutex, not inside sync.
         testScheduler.advanceUntilIdle()

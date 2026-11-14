@@ -21,13 +21,10 @@ class ScriptedSyncPort(
     override suspend fun status(stateDir: String, vaultUuid: ByteArray): SyncStatus =
         SyncStatus(hasState = false, deviceClocks = emptyList(), lastStateWriteMs = null)
 
-    override suspend fun sync(stateDir: String, vaultFolder: String, password: ByteArray, nowMs: ULong): SyncOutcome =
-        syncOutcome
+    override suspend fun sync(stateDir: String, nowMs: ULong): SyncOutcome = syncOutcome
 
     override suspend fun commitDecisions(
         stateDir: String,
-        vaultFolder: String,
-        password: ByteArray,
         decisions: List<SyncVetoDecision>,
         manifestHash: ByteArray,
         nowMs: ULong,
