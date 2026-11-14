@@ -128,7 +128,8 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
     data class CorruptVault(val detail: String) : VaultBrowseError(detail)
 
     /** The vault changed on disk since it was opened; the write was refused. Sync, then retry. */
-    data object VaultChangedOnDisk : VaultBrowseError()
+    data object VaultChangedOnDisk :
+        VaultBrowseError("This vault changed on another device since you opened it. Sync, then try again.")
 
     /** The supplied folder path is not a readable vault folder. */
     data class FolderInvalid(val detail: String) : VaultBrowseError(detail)

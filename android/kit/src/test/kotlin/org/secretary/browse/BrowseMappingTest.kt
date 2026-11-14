@@ -95,6 +95,10 @@ class BrowseMappingTest {
             VaultBrowseError.VaultChangedOnDisk,
             mapVaultBrowseError(VaultException.VaultChangedOnDisk()),
         )
+        assertEquals(
+            "This vault changed on another device since you opened it. Sync, then try again.",
+            mapVaultBrowseError(VaultException.VaultChangedOnDisk()).message,
+        )
     }
 
     @Test

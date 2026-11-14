@@ -331,6 +331,8 @@ private fun FieldRow(
 private fun ErrorBanner(error: VaultBrowseError) {
     val text = if (error is VaultBrowseError.ReauthFailed) {
         "Couldn't authorize the change: ${error.detail}"
+    } else if (error is VaultBrowseError.VaultChangedOnDisk) {
+        error.message.orEmpty()
     } else {
         "Couldn't read the vault: ${error::class.simpleName}"
     }

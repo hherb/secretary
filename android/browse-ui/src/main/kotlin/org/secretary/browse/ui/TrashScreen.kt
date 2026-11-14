@@ -174,6 +174,7 @@ fun TrashScreen(viewModel: TrashBrowseViewModel, onBack: () -> Unit) {
 private fun TrashErrorBanner(error: VaultBrowseError) {
     val text = when (error) {
         is VaultBrowseError.ReauthFailed -> "Couldn't authorize the change: ${error.detail}"
+        is VaultBrowseError.VaultChangedOnDisk -> error.message.orEmpty()
         else -> "Trash operation failed: ${error::class.simpleName}"
     }
     Text(
