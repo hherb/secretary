@@ -18,10 +18,10 @@ use secretary_core::vault::merge_vector_clocks;
 use super::outcomes::{InspectOutcome, RunOutcome, SyncPassOutcome};
 use crate::veto::VetoUx;
 
-/// Run one sync attempt against `vault_folder` using `identity` for
-/// reads and the commit-side re-verification, and `state` as both
-/// input ("what clock have we already seen?") and output (mutated in
-/// place when the disk-side clock advances).
+/// Run one sync attempt against `vault_folder`. `identity` serves the
+/// reads and the commit-side re-verification. `state` is both input
+/// ("what clock have we already seen?") and output (mutated in place
+/// when the disk-side clock advances).
 ///
 /// `veto_ux` is invoked exactly on the
 /// [`SyncOutcome::ConcurrentDetected`] arm with a non-empty diff plan.

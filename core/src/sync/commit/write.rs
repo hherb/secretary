@@ -244,9 +244,9 @@ struct OwnerKeyBag {
 impl OwnerKeyBag {
     /// Derive the owner sender + recipient keys from the unlocked identity
     /// bundle and the verified owner card. Mirrors `save_block`'s step-4
-    /// owner-key setup. The stack copy of the Ed25519 SK is zeroized immediately after
-    /// wrapping in [`Sensitive`] (`[u8; 32]: Copy` move-residue pattern,
-    /// per CLAUDE.md memory hygiene).
+    /// owner-key setup. The stack copy of the Ed25519 SK is zeroized
+    /// immediately after wrapping in [`Sensitive`] (`[u8; 32]: Copy`
+    /// move-residue pattern, per CLAUDE.md memory hygiene).
     fn derive(bundle: &IdentityBundle, owner_card: &ContactCard) -> Result<Self, SyncError> {
         let owner_card_bytes = owner_card
             .to_canonical_cbor()
