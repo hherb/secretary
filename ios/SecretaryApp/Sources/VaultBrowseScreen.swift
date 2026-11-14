@@ -196,8 +196,8 @@ struct VaultBrowseScreen: View {
         }
         if let syncError = syncModel.lastError {
             Section("Sync") {
-                Text(String(describing: syncError))
-                    .font(.footnote.monospaced()).foregroundStyle(.red)
+                Text(syncErrorMessage(syncError))
+                    .font(.footnote).foregroundStyle(.red)
             }
         }
     }

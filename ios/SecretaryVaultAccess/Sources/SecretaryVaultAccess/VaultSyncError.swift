@@ -9,8 +9,9 @@ import Foundation
 /// variant (wrong password is indistinguishable from a tampered vault). Do NOT
 /// split it into a "wrong credential" case — that reintroduces the oracle.
 public enum VaultSyncError: Error, Equatable {
-    /// Identity re-open failed: wrong password OR corruption. Kept for the
-    /// password sync calls the CLI still uses; the session path never needs it.
+    /// Identity re-open failed: wrong password OR corruption. Kept because
+    /// `mapVaultSyncError` still maps the FFI `WrongPasswordOrCorrupt` arm; the
+    /// session sync path never produces it.
     case wrongPasswordOrCorrupt
     /// Another sync pass already holds the per-vault lock.
     case inProgress

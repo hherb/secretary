@@ -39,7 +39,7 @@ public final class UniffiVaultSession: VaultSession, @unchecked Sendable {
     // INVARIANT: widening these to `internal` trades away the file-scoped
     // guarantee that once enforced lock-serialized access. Any new same-module
     // read/write of `identity`/`manifest` MUST go through a lock-guarded helper
-    // (`readTrash`/`readTrashInfallible`/`write`/`writeTrash*`/`withLiveHandles`) — never touch
+    // (`readMapped`/`readTrashInfallible`/`write`/`writeTrash*`/`withLiveHandles`) — never touch
     // the raw handles outside `lock.withLock`, or the `wipe()` race the lock
     // exists to close reopens.
     internal let identity: UnlockedIdentity
@@ -303,8 +303,8 @@ public final class UniffiVaultSession: VaultSession, @unchecked Sendable {
 
     /// Read under the lock with the wiped-guard, returning a value or throwing.
     /// Mirrors `write`'s wiped-check-then-map-error shape for the read side
-    /// (`listTrashedBlocks` is the only throwing trash read).
-    internal func readTrash<T>(_ body: () throws -> T) throws -> T {
+    /// (trash, settings and the sync refresh all read through it).
+    internal func readMapped<T>(_ body: () throws -> T) throws -> T {
         try lock.withLock {
             if wiped { throw VaultAccessError.other("read on a wiped session") }
             do {

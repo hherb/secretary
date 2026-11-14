@@ -48,8 +48,8 @@ struct ConflictResolutionSheet: View {
                 }
                 if let err = model.lastError {
                     Section("Error") {
-                        Text(String(describing: err))
-                            .font(.footnote.monospaced()).foregroundStyle(.red)
+                        Text(syncErrorMessage(err))
+                            .font(.footnote).foregroundStyle(.red)
                     }
                 }
             }

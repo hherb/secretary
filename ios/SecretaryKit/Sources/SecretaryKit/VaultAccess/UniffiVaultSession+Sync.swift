@@ -10,10 +10,11 @@ import SecretaryVaultAccess
 /// they run in `runOffMainActor`; they hold the session lock for the pass, which
 /// also stops a concurrent write from racing the handle refresh.
 ///
-/// The bridge refreshes the manifest handle itself on every advancing outcome,
-/// never on `.rollbackRejected` / `.conflictsPending`. If the pass succeeded but
-/// the refresh failed it throws (mapped to `VaultSyncError`), the handle is
-/// unchanged, and a retry is safe.
+/// The bridge refreshes the manifest handle itself on every outcome except
+/// `.rollbackRejected` / `.conflictsPending`. If the pass succeeded but the
+/// refresh failed it throws (mapped to `VaultSyncError`), the handle is
+/// unchanged, and a retry is safe (after a `.silentMerge` it may not recover;
+/// see `VaultSyncPort`, #730).
 extension UniffiVaultSession: VaultSyncPort {
     private static let wipedError = VaultSyncError.failed("sync on a wiped session")
 
@@ -53,7 +54,7 @@ extension UniffiVaultSession: VaultSyncPort {
     /// handle, rollback-guarded by the sync state in `stateDir`. Maps onto
     /// `VaultAccessError` like every other `VaultSession` call.
     public func refreshFromDisk(stateDir: String) throws {
-        try readTrash {
+        try readMapped {
             try SecretaryKit.refreshManifest(stateDir: stateDir, identity: identity, manifest: manifest)
         }
     }

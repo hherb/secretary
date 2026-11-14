@@ -2,7 +2,7 @@ import Foundation
 import SecretaryVaultAccess
 
 /// `SettingsPort` conformance for `UniffiVaultSession`. Reuses the internal
-/// `readTrash` / `writeTrash` helpers so a settings read/write gets the same
+/// `readMapped` / `writeTrash` helpers so a settings read/write gets the same
 /// wiped-guard, device-uuid/now resolution, and `VaultError` → `VaultAccessError`
 /// mapping as every other vault op. Only the four numeric/bool settings fields
 /// cross this boundary — no record plaintext.
@@ -12,7 +12,7 @@ import SecretaryVaultAccess
 /// `VaultAccessError.invalidArgument`); the view model also clamps client-side.
 extension UniffiVaultSession: SettingsPort {
     public func readSettings() throws -> VaultSettings {
-        try readTrash {
+        try readMapped {
             let s = try SecretaryKit.readSettings(identity: identity, manifest: manifest)
             return VaultSettings(
                 autoLockTimeoutMs: s.autoLockTimeoutMs,

@@ -162,6 +162,25 @@ final class VaultSyncViewModelTests: XCTestCase {
         XCTAssertFalse(vm.conflictSheetPresented)
     }
 
+    /// A second "Sync now" tap while the first tap's re-auth prompt is still up is
+    /// dropped: no second prompt and no second pass.
+    func testSecondSyncNowTapWhileThePromptIsUpIsDropped() async {
+        let port = FakeVaultSyncPort(syncResult: .success(.nothingToDo))
+        let gate = FakeWriteReauthGate()
+        let prompt = SuspensionGate()
+        gate.suspension = prompt
+        let vm = makeVM(port: port, gate: gate)
+
+        let first = Task { await vm.syncNow() }
+        await prompt.waitUntilEntered()
+        await vm.syncNow()
+        await prompt.release()
+        await first.value
+
+        XCTAssertEqual(gate.authorizeCount, 1)
+        XCTAssertEqual(port.syncCalls, 1)
+    }
+
     // MARK: - onVaultChanged
 
     func testOnVaultChangedFiresAfterMergedCleanNotAfterRollbackOrConflict() async {
