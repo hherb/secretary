@@ -1,4 +1,4 @@
-"""§4.2/§4.3 manifest BODY decoder, plus its shape validation.
+"""§4.2/§4.3 manifest BODY decoder (shape checks: `codec/manifest_shape.py`).
 
 Distinct from `conformance_lib.codec.manifest_file`, which handles the §4.1
 outer signed envelope. This decoder re-encodes the parsed body and requires

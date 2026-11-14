@@ -17,13 +17,17 @@ merged).
 **The move.** `_check_uint`, `_check_fixed_bytes` and
 `_validate_manifest_shape` (origin/main `manifest_decode.py` lines 335-460)
 moved to the new `core/tests/python/conformance_lib/codec/manifest_shape.py`
-(152 lines). `manifest_decode.py` went from 501 to 371 lines and imports the
+(154 lines). `manifest_decode.py` went from 501 to 371 lines and imports the
 function back. The call stays where it was, between the required-key check
 and the sort checks, so no check is reordered. Nothing outside the file
 imported the three names.
 
 **Evidence that nothing changed:**
-- The moved block `cmp`s byte-identical against `git show origin/main:` lines 335-460.
+- The moved block `cmp`s byte-identical against `git show origin/main:` lines 335-460
+  (measured at `c58f7237`; the PR #727 review then reworded two stale "this
+  file" references in `_validate_manifest_shape`'s docstring, 152 -> 154
+  lines, and fixed the CLAUDE.md ranking paragraph, which still listed
+  `manifest_decode.py` at 501 as third — no code changed).
 - A scratchpad script ran `diff_replay.replay_bytes` over all 185 committed
   inputs (`core/fuzz/seeds/*/*`, `core/tests/data/diff_regressions/*/*`).
   The before and after JSONL files are byte-identical, with 0 `error` verdicts.

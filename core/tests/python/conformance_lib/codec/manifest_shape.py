@@ -1,8 +1,9 @@
 """§4.2 type-, range- and version-checks on a decoded manifest body.
 
-Split out of `codec/manifest_decode.py` (#725) as a verbatim move; the
-decoder calls `_validate_manifest_shape` at exactly the point it always did,
-so no check is reordered.
+Split out of `codec/manifest_decode.py` (#725). The code moved verbatim
+(only two docstring references to "this file" were reworded); the decoder
+calls `_validate_manifest_shape` at exactly the point it always did, so no
+check is reordered.
 """
 
 from __future__ import annotations
@@ -61,15 +62,16 @@ def _validate_manifest_shape(out: dict) -> None:
     bare `cbor2.loads` and never looked at them, so it ACCEPTED bodies the
     Rust decoder rejects -- `manifest_version = 999`, a text `manifest_version`,
     a 5-byte `vault_uuid`, a 3-byte salt. That is a fail-OPEN divergence in
-    the direction that matters: this file exists to prove `docs/` alone is
-    enough to build a conformant reader, so a reader here that is LAXER than
-    `decode_manifest` proves the opposite of what it claims.
+    the direction that matters: the clean-room verifier exists to prove
+    `docs/` alone is enough to build a conformant reader, so a reader here
+    that is LAXER than `decode_manifest` proves the opposite of what it claims.
 
-    Nothing else in the file can catch this class. The §4.3 step-4 re-encode
-    compares BYTES, and every mutation above re-encodes to itself; the splice family of the
-    canonicality corpus mutates only `unknown` subtrees. The three version
-    sentinels mirror `decode/mod.rs`'s `UnsupportedManifestVersion` /
-    `UnsupportedFormatVersion` / `UnsupportedSuiteId`.
+    Nothing else on `py_decode_manifest`'s path can catch this class. The
+    §4.3 step-4 re-encode compares BYTES, and every mutation above re-encodes
+    to itself; the splice family of the canonicality corpus mutates only
+    `unknown` subtrees. The three version sentinels mirror `decode/mod.rs`'s
+    `UnsupportedManifestVersion` / `UnsupportedFormatVersion` /
+    `UnsupportedSuiteId`.
     """
     _check_uint(out["manifest_version"], "manifest_version", 8)
     if out["manifest_version"] != MANIFEST_VERSION_V1:
