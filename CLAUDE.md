@@ -29,7 +29,7 @@ core/tests/          — integration tests; tests/data/ holds KATs and fuzz regr
 core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (156 lines; the PEP
                                              723 header is the sole dependency declaration).
                                              `conformance.py:NNN` citations predating #593 are
-                                             stale — the verifier is now an 81-file package.
+                                             stale — the verifier is now an 82-file package.
                                              RE-MEASURE: `find core/tests/python/conformance_lib
                                              -name '*.py' | wc -l` — this line said 62 while the
                                              paragraph below said 65 for a whole slice, and said
@@ -37,7 +37,9 @@ core/tests/python/conformance.py           — clean-room verifier ENTRYPOINT (1
                                              here (that branch added `codec/card_rules.py` and
                                              `sections/rule_token_seeds_ordering.py`, 78 -> 80;
                                              the PR #720 review split out
-                                             `sections/rule_token_seed_classes.py`, 80 -> 81).
+                                             `sections/rule_token_seed_classes.py`, 80 -> 81;
+                                             #725 split out `codec/manifest_shape.py`,
+                                             81 -> 82).
 core/tests/python/conformance_lib/         — DIRECTORY module (#593), the verifier itself: no
                                              dependency on `secretary-core`; proves the spec is
                                              implementable from `docs/` alone. `wire/` parses to
@@ -417,22 +419,24 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.
 
 **`conformance.py` is a thin entrypoint over `conformance_lib/` (#593).** The file
-was 6849 lines; it is now 156, over an **81**-file package (re-measured at
-the PR #720 review; see the dated re-measurement entries below) whose largest module is
-`sections/value_type_discipline.py` at **849** lines, then
-`sections/value_type_structure.py` at
-550 (both re-measured at #700/#715) — **three** past the 500-line split threshold (#683) since #723 grew
-`codec/manifest_decode.py` 498 -> 501 (split tracked as #725); it was two after
-the #689 merge-base's three, because #641/#691 shrank `sections/nesting_depth.py`
-30 net lines (522 -> 492) while deleting the now-callerless
-`reject_excessive_nesting` and its content-blind entry-point machinery —
-then `codec/manifest_decode.py` at 501, `sections/nesting_depth.py` at 492
-(a near-tie, one line above `manifest_canonicality_cause.py`, not the
-five-line gap the paragraph below still narrates as current), then
-`sections/manifest_canonicality_cause.py` at 491 and `codec/scanner.py` at
-479. **This is the THIRD consecutive slice in which a review round moved
-these numbers after the docs commit measured them**, which is what the rest
-of this paragraph is about; the PR #689 review grew
+was 6849 lines; it is now 156, over an **82**-file package (re-measured at
+the #725 split; see the dated re-measurement entries below) whose largest
+module is `sections/value_type_discipline.py` at **849** lines, then
+`sections/value_type_structure.py` at 550 (both re-measured at #700/#715),
+`sections/nesting_depth.py` at 492, `sections/manifest_canonicality_cause.py`
+at 491 and `codec/scanner.py` at 479 (re-measured at #725) — **two** past the
+500-line split threshold (#683). That count was three at the #689
+merge-base, two after #641/#691 shrank `sections/nesting_depth.py` 30 net
+lines (522 -> 492) while deleting the now-callerless
+`reject_excessive_nesting` and its content-blind entry-point machinery, three
+again after #723 grew `codec/manifest_decode.py` 498 -> 501, and two since
+#725 split its shape checks out to `codec/manifest_shape.py` (154), taking it
+501 -> 371 and out of the top six. `nesting_depth.py` leads
+`manifest_canonicality_cause.py` by one line (a near-tie, not the five-line
+gap the paragraph below still narrates as current). **This is the THIRD
+consecutive slice in which a review round moved these numbers after the
+docs commit measured them**, which is what the rest of this paragraph is
+about; the PR #689 review grew
 `value_type_discipline.py` 761 -> 834 (the `_CHECKS` driver table; written
 down as 828 first, then corrected by the ONE further edit that moved a
 docstring inside its class — a fourth occurrence, inside the paragraph that
@@ -501,17 +505,22 @@ the PR #718 review, whose RTS check 0 and `bundle_file` rows grew
 (479) out of the six; then #719 grew it 489 -> 496, from sixth to fourth;
 then the PR #720 review moved its class tables out to the new
 `sections/rule_token_seed_classes.py` (133), taking it 496 -> 382 and out of
-the six, and `scanner.py` back in):
+the six, and `scanner.py` back in; then #725 split
+`codec/manifest_decode.py` 501 -> 371, taking it out of the six and
+`sections/required_key_determinism.py` back in):
 849 `value_type_discipline.py`, 550 `value_type_structure.py`,
-501 `codec/manifest_decode.py` (498 until #723), 492 `sections/nesting_depth.py`,
-491 `sections/manifest_canonicality_cause.py`, 479 `codec/scanner.py` —
-THREE past the 500-line threshold since #723 (#725 tracks the split). The concrete effect on the ranking:
-`nesting_depth.py` fell out of the "past the 500-line threshold" set
-entirely (522 -> 492, now under 500) and dropped from second place to a
-near-tie for fourth/fifth against `manifest_canonicality_cause.py` (492 vs
-491, one line apart, where it previously led by 31). `codec/card.py` (135 ->
-281, +146 net) and `codec/well_formed.py` (212 -> 199, -13 net) also changed
-substantially but neither was ever in the top six and neither entered it.
+492 `sections/nesting_depth.py`,
+491 `sections/manifest_canonicality_cause.py`, 479 `codec/scanner.py`,
+390 `sections/required_key_determinism.py` — TWO past the 500-line threshold
+(`codec/manifest_decode.py` was a third at 501 from #723 until #725). The
+concrete effect of #641/#691 on the ranking: `nesting_depth.py` fell out of
+the "past the 500-line threshold" set entirely (522 -> 492, now under 500)
+and dropped from second place to a near-tie against
+`manifest_canonicality_cause.py` (492 vs 491, one line apart, where it
+previously led by 31) — fourth/fifth then, third/fourth since #725.
+`codec/card.py` (135 -> 281, +146 net) and `codec/well_formed.py` (212 ->
+199, -13 net) also changed substantially but neither was ever in the top six
+and neither entered it.
 Re-measured at #667/#670 (75 -> 78 files: `sections/nesting_depth.py`,
 `sections/nesting_depth_bodies.py`, `sections/record_defaults.py`), which grew
 `manifest_decode.py` 450 -> 460 (the depth pass is its first statement) and
