@@ -22,7 +22,7 @@ fn random_16() -> [u8; 16] {
 }
 
 /// Write one fresh empty block through `out`; returns its uuid.
-fn write_block(out: &OpenVaultOutput) -> Result<[u8; 16], FfiVaultError> {
+pub(super) fn write_block(out: &OpenVaultOutput) -> Result<[u8; 16], FfiVaultError> {
     let block_uuid = random_16();
     let input = BlockInput {
         block_uuid,
@@ -44,7 +44,7 @@ fn block_path(folder: &Path, uuid: &[u8; 16]) -> PathBuf {
     ))
 }
 
-fn has_block(out: &OpenVaultOutput, uuid: &[u8; 16]) -> bool {
+pub(super) fn has_block(out: &OpenVaultOutput, uuid: &[u8; 16]) -> bool {
     out.manifest
         .block_summaries()
         .iter()
@@ -52,7 +52,7 @@ fn has_block(out: &OpenVaultOutput, uuid: &[u8; 16]) -> bool {
 }
 
 /// Session handles plus a second writer that has advanced the disk.
-fn session_and_other_writer() -> (TempDir, OpenVaultOutput, [u8; 16]) {
+pub(super) fn session_and_other_writer() -> (TempDir, OpenVaultOutput, [u8; 16]) {
     let (tmp, session) = open_writable_golden_001();
     let other = open_vault_with_password(tmp.path(), VAULT_001_PASSWORD).expect("second open");
     let other_block = write_block(&other).expect("other writer saves a block");
@@ -71,7 +71,7 @@ fn seed_dominating_state(state_dir: &Path, folder: &Path) {
 
 /// Seed `state_dir` with a clock concurrent with any disk clock: one entry
 /// for a device the disk has never seen, and none of the disk's entries.
-fn seed_concurrent_state(state_dir: &Path, session: &OpenVaultOutput) {
+pub(super) fn seed_concurrent_state(state_dir: &Path, session: &OpenVaultOutput) {
     let vault_uuid: [u8; 16] = session.manifest.vault_uuid().try_into().unwrap();
     let clock = vec![VectorClockEntry {
         device_uuid: random_16(),
@@ -414,7 +414,7 @@ fn session_refresh_checks_the_disk_against_the_post_pass_clock() {
             Ok(outcome)
         },
         inspect_advanced,
-        inspect_baseline,
+        inspect_refreshes,
     )
     .expect_err("a rolled-back disk must not be adopted");
     assert!(
