@@ -60,7 +60,8 @@ pub static CANONICAL_NONCE_A: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(ran
 pub static SIBLING_NONCE_B: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_nonce);
 
 /// Nonce for the second sibling manifest in N-way fixtures. Consumed by
-/// [`fresh_vault_four_concurrent_manifests`] in C.1.1a integration tests.
+/// [`fresh_vault_four_concurrent_manifests`] in C.1.1a integration tests
+/// and by [`add_concurrent_block_sibling`] (#751).
 #[allow(dead_code)]
 pub static SIBLING_NONCE_C: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_nonce);
 
@@ -810,7 +811,9 @@ pub fn fresh_vault_two_concurrent_blocks(
 ///
 /// The canonical manifest and block are untouched, so the vault still
 /// opens; `manifest_filename` and `block_suffix` MUST differ from the
-/// first sibling's, or this overwrites it.
+/// first sibling's, or this overwrites it. Call it at most once per
+/// vault: every call encrypts under the same [`BLOCK_NONCE_G`] /
+/// [`SIBLING_NONCE_C`], so a second call would reuse a key and nonce.
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub fn add_concurrent_block_sibling(
