@@ -42,12 +42,47 @@ final class UniffiVaultSessionSyncTests: XCTestCase {
         if let tmp { try? FileManager.default.removeItem(at: tmp) }
     }
 
-    private func openSession() throws -> UniffiVaultSession {
+    private func openSession(
+        folder: URL? = nil, device: [UInt8] = [UInt8](repeating: 0x5A, count: 16)
+    ) throws -> UniffiVaultSession {
         let out = try SecretaryKit.openVaultWithPassword(
-            folderPath: Data(vaultCopy.path.utf8), password: Data(goldenPassword.utf8))
-        return UniffiVaultSession(
-            output: out, deviceUuids: FixedDeviceUuid(value: [UInt8](repeating: 0x5A, count: 16)))
+            folderPath: Data((folder ?? vaultCopy).path.utf8), password: Data(goldenPassword.utf8))
+        return UniffiVaultSession(output: out, deviceUuids: FixedDeviceUuid(value: device))
     }
+
+    /// #749: the SilentMerge ticks THIS session's device UUID, the one its
+    /// writes stamp (`syncLocked` resolves `deviceUuid()`). Two copies of the
+    /// golden vault each add a block, so their clocks are concurrent with no
+    /// block diverged. Copy A wrote once (A at 1) and its merge ticks it again
+    /// (A at 2); a wrong UUID would leave A at 1. The clock is read from the
+    /// saved sync state, which the bridge sets to the clock it wrote
+    /// (`a_silent_merge_writes_a_manifest_carrying_the_local_clock`); no FFI
+    /// reads the disk clock.
+    func testSilentMergeTicksTheSessionsOwnDeviceUuid() async throws {
+        let copyB = tmp.appendingPathComponent("copy_b", isDirectory: true)
+        try FileManager.default.copyItem(at: vaultCopy, to: copyB)
+        let deviceA = [UInt8](repeating: 0xA1, count: 16)
+        let a = try openSession(device: deviceA)
+        let b = try openSession(folder: copyB, device: [UInt8](repeating: 0xB2, count: 16))
+        defer { a.wipe(); b.wipe() }
+        let vaultUuid = try XCTUnwrap(HexUuid.bytes(fromHex: a.vaultUuidHex))
+        _ = try a.createBlock(blockName: "only on A")
+        _ = try b.createBlock(blockName: "only on B")
+
+        let seeded = try await b.sync(stateDir: stateDir.path, nowMs: 1_000)
+        XCTAssertEqual(seeded, .appliedAutomatically)
+        let merged = try await a.sync(stateDir: stateDir.path, nowMs: 2_000)
+        XCTAssertEqual(merged, .silentMerge)
+
+        let clocks = try SecretaryKit.syncStatus(stateDir: stateDir.path, vaultUuid: Data(vaultUuid))
+            .deviceClocks
+        let hexA = deviceA.map { String(format: "%02x", $0) }.joined()
+        let entryA = try XCTUnwrap(clocks.first { $0.deviceUuidHex == hexA }, "no entry for A in \(clocks)")
+        XCTAssertEqual(entryA.counter, Self.aWrites + Self.mergeTick, "\(clocks)")
+    }
+
+    private static let aWrites: UInt64 = 1
+    private static let mergeTick: UInt64 = 1
 
     // MARK: - Real FFI
 
