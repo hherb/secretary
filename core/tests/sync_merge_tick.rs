@@ -24,6 +24,9 @@ const LOCAL_SEEN_DEVICE: [u8; 16] = [0x0C; 16];
 const MERGING_DEVICE: [u8; 16] = [0x0D; 16];
 const SIBLING_MANIFEST: &str = "manifest.cbor.enc.sync-conflict-from-device-bb";
 const SIBLING_BLOCK_SUFFIX: &str = ".sync-conflict-from-device-bb";
+const SECOND_SIBLING_DEVICE: [u8; 16] = [0x0E; 16];
+const SECOND_SIBLING_MANIFEST: &str = "manifest.cbor.enc.sync-conflict-from-device-ee";
+const SECOND_SIBLING_BLOCK_SUFFIX: &str = ".sync-conflict-from-device-ee";
 const COMMIT_NOW_MS: u64 = 1_000_000;
 const FIXTURE_NOW_MS: u64 = 500_000;
 
@@ -55,6 +58,18 @@ fn merge_and_commit(folder: &std::path::Path, local_seen: Vec<VectorClockEntry>)
     assert_eq!(draft.merging_device, MERGING_DEVICE);
     commit_with_decisions(folder, &identity, draft, Vec::new(), COMMIT_NOW_MS)
         .expect("commit_with_decisions")
+}
+
+fn disk_block_clock(folder: &std::path::Path, block_uuid: [u8; 16]) -> Vec<VectorClockEntry> {
+    let password = fixtures::golden_vault_001_password();
+    let open = open_vault(folder, Unlocker::Password(&password), None).expect("open_vault");
+    open.manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .expect("merged block entry")
+        .vector_clock_summary
+        .clone()
 }
 
 fn disk_manifest_clock(folder: &std::path::Path) -> Vec<VectorClockEntry> {
@@ -141,22 +156,123 @@ fn a_block_merge_ticks_the_merging_device_not_the_user_uuid() {
 
     merge_and_commit(&folder, vec![vc(LOCAL_SEEN_DEVICE, 1)]);
 
-    let password = fixtures::golden_vault_001_password();
-    let open = open_vault(&folder, Unlocker::Password(&password), None).expect("open_vault");
-    let block_clock = &open
-        .manifest
-        .blocks
-        .iter()
-        .find(|b| b.block_uuid == block_uuid)
-        .expect("merged block entry")
-        .vector_clock_summary;
+    let block_clock = disk_block_clock(&folder, block_uuid);
     assert_eq!(
         block_clock,
-        &vec![
+        vec![
             vc(CANONICAL_DEVICE, 1),
             vc(SIBLING_DEVICE, 1),
             vc(MERGING_DEVICE, 1),
         ]
     );
     assert!(block_clock.iter().all(|e| e.device_uuid != user_uuid));
+}
+
+/// Three concurrent copies of one block are one merge event, so the merged
+/// block clock gets ONE tick for the merging device, not one per fold step
+/// (crypto-design §11.2 "N-way merge", #751). The manifest clock likewise.
+#[test]
+fn a_three_way_block_merge_ticks_the_merging_device_once() {
+    let (probe, _probe_tmp) = sync_helpers::fresh_vault_with_clock(Vec::new());
+    let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&probe);
+
+    let canonical_clock = vec![vc(CANONICAL_DEVICE, 1)];
+    let sibling_clock = vec![vc(SIBLING_DEVICE, 1)];
+    let second_clock = vec![vc(SECOND_SIBLING_DEVICE, 1)];
+    let (folder, _tmp) = sync_helpers::fresh_vault_two_concurrent_blocks(
+        block_uuid,
+        vec![sync_helpers::live_record(
+            [0xAA; 16],
+            CANONICAL_DEVICE,
+            100,
+            "canonical",
+        )],
+        canonical_clock.clone(),
+        canonical_clock,
+        vec![sync_helpers::live_record(
+            [0xBB; 16],
+            SIBLING_DEVICE,
+            200,
+            "sibling",
+        )],
+        sibling_clock.clone(),
+        sibling_clock,
+        SIBLING_MANIFEST,
+        SIBLING_BLOCK_SUFFIX,
+        FIXTURE_NOW_MS,
+    );
+    sync_helpers::add_concurrent_block_sibling(
+        &folder,
+        block_uuid,
+        vec![sync_helpers::live_record(
+            [0xCC; 16],
+            SECOND_SIBLING_DEVICE,
+            300,
+            "second",
+        )],
+        second_clock.clone(),
+        second_clock,
+        SECOND_SIBLING_MANIFEST,
+        SECOND_SIBLING_BLOCK_SUFFIX,
+        FIXTURE_NOW_MS,
+    );
+
+    merge_and_commit(&folder, vec![vc(LOCAL_SEEN_DEVICE, 1)]);
+
+    let want = vec![
+        vc(CANONICAL_DEVICE, 1),
+        vc(SIBLING_DEVICE, 1),
+        vc(MERGING_DEVICE, 1),
+        vc(SECOND_SIBLING_DEVICE, 1),
+    ];
+    assert_eq!(disk_block_clock(&folder, block_uuid), want);
+    assert_eq!(disk_manifest_clock(&folder), want);
+}
+
+/// A diverging block whose sibling copy strictly dominates the canonical one
+/// has no concurrent fold step, so the dominating clock is adopted unchanged
+/// and the merging device gets no block tick (crypto-design §11.2 "N-way
+/// merge", #751). The manifest clocks are concurrent, so the manifest still
+/// gets its one tick.
+#[test]
+fn a_dominated_block_fold_adopts_the_dominating_clock_untouched() {
+    let (probe, _probe_tmp) = sync_helpers::fresh_vault_with_clock(Vec::new());
+    let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&probe);
+
+    let canonical_block_clock = vec![vc(CANONICAL_DEVICE, 1)];
+    let sibling_block_clock = vec![vc(CANONICAL_DEVICE, 1), vc(SIBLING_DEVICE, 1)];
+    let (folder, _tmp) = sync_helpers::fresh_vault_two_concurrent_blocks(
+        block_uuid,
+        vec![sync_helpers::live_record(
+            [0xAA; 16],
+            CANONICAL_DEVICE,
+            100,
+            "canonical",
+        )],
+        canonical_block_clock,
+        vec![vc(CANONICAL_DEVICE, 1)],
+        vec![sync_helpers::live_record(
+            [0xBB; 16],
+            SIBLING_DEVICE,
+            200,
+            "sibling",
+        )],
+        sibling_block_clock.clone(),
+        vec![vc(SIBLING_DEVICE, 1)],
+        SIBLING_MANIFEST,
+        SIBLING_BLOCK_SUFFIX,
+        FIXTURE_NOW_MS,
+    );
+
+    merge_and_commit(&folder, vec![vc(LOCAL_SEEN_DEVICE, 1)]);
+
+    assert_eq!(disk_block_clock(&folder, block_uuid), sibling_block_clock);
+    assert_eq!(
+        disk_manifest_clock(&folder),
+        vec![
+            vc(CANONICAL_DEVICE, 1),
+            vc(SIBLING_DEVICE, 1),
+            vc(MERGING_DEVICE, 1),
+        ]
+    );
 }
