@@ -69,11 +69,13 @@ pub fn sync_vault(
 /// Commit tombstone-veto decisions for a paused sync pass. uniffi-projected (#187).
 ///
 /// `manifest_hash` is the opaque 32-byte freshness token from a prior
-/// `sync_vault` `ConflictsPending` result.
+/// `sync_vault` `ConflictsPending` result. `device_uuid` is the merging
+/// device, as for `sync_vault`.
 ///
 /// # Errors
-/// See the bridge `sync_commit_decisions_in` docs
-/// (`SyncDecisionsIncomplete`, `SyncEvidenceStale`, `SyncFailed`, ...).
+/// - [`VaultError::InvalidArgument`] — `device_uuid` is not 16 bytes.
+/// - See the bridge `sync_commit_decisions_in` docs
+///   (`SyncDecisionsIncomplete`, `SyncEvidenceStale`, `SyncFailed`, ...).
 pub fn sync_commit_decisions(
     state_dir: String,
     vault_folder: String,
@@ -119,10 +121,12 @@ pub fn refresh_manifest(
 }
 
 /// One sync pass through the open session (no password), then a refresh of
-/// `manifest`. uniffi-projected (#101).
+/// `manifest`. uniffi-projected (#101). `device_uuid` is the merging
+/// device, as for `sync_vault`.
 ///
 /// # Errors
-/// See the bridge `sync_vault_with_session_in` docs.
+/// - [`VaultError::InvalidArgument`] — `device_uuid` is not 16 bytes.
+/// - See the bridge `sync_vault_with_session_in` docs.
 pub fn sync_vault_with_session(
     state_dir: String,
     identity: Arc<UnlockedIdentity>,
@@ -143,10 +147,12 @@ pub fn sync_vault_with_session(
 }
 
 /// Commit veto decisions through the open session, then refresh `manifest`.
-/// uniffi-projected (#101).
+/// uniffi-projected (#101). `device_uuid` is the merging device, as for
+/// `sync_vault`.
 ///
 /// # Errors
-/// See the bridge `sync_commit_decisions_with_session_in` docs.
+/// - [`VaultError::InvalidArgument`] — `device_uuid` is not 16 bytes.
+/// - See the bridge `sync_commit_decisions_with_session_in` docs.
 pub fn sync_commit_decisions_with_session(
     state_dir: String,
     identity: Arc<UnlockedIdentity>,

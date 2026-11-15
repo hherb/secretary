@@ -155,6 +155,21 @@ mod tests {
         }
     }
 
+    /// `--device-uuid` parses 32 hex digits and rejects anything else (#744).
+    #[test]
+    fn parse_device_uuid_flag() {
+        let hex = "5e".repeat(16);
+        let cli = Cli::try_parse_from(["secretary-sync", "once", "--device-uuid", &hex, "/v"])
+            .expect("parse failed");
+        let Command::Once { common, .. } = cli.command else {
+            panic!("expected Once subcommand");
+        };
+        assert_eq!(common.device_uuid, Some([0x5e; 16]));
+
+        let bad = ["secretary-sync", "once", "--device-uuid", "abcd", "/v"];
+        assert!(Cli::try_parse_from(bad).is_err());
+    }
+
     /// `secretary-sync run` with all flags parses each correctly.
     #[test]
     fn parse_run_with_all_flags() {

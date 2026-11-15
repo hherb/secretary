@@ -64,8 +64,8 @@ fn disk_manifest_clock(folder: &std::path::Path) -> Vec<VectorClockEntry> {
 }
 
 /// The written manifest clock is the LUB plus a fresh `MERGING_DEVICE: 1`
-/// entry, and the returned state equals the disk, so the next pass is
-/// `NothingToDo`.
+/// entry, and the returned state equals the disk (which is what makes the
+/// next pass `NothingToDo`).
 #[test]
 fn a_manifest_only_merge_adds_the_merging_device_entry() {
     let (folder, _tmp) = sync_helpers::fresh_vault_two_concurrent_manifests(

@@ -43,9 +43,9 @@ fn open_identity(
 /// when the pass commits a clean concurrent merge (`MergedClean`); D.1.14 passes
 /// real time. `device_uuid` is this device's per-vault device UUID, the one
 /// its writes pass: a merge ticks it on the merged block and manifest clocks
-/// (crypto-design §10 / §11.2, #744). On advancing arms the new `SyncState` is
-/// persisted; on
-/// `ConflictsPending`/`NothingToDo`/`RollbackRejected` nothing is written.
+/// (crypto-design §10 / §11.2, #744). On advancing arms the new `SyncState`
+/// is persisted; on `ConflictsPending`/`NothingToDo`/`RollbackRejected`
+/// nothing is written.
 ///
 /// # Errors
 /// - `SyncInProgress` — the per-vault lockfile is held.

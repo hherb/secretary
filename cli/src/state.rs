@@ -14,6 +14,9 @@
 //! (flock(LOCK_EX | LOCK_NB) on Unix, LockFileEx on Windows). Kernel
 //! auto-releases on process death; no stale-PID handling required.
 //!
+//! Beside them sits `<vault_uuid_hex>.device`, this CLI's per-vault device
+//! UUID (`crate::device`, #744), read or created only under the lockfile.
+//!
 //! fs4 1.x API note: the trait is `fs4::FileExt` (re-exported at the
 //! crate root; no `fs_std` module in v1, unlike the early plan draft).
 //! The exclusive try-variant is `try_lock()` and returns

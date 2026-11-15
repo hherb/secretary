@@ -31,8 +31,8 @@ use crate::veto::VetoUx;
 /// instance can adjudicate multiple records in one call.
 ///
 /// `merging_device` is this device's per-vault device UUID. A merge ticks it
-/// on every merged block clock and on the written manifest clock
-/// (crypto-design §10 / §11.2, #744); the other arms ignore it.
+/// on each concurrent per-block fold step and once on the written manifest
+/// clock (crypto-design §10 / §11.2, #744); the other arms ignore it.
 ///
 /// `now_ms` is forwarded into the underlying merge timestamp; callers
 /// without a wall-clock requirement may pass `0` (the C.1 era pre-
@@ -57,8 +57,9 @@ use crate::veto::VetoUx;
 /// - [`RunOutcome::SilentMerge`] / [`RunOutcome::MergedAndCommitted`] —
 ///   a merged manifest is written and `state` becomes its clock: the LUB
 ///   of the canonical disk clock, every conflict-copy clock and the
-///   prior local-seen (see `commit_merge`), plus one for `merging_device`. `SilentMerge` is the arm
-///   where no block diverged, so only the manifest is rewritten (#730).
+///   prior local-seen (see `commit_merge`), plus one for
+///   `merging_device`. `SilentMerge` is the arm where no block diverged,
+///   so only the manifest is rewritten (#730).
 ///
 /// On `Err`, `state` may have been partially mutated only if the error
 /// came from `commit_with_decisions` after state was updated — but

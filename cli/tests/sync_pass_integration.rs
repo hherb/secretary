@@ -45,7 +45,7 @@ use secretary_core::vault::{
 use secretary_test_utils::{copy_dir_recursive, core_test_data_dir};
 use zeroize::Zeroize as _;
 
-/// The merging device the direct `prepare_merge` calls pass (#744).
+/// The merging device every pass and direct `prepare_merge` call here passes (#744).
 const TEST_MERGING_DEVICE: [u8; 16] = [0x5E; 16];
 
 // --- Harness helpers (mirrored from cli/tests/pipeline_integration.rs;

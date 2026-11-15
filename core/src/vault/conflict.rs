@@ -13,8 +13,9 @@
 //!   merge or a no-op pick.
 //! - [`merge_vector_clocks`] — component-wise max of two clocks, sorted
 //!   ascending by `device_uuid` per §6.1's wire-format invariant. Pure;
-//!   does **not** add `+1` for any merging device. Tick is a separate
-//!   concern owned by the orchestrator layer.
+//!   does **not** add `+1` for any merging device. The tick is the
+//!   caller's: [`merge_block`] and the sync commit apply it through
+//!   `tick_for_device`, the vault writers through the orchestrator layer.
 //!
 //! The record-level and block-level merge functions land in subsequent
 //! commits and compose on top of these primitives.
@@ -141,9 +142,10 @@ pub fn clock_relation(local: &[VectorClockEntry], incoming: &[VectorClockEntry])
 /// `device_uuid` per `docs/vault-format.md` §6.1.
 ///
 /// Pure function. Does **not** apply `+1` for any "merging device" —
-/// that is an orchestrator concern (see
-/// `super::orchestrators`'s private `tick_clock`). The merge primitive
-/// here only computes the join in the lattice of vector clocks.
+/// that is the caller's (`tick_for_device` for [`merge_block`] and the
+/// sync commit, `super::orchestrators`'s private `tick_clock` for the vault
+/// writers). The merge primitive here only computes the join in the
+/// lattice of vector clocks.
 ///
 /// Properties (proved by `core/tests/proptest.rs` in a subsequent
 /// commit):
@@ -918,6 +920,17 @@ fn merge_block_name(l: &str, r: &str) -> String {
     }
 }
 
+/// Lift a merge-layer error into [`super::VaultError`], keeping a clock
+/// overflow as the one typed `ClockOverflow` every write path reports.
+pub(crate) fn conflict_to_vault_error(e: ConflictError) -> super::VaultError {
+    match e {
+        ConflictError::ClockOverflow { device_uuid } => {
+            super::VaultError::ClockOverflow { device_uuid }
+        }
+        other => super::VaultError::Conflict(other),
+    }
+}
+
 /// Apply `+1` to `device`'s component of `clock`, inserting a fresh
 /// entry at counter `1` when the device has no current entry. The
 /// result is sorted ascending by `device_uuid` to keep the §6.1
@@ -926,7 +939,8 @@ fn merge_block_name(l: &str, r: &str) -> String {
 /// Mirrors the orchestrator layer's private `tick_clock` but is pure
 /// (takes `clock` by value, returns a new `Vec`) and produces a
 /// layer-local error rather than `VaultError` so this module stays
-/// independent of the umbrella enum.
+/// independent of the umbrella enum. Two callers: [`merge_block`]'s
+/// concurrent arm, and `sync::commit::write`'s manifest-clock tick (#744).
 pub(crate) fn tick_for_device(
     clock: Vec<VectorClockEntry>,
     device: [u8; 16],

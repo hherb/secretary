@@ -27,9 +27,17 @@ const DEVICE_UUID_HEX_LEN: usize = DEVICE_UUID_LEN * 2;
 
 #[derive(Debug, Error)]
 pub enum DeviceUuidError {
-    #[error("I/O error reading or writing device UUID file: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("device UUID file {path} holds {len} bytes, expected {DEVICE_UUID_LEN}")]
+    #[error("I/O error on device UUID file {}: {source}", path.display())]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "device UUID file {} holds {len} bytes, expected {DEVICE_UUID_LEN}; \
+         restore it from a backup, or delete it to mint a new device UUID",
+        path.display()
+    )]
     Malformed { path: PathBuf, len: usize },
 }
 
@@ -60,15 +68,20 @@ pub fn load_or_create(
             })
         }
         Err(e) if e.kind() == ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
+        Err(source) => return Err(DeviceUuidError::Io { path, source }),
     }
     let mut uuid = [0u8; DEVICE_UUID_LEN];
     OsRng.fill_bytes(&mut uuid);
-    create_dir_secure(state_dir)?;
-    let mut tmp = NamedTempFile::new_in(state_dir)?;
-    tmp.write_all(&uuid)?;
-    tmp.persist(&path)
-        .map_err(|e| DeviceUuidError::Io(e.error))?;
+    let io = |source| DeviceUuidError::Io {
+        path: path.clone(),
+        source,
+    };
+    create_dir_secure(state_dir).map_err(io)?;
+    let mut tmp = NamedTempFile::new_in(state_dir).map_err(io)?;
+    tmp.write_all(&uuid).map_err(io)?;
+    // Durable before the rename, so a power loss cannot leave a short file.
+    tmp.as_file().sync_all().map_err(io)?;
+    tmp.persist_noclobber(&path).map_err(|e| io(e.error))?;
     Ok(uuid)
 }
 
@@ -124,9 +137,11 @@ mod tests {
     #[test]
     fn a_wrong_length_file_is_refused() {
         let dir = TempDir::new().unwrap();
-        fs::write(device_file_path(dir.path(), [1; 16]), [0u8; 3]).unwrap();
+        let path = device_file_path(dir.path(), [1; 16]);
+        fs::write(&path, [0u8; 3]).unwrap();
         let err = load_or_create(dir.path(), [1; 16]).unwrap_err();
         assert!(matches!(err, DeviceUuidError::Malformed { len: 3, .. }));
+        assert_eq!(fs::read(&path).unwrap(), [0u8; 3], "never overwritten");
     }
 
     #[test]

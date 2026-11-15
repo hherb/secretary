@@ -35,7 +35,7 @@ use crate::sync::state::SyncState;
 use crate::unlock::bundle::IdentityBundle;
 use crate::unlock::UnlockedIdentity;
 use crate::vault::block::VectorClockEntry;
-use crate::vault::conflict::tick_for_device;
+use crate::vault::conflict::{conflict_to_vault_error, tick_for_device};
 use crate::vault::io::write_atomic;
 use crate::vault::manifest::Manifest;
 use crate::vault::orchestrators::{
@@ -135,6 +135,13 @@ pub fn commit_with_decisions(
     // before any disk writes happen.
     let post_decision_records = apply_decisions(&draft, &decisions)?;
 
+    // §10 (#744): the written clock is the merged clock plus one for the
+    // merging device. This is the last change to the clock, so a caller's
+    // fold into `post_merge_clock` cannot absorb the tick, and it runs
+    // before step 5 so an overflow fails before any file is written.
+    let written_clock = tick_for_device(draft.post_merge_clock.clone(), draft.merging_device)
+        .map_err(|e| SyncError::Vault(conflict_to_vault_error(e)))?;
+
     // Step 4: derive owner sender + recipient keys once. The golden
     // single-owner v1 model means author == recipient; the recipient
     // list contains exactly the owner, mirroring save_block / share_block.
@@ -161,15 +168,6 @@ pub fn commit_with_decisions(
     // Step 6: build the new manifest body. Copy the cached manifest,
     // replace top-level vector_clock, update each affected block's
     // BlockEntry with the new fingerprint + per-block clock + last_mod_ms.
-    // §10 (#744): the written clock is the merged clock plus one for the
-    // merging device, ticked last so any caller fold into
-    // `post_merge_clock` cannot absorb it.
-    let written_clock = tick_for_device(draft.post_merge_clock.clone(), draft.merging_device)
-        .map_err(|_| {
-            SyncError::Vault(crate::vault::VaultError::ClockOverflow {
-                device_uuid: draft.merging_device,
-            })
-        })?;
     let mut new_manifest = verified.manifest.clone();
     new_manifest.vector_clock = written_clock.clone();
     for entry in new_manifest.blocks.iter_mut() {

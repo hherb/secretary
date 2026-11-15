@@ -216,16 +216,12 @@ pub(crate) fn sync_vault(
     device_uuid: Vec<u8>,
     now_ms: u64,
 ) -> PyResult<SyncOutcomeDto> {
+    // Wrapped before the fallible uuid check so `Drop` wipes it on that exit too.
+    let password = SecretBytes::new(password);
     let device_uuid = uuid_array_or_value_error(&device_uuid, "device_uuid")?;
-    secretary_ffi_bridge::sync_vault_in(
-        &state_dir,
-        &vault_folder,
-        SecretBytes::new(password),
-        device_uuid,
-        now_ms,
-    )
-    .map(outcome_from_bridge)
-    .map_err(ffi_vault_error_to_pyerr)
+    secretary_ffi_bridge::sync_vault_in(&state_dir, &vault_folder, password, device_uuid, now_ms)
+        .map(outcome_from_bridge)
+        .map_err(ffi_vault_error_to_pyerr)
 }
 
 /// Commit tombstone-veto decisions for a paused `ConflictsPending` sync pass.
@@ -259,6 +255,7 @@ pub(crate) fn sync_vault(
 /// - `VaultWrongPasswordOrCorrupt` — password wrong or integrity failure.
 /// - `VaultSyncStateVaultMismatch` — state file belongs to a different vault.
 /// - `VaultSyncStateCorrupt` — state file exists but failed to decode.
+/// - `ValueError` — `device_uuid` is not 16 bytes.
 #[pyfunction]
 #[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required to move into SecretBytes / freshness check
 pub(crate) fn sync_commit_decisions(
@@ -270,11 +267,13 @@ pub(crate) fn sync_commit_decisions(
     device_uuid: Vec<u8>,
     now_ms: u64,
 ) -> PyResult<SyncOutcomeDto> {
+    // Wrapped before the fallible uuid check so `Drop` wipes it on that exit too.
+    let password = SecretBytes::new(password);
     let device_uuid = uuid_array_or_value_error(&device_uuid, "device_uuid")?;
     secretary_ffi_bridge::sync_commit_decisions_in(
         &state_dir,
         &vault_folder,
-        SecretBytes::new(password),
+        password,
         decisions_to_bridge(decisions),
         manifest_hash,
         device_uuid,

@@ -27,7 +27,9 @@ use crate::sync::error::SyncError;
 use crate::sync::outcome::DiffPlan;
 use crate::unlock::UnlockedIdentity;
 use crate::vault::block::{decode_block_file, decrypt_block, BlockPlaintext, VectorClockEntry};
-use crate::vault::conflict::{merge_block, merge_vector_clocks};
+use crate::vault::conflict::{
+    conflict_to_vault_error, merge_block, merge_vector_clocks, ConflictError,
+};
 use crate::vault::orchestrators::read_vault_manifest_full;
 use crate::vault::record::Record;
 
@@ -319,8 +321,8 @@ fn parent_block_clock(
 ///   [`crate::sync::sync_once`]; its `diverging_blocks` field drives
 ///   the per-block iteration order.
 /// - `merging_device`: this device's per-vault device UUID (the one its
-///   block writes tick). Each merged block clock gets `+1` for it
-///   (crypto-design §11.2), and it rides on the draft so
+///   block writes tick). Each concurrent per-block fold step gets `+1`
+///   for it (crypto-design §11.2), and it rides on the draft so
 ///   `commit_with_decisions` ticks the manifest clock for it too (§10,
 ///   #744).
 ///
@@ -449,8 +451,11 @@ pub fn prepare_merge(
                 &copy_block_clock,
                 merging_device,
             )
-            .map_err(|e| SyncError::InvalidArgument {
-                detail: format!("merge_block: {e}"),
+            .map_err(|e| match e {
+                ConflictError::ClockOverflow { .. } => SyncError::Vault(conflict_to_vault_error(e)),
+                e => SyncError::InvalidArgument {
+                    detail: format!("merge_block: {e}"),
+                },
             })?;
 
             // Capture metadata-only field collisions BEFORE `merged` is

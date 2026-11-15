@@ -113,8 +113,10 @@ fn a_silent_merge_writes_a_manifest_carrying_the_local_clock() {
     );
 }
 
-/// Both bridge entry points forward their `device_uuid` as the merging device:
-/// the written clock gains a fresh entry for it (#744).
+/// Both inspect entry points (session and password) forward their
+/// `device_uuid` as the merging device: the written clock gains a fresh entry
+/// for it (#744). The commit-decisions pair is pinned in
+/// `commit_tick_tests.rs`.
 #[test]
 fn a_silent_merge_ticks_the_callers_device_uuid() {
     let tick = |device: [u8; 16]| secretary_core::vault::VectorClockEntry {

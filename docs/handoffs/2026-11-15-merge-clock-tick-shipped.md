@@ -19,10 +19,11 @@ Decisions asked and answered at session start:
 
 | SHA | What |
 |---|---|
-| `b1ab0694` | **core**: `prepare_merge(.., merging_device)` records it on `DraftMerge.merging_device`. Block merges tick it; before, they ticked the owner's `user_uuid`. `commit_with_decisions` ticks the manifest clock as its last step, after any caller fold, and returns that clock as the new `SyncState`. **cli**: the four passes take `merging_device`. New `cli/src/device.rs` loads or creates `<state-dir>/<vault_hex>.device` under the lockfile; `--device-uuid <32 hex>` overrides it. **bridge**: all four sync entry points (and their `_in` seams) take `device_uuid: [u8; 16]`. **uniffi / pyo3**: take `bytes device_uuid` and validate the length. **desktop**: passes `u.device_uuid`. |
+| `b1ab0694` | **core**: `prepare_merge(.., merging_device)` records it on `DraftMerge.merging_device`. Block merges tick it; before, they ticked the owner's `user_uuid`. `commit_with_decisions` ticks the manifest clock as the last change to it, after any caller fold, and returns that clock as the new `SyncState`. **cli**: the four passes take `merging_device`. New `cli/src/device.rs` loads or creates `<state-dir>/<vault_hex>.device` under the lockfile; `--device-uuid <32 hex>` overrides it. **bridge**: all four sync entry points (and their `_in` seams) take `device_uuid: [u8; 16]`. **uniffi / pyo3**: take `bytes device_uuid` and validate the length. **desktop**: passes `u.device_uuid`. |
 | `d3a23754` | Android `UniffiVaultSession` and iOS `UniffiVaultSession+Sync.swift` resolve the per-vault device UUID their writes use, under the session lock, and pass it to session sync. A resolve failure is `VaultSyncError.Failed`. |
-| `a429745d` | README row, ROADMAP entry, and a CLAUDE.md note under "CRDT merge": the manifest tick is the commit's LAST step. |
-| (this commit) | This handoff and the symlink retarget. |
+| `a429745d` | README row, ROADMAP entry, and a CLAUDE.md note under "CRDT merge": the manifest tick is the last change to the commit's clock. |
+| `a9df5d95` | This handoff and the symlink retarget. |
+| (review fix) | PR #750 review, all findings fixed in one commit: see "Review fixes" below. |
 
 **Evidence:**
 - `core/tests/sync_merge_tick.rs`, 3 tests:
@@ -36,9 +37,30 @@ Decisions asked and answered at session start:
 - Binding tests reject a wrong-length `device_uuid`:
   - uniffi: `sync_vault_wrong_length_device_uuid_is_invalid_argument`;
   - pyo3: `test_sync_vault_wrong_length_device_uuid_raises_value_error`.
-- `scripts/mutate.py` (self-test 20/20), two rows, both `RED_AS_EXPECTED`:
+- `scripts/mutate.py` (self-test 20/20), two rows, both `RED_AS_EXPECTED`, each
+  gated on `cargo test --release -p secretary-core --test sync_merge_tick`
+  (so the counts are that target's only):
   - T1, dropping the manifest tick, reds the two manifest tests;
   - T2, restoring the `user_uuid` block tick, reds the block test.
+
+**Review fixes (PR #750 review):**
+- pyo3 `sync_vault` / `sync_commit_decisions` wrapped the password only after
+  the fallible `device_uuid` check, so a wrong-length UUID freed it unwiped
+  (the #513/#518 E3 window). Now wrapped first.
+- `commit_with_decisions` ticks before step 5's block writes, so an overflow
+  fails before any file is written. Overflow maps to `VaultError::ClockOverflow`
+  on both the manifest and block paths (`conflict::conflict_to_vault_error`);
+  the block path was `InvalidArgument`.
+- `cli/src/device.rs`: fsync before `persist_noclobber`; I/O errors name the
+  path; a malformed file's error says how to recover.
+- New tests: bridge `a_commit_decisions_merge_ticks_the_callers_device_uuid`
+  (both commit entry points, manifest and block clock), three
+  `secretary-sync once` tests (device file created and reused, `--device-uuid`
+  bypasses it, a malformed file fails and is left alone), `--device-uuid`
+  parse, and the malformed unit test now checks the file is untouched.
+- Stale or overclaiming docs fixed in `draft.rs`, `outcomes.rs`,
+  `conflict.rs`, `passes.rs`, `prepare.rs`, the bindings, `state.rs`,
+  CLAUDE.md, README and ROADMAP.
 
 **Gates, each exit 0:**
 - `cargo fmt --check`
@@ -75,13 +97,14 @@ Decisions asked and answered at session start:
 3. **#749**: one test per app that a SilentMerge's written clock contains the session's device UUID at counter 1.
 4. **Manual GUI pass, desktop and Android**. Still never done since #745; see the previous handoff's list.
 5. **#736**, **#734**, **#740** / **#741** / **#742**, **#747** / **#748**.
-6. **#737 / #729** size caps. #744 grew three over-cap files (`core/src/sync/prepare.rs`, `cli/src/daemon.rs`, `cli/src/main.rs`); they are noted on #737. Also #738, #731, #743.
-7. Carried over: #649, #683, #677, #668 / #693 (spec questions, ask the user), #699 / #701-#705.
+6. **#737 / #729** size caps. #744 grew three over-cap production files (`core/src/sync/prepare.rs`, `cli/src/daemon.rs`, `cli/src/main.rs`); they are noted on #737. It also grew two over-cap test files (`cli/tests/sync_pass_integration.rs`, `core/tests/sync_helpers/mod.rs`) and pushed two past 500 (`core/tests/sync_merge.rs`, `core/tests/sync_merge_vetoes.rs`, each 495 -> 501). Also #738, #731, #743.
+7. **#751** (spec question, ask the user): N concurrent copies of one block tick its clock N times, the manifest once. Filed from the PR #750 review; behaviour predates #744.
+8. Carried over: #649, #683, #677, #668 / #693 (spec questions, ask the user), #699 / #701-#705.
 
 ## (3) Open decisions and risks
 
 - **Behaviour change: written merge clocks gain an entry per merging device.**
-  - Every merge now adds `this device: +1` to the manifest clock and to each merged block clock.
+  - Every merge now adds `this device: +1` to the manifest clock (once) and to a block clock on each concurrent per-block fold step (so N concurrent copies of one block add N).
   - Older clients read such clocks fine (a clock is a list of entries), and no fixture pins a merge clock.
   - Vaults that merged before this keep their old `user_uuid` entries on block clocks. These are harmless: just another component.
 - **The CLI and an app on one machine are two devices** for the same vault: separate UUIDs and separate counters. That is correct for vector clocks.

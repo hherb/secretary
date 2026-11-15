@@ -80,8 +80,9 @@ proptest! {
     /// Why this is non-trivial: `commit_with_decisions` writes
     /// `post_merge_clock` (the component-wise max of canonical +
     /// sibling manifest clocks) plus one for the merging device (#744)
-    /// into both the returned `SyncState` and the on-disk manifest. The next `sync_once` reads only the
-    /// canonical manifest and dispatches purely on
+    /// into both the returned `SyncState` and the on-disk manifest. The
+    /// next `sync_once` reads only the canonical manifest and dispatches
+    /// purely on
     /// `clock_relation` between state and disk — `Equal` triggers
     /// `NothingToDo`. The property pins that the two writes agree, so
     /// the relation cannot land in any other branch (Concurrent /

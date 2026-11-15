@@ -45,7 +45,7 @@ pub enum RunOutcome {
     /// manifest level, identical at the block level"). A manifest-only
     /// merge was committed (crypto-design §10, #730) and `state` is its
     /// clock: the LUB of the canonical disk clock, every conflict-copy
-    /// clock and the prior local-seen.
+    /// clock and the prior local-seen, plus one for the merging device.
     SilentMerge,
     /// Disk vector clock is strictly dominated by the local
     /// `highest_vector_clock_seen` (rollback per

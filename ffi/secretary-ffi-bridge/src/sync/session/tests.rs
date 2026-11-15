@@ -284,7 +284,7 @@ fn session_sync_refresh_failure_leaves_handle_and_retry_succeeds() {
 
 /// Collision fixture (a pass there would merge and write) opened into bridge
 /// handles: (vault tmp, state tmp, handles).
-fn open_fixture(name: &str) -> (TempDir, TempDir, OpenVaultOutput) {
+pub(super) fn open_fixture(name: &str) -> (TempDir, TempDir, OpenVaultOutput) {
     let src = fixture_folder(name);
     let vault_tmp = copy_dir_to_tempdir(&src.join("vault"));
     let state_tmp = copy_dir_to_tempdir(&src.join("state"));

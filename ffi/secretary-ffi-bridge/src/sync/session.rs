@@ -99,7 +99,7 @@ pub fn sync_vault_with_session(
 /// One sync pass through the open session, then a refresh of `manifest` on
 /// `AppliedAutomatically`, `SilentMerge`, `MergedClean` and `NothingToDo`.
 /// `device_uuid` is the merging device, the same per-vault UUID the session's
-/// writes pass (see [`crate::sync_vault_in`]).
+/// writes pass (see [`crate::sync_vault`]).
 /// Never refreshes on `RollbackRejected` (that would adopt the rolled-back
 /// manifest) or `ConflictsPending` (nothing was written; the commit call
 /// refreshes). The refresh runs while the pass's lockfile is still held.
@@ -285,3 +285,6 @@ mod tests;
 
 #[cfg(test)]
 mod silent_merge_tests;
+
+#[cfg(test)]
+mod commit_tick_tests;
