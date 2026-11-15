@@ -159,7 +159,7 @@ class UniffiVaultSession(
      *  port to map. */
     fun syncThroughSession(stateDir: String, nowMs: ULong): SyncOutcomeDto = synchronized(sessionLock) {
         if (wiped) throw VaultSyncError.Failed("sync on a wiped session")
-        ffiSyncVaultWithSession(stateDir, identity, manifest, nowMs)
+        ffiSyncVaultWithSession(stateDir, identity, manifest, syncDeviceUuid(), nowMs)
     }
 
     /** Commit veto decisions through this session's handles, then refresh; see [syncThroughSession]. */
@@ -170,7 +170,18 @@ class UniffiVaultSession(
         nowMs: ULong,
     ): SyncOutcomeDto = synchronized(sessionLock) {
         if (wiped) throw VaultSyncError.Failed("commit on a wiped session")
-        ffiSyncCommitDecisionsWithSession(stateDir, identity, manifest, decisions, manifestHash, nowMs)
+        ffiSyncCommitDecisionsWithSession(
+            stateDir, identity, manifest, decisions, manifestHash, syncDeviceUuid(), nowMs,
+        )
+    }
+
+    /** This vault's device UUID as the merging device a sync merge ticks (#744): the same one
+     *  writes pass. A resolve failure (or a read-only session) surfaces as [VaultSyncError.Failed]
+     *  for the sync port. Call under [sessionLock]. */
+    private fun syncDeviceUuid(): ByteArray = try {
+        deviceUuid()
+    } catch (e: VaultBrowseError) {
+        throw VaultSyncError.Failed("device-uuid unavailable for sync: ${diagnosticDetail(e)}")
     }
 
     override fun blockSummaries(): List<BlockSummaryView> =

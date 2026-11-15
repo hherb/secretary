@@ -361,7 +361,8 @@ public final class UniffiVaultSession: VaultSession, @unchecked Sendable {
     /// (`expiredTrashEntries`), which has no write to derive `now` from.
     internal static func nowMsPublic() -> UInt64 { nowMs() }
 
-    private func deviceUuid() throws -> [UInt8] {
+    /// Internal (not private) so `+Sync.swift` can pass it as the merging device (#744).
+    internal func deviceUuid() throws -> [UInt8] {
         if let c = cachedDeviceUuid { return c }
         let provider = try (deviceUuids ?? DeviceUuidStore.applicationSupportDefault())
         let d = try provider.deviceUuid(forVaultHex: vaultUuidHex)
