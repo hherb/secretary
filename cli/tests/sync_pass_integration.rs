@@ -45,6 +45,9 @@ use secretary_core::vault::{
 use secretary_test_utils::{copy_dir_recursive, core_test_data_dir};
 use zeroize::Zeroize as _;
 
+/// The merging device the direct `prepare_merge` calls pass (#744).
+const TEST_MERGING_DEVICE: [u8; 16] = [0x5E; 16];
+
 // --- Harness helpers (mirrored from cli/tests/pipeline_integration.rs;
 //     each tests/*.rs is its own binary so duplicating the block keeps
 //     per-test isolation consistent with the repo pattern) ----------------
@@ -100,7 +103,8 @@ fn sync_pass_returns_applied_automatically_on_fresh_state() {
     let (_tmp, vault_dir, identity, _password, vault_uuid) = stage_and_unlock_golden();
     let mut state = SyncState::empty(vault_uuid);
     let outcome =
-        sync_pass_pause_on_conflict(&vault_dir, &identity, &mut state, 0).expect("sync pass");
+        sync_pass_pause_on_conflict(&vault_dir, &identity, &mut state, TEST_MERGING_DEVICE, 0)
+            .expect("sync pass");
     assert_eq!(outcome, SyncPassOutcome::AppliedAutomatically);
     assert!(!state.highest_vector_clock_seen.is_empty());
 }
@@ -109,10 +113,12 @@ fn sync_pass_returns_applied_automatically_on_fresh_state() {
 fn sync_pass_returns_nothing_to_do_on_second_call() {
     let (_tmp, vault_dir, identity, _password, vault_uuid) = stage_and_unlock_golden();
     let mut state = SyncState::empty(vault_uuid);
-    sync_pass_pause_on_conflict(&vault_dir, &identity, &mut state, 0).expect("first");
+    sync_pass_pause_on_conflict(&vault_dir, &identity, &mut state, TEST_MERGING_DEVICE, 0)
+        .expect("first");
     let before = state.clone();
     let outcome =
-        sync_pass_pause_on_conflict(&vault_dir, &identity, &mut state, 0).expect("second");
+        sync_pass_pause_on_conflict(&vault_dir, &identity, &mut state, TEST_MERGING_DEVICE, 0)
+            .expect("second");
     assert_eq!(outcome, SyncPassOutcome::NothingToDo);
     assert_eq!(state, before);
 }
@@ -553,8 +559,9 @@ fn sync_pass_pauses_on_tombstone_veto_without_writing() {
     let block_path = block_file_path(&vault_dir, &block_uuid);
     let block_bytes_before = fs::read(&block_path).expect("read canonical block pre-pass");
 
-    let outcome = sync_pass_pause_on_conflict(&vault_dir, &identity, &mut state, 0)
-        .expect("sync pass must return Ok (pause is not an error)");
+    let outcome =
+        sync_pass_pause_on_conflict(&vault_dir, &identity, &mut state, TEST_MERGING_DEVICE, 0)
+            .expect("sync pass must return Ok (pause is not an error)");
 
     match outcome {
         SyncPassOutcome::ConflictsPending { veto_count } => assert!(veto_count >= 1),
@@ -638,7 +645,7 @@ fn inspect_returns_veto_detail_and_leaves_disk_untouched() {
 
     let before = hash_dir(&vault_dir);
 
-    let outcome = sync_pass_inspect(&vault_dir, &identity, &mut state, 0)
+    let outcome = sync_pass_inspect(&vault_dir, &identity, &mut state, TEST_MERGING_DEVICE, 0)
         .expect("inspect must return Ok (a pending conflict is not an error)");
 
     match outcome {
@@ -713,7 +720,8 @@ fn prepare_merge_populates_collisions_on_concurrent_field_edit() {
         "the collision fixture must produce a diverging block"
     );
 
-    let draft = prepare_merge(&vault_dir, &identity, &bundle, &plan).expect("prepare_merge");
+    let draft = prepare_merge(&vault_dir, &identity, &bundle, &plan, TEST_MERGING_DEVICE)
+        .expect("prepare_merge");
 
     // Zero vetoes: the non-tombstone edit resolves cleanly. This is the
     // discriminator that proves we exercised the collision path, not the
@@ -773,15 +781,22 @@ fn commit_decisions_keep_local_keeps_record_live() {
     // Read the veto set + token from a clone of the state so the real
     // `state` stays at its pre-commit value to commit against below.
     let mut probe_state = state.clone();
-    let (vetoes, manifest_hash) =
-        match sync_pass_inspect(&vault_folder, &identity, &mut probe_state, 0).unwrap() {
-            InspectOutcome::ConflictsPending {
-                vetoes,
-                manifest_hash,
-                ..
-            } => (vetoes, manifest_hash),
-            other => panic!("expected ConflictsPending, got {other:?}"),
-        };
+    let (vetoes, manifest_hash) = match sync_pass_inspect(
+        &vault_folder,
+        &identity,
+        &mut probe_state,
+        TEST_MERGING_DEVICE,
+        0,
+    )
+    .unwrap()
+    {
+        InspectOutcome::ConflictsPending {
+            vetoes,
+            manifest_hash,
+            ..
+        } => (vetoes, manifest_hash),
+        other => panic!("expected ConflictsPending, got {other:?}"),
+    };
     let decisions: Vec<VetoDecision> = vetoes
         .iter()
         .map(|v| VetoDecision::KeepLocal {
@@ -795,6 +810,7 @@ fn commit_decisions_keep_local_keeps_record_live() {
         &mut state,
         manifest_hash,
         decisions,
+        TEST_MERGING_DEVICE,
         1,
     )
     .expect("commit must succeed");
@@ -817,7 +833,7 @@ fn commit_decisions_keep_local_keeps_record_live() {
 
     // After committing the merge the conflict copies are consumed; a
     // fresh inspect against the advanced state no longer raises a veto.
-    let follow_up = sync_pass_inspect(&vault_folder, &identity, &mut state, 2)
+    let follow_up = sync_pass_inspect(&vault_folder, &identity, &mut state, TEST_MERGING_DEVICE, 2)
         .expect("follow-up inspect must return Ok");
     assert!(
         !matches!(follow_up, InspectOutcome::ConflictsPending { .. }),
@@ -837,15 +853,22 @@ fn commit_decisions_stale_token_is_rejected() {
     let mut state = concurrent_state(vault_uuid);
 
     let mut probe_state = state.clone();
-    let (vetoes, manifest_hash) =
-        match sync_pass_inspect(&vault_folder, &identity, &mut probe_state, 0).unwrap() {
-            InspectOutcome::ConflictsPending {
-                vetoes,
-                manifest_hash,
-                ..
-            } => (vetoes, manifest_hash),
-            other => panic!("expected ConflictsPending, got {other:?}"),
-        };
+    let (vetoes, manifest_hash) = match sync_pass_inspect(
+        &vault_folder,
+        &identity,
+        &mut probe_state,
+        TEST_MERGING_DEVICE,
+        0,
+    )
+    .unwrap()
+    {
+        InspectOutcome::ConflictsPending {
+            vetoes,
+            manifest_hash,
+            ..
+        } => (vetoes, manifest_hash),
+        other => panic!("expected ConflictsPending, got {other:?}"),
+    };
     let decisions: Vec<VetoDecision> = vetoes
         .iter()
         .map(|v| VetoDecision::AcceptTombstone {
@@ -858,8 +881,16 @@ fn commit_decisions_stale_token_is_rejected() {
     bad.0[0] ^= 0xff;
     let before = hash_dir(&vault_folder);
 
-    let err = sync_pass_commit_decisions(&vault_folder, &identity, &mut state, bad, decisions, 1)
-        .unwrap_err();
+    let err = sync_pass_commit_decisions(
+        &vault_folder,
+        &identity,
+        &mut state,
+        bad,
+        decisions,
+        TEST_MERGING_DEVICE,
+        1,
+    )
+    .unwrap_err();
     assert!(matches!(err, SyncError::EvidenceStale), "got {err:?}");
     assert_eq!(hash_dir(&vault_folder), before, "no write on stale token");
 }
@@ -933,15 +964,22 @@ fn commit_decisions_real_concurrent_manifest_rewrite_is_rejected() {
 
     // Call-1: obtain the GENUINE freshness token + veto set.
     let mut probe_state = state.clone();
-    let (vetoes, genuine_token) =
-        match sync_pass_inspect(&vault_folder, &identity, &mut probe_state, 0).unwrap() {
-            InspectOutcome::ConflictsPending {
-                vetoes,
-                manifest_hash,
-                ..
-            } => (vetoes, manifest_hash),
-            other => panic!("expected ConflictsPending, got {other:?}"),
-        };
+    let (vetoes, genuine_token) = match sync_pass_inspect(
+        &vault_folder,
+        &identity,
+        &mut probe_state,
+        TEST_MERGING_DEVICE,
+        0,
+    )
+    .unwrap()
+    {
+        InspectOutcome::ConflictsPending {
+            vetoes,
+            manifest_hash,
+            ..
+        } => (vetoes, manifest_hash),
+        other => panic!("expected ConflictsPending, got {other:?}"),
+    };
     let decisions: Vec<VetoDecision> = vetoes
         .iter()
         .map(|v| VetoDecision::AcceptTombstone {
@@ -961,6 +999,7 @@ fn commit_decisions_real_concurrent_manifest_rewrite_is_rejected() {
         &mut state,
         genuine_token,
         decisions,
+        TEST_MERGING_DEVICE,
         1,
     )
     .unwrap_err();
@@ -1055,16 +1094,17 @@ fn stage_smoke_vault() {
     // ConflictsPending arm writes nothing and advances no state, so this does
     // not consume the conflict copies or disturb the seeded state file.
     let mut reloaded = load(&state_dir, vault_uuid).expect("reload seeded state");
-    let veto_count = match sync_pass_inspect(&dest, &identity, &mut reloaded, 0)
-        .expect("inspect on the staged vault")
-    {
-        InspectOutcome::ConflictsPending { vetoes, .. } => vetoes.len(),
-        other => panic!(
-            "self-check FAILED: expected ConflictsPending, got {other:?} — \
+    let veto_count =
+        match sync_pass_inspect(&dest, &identity, &mut reloaded, TEST_MERGING_DEVICE, 0)
+            .expect("inspect on the staged vault")
+        {
+            InspectOutcome::ConflictsPending { vetoes, .. } => vetoes.len(),
+            other => panic!(
+                "self-check FAILED: expected ConflictsPending, got {other:?} — \
              the GUI would not fire a veto. Did the staged vault or seeded \
              state drift?"
-        ),
-    };
+            ),
+        };
 
     let pw = String::from_utf8_lossy(password.expose()).into_owned();
     println!("\n=== D.1.15 conflict-resolution smoke vault staged ===");
@@ -1111,7 +1151,9 @@ fn generate_sync_conflict_fixture() {
     // Self-validate: the fixture must actually pause on a veto, else it is
     // not a valid ConflictsPending fixture. Inspect writes nothing.
     let mut probe = state.clone();
-    match sync_pass_inspect(&vault_dir, &identity, &mut probe, 0).expect("inspect must return Ok") {
+    match sync_pass_inspect(&vault_dir, &identity, &mut probe, TEST_MERGING_DEVICE, 0)
+        .expect("inspect must return Ok")
+    {
         InspectOutcome::ConflictsPending { vetoes, .. } => {
             assert!(!vetoes.is_empty(), "fixture must yield >=1 veto");
         }
@@ -1192,7 +1234,8 @@ fn generate_sync_collision_fixture() {
             SyncOutcome::ConcurrentDetected { bundle, plan, .. } => (bundle, plan),
             other => panic!("fixture is not Concurrent: {other:?}"),
         };
-    let draft = prepare_merge(&vault_dir, &identity, &bundle, &plan).expect("prepare_merge");
+    let draft = prepare_merge(&vault_dir, &identity, &bundle, &plan, TEST_MERGING_DEVICE)
+        .expect("prepare_merge");
     assert!(
         draft.vetoes.is_empty(),
         "collision fixture must raise no veto, got {:?}",

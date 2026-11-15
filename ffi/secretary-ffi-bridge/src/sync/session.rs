@@ -84,13 +84,22 @@ pub fn refresh_manifest_in(
 pub fn sync_vault_with_session(
     identity: &UnlockedIdentity,
     manifest: &OpenVaultManifest,
+    device_uuid: [u8; 16],
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, FfiVaultError> {
-    sync_vault_with_session_in(&default_state_dir_or_err()?, identity, manifest, now_ms)
+    sync_vault_with_session_in(
+        &default_state_dir_or_err()?,
+        identity,
+        manifest,
+        device_uuid,
+        now_ms,
+    )
 }
 
 /// One sync pass through the open session, then a refresh of `manifest` on
 /// `AppliedAutomatically`, `SilentMerge`, `MergedClean` and `NothingToDo`.
+/// `device_uuid` is the merging device, the same per-vault UUID the session's
+/// writes pass (see [`crate::sync_vault_in`]).
 /// Never refreshes on `RollbackRejected` (that would adopt the rolled-back
 /// manifest) or `ConflictsPending` (nothing was written; the commit call
 /// refreshes). The refresh runs while the pass's lockfile is still held.
@@ -120,13 +129,14 @@ pub fn sync_vault_with_session_in(
     state_dir: &Path,
     identity: &UnlockedIdentity,
     manifest: &OpenVaultManifest,
+    device_uuid: [u8; 16],
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, FfiVaultError> {
     let outcome = run_session_pass(
         state_dir,
         identity,
         manifest,
-        |folder, id, state| sync_pass_inspect(folder, id, state, now_ms),
+        |folder, id, state| sync_pass_inspect(folder, id, state, device_uuid, now_ms),
         inspect_advanced,
         inspect_refreshes,
     )?;
@@ -139,6 +149,7 @@ pub fn sync_commit_decisions_with_session(
     manifest: &OpenVaultManifest,
     decisions: Vec<VetoDecisionDto>,
     manifest_hash: Vec<u8>,
+    device_uuid: [u8; 16],
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, FfiVaultError> {
     sync_commit_decisions_with_session_in(
@@ -147,6 +158,7 @@ pub fn sync_commit_decisions_with_session(
         manifest,
         decisions,
         manifest_hash,
+        device_uuid,
         now_ms,
     )
 }
@@ -169,6 +181,7 @@ pub fn sync_commit_decisions_with_session_in(
     manifest: &OpenVaultManifest,
     decisions: Vec<VetoDecisionDto>,
     manifest_hash: Vec<u8>,
+    device_uuid: [u8; 16],
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, FfiVaultError> {
     let (expected, core_decisions) = parse_commit_args(&decisions, &manifest_hash)?;
@@ -177,7 +190,15 @@ pub fn sync_commit_decisions_with_session_in(
         identity,
         manifest,
         |folder, id, state| {
-            sync_pass_commit_decisions(folder, id, state, expected, core_decisions, now_ms)
+            sync_pass_commit_decisions(
+                folder,
+                id,
+                state,
+                expected,
+                core_decisions,
+                device_uuid,
+                now_ms,
+            )
         },
         commit_advanced,
         commit_refreshes,

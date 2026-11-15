@@ -68,7 +68,8 @@ pub fn sync_as_merger(
         SyncState::new(vault_uuid(baseline), merger.manifest_clock()).expect("merger SyncState");
     match sync_once(shared, &identity, &state, now_ms).expect("merger sync_once") {
         SyncOutcome::ConcurrentDetected { bundle, plan, .. } => {
-            let draft = prepare_merge(shared, &identity, &bundle, &plan).expect("prepare_merge");
+            let draft = prepare_merge(shared, &identity, &bundle, &plan, merger.device_uuid())
+                .expect("prepare_merge");
             let decisions: Vec<VetoDecision> = match policy {
                 VetoPolicy::NoVetoExpected => {
                     assert!(

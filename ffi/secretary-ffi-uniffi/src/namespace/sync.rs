@@ -35,18 +35,22 @@ pub fn sync_status(state_dir: String, vault_uuid: Vec<u8>) -> Result<SyncStatusD
 ///
 /// `password` is a zero-copy borrow of the foreign caller's buffer
 /// (`[ByRef] bytes`, #307); the one controlled copy made here is wrapped
-/// in `SecretBytes` (ZeroizeOnDrop) immediately. `now_ms` is the caller's
+/// in `SecretBytes` (ZeroizeOnDrop) immediately. `device_uuid` (16 bytes) is
+/// the merging device a merge ticks (#744). `now_ms` is the caller's
 /// wall-clock used as the merge timestamp on a clean concurrent merge.
 ///
 /// # Errors
-/// See the bridge `sync_vault_in` docs (`SyncInProgress`,
-/// `WrongPasswordOrCorrupt`, `SyncEvidenceStale`, `SyncFailed`, ...).
+/// - [`VaultError::InvalidArgument`] — `device_uuid` is not 16 bytes.
+/// - See the bridge `sync_vault_in` docs (`SyncInProgress`,
+///   `WrongPasswordOrCorrupt`, `SyncEvidenceStale`, `SyncFailed`, ...).
 pub fn sync_vault(
     state_dir: String,
     vault_folder: String,
     password: &[u8],
+    device_uuid: Vec<u8>,
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, VaultError> {
+    let device_uuid = super::uuid_from_vec(&device_uuid, "device_uuid")?;
     use secretary_core::crypto::secret::SecretBytes;
     // The borrowed `password` is foreign-owned (the adapter scrubs it);
     // SecretBytes owns the single Rust-side copy and its ZeroizeOnDrop
@@ -55,6 +59,7 @@ pub fn sync_vault(
         std::path::Path::new(&state_dir),
         std::path::Path::new(&vault_folder),
         SecretBytes::new(password.to_vec()),
+        device_uuid,
         now_ms,
     )
     .map(sync_outcome_from_bridge)
@@ -75,8 +80,10 @@ pub fn sync_commit_decisions(
     password: &[u8],
     decisions: Vec<VetoDecisionDto>,
     manifest_hash: Vec<u8>,
+    device_uuid: Vec<u8>,
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, VaultError> {
+    let device_uuid = super::uuid_from_vec(&device_uuid, "device_uuid")?;
     use secretary_core::crypto::secret::SecretBytes;
     let bridge_decisions = decisions_to_bridge(decisions);
     // `[ByRef] bytes` (#307): the borrowed `password` is foreign-owned
@@ -89,6 +96,7 @@ pub fn sync_commit_decisions(
         SecretBytes::new(password.to_vec()),
         bridge_decisions,
         manifest_hash,
+        device_uuid,
         now_ms,
     )
     .map(sync_outcome_from_bridge)
@@ -119,12 +127,15 @@ pub fn sync_vault_with_session(
     state_dir: String,
     identity: Arc<UnlockedIdentity>,
     manifest: Arc<OpenVaultManifest>,
+    device_uuid: Vec<u8>,
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, VaultError> {
+    let device_uuid = super::uuid_from_vec(&device_uuid, "device_uuid")?;
     secretary_ffi_bridge::sync_vault_with_session_in(
         Path::new(&state_dir),
         &identity.0,
         &manifest.0,
+        device_uuid,
         now_ms,
     )
     .map(sync_outcome_from_bridge)
@@ -142,14 +153,17 @@ pub fn sync_commit_decisions_with_session(
     manifest: Arc<OpenVaultManifest>,
     decisions: Vec<VetoDecisionDto>,
     manifest_hash: Vec<u8>,
+    device_uuid: Vec<u8>,
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, VaultError> {
+    let device_uuid = super::uuid_from_vec(&device_uuid, "device_uuid")?;
     secretary_ffi_bridge::sync_commit_decisions_with_session_in(
         Path::new(&state_dir),
         &identity.0,
         &manifest.0,
         decisions_to_bridge(decisions),
         manifest_hash,
+        device_uuid,
         now_ms,
     )
     .map(sync_outcome_from_bridge)
@@ -258,12 +272,32 @@ mod tests {
             &secretary_test_utils::golden_vault_001_password(),
             vec![],
             vec![0u8; 5], // != 32 -> reject before vault open
+            vec![0u8; 16],
             0,
         ) {
             Err(VaultError::SyncFailed { detail }) => {
                 assert!(detail.contains("manifest_hash must be 32 bytes"));
             }
             other => panic!("expected SyncFailed, got {other:?}"),
+        }
+    }
+
+    /// A wrong-length `device_uuid` is refused before the vault is opened.
+    #[test]
+    fn sync_vault_wrong_length_device_uuid_is_invalid_argument() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = secretary_test_utils::core_test_data_dir().join("golden_vault_001");
+        match super::sync_vault(
+            dir.path().to_str().unwrap().to_string(),
+            folder.to_str().unwrap().to_string(),
+            &secretary_test_utils::golden_vault_001_password(),
+            vec![0u8; 15],
+            0,
+        ) {
+            Err(VaultError::InvalidArgument { detail }) => {
+                assert!(detail.contains("device_uuid") && detail.contains("got 15"));
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
         }
     }
 }

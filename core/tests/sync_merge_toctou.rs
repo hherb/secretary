@@ -34,6 +34,8 @@ use secretary_core::vault::block::VectorClockEntry;
 mod fixtures;
 mod sync_helpers;
 
+use sync_helpers::TEST_MERGING_DEVICE;
+
 use fixtures::extract_vault_uuid;
 
 /// Record UUID carried by the canonical block. Distinct from the sibling
@@ -173,7 +175,8 @@ fn commit_with_decisions_stale_manifest_with_diverging_blocks_writes_no_block_fi
         "the block we snapshot must be one step 5 would rewrite on a successful commit",
     );
 
-    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE)
+        .expect("prepare_merge");
     assert!(
         draft.vetoes.is_empty(),
         "distinct record UUIDs must merge with no vetoes (got {} vetoes)",

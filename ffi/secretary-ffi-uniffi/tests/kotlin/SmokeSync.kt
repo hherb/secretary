@@ -80,6 +80,7 @@ fun runSyncAsserts(env: SmokeEnv) {
             stateDir.toString(),
             vaultFolder.toString(),
             env.password001.direct(),
+            ByteArray(16) { 0x5E },
             1_715_000_000_000UL,
         )
         if (outcome is SyncOutcomeDto.AppliedAutomatically) {

@@ -12,7 +12,9 @@ use tempfile::TempDir;
 use secretary_test_utils::copy_dir_to_tempdir;
 
 use super::*;
-use crate::test_support::{fixture_folder, open_writable_golden_001, VAULT_001_PASSWORD};
+use crate::test_support::{
+    fixture_folder, open_writable_golden_001, TEST_DEVICE_UUID, VAULT_001_PASSWORD,
+};
 use crate::{open_vault_with_password, save_block, sync_vault_in, BlockInput, OpenVaultOutput};
 
 fn random_16() -> [u8; 16] {
@@ -91,6 +93,7 @@ fn session_sync_silent_merge_refreshes_and_write_succeeds() {
         state_dir.path(),
         &session.identity,
         &session.manifest,
+        TEST_DEVICE_UUID,
         2_000,
     )
     .expect("a silent merge refreshes");
@@ -115,6 +118,7 @@ fn session_sync_then_write_succeeds() {
         state_dir.path(),
         &session.identity,
         &session.manifest,
+        TEST_DEVICE_UUID,
         2_000,
     )
     .expect("session sync");
@@ -137,6 +141,7 @@ fn password_sync_then_refresh_then_write_succeeds() {
         state_dir.path(),
         &folder_of(&tmp),
         SecretBytes::new(VAULT_001_PASSWORD.to_vec()),
+        TEST_DEVICE_UUID,
         2_000,
     )
     .expect("password sync");
@@ -214,6 +219,7 @@ fn rollback_rejected_does_not_refresh_and_writes_stay_refused() {
         state_dir.path(),
         &session.identity,
         &session.manifest,
+        TEST_DEVICE_UUID,
         2_000,
     )
     .expect("pass reports rollback as an outcome");
@@ -243,6 +249,7 @@ fn session_sync_refresh_failure_leaves_handle_and_retry_succeeds() {
         state_dir.path(),
         &session.identity,
         &session.manifest,
+        TEST_DEVICE_UUID,
         2_000,
     )
     .expect_err("refresh must fail on a missing block file");
@@ -266,6 +273,7 @@ fn session_sync_refresh_failure_leaves_handle_and_retry_succeeds() {
         state_dir.path(),
         &session.identity,
         &session.manifest,
+        TEST_DEVICE_UUID,
         3_000,
     )
     .expect("retry succeeds once the block file is back");
@@ -309,8 +317,14 @@ fn session_sync_on_wiped_identity_writes_nothing() {
     let state_before = snapshot_tree(state_tmp.path());
 
     out.identity.wipe();
-    let err =
-        sync_vault_with_session_in(state_tmp.path(), &out.identity, &out.manifest, 1).unwrap_err();
+    let err = sync_vault_with_session_in(
+        state_tmp.path(),
+        &out.identity,
+        &out.manifest,
+        TEST_DEVICE_UUID,
+        1,
+    )
+    .unwrap_err();
     assert!(
         matches!(err, FfiVaultError::CorruptVault { .. }),
         "got {err:?}"
@@ -331,8 +345,14 @@ fn session_sync_on_wiped_manifest_writes_nothing() {
     let state_before = snapshot_tree(state_tmp.path());
 
     out.manifest.wipe();
-    let err =
-        sync_vault_with_session_in(state_tmp.path(), &out.identity, &out.manifest, 1).unwrap_err();
+    let err = sync_vault_with_session_in(
+        state_tmp.path(),
+        &out.identity,
+        &out.manifest,
+        TEST_DEVICE_UUID,
+        1,
+    )
+    .unwrap_err();
     assert!(
         matches!(err, FfiVaultError::CorruptVault { .. }),
         "got {err:?}"
@@ -350,8 +370,14 @@ fn conflicts_pending_does_not_refresh() {
     let other_block = write_block(&other).expect("other writer saves a block");
     let before = out.manifest.manifest_body();
 
-    let outcome = sync_vault_with_session_in(state_tmp.path(), &out.identity, &out.manifest, 1)
-        .expect("inspect pass");
+    let outcome = sync_vault_with_session_in(
+        state_tmp.path(),
+        &out.identity,
+        &out.manifest,
+        TEST_DEVICE_UUID,
+        1,
+    )
+    .expect("inspect pass");
     let SyncOutcomeDto::ConflictsPending {
         vetoes,
         manifest_hash,
@@ -377,6 +403,7 @@ fn conflicts_pending_does_not_refresh() {
         &out.manifest,
         decisions,
         manifest_hash,
+        TEST_DEVICE_UUID,
         2,
     )
     .expect("commit");
@@ -405,7 +432,7 @@ fn session_refresh_checks_the_disk_against_the_post_pass_clock() {
         &session.identity,
         &session.manifest,
         |folder, id, state| {
-            let outcome = sync_pass_inspect(folder, id, state, 2_000)?;
+            let outcome = sync_pass_inspect(folder, id, state, TEST_DEVICE_UUID, 2_000)?;
             assert!(
                 matches!(outcome, InspectOutcome::AppliedAutomatically),
                 "fresh state fast-forwards"

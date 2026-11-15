@@ -41,7 +41,10 @@ fn open_identity(
 /// Run one manual sync pass against `vault_folder`, unlocking with `password`.
 /// `now_ms` is the caller's wall-clock (Unix ms) — used as the merge timestamp
 /// when the pass commits a clean concurrent merge (`MergedClean`); D.1.14 passes
-/// real time. On advancing arms the new `SyncState` is persisted; on
+/// real time. `device_uuid` is this device's per-vault device UUID, the one
+/// its writes pass: a merge ticks it on the merged block and manifest clocks
+/// (crypto-design §10 / §11.2, #744). On advancing arms the new `SyncState` is
+/// persisted; on
 /// `ConflictsPending`/`NothingToDo`/`RollbackRejected` nothing is written.
 ///
 /// # Errors
@@ -53,10 +56,11 @@ fn open_identity(
 pub fn sync_vault(
     vault_folder: &Path,
     password: SecretBytes,
+    device_uuid: [u8; 16],
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, FfiVaultError> {
     let state_dir = default_state_dir_or_err()?;
-    sync_vault_in(&state_dir, vault_folder, password, now_ms)
+    sync_vault_in(&state_dir, vault_folder, password, device_uuid, now_ms)
 }
 
 /// Public explicit-`state_dir` seam — the API the uniffi/pyo3 bindings project
@@ -67,13 +71,14 @@ pub fn sync_vault_in(
     state_dir: &Path,
     vault_folder: &Path,
     password: SecretBytes,
+    device_uuid: [u8; 16],
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, FfiVaultError> {
     let (identity, vault_uuid) = open_identity(vault_folder, &password)?;
     let locked = run_locked_pass(
         state_dir,
         vault_uuid,
-        |state| sync_pass_inspect(vault_folder, &identity, state, now_ms),
+        |state| sync_pass_inspect(vault_folder, &identity, state, device_uuid, now_ms),
         inspect_advanced,
     )?;
     Ok(locked.outcome.into())
@@ -93,7 +98,8 @@ pub fn sync_vault_in(
 /// daemon merged first), the token no longer matches and the commit returns
 /// [`FfiVaultError::SyncEvidenceStale`] without writing — the caller must
 /// re-run [`sync_vault`] and re-prompt. `now_ms` is the caller's wall-clock
-/// (Unix ms), used as the merge timestamp for the committed result.
+/// (Unix ms), used as the merge timestamp for the committed result, and
+/// `device_uuid` is the merging device, as for [`sync_vault`].
 ///
 /// On success the merged result is written to the vault and the advanced
 /// `SyncState` is persisted; the returned [`SyncOutcomeDto`] is `MergedClean`
@@ -116,6 +122,7 @@ pub fn sync_commit_decisions(
     password: SecretBytes,
     decisions: Vec<VetoDecisionDto>,
     manifest_hash: Vec<u8>,
+    device_uuid: [u8; 16],
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, FfiVaultError> {
     let state_dir = default_state_dir_or_err()?;
@@ -125,6 +132,7 @@ pub fn sync_commit_decisions(
         password,
         decisions,
         manifest_hash,
+        device_uuid,
         now_ms,
     )
 }
@@ -139,6 +147,7 @@ pub fn sync_commit_decisions_in(
     password: SecretBytes,
     decisions: Vec<VetoDecisionDto>,
     manifest_hash: Vec<u8>,
+    device_uuid: [u8; 16],
     now_ms: u64,
 ) -> Result<SyncOutcomeDto, FfiVaultError> {
     // Both argument checks fail fast, before the vault is opened.
@@ -154,6 +163,7 @@ pub fn sync_commit_decisions_in(
                 state,
                 expected,
                 core_decisions,
+                device_uuid,
                 now_ms,
             )
         },
@@ -172,7 +182,7 @@ mod tests {
 
     use secretary_test_utils::copy_dir_to_tempdir;
 
-    use crate::test_support::{fixture_folder, VAULT_001_PASSWORD};
+    use crate::test_support::{fixture_folder, TEST_DEVICE_UUID, VAULT_001_PASSWORD};
 
     /// Stage a writable copy of golden_vault_001, returning the tempdir guard
     /// (keep it alive), the vault folder path, a fresh password `SecretBytes`,
@@ -195,8 +205,14 @@ mod tests {
     fn sync_vault_in_fast_forwards_fresh_state() {
         let (_vault_tmp, vault_folder, password, vault_uuid) = stage_golden_writable_and_password();
         let state_dir = TempDir::new().unwrap();
-        let outcome = sync_vault_in(state_dir.path(), &vault_folder, password, 0)
-            .expect("sync_vault must succeed on a fresh golden vault");
+        let outcome = sync_vault_in(
+            state_dir.path(),
+            &vault_folder,
+            password,
+            TEST_DEVICE_UUID,
+            0,
+        )
+        .expect("sync_vault must succeed on a fresh golden vault");
         assert_eq!(outcome, SyncOutcomeDto::AppliedAutomatically);
         // state advanced + persisted → status now reports has_state
         let status =
@@ -211,7 +227,14 @@ mod tests {
         let state_dir = TempDir::new().unwrap();
         let _guard = secretary_cli::state::LockfileGuard::acquire(state_dir.path(), vault_uuid)
             .expect("acquire lock");
-        let err = sync_vault_in(state_dir.path(), &vault_folder, password, 0).unwrap_err();
+        let err = sync_vault_in(
+            state_dir.path(),
+            &vault_folder,
+            password,
+            TEST_DEVICE_UUID,
+            0,
+        )
+        .unwrap_err();
         assert!(matches!(err, FfiVaultError::SyncInProgress));
     }
 
@@ -221,8 +244,14 @@ mod tests {
         let state_dir = TempDir::new().unwrap();
         let mut wrong = VAULT_001_PASSWORD.to_vec();
         wrong[0] = wrong[0].wrapping_add(1);
-        let err =
-            sync_vault_in(state_dir.path(), &vault_folder, SecretBytes::new(wrong), 0).unwrap_err();
+        let err = sync_vault_in(
+            state_dir.path(),
+            &vault_folder,
+            SecretBytes::new(wrong),
+            TEST_DEVICE_UUID,
+            0,
+        )
+        .unwrap_err();
         assert!(
             matches!(err, FfiVaultError::WrongPasswordOrCorrupt),
             "got {err:?}"
@@ -311,7 +340,7 @@ mod tests {
         let block_before = std::fs::read(&block_path).expect("read canonical block pre-merge");
         let state_before = load(&state_dir, vault_uuid).expect("seeded state must load");
 
-        let outcome = sync_vault_in(&state_dir, &vault_folder, password, 1)
+        let outcome = sync_vault_in(&state_dir, &vault_folder, password, TEST_DEVICE_UUID, 1)
             .expect("sync_vault_in on a clean-collision fixture must succeed");
         assert_eq!(outcome, SyncOutcomeDto::MergedClean, "got {outcome:?}");
 
@@ -363,6 +392,7 @@ mod tests {
             password,
             vec![],
             vec![0u8; 5],
+            TEST_DEVICE_UUID,
             0,
         )
         .unwrap_err();
@@ -391,6 +421,7 @@ mod tests {
             password,
             decisions,
             vec![0u8; 32],
+            TEST_DEVICE_UUID,
             0,
         )
         .unwrap_err();

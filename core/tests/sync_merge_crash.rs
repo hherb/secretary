@@ -31,6 +31,8 @@ use secretary_core::vault::{open_vault, Record, Unlocker, VaultError};
 mod fixtures;
 mod sync_helpers;
 
+use sync_helpers::TEST_MERGING_DEVICE;
+
 use fixtures::extract_vault_uuid;
 
 /// Record UUID carried by the canonical block. Single byte (`0xAA`)
@@ -193,8 +195,14 @@ fn partial_commit_recovers_via_idempotent_re_run() {
         !plan_v1.diverging_blocks.is_empty(),
         "fixture must force per-block divergence (plan.diverging_blocks empty in v1)",
     );
-    let draft_v1 =
-        prepare_merge(&folder, &identity, &bundle_v1, &plan_v1).expect("prepare_merge v1");
+    let draft_v1 = prepare_merge(
+        &folder,
+        &identity,
+        &bundle_v1,
+        &plan_v1,
+        TEST_MERGING_DEVICE,
+    )
+    .expect("prepare_merge v1");
     assert!(
         draft_v1.vetoes.is_empty(),
         "non-conflicting records must produce no vetoes (got {} vetoes in v1 draft)",
@@ -257,8 +265,14 @@ fn partial_commit_recovers_via_idempotent_re_run() {
         SyncOutcome::ConcurrentDetected { bundle, plan, .. } => (bundle, plan),
         other => panic!("expected ConcurrentDetected v2, got {other:?}"),
     };
-    let draft_v2 =
-        prepare_merge(&folder, &identity, &bundle_v2, &plan_v2).expect("prepare_merge v2");
+    let draft_v2 = prepare_merge(
+        &folder,
+        &identity,
+        &bundle_v2,
+        &plan_v2,
+        TEST_MERGING_DEVICE,
+    )
+    .expect("prepare_merge v2");
     let state_v2 = commit_with_decisions(&folder, &identity, draft_v2, Vec::new(), COMMIT_NOW_MS)
         .expect("commit_with_decisions v2");
 
@@ -355,7 +369,8 @@ fn identity_commit_aborts_on_tampered_block_fingerprint() {
         SyncOutcome::ConcurrentDetected { bundle, plan, .. } => (bundle, plan),
         other => panic!("expected ConcurrentDetected, got {other:?}"),
     };
-    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE)
+        .expect("prepare_merge");
 
     // Flip one byte in the manifest-listed block file.
     let block_path = sync_helpers::block_file_path(&folder, &block_uuid);

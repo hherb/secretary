@@ -42,6 +42,8 @@ use serde::Deserialize;
 
 mod fixtures;
 mod sync_helpers;
+
+use sync_helpers::TEST_MERGING_DEVICE;
 mod sync_merge_proptest_helpers;
 
 use sync_merge_proptest_helpers::{
@@ -269,7 +271,7 @@ fn replay_concurrent_merge_apply_decisions(name: &str, v: &ConcurrentMergeApplyD
     let identity = open_identity(&folder);
     let (bundle, plan) = drive_sync_once_concurrent(&folder);
 
-    let draft = prepare_merge(&folder, &identity, &bundle, &plan)
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE)
         .unwrap_or_else(|e| panic!("vector {name} prepare_merge failed: {e}"));
     assert_eq!(
         draft.vetoes.len(),
@@ -342,7 +344,7 @@ fn replay_evidence_stale(name: &str, v: &EvidenceStaleVector) {
     let identity = open_identity(&folder);
     let (bundle, plan) = drive_sync_once_concurrent(&folder);
 
-    let draft = prepare_merge(&folder, &identity, &bundle, &plan)
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE)
         .unwrap_or_else(|e| panic!("vector {name} prepare_merge failed: {e}"));
 
     let racing_clock = vec![VectorClockEntry {

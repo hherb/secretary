@@ -5,9 +5,10 @@
 //!
 //! 1. **Post-commit fixpoint** — after `commit_with_decisions` succeeds,
 //!    re-running `sync_once` with the returned [`SyncState`] yields
-//!    [`SyncOutcome::NothingToDo`]. Proves the commit's
-//!    `post_merge_clock` matches the on-disk canonical manifest's new
-//!    `vector_clock` (so the next dispatch sees `ClockRelation::Equal`).
+//!    [`SyncOutcome::NothingToDo`]. Proves the clock the commit returns
+//!    matches the on-disk canonical manifest's new `vector_clock`
+//!    (`post_merge_clock` plus the merging device's tick, #744), so the
+//!    next dispatch sees `ClockRelation::Equal`.
 //! 2. **Deterministic merge** — running the three-step
 //!    `sync_once → prepare_merge → commit_with_decisions` on two
 //!    independent vaults with identical inputs produces the same
@@ -51,6 +52,8 @@ use secretary_core::sync::{
 
 mod fixtures;
 mod sync_helpers;
+
+use sync_helpers::TEST_MERGING_DEVICE;
 mod sync_merge_proptest_helpers;
 
 use sync_merge_proptest_helpers::{
@@ -76,8 +79,8 @@ proptest! {
     ///
     /// Why this is non-trivial: `commit_with_decisions` writes
     /// `post_merge_clock` (the component-wise max of canonical +
-    /// sibling manifest clocks) into both the returned `SyncState` and
-    /// the on-disk manifest. The next `sync_once` reads only the
+    /// sibling manifest clocks) plus one for the merging device (#744)
+    /// into both the returned `SyncState` and the on-disk manifest. The next `sync_once` reads only the
     /// canonical manifest and dispatches purely on
     /// `clock_relation` between state and disk — `Equal` triggers
     /// `NothingToDo`. The property pins that the two writes agree, so
@@ -93,7 +96,7 @@ proptest! {
         let (bundle, plan) = drive_sync_once_concurrent(&folder);
         let identity = open_identity(&folder);
 
-        let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+        let draft = prepare_merge(&folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE).expect("prepare_merge");
         prop_assert!(
             draft.vetoes.is_empty(),
             "no_veto_fixture must produce zero vetoes (got {})",
@@ -129,8 +132,8 @@ proptest! {
     /// independent vaults built with identical fixture parameters
     /// produces:
     ///
-    /// - The same returned `SyncState` (`post_merge_clock` is a pure
-    ///   function of the input manifest clocks).
+    /// - The same returned `SyncState` (the written clock is a pure
+    ///   function of the input manifest clocks and the merging device).
     /// - The same decrypted canonical block records (CRDT merge is a
     ///   pure function of its inputs).
     /// - DIFFERENT canonical block envelope bytes (AEAD nonces are
@@ -167,7 +170,7 @@ proptest! {
         let run = |folder: &std::path::Path| {
             let (bundle, plan) = drive_sync_once_concurrent(folder);
             let identity = open_identity(folder);
-            let draft = prepare_merge(folder, &identity, &bundle, &plan).expect("prepare_merge");
+            let draft = prepare_merge(folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE).expect("prepare_merge");
             assert!(
                 draft.vetoes.is_empty(),
                 "no_veto_fixture must produce zero vetoes (got {})",
@@ -256,7 +259,7 @@ proptest! {
         let commit = |folder: &std::path::Path, decisions: Vec<VetoDecision>| {
             let (bundle, plan) = drive_sync_once_concurrent(folder);
             let identity = open_identity(folder);
-            let draft = prepare_merge(folder, &identity, &bundle, &plan).expect("prepare_merge");
+            let draft = prepare_merge(folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE).expect("prepare_merge");
             assert_eq!(
                 draft.vetoes.len(),
                 2,
@@ -333,7 +336,7 @@ proptest! {
         let identity = open_identity(&folder);
         let _password = fixtures::golden_vault_001_password();
 
-        let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+        let draft = prepare_merge(&folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE).expect("prepare_merge");
         prop_assert_eq!(
             draft.vetoes.len(),
             1,

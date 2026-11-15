@@ -28,6 +28,11 @@ use crate::fixtures;
 
 const GOLDEN_VAULT_FOLDER: &str = "tests/data/golden_vault_001";
 pub const MANIFEST_FILENAME: &str = "manifest.cbor.enc";
+
+/// The merging device tests pass to `prepare_merge` when the test is not
+/// about which device merges (#744). Distinct from every fixture device.
+#[allow(dead_code)]
+pub const TEST_MERGING_DEVICE: [u8; 16] = [0x5E; 16];
 const AEAD_NONCE_LEN: usize = 24;
 
 /// Test-only source of a fresh, per-run random 24-byte value used below as an

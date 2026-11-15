@@ -24,6 +24,8 @@ from secretary_ffi_py import (
 
 VAULT_001_PASSWORD = b"correct horse battery staple"
 NOW_MS = 1_715_000_000_000
+# The merging device a sync merge ticks on the vector clocks (#744).
+DEVICE_UUID = bytes([0x5E] * 16)
 
 
 def _golden_vault_path(n: int) -> Path:
@@ -62,11 +64,19 @@ def test_sync_vault_fresh_state_applies_automatically(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     vault = _fresh_writable_vault(tmp_path)
-    outcome = sync_vault(str(state_dir), str(vault), VAULT_001_PASSWORD, NOW_MS)
+    outcome = sync_vault(str(state_dir), str(vault), VAULT_001_PASSWORD, DEVICE_UUID, NOW_MS)
     assert outcome.kind == "AppliedAutomatically"
     # state was persisted -> a second pass over the now-current vault is NothingToDo
-    again = sync_vault(str(state_dir), str(vault), VAULT_001_PASSWORD, NOW_MS)
+    again = sync_vault(str(state_dir), str(vault), VAULT_001_PASSWORD, DEVICE_UUID, NOW_MS)
     assert again.kind == "NothingToDo"
+
+
+def test_sync_vault_wrong_length_device_uuid_raises_value_error(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    vault = _fresh_writable_vault(tmp_path)
+    with pytest.raises(ValueError):
+        sync_vault(str(state_dir), str(vault), VAULT_001_PASSWORD, bytes(15), NOW_MS)
 
 
 def test_sync_commit_decisions_bad_manifest_hash_raises_sync_failed(
@@ -77,7 +87,7 @@ def test_sync_commit_decisions_bad_manifest_hash_raises_sync_failed(
     vault = _fresh_writable_vault(tmp_path)
     with pytest.raises(VaultSyncFailed):
         sync_commit_decisions(
-            str(state_dir), str(vault), VAULT_001_PASSWORD, [], bytes(5), NOW_MS
+            str(state_dir), str(vault), VAULT_001_PASSWORD, [], bytes(5), DEVICE_UUID, NOW_MS
         )
 
 
@@ -107,7 +117,7 @@ def _stage_conflict(tmp_path: Path) -> tuple[Path, Path]:
 def test_conflict_round_trip_keep_local(tmp_path: Path) -> None:
     state_dir, vault = _stage_conflict(tmp_path)
 
-    pending = sync_vault(str(state_dir), str(vault), VAULT_001_PASSWORD, NOW_MS)
+    pending = sync_vault(str(state_dir), str(vault), VAULT_001_PASSWORD, DEVICE_UUID, NOW_MS)
     assert pending.kind == "ConflictsPending"
     assert len(pending.vetoes) >= 1
     # Tombstone divergence yields no field collision (see #192).
@@ -121,6 +131,7 @@ def test_conflict_round_trip_keep_local(tmp_path: Path) -> None:
         VAULT_001_PASSWORD,
         decisions,
         bytes(pending.manifest_hash),
+        DEVICE_UUID,
         NOW_MS,
     )
     assert committed.kind == "MergedClean"
@@ -128,7 +139,7 @@ def test_conflict_round_trip_keep_local(tmp_path: Path) -> None:
 
 def test_commit_decisions_incomplete_raises(tmp_path: Path) -> None:
     state_dir, vault = _stage_conflict(tmp_path)
-    pending = sync_vault(str(state_dir), str(vault), VAULT_001_PASSWORD, NOW_MS)
+    pending = sync_vault(str(state_dir), str(vault), VAULT_001_PASSWORD, DEVICE_UUID, NOW_MS)
     assert pending.kind == "ConflictsPending"
     # Empty decisions cannot cover a non-empty veto set -> typed error.
     with pytest.raises(VaultSyncDecisionsIncomplete):
@@ -138,6 +149,7 @@ def test_commit_decisions_incomplete_raises(tmp_path: Path) -> None:
             VAULT_001_PASSWORD,
             [],
             bytes(pending.manifest_hash),
+            DEVICE_UUID,
             NOW_MS,
         )
 

@@ -927,7 +927,7 @@ fn merge_block_name(l: &str, r: &str) -> String {
 /// (takes `clock` by value, returns a new `Vec`) and produces a
 /// layer-local error rather than `VaultError` so this module stays
 /// independent of the umbrella enum.
-fn tick_for_device(
+pub(crate) fn tick_for_device(
     clock: Vec<VectorClockEntry>,
     device: [u8; 16],
 ) -> Result<Vec<VectorClockEntry>, ConflictError> {

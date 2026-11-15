@@ -144,7 +144,7 @@ pub fn resolve_state_dir(
 /// plain recursive create. An already-existing directory is left as-is
 /// (its mode is not changed), matching the spec wording "created on first
 /// run with mode 0700".
-fn create_dir_secure(path: &Path) -> std::io::Result<()> {
+pub(crate) fn create_dir_secure(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;

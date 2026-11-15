@@ -16,6 +16,9 @@ use crate::{open_vault_with_password, OpenVaultOutput};
 /// against the fixture's inputs JSON on every test run).
 pub(crate) const VAULT_001_PASSWORD: &[u8] = b"correct horse battery staple";
 
+/// The device UUID the sync tests pass as the merging device (#744).
+pub(crate) const TEST_DEVICE_UUID: [u8; 16] = [0x5E; 16];
+
 /// Path to a committed fixture folder under `core/tests/data/`.
 pub(crate) fn fixture_folder(name: &str) -> PathBuf {
     core_test_data_dir().join(name)

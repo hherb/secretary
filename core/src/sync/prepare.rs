@@ -318,6 +318,11 @@ fn parent_block_clock(
 /// - `plan`: the [`DiffPlan`] produced alongside `bundle` by
 ///   [`crate::sync::sync_once`]; its `diverging_blocks` field drives
 ///   the per-block iteration order.
+/// - `merging_device`: this device's per-vault device UUID (the one its
+///   block writes tick). Each merged block clock gets `+1` for it
+///   (crypto-design §11.2), and it rides on the draft so
+///   `commit_with_decisions` ticks the manifest clock for it too (§10,
+///   #744).
 ///
 /// # Algorithm
 ///
@@ -332,7 +337,8 @@ fn parent_block_clock(
 ///    `merged_records` map (keyed by `record_uuid` — `merge_block`
 ///    already dedupes per block; this outer map dedupes across blocks).
 /// 3. Fold the manifest-level vector clocks: `post_merge_clock =
-///    merge_vector_clocks(canonical, copy_0, ..., copy_N)`.
+///    merge_vector_clocks(canonical, copy_0, ..., copy_N)`. Unticked: the
+///    commit adds the merging device's `+1` last, after any caller fold.
 /// 4. Construct the `DraftMerge`.
 ///
 /// # Per-copy block-clock pairing
@@ -373,6 +379,7 @@ pub fn prepare_merge(
     identity: &UnlockedIdentity,
     bundle: &VaultBundle,
     plan: &DiffPlan,
+    merging_device: [u8; 16],
 ) -> Result<DraftMerge, SyncError> {
     let keys = derive_block_reader_keys(vault_folder, identity)?;
 
@@ -435,16 +442,12 @@ pub fn prepare_merge(
                 records: acc_records.values().cloned().collect(),
                 unknown: acc_unknown.clone(),
             };
-            // Multi-device note: `user_uuid` is the single-owner v1
-            // stand-in for the merging device. When multi-device support
-            // lands, this becomes a real `device_uuid` on
-            // `UnlockedIdentity` (or threaded from caller config).
             let merged = merge_block(
                 &acc_pt,
                 &acc_clock,
                 &copy_pt,
                 &copy_block_clock,
-                identity.identity.user_uuid,
+                merging_device,
             )
             .map_err(|e| SyncError::InvalidArgument {
                 detail: format!("merge_block: {e}"),
@@ -551,6 +554,7 @@ pub fn prepare_merge(
         vetoes,
         collisions,
         post_merge_clock,
+        merging_device,
         per_block_clocks,
         per_block_records,
         merged_trash,
