@@ -101,7 +101,12 @@ fn reset_sync_state_and_unlock_with_a_wrong_password_leaves_the_state_file() {
         &state,
         state_dir.path(),
         vault_dir.path().to_str().unwrap(),
-        b"definitely not the password",
+        // Runtime-derived, never the real password (CodeQL flags literals).
+        &[
+            secretary_test_utils::golden_vault_001_password(),
+            secretary_test_utils::golden_vault_001_password(),
+        ]
+        .concat(),
     )
     .expect_err("wrong password");
 

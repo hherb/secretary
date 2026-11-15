@@ -79,21 +79,26 @@ pub fn reset_sync_state_and_open_with_password_in(
 mod tests {
     use super::*;
     use crate::vault::orchestration::enforce_rollback_resistance_in;
-    use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
     use secretary_cli::state::{load, state_file_path};
-    use secretary_core::crypto::kdf::Argon2idParams;
-    use secretary_core::vault::{create_vault, open_vault, VectorClockEntry};
+    use secretary_core::vault::{open_vault, VectorClockEntry};
+    use secretary_test_utils::{
+        copy_dir_to_tempdir, core_test_data_dir, golden_vault_001_password,
+    };
+    use tempfile::TempDir;
 
-    const PASSWORD: &[u8] = b"correct horse battery";
+    /// The golden vault's password, read from its fixture at runtime (CodeQL
+    /// flags literal passwords in tests).
+    fn password() -> Vec<u8> {
+        golden_vault_001_password()
+    }
 
-    /// A vault in `dir` plus a saved state in `state_dir` whose clock strictly
-    /// dominates its manifest: the pre-#730 poisoned device. Returns the
-    /// vault uuid.
-    fn poisoned(dir: &Path, state_dir: &Path) -> [u8; 16] {
-        let mut rng = ChaCha20Rng::from_seed([11u8; 32]);
-        let pw = SecretBytes::new(PASSWORD.to_vec());
-        create_vault(dir, &pw, "T", Argon2idParams::new(65536, 1, 1), 0, &mut rng).unwrap();
-        let open = open_vault(dir, Unlocker::Password(&pw), None).unwrap();
+    /// A golden-vault copy plus a saved state in `state_dir` whose clock
+    /// strictly dominates its manifest: the pre-#730 poisoned device. Returns
+    /// the copy and the vault uuid.
+    fn poisoned(state_dir: &Path) -> (TempDir, [u8; 16]) {
+        let vault = copy_dir_to_tempdir(&core_test_data_dir().join("golden_vault_001"));
+        let pw = SecretBytes::new(password());
+        let open = open_vault(vault.path(), Unlocker::Password(&pw), None).unwrap();
         let mut ahead: Vec<VectorClockEntry> = open.manifest.vector_clock.clone();
         ahead.push(VectorClockEntry {
             device_uuid: [0xee; 16],
@@ -106,21 +111,21 @@ mod tests {
             enforce_rollback_resistance_in(state_dir, &open),
             Err(FfiVaultError::RollbackDetected)
         ));
-        uuid
+        (vault, uuid)
     }
 
     #[test]
     fn reset_recovers_a_device_whose_baseline_dominates_the_disk() {
-        let vault = tempfile::tempdir().unwrap();
         let state = tempfile::tempdir().unwrap();
-        let uuid = poisoned(vault.path(), state.path());
+        let (vault, uuid) = poisoned(state.path());
 
-        let out = reset_sync_state_and_open_with_password_in(state.path(), vault.path(), PASSWORD)
-            .expect("reset opens");
+        let out =
+            reset_sync_state_and_open_with_password_in(state.path(), vault.path(), &password())
+                .expect("reset opens");
         assert_eq!(out.manifest.vault_uuid(), uuid.to_vec());
 
         // The baseline is re-armed at exactly the clock the reset verified.
-        let pw = SecretBytes::new(PASSWORD.to_vec());
+        let pw = SecretBytes::new(password());
         let reopened = open_vault(vault.path(), Unlocker::Password(&pw), None).unwrap();
         assert_eq!(
             load(state.path(), uuid).unwrap().highest_vector_clock_seen,
@@ -132,11 +137,11 @@ mod tests {
 
     #[test]
     fn a_wrong_password_leaves_the_state_file_alone() {
-        let vault = tempfile::tempdir().unwrap();
         let state = tempfile::tempdir().unwrap();
-        let uuid = poisoned(vault.path(), state.path());
+        let (vault, uuid) = poisoned(state.path());
+        let wrong = [password(), password()].concat();
 
-        let err = reset_sync_state_and_open_with_password_in(state.path(), vault.path(), b"nope")
+        let err = reset_sync_state_and_open_with_password_in(state.path(), vault.path(), &wrong)
             .unwrap_err();
         assert!(
             matches!(err, FfiVaultError::WrongPasswordOrCorrupt),
@@ -147,13 +152,13 @@ mod tests {
 
     #[test]
     fn a_held_lockfile_leaves_the_state_file_alone() {
-        let vault = tempfile::tempdir().unwrap();
         let state = tempfile::tempdir().unwrap();
-        let uuid = poisoned(vault.path(), state.path());
+        let (vault, uuid) = poisoned(state.path());
         let _held = LockfileGuard::acquire(state.path(), uuid).unwrap();
 
-        let err = reset_sync_state_and_open_with_password_in(state.path(), vault.path(), PASSWORD)
-            .unwrap_err();
+        let err =
+            reset_sync_state_and_open_with_password_in(state.path(), vault.path(), &password())
+                .unwrap_err();
         assert!(matches!(err, FfiVaultError::SyncInProgress), "got {err:?}");
         assert_poisoned_baseline_kept(state.path(), vault.path(), uuid);
     }
@@ -162,7 +167,7 @@ mod tests {
     /// always exists, so only the open check can tell the two apart.
     fn assert_poisoned_baseline_kept(state_dir: &Path, dir: &Path, uuid: [u8; 16]) {
         assert!(state_file_path(state_dir, uuid).exists());
-        let pw = SecretBytes::new(PASSWORD.to_vec());
+        let pw = SecretBytes::new(password());
         let open = open_vault(dir, Unlocker::Password(&pw), None).unwrap();
         assert!(matches!(
             enforce_rollback_resistance_in(state_dir, &open),

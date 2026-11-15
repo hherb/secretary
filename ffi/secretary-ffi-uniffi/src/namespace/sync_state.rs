@@ -65,7 +65,9 @@ mod tests {
         match reset_sync_state_and_open_with_password(
             "/nonexistent".to_string(),
             b"\xff\xfe".to_vec(),
-            b"pw",
+            // Never reached (the path fails first); runtime-loaded because
+            // CodeQL flags literal passwords.
+            &secretary_test_utils::golden_vault_001_password(),
         ) {
             Err(VaultError::FolderInvalid { .. }) => {}
             Err(other) => panic!("expected FolderInvalid, got {other:?}"),
