@@ -60,9 +60,9 @@ class BrowseWithSyncScreenUiTest {
             BrowseWithSyncScreen(browse = session.browse, sync = session.sync)
         }
 
-        // Badge + the "Blocks" header are visible together on the block-list view.
+        // Badge + the block-list header ("Your vault" since #541) are visible together.
         composeRule.onNodeWithTag(SYNC_BADGE_TAG).assertIsDisplayed()
-        composeRule.onNodeWithText("Blocks").assertIsDisplayed()
+        composeRule.onNodeWithText("Your vault").assertIsDisplayed()
 
         // Navigate into the first block by driving the view-model directly (avoids brittle
         // label matching against real block UUIDs). The invariant is "badge visible on both
