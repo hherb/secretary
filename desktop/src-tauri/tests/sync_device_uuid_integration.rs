@@ -84,8 +84,8 @@ fn a_silent_merge_ticks_the_sessions_own_device_uuid() {
         "{outcome:?}"
     );
 
-    let a_device = load_or_create_device_uuid_in(a_device_dir.path(), &vault_uuid)
-        .expect("a's device file exists after unlock");
+    let a_device =
+        load_or_create_device_uuid_in(a_device_dir.path(), &vault_uuid).expect("a's device uuid");
     let disk = open_vault(vault, Unlocker::Password(&password()), None).expect("reopen");
     let want = VectorClockEntry {
         device_uuid: a_device,
