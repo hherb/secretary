@@ -24,6 +24,7 @@ internal func mapVaultAccessError(_ e: VaultError) -> VaultAccessError {
     case .InvalidArgument(let detail):      return .invalidArgument(detail)
     case .FolderInvalid(let detail):        return .folderInvalid(detail)
     case .VaultChangedOnDisk:               return .vaultChangedOnDisk
+    case .RollbackDetected:                 return .rollbackDetected
     // Device-secret open failures. `WrongDeviceSecretOrCorrupt` and
     // `DeviceSlotNotFound` both fold into the SAME anti-oracle case: on this
     // path the user-facing action is identical ("the device key couldn't

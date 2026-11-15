@@ -5,7 +5,14 @@ import SecretaryVaultAccess
 /// Argon2id open runs off the calling actor via `runOffMainActor`, so a
 /// `@MainActor` view-model's UI is not blocked during the KDF.
 public struct UniffiVaultOpenPort: VaultOpenPort {
-    public init() {}
+    /// Where `resetSyncStateAndOpen` deletes this device's sync baseline. nil
+    /// means `defaultSyncStateDir()`, the same dir the bridge's open-time
+    /// rollback check reads on Apple platforms. Tests pass a temp dir.
+    private let syncStateDir: URL?
+
+    public init(syncStateDir: URL? = nil) {
+        self.syncStateDir = syncStateDir
+    }
 
     public func openWithPassword(vaultPath: Data, password: [UInt8]) async throws -> VaultSession {
         try await runOffMainActor {
@@ -27,6 +34,22 @@ public struct UniffiVaultOpenPort: VaultOpenPort {
                 let out = try withZeroizingData(phrase) { ph in
                     try SecretaryKit.openVaultWithRecovery(
                         folderPath: vaultPath, mnemonic: ph)
+                }
+                return UniffiVaultSession(output: out)
+            } catch let e as VaultError {
+                throw mapVaultAccessError(e)
+            }
+        }
+    }
+
+    public func resetSyncStateAndOpen(vaultPath: Data, password: [UInt8]) async throws -> VaultSession {
+        let configuredDir = syncStateDir
+        return try await runOffMainActor {
+            do {
+                let stateDir = try configuredDir ?? defaultSyncStateDir()
+                let out = try withZeroizingData(password) { pw in
+                    try SecretaryKit.resetSyncStateAndOpenWithPassword(
+                        stateDir: stateDir.path, folderPath: vaultPath, password: pw)
                 }
                 return UniffiVaultSession(output: out)
             } catch let e as VaultError {

@@ -64,6 +64,11 @@ struct MacUnlockView: View {
                 Button("Unlock") { passwordUnlock() }
                     .disabled(isBusy || isOpening || password.isEmpty)
             }
+            if case .rollbackResetPrompt = viewModel.state {
+                MacRollbackResetSection(
+                    onConfirm: { runPasswordOpen { await viewModel.confirmRollbackReset(secret: $0) } },
+                    onCancel: { viewModel.cancelRollbackReset() })
+            }
             if case .failed(let err) = viewModel.state {
                 Section("Error") { Text(err.localizedDescription).foregroundStyle(.red) }
             }
@@ -89,24 +94,30 @@ struct MacUnlockView: View {
     }
 
     private func passwordUnlock() {
+        viewModel.mode = .password
+        runPasswordOpen { await viewModel.unlock(secret: $0) }
+    }
+
+    /// Run one password open attempt (the unlock, or the confirmed rollback
+    /// reset, #746) under the `isOpening` guard. If it does not unlock (a
+    /// failure, or the rollback prompt, which takes the password again on
+    /// confirm) the secret is never handed off (no `onOpened` / enroll), so drop
+    /// + wipe our retained copy now instead of holding it until the next attempt
+    /// or teardown. Nil the `@State` reference FIRST so `secret` becomes uniquely
+    /// referenced, then `zeroize` overwrites the real backing buffer — a
+    /// still-shared `[UInt8]` would only COW-clear a throwaway copy. Best-effort:
+    /// the SwiftUI `password` String and any bytes already copied across the FFI
+    /// are out of reach (see `zeroize`). On success the buffer is deliberately
+    /// kept for enroll and released by `onChange`.
+    private func runPasswordOpen(_ attempt: @escaping ([UInt8]) async -> Void) {
         guard !isOpening else { return }
         isOpening = true
-        viewModel.mode = .password
         var secret = Array(password.utf8)
         lastPasswordSecret = secret
         Task {
-            await viewModel.unlock(secret: secret)
+            await attempt(secret)
             isOpening = false
-            // On failure the secret is never handed off (no `onOpened` / enroll),
-            // so drop + wipe our retained copy now instead of holding it until the
-            // next attempt or teardown. Nil the `@State` reference FIRST so `secret`
-            // becomes uniquely referenced, then `zeroize` overwrites the real
-            // backing buffer — a still-shared `[UInt8]` would only COW-clear a
-            // throwaway copy. Best-effort: the SwiftUI `password` String and any
-            // bytes already copied across the FFI are out of reach (see `zeroize`).
-            // On success the buffer is deliberately kept for enroll and released by
-            // `onChange`.
-            if case .failed = viewModel.state {
+            if !stateIsUnlocked {
                 lastPasswordSecret = nil
                 zeroize(&secret)
             }
@@ -171,6 +182,23 @@ struct MacUnlockView: View {
             } catch {
                 macUnlockLog.error("device enroll failed: \(diagnosticDetail(error), privacy: .public)")
                 await MainActor.run { biometricError = "Couldn’t enable Touch ID unlock. You can try again later." }
+            }
+        }
+    }
+}
+
+/// The rollback-reset prompt (#746): the explanation plus explicit confirm and
+/// cancel, as its own view to keep `MacUnlockView.body` cheap to type-check.
+private struct MacRollbackResetSection: View {
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        Section(RollbackResetCopy.title) {
+            Text(RollbackResetCopy.body)
+            HStack {
+                Button(RollbackResetCopy.cancel, role: .cancel, action: onCancel)
+                Button(RollbackResetCopy.confirm, role: .destructive, action: onConfirm)
             }
         }
     }

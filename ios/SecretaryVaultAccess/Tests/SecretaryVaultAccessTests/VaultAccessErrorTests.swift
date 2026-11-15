@@ -31,7 +31,7 @@ final class VaultAccessErrorTests: XCTestCase {
         .wrongPasswordOrCorrupt, .wrongMnemonicOrCorrupt, .invalidMnemonic("bad words"),
         .wrongDeviceSecretOrCorrupt, .vaultMismatch, .corruptVault("blk"),
         .blockNotFound("blk"), .recordNotFound("rec"), .invalidArgument("arg"),
-        .folderInvalid("/path"), .vaultChangedOnDisk, .reauthFailed("cancelled"), .other("boom"),
+        .folderInvalid("/path"), .vaultChangedOnDisk, .rollbackDetected, .reauthFailed("cancelled"), .other("boom"),
     ]
 
     // #454: every case must surface a friendly, non-nil `errorDescription`, so a
@@ -88,6 +88,13 @@ final class VaultAccessErrorTests: XCTestCase {
         XCTAssertEqual(
             VaultAccessError.vaultChangedOnDisk.errorDescription,
             "This vault changed on another device since you opened it. Sync, then try again.")
+    }
+
+    // The rollback copy points at the only remedy, the master-password unlock
+    // that offers the confirmed reset (#746); a biometric unlock never offers it.
+    func testRollbackDetectedCopyNamesTheMasterPassword() {
+        let desc = VaultAccessError.rollbackDetected.errorDescription ?? ""
+        XCTAssertTrue(desc.contains("master password"), desc)
     }
 
     // Anti-oracle invariant (crypto-design): the three folded "…OrCorrupt" cases must

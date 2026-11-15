@@ -86,32 +86,23 @@ struct UnlockScreen: View {
                 Section {
                     Button("Unlock") {
                         viewModel.mode = mode
-                        var secret: [UInt8] = mode == .password
-                            ? Array(password.utf8)
-                            : Array(RecoveryPhrase.normalize(phrase).utf8)
-                        lastPasswordSecret = (mode == .password) ? secret : nil
-                        Task {
-                            await viewModel.unlock(secret: secret)
-                            // On failure the secret is never handed off (`onChange`
-                            // only fires on `.unlocked`), so drop + wipe our retained
-                            // copy now instead of holding it until the next attempt.
-                            // Nil the `@State` reference FIRST so `secret` becomes
-                            // uniquely referenced, then `zeroize` overwrites the real
-                            // backing buffer — a still-shared `[UInt8]` would only
-                            // COW-clear a throwaway copy. Best-effort: the SwiftUI
-                            // `password`/`phrase` Strings and any bytes already copied
-                            // across the FFI are out of reach (see `zeroize`). On
-                            // success the buffer is deliberately kept for sync/enroll
-                            // and released by `onChange`.
-                            if case .failed = viewModel.state {
-                                lastPasswordSecret = nil
-                                zeroize(&secret)
-                            }
-                        }
+                        let isPassword = mode == .password
+                        submit(isPassword ? Array(password.utf8) : Array(RecoveryPhrase.normalize(phrase).utf8),
+                               isPassword: isPassword) { await viewModel.unlock(secret: $0) }
                     }
                     .buttonStyle(.borderedProminent)
                 }
                 .disabled(isBusy)
+
+                if case .rollbackResetPrompt = viewModel.state {
+                    RollbackResetSection(
+                        onConfirm: {
+                            submit(Array(password.utf8), isPassword: true) {
+                                await viewModel.confirmRollbackReset(secret: $0)
+                            }
+                        },
+                        onCancel: { viewModel.cancelRollbackReset() })
+                }
 
                 if case .failed(let err) = viewModel.state {
                     Section("Error") {
@@ -137,8 +128,47 @@ struct UnlockScreen: View {
         }
     }
 
+    /// Run one open attempt with `secret`, retaining a password copy for the
+    /// `onUnlocked` hand-off. If the attempt does not unlock (a failure, or the
+    /// rollback prompt, which takes the password again on confirm) the secret is
+    /// never handed off, so drop + wipe our retained copy now instead of holding
+    /// it until the next attempt. Nil the `@State` reference FIRST so `secret`
+    /// becomes uniquely referenced, then `zeroize` overwrites the real backing
+    /// buffer — a still-shared `[UInt8]` would only COW-clear a throwaway copy.
+    /// Best-effort: the SwiftUI `password`/`phrase` Strings and any bytes already
+    /// copied across the FFI are out of reach (see `zeroize`). On success the
+    /// buffer is deliberately kept for sync/enroll and released by `onChange`.
+    private func submit(_ secretIn: [UInt8], isPassword: Bool,
+                        _ attempt: @escaping ([UInt8]) async -> Void) {
+        var secret = secretIn
+        lastPasswordSecret = isPassword ? secret : nil
+        Task {
+            await attempt(secret)
+            if !stateIsUnlocked {
+                lastPasswordSecret = nil
+                zeroize(&secret)
+            }
+        }
+    }
+
     // A Bool projection so `.onChange` fires exactly when we transition to unlocked.
     private var stateIsUnlocked: Bool {
         if case .unlocked = viewModel.state { return true } else { return false }
+    }
+}
+
+/// The rollback-reset prompt (#746): the explanation plus explicit confirm and
+/// cancel. A separate view so `UnlockScreen.body` stays under the type-checker's
+/// time limit.
+private struct RollbackResetSection: View {
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        Section(RollbackResetCopy.title) {
+            Text(RollbackResetCopy.body).font(.footnote)
+            Button(RollbackResetCopy.confirm, role: .destructive, action: onConfirm)
+            Button(RollbackResetCopy.cancel, role: .cancel, action: onCancel)
+        }
     }
 }
