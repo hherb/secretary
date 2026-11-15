@@ -5,9 +5,10 @@ import SecretaryVaultAccess
 /// Argon2id open runs off the calling actor via `runOffMainActor`, so a
 /// `@MainActor` view-model's UI is not blocked during the KDF.
 public struct UniffiVaultOpenPort: VaultOpenPort {
-    /// Where `resetSyncStateAndOpen` deletes this device's sync baseline. nil
-    /// means `defaultSyncStateDir()`, the same dir the bridge's open-time
-    /// rollback check reads on Apple platforms. Tests pass a temp dir.
+    /// Where `resetSyncStateAndOpen` rewrites this device's sync baseline. nil
+    /// means `defaultSyncStateDir()`, which the apps also install as the
+    /// bridge's state dir at startup (`installPlatformSyncStateDir`), so the
+    /// open-time rollback check reads the same file. Tests pass a temp dir.
     private let syncStateDir: URL?
 
     public init(syncStateDir: URL? = nil) {
