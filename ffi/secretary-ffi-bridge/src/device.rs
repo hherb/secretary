@@ -233,6 +233,9 @@ pub fn add_device_slot(
 ///   per ADR 0009 §5a anti-oracle property).
 /// - [`FfiVaultError::DeviceUuidMismatch`] — vault-format §3a relabel
 ///   integrity check failure.
+/// - [`FfiVaultError::RollbackDetected`] — this device's §10 baseline
+///   dominates the disk (#746). There is no device-secret reset; the apps
+///   send the user to the password unlock.
 pub fn open_with_device_secret(
     folder: &Path,
     device_uuid: &[u8; 16],

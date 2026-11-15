@@ -46,8 +46,9 @@ pub struct OpenVaultOutput {
 ///
 /// # Errors
 ///
-/// Returns [`FfiVaultError`]; six possible variants. See module-level docs
-/// on `crate::error` for the full surface.
+/// Returns [`FfiVaultError`], including [`FfiVaultError::RollbackDetected`]
+/// when this device's §10 baseline dominates the disk (#746). See
+/// module-level docs on `crate::error` for the full surface.
 pub fn open_vault_with_password(
     folder: &Path,
     password: &[u8],
@@ -69,7 +70,8 @@ pub fn open_vault_with_password(
 ///
 /// # Errors
 ///
-/// Returns [`FfiVaultError`]; six possible variants.
+/// Returns [`FfiVaultError`], including [`FfiVaultError::RollbackDetected`]
+/// (#746), as for [`open_vault_with_password`].
 pub fn open_vault_with_recovery(
     folder: &Path,
     mnemonic_bytes: &[u8],
