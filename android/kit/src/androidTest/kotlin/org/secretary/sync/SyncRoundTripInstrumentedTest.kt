@@ -115,8 +115,9 @@ class SyncRoundTripInstrumentedTest {
      * #749: the SilentMerge ticks THIS session's device UUID, the one its writes stamp
      * (`syncThroughSession` passes `syncDeviceUuid()`). Copy A writes once (A at 1), then merges
      * (A at 2). A wrong UUID would leave A at 1 and tick some other entry. The clock is read from
-     * the saved sync state, which the bridge sets to the clock it wrote
-     * (`a_silent_merge_writes_a_manifest_carrying_the_local_clock`); no FFI reads the disk clock.
+     * the saved sync state, which the bridge sets to the clock it wrote; no FFI reads the disk
+     * clock. `a_silent_merge_writes_a_manifest_carrying_the_local_clock` pins saved == disk on the
+     * password entry point, and this session entry point shares its `run_locked_pass` save.
      */
     @Test
     fun silentMerge_ticksTheSessionsOwnDeviceUuid_onDevice() = runBlocking {

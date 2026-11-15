@@ -23,18 +23,24 @@ All of it is test code. No production, spec, FFI or fixture change.
 | `b22fa1d5` | **Android**: `SyncRoundTripInstrumentedTest.silentMerge_ticksTheSessionsOwnDeviceUuid_onDevice`. Two golden copies; A writes once, then merges, so A's entry must be 2. `GoldenVaultStaging.openSession` takes an optional `device`. |
 | `279384d8` | **iOS**: `UniffiVaultSessionSyncTests.testSilentMergeTicksTheSessionsOwnDeviceUuid`, same shape as the Android test. |
 | `db6c258d` | **#743**: `BrowseWithSyncScreenUiTest` asserted the old header "Blocks". #541 (`6e65ca8d`) renamed it "Your vault". Root cause and runs are recorded on #743. |
-| (this commit) | ROADMAP entry, this handoff, and the symlink retarget. |
+| `a0709238` | ROADMAP entry, this handoff, and the symlink retarget. |
+| (PR review) | **Desktop commit path**: `ipc_integration.rs::sync_commit_decisions_refreshes_session_so_next_write_succeeds` now also requires `{device UUID, 1}` on the disk clock after the commit, since `sync_commit_core` forwards `u.device_uuid` from its own call site. The Android commit path has the same gap and is noted on #748 (item 4); iOS shares one `syncLocked` for sync and commit. |
 
 **Where the Android and iOS tests read the clock.** No FFI exposes the disk
 manifest clock, so they read `sync_status`'s saved clock. The bridge sets that
-to the clock it wrote, which
-`a_silent_merge_writes_a_manifest_carrying_the_local_clock` pins. The desktop
-test reads the disk directly.
+to the clock it wrote. `a_silent_merge_writes_a_manifest_carrying_the_local_clock`
+pins saved == disk on the password entry point (`sync_vault_in`); the session
+entry point these tests use shares its `run_locked_pass` save, and nothing
+pins saved == disk on the session entry point itself. The desktop tests read
+the disk directly.
 
 **Mutations.** Each test reds when its app passes a zero UUID:
 - **D1 (desktop):** `[0u8; 16]` in `commands/sync.rs`. `scripts/mutate.py`
   reports `RED_AS_EXPECTED` (self-test 20/20). The spec is in the session
   scratchpad, not committed.
+- **D2 (desktop commit, PR review):** `[0u8; 16]` in place of `u.device_uuid`
+  in `sync_commit_core`'s `Some(d)` arm. `scripts/mutate.py` reports
+  `RED_AS_EXPECTED` on `sync_commit_decisions_refreshes_session_so_next_write_succeeds`.
 - **A1 (Android):** `ByteArray(16)` in `UniffiVaultOpenPort.kt`
   `syncThroughSession`. Done by hand: `expected:<2> but was:<1>`.
 - **I1 (iOS):** `Data(count: 16)` in `UniffiVaultSession+Sync.swift` `sync`.
@@ -85,7 +91,12 @@ gates touch the changed files; CI runs the Rust and desktop ones.
 
 - **The Android and iOS tests read the saved state, not the disk.** If the
   bridge ever saved a clock different from the one it wrote, they would
-  still pass. The bridge test named in (1) is what pins those two together.
+  still pass. The bridge test named in (1) pins those two together on the
+  password entry point only; the session entry point is covered because it
+  shares `run_locked_pass`, not by a test of its own.
+- **The Android commit path is unpinned for its device UUID.** Noted on #748
+  (item 4), which already tracks that `commitDecisionsThroughSession` has no
+  on-device test.
 - **The #752 badge-assertion failure did not reproduce.** The test passed
   alone and in the full suite. If it comes back, it is an ordering or flake
   issue, not the header.

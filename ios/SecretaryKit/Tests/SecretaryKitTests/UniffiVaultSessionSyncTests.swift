@@ -55,9 +55,11 @@ final class UniffiVaultSessionSyncTests: XCTestCase {
     /// golden vault each add a block, so their clocks are concurrent with no
     /// block diverged. Copy A wrote once (A at 1) and its merge ticks it again
     /// (A at 2); a wrong UUID would leave A at 1. The clock is read from the
-    /// saved sync state, which the bridge sets to the clock it wrote
-    /// (`a_silent_merge_writes_a_manifest_carrying_the_local_clock`); no FFI
+    /// saved sync state, which the bridge sets to the clock it wrote; no FFI
     /// reads the disk clock.
+    /// `a_silent_merge_writes_a_manifest_carrying_the_local_clock` pins saved
+    /// == disk on the password entry point, and this session entry point
+    /// shares its `run_locked_pass` save.
     func testSilentMergeTicksTheSessionsOwnDeviceUuid() async throws {
         let copyB = tmp.appendingPathComponent("copy_b", isDirectory: true)
         try FileManager.default.copyItem(at: vaultCopy, to: copyB)
