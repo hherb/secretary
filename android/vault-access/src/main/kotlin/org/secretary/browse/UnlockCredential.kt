@@ -12,7 +12,12 @@ package org.secretary.browse
 sealed interface UnlockCredential {
     val secret: ByteArray
 
-    class Password(override val secret: ByteArray) : UnlockCredential
+    /**
+     * The master password. [resetSyncState] true routes the open through
+     * [VaultOpenPort.resetSyncStateAndOpenWithPassword]: set ONLY from the user's confirmation of
+     * the rollback dialog (#746).
+     */
+    class Password(override val secret: ByteArray, val resetSyncState: Boolean = false) : UnlockCredential
     class Recovery(override val secret: ByteArray) : UnlockCredential
     class DeviceSecret(val deviceUuid: ByteArray, override val secret: ByteArray) : UnlockCredential
 }
@@ -28,7 +33,12 @@ suspend fun openWithCredential(
     vaultFolder: String,
     credential: UnlockCredential,
 ): VaultSession = when (credential) {
-    is UnlockCredential.Password -> openPort.openWithPassword(vaultFolder, credential.secret)
+    is UnlockCredential.Password ->
+        if (credential.resetSyncState) {
+            openPort.resetSyncStateAndOpenWithPassword(vaultFolder, credential.secret)
+        } else {
+            openPort.openWithPassword(vaultFolder, credential.secret)
+        }
     is UnlockCredential.Recovery -> openPort.openWithRecovery(vaultFolder, credential.secret)
     is UnlockCredential.DeviceSecret -> openPort.openWithDeviceSecret(vaultFolder, credential.deviceUuid, credential.secret)
 }

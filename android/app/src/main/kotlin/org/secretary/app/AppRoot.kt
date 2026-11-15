@@ -64,10 +64,13 @@ internal sealed interface Route {
      * The unlock screen. [cloudTarget] null = the demo golden vault (the `onDemo` path, unchanged);
      * non-null = a cloud vault whose credential, once entered here, is applied to THAT vault via the
      * working-copy coordinator. Both cloud paths (open-remembered + just-created) route through here.
+     * [rollback] is set when the last open was refused as a rollback (#746); [RollbackRefusal.OfferReset]
+     * shows the reset dialog.
      */
     data class Unlock(
         val cloudTarget: CloudVaultTarget? = null,
         val unsyncedCreateWarning: Boolean = false,
+        val rollback: RollbackRefusal? = null,
     ) : Route
 
     /**
@@ -172,7 +175,9 @@ fun AppRoot() {
     var cloudEnrolled by remember { mutableStateOf(false) }
     val settingsVm = remember(coordinator) { DeviceSettingsViewModel(coordinator) }
     var settingsState by remember { mutableStateOf(DeviceSettingsState(enrolled = false)) }
-    LaunchedEffect(route) {
+    // Keyed without `rollback`: showing or dismissing the reset dialog is not a new Unlock-screen
+    // entry, so it must not clear the "Remember this device" tick (#342) or re-read enrollment.
+    LaunchedEffect((route as? Route.Unlock)?.copy(rollback = null) ?: route) {
         val current = route
         if (current is Route.Unlock) {
             // #342: clear the "Remember this device" tick on every Unlock-screen entry so it never
@@ -343,11 +348,10 @@ fun AppRoot() {
                                 // (a SAF provider hiccup, e.g. eventually-consistent cloud, or a wrong
                                 // password otherwise looks like a dead button).
                                 if (result is Route.Unlock) {
-                                    Toast.makeText(
-                                        context,
+                                    failedOpenToast(
+                                        result.rollback,
                                         "Couldn't open the cloud vault — check the folder is reachable and the password is correct, then try again.",
-                                        Toast.LENGTH_LONG,
-                                    ).show()
+                                    )?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
                                 }
                             }
                         } else {
@@ -390,11 +394,10 @@ fun AppRoot() {
                                 ).also { result ->
                                     selectionState = selectionVm.state
                                     if (result is Route.Unlock) {
-                                        Toast.makeText(
-                                            context,
+                                        failedOpenToast(
+                                            result.rollback,
                                             "Couldn't open the cloud vault — check the folder is reachable, then try again.",
-                                            Toast.LENGTH_LONG,
-                                        ).show()
+                                        )?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
                                     }
                                 }
                             }
@@ -426,6 +429,8 @@ fun AppRoot() {
                 }
             },
             unsyncedCreateWarning = r.unsyncedCreateWarning,
+            showRollbackReset = r.rollback == RollbackRefusal.OfferReset,
+            onRollbackCancel = { route = r.copy(rollback = null) },
         )
         is Route.Browse -> {
             // Monitor + session lifecycle keyed on the SESSION instance only — flipping showSettings
@@ -547,7 +552,7 @@ private suspend fun unlockAndOpen(
         val makeGraceGate: (Long) -> WriteReauthGate = { w -> GraceWindowReauthGate(authorizer, clock, w) }
         val writeReauthGate = RetargetableReauthGate()
         val session = openBrowseWithSync(
-            uniffiVaultOpenPort(deviceUuids), folder, stateDir, uuid, credential, writeReauthGate,
+            uniffiVaultOpenPort(deviceUuids, stateDir), folder, stateDir, uuid, credential, writeReauthGate,
             makeGraceGate = makeGraceGate)
         // Background sync-at-unlock through the open session, for every credential (#733), then the
         // "synced N ago" label (the model never refreshes status itself). If Browse is disposed
@@ -576,8 +581,10 @@ private suspend fun unlockAndOpen(
         return Route.Browse(session, folder)
     } catch (e: Exception) {
         SecretaryLog.warn(TAG, "unlock/open failed; returning to unlock screen", e)
-        Toast.makeText(context, unlockFailureMessage(e), Toast.LENGTH_LONG).show()
-        return Route.Unlock()
+        // A rollback-refused password open shows the reset dialog instead of a toast (#746).
+        val rollback = rollbackRefusal(e, credential)
+        failedOpenToast(rollback, unlockFailureMessage(e))?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+        return Route.Unlock(rollback = rollback)
     } finally {
         credential.secret.fill(0) // zeroize on every exit; the password background copy is independent
     }

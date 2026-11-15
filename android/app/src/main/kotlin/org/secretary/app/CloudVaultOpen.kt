@@ -150,7 +150,7 @@ internal suspend fun openCloudBrowse(
         // grace change. The closure reads learnedVaultId at call time.
         val makeGraceGate: (Long) -> WriteReauthGate = { w -> cloudGateForResolvedVault(deviceUnlock, learnedVaultId, clock, w) }
         val session = openBrowseWithSync(
-            uniffiVaultOpenPort(deviceUuids),
+            uniffiVaultOpenPort(deviceUuids, stateDir),
             workingDir,
             stateDir,
             vaultUuid = if (vaultId.isEmpty()) ByteArray(0) else hexToBytesPublic(vaultId),
@@ -298,7 +298,8 @@ internal suspend fun openCloudTarget(
         } else {
             SecretaryLog.warn(TAG, "cloud open/create failed; returning to unlock with same target", e)
         }
-        unsyncedCreateRoute(failure)
+        // The credential is already zeroized here; rollbackRefusal reads only its type (#746).
+        unsyncedCreateRoute(failure).copy(rollback = rollbackRefusal(e, credential))
     } finally {
         // Backstop zeroize: openCloudBrowse zeroizes too, but the coordinator's flush/materialize
         // runs BEFORE openAndSync — if it throws, openCloudBrowse (and its finally) never runs, so the

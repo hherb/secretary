@@ -11,3 +11,11 @@ private const val SYNC_STATE_DIRNAME = "sync-state"
  * caller passes `context.filesDir` and is responsible for creating the directory.
  */
 fun syncStateDir(base: File): File = File(base, SYNC_STATE_DIRNAME)
+
+/**
+ * Creates the sync-state dir under [base] and hands it to [setOpenStateDir] (production: `:kit`'s
+ * `setPlatformSyncStateDir`), so the open-time rollback check reads the baseline this app's sync
+ * writes (#746). Call once per process before any vault open; returns the dir.
+ */
+fun installPlatformSyncStateDir(base: File, setOpenStateDir: (File) -> Unit): File =
+    syncStateDir(base).apply { mkdirs() }.also(setOpenStateDir)

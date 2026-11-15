@@ -5,6 +5,7 @@ import android.view.WindowManager
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.material3.Surface
+import org.secretary.browse.setPlatformSyncStateDir
 
 /**
  * The single Activity (a `FragmentActivity`, required by `androidx.biometric`) for the walking skeleton.
@@ -15,6 +16,9 @@ import androidx.compose.material3.Surface
 class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Before any open: the rollback check must read the baseline this app's sync writes (#746).
+        // Activity recreation repeats the same path, which the bridge treats as a no-op.
+        installPlatformSyncStateDir(filesDir, ::setPlatformSyncStateDir)
         window.setFlags(
             WindowManager.LayoutParams.FLAG_SECURE,
             WindowManager.LayoutParams.FLAG_SECURE,

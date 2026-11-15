@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -14,6 +15,7 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,6 +59,10 @@ private enum class UnlockMode { Password, Recovery }
  *   [CircularProgressIndicator] during the multi-second vault open.
  * @param unsyncedCreateWarning When true, shows a persistent "created but not yet synced" banner
  *   above the title (#329).
+ * @param showRollbackReset When true (and no open is in flight), shows the rollback reset dialog
+ *   (#746). Confirm resubmits the password still in the field through [onUnlock] as a
+ *   [UnlockCredential.Password] with `resetSyncState = true`; cancel calls [onRollbackCancel] and
+ *   resets nothing.
  */
 @Composable
 fun UnlockScreen(
@@ -68,6 +74,8 @@ fun UnlockScreen(
     onEnrollChoice: (Boolean) -> Unit,
     onBiometricUnlock: () -> Unit,
     unsyncedCreateWarning: Boolean = false,
+    showRollbackReset: Boolean = false,
+    onRollbackCancel: () -> Unit = {},
 ) {
     var mode by remember { mutableStateOf(UnlockMode.Password) }
     var password by remember { mutableStateOf("") }
@@ -178,5 +186,27 @@ fun UnlockScreen(
                 }
             }
         }
+    }
+    if (showRollbackReset && !isUnlocking) {
+        AlertDialog(
+            onDismissRequest = onRollbackCancel,
+            title = { Text(ROLLBACK_DIALOG_TITLE) },
+            text = { Text(ROLLBACK_DIALOG_BODY) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onUnlock(UnlockCredential.Password(password.toByteArray(Charsets.UTF_8), resetSyncState = true))
+                    },
+                    modifier = Modifier.testTag("rollback-reset-confirm"),
+                ) { Text(ROLLBACK_DIALOG_CONFIRM) }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = onRollbackCancel,
+                    modifier = Modifier.testTag("rollback-reset-cancel"),
+                ) { Text(ROLLBACK_DIALOG_CANCEL) }
+            },
+            modifier = Modifier.testTag("rollback-reset-dialog"),
+        )
     }
 }
