@@ -2692,7 +2692,7 @@ fn sync_commit_decisions_refreshes_session_so_next_write_succeeds() {
         .join("sync_conflict_fixture");
     let vault_dir = secretary_test_utils::copy_dir_to_tempdir(&fixture.join("vault"));
     let state_dir = secretary_test_utils::copy_dir_to_tempdir(&fixture.join("state"));
-    let (a, _da) = unlocked_over(vault_dir.path());
+    let (a, a_device_dir) = unlocked_over(vault_dir.path());
     let (b, _db) = unlocked_over(vault_dir.path());
     edit::create_block_impl(&b, "Other").expect("b writes");
     let outcome = sync::sync_now_in_impl(&a, state_dir.path(), 1).expect("inspect");
@@ -2718,5 +2718,30 @@ fn sync_commit_decisions_refreshes_session_so_next_write_succeeds() {
         matches!(outcome, SyncOutcomeDto::MergedClean),
         "{outcome:?}"
     );
+
+    // #749: the commit ticks this session's own device UUID (read from its
+    // device file, not the session), once; A had never written to this vault.
+    let password = secretary_core::crypto::secret::SecretBytes::new(golden_vault_password());
+    let disk = secretary_core::vault::open_vault(
+        vault_dir.path(),
+        secretary_core::vault::Unlocker::Password(&password),
+        None,
+    )
+    .expect("reopen");
+    let a_device = secretary_desktop::settings::load_or_create_device_uuid_in(
+        a_device_dir.path(),
+        &disk.manifest.vault_uuid,
+    )
+    .expect("a's device uuid");
+    let want = secretary_core::vault::VectorClockEntry {
+        device_uuid: a_device,
+        counter: 1,
+    };
+    assert!(
+        disk.manifest.vector_clock.contains(&want),
+        "disk clock {:?} lacks {want:?}",
+        disk.manifest.vector_clock
+    );
+
     edit::create_block_impl(&a, "Mine").expect("write after commit must not be refused");
 }

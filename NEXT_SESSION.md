@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-15-sync-state-reset-shipped.md
+docs/handoffs/2026-11-15-sync-device-uuid-tests-shipped.md

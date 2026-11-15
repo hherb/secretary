@@ -34,11 +34,13 @@ object GoldenVaultStaging {
     /** The published golden-vault KAT password — not a real secret, so not zeroized. */
     val PASSWORD: ByteArray get() = "correct horse battery staple".toByteArray()
 
+    /** A random 16-byte device UUID, the shape [openSession] stamps. */
+    fun randomDeviceUuid(): ByteArray = ByteArray(UUID_BYTES).also { SecureRandom().nextBytes(it) }
+
     /** Open [folder] into a writable [UniffiVaultSession] (sync passes run through it, #733).
-     *  Writes stamp one random device UUID; the caller wipes the session. */
-    fun openSession(folder: File): UniffiVaultSession {
+     *  Writes and sync merges stamp [device] (random by default); the caller wipes the session. */
+    fun openSession(folder: File, device: ByteArray = randomDeviceUuid()): UniffiVaultSession {
         val out = withDirectSecret(PASSWORD) { pw -> openVaultWithPassword(folder.path.toByteArray(), pw) }
-        val device = ByteArray(UUID_BYTES).also { SecureRandom().nextBytes(it) }
         val devices = object : DeviceUuidProvider {
             override fun deviceUuid(vaultHex: String): ByteArray = device
         }

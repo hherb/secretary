@@ -10,6 +10,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.secretary.browse.UniffiVaultSession
+import org.secretary.browse.hexOfBytes
+import uniffi.secretary.syncStatus
 import java.io.File
 
 /**
@@ -49,8 +51,8 @@ class SyncRoundTripInstrumentedTest {
     private fun stateDir(): File =
         GoldenVaultStaging.freshStateDir(context).also { toClean += it }
 
-    private fun session(folder: File): UniffiVaultSession =
-        GoldenVaultStaging.openSession(folder).also { sessions += it }
+    private fun session(folder: File, device: ByteArray = GoldenVaultStaging.randomDeviceUuid()): UniffiVaultSession =
+        GoldenVaultStaging.openSession(folder, device).also { sessions += it }
 
     @Test
     fun rawPort_statusThenSync_roundTripsThroughNativeFfi() = runBlocking {
@@ -107,5 +109,37 @@ class SyncRoundTripInstrumentedTest {
         assertEquals(SyncOutcome.NothingToDo, portA.sync(state.path, mergeClockMs))
         sessionA.createBlock("written after the merge")
         Unit
+    }
+
+    /**
+     * #749: the SilentMerge ticks THIS session's device UUID, the one its writes stamp
+     * (`syncThroughSession` passes `syncDeviceUuid()`). Copy A writes once (A at 1), then merges
+     * (A at 2). A wrong UUID would leave A at 1 and tick some other entry. The clock is read from
+     * the saved sync state, which the bridge sets to the clock it wrote; no FFI reads the disk
+     * clock. `a_silent_merge_writes_a_manifest_carrying_the_local_clock` pins saved == disk on the
+     * password entry point, and this session entry point shares its `run_locked_pass` save.
+     */
+    @Test
+    fun silentMerge_ticksTheSessionsOwnDeviceUuid_onDevice() = runBlocking {
+        val vaultA = stageVault()
+        val vaultB = stageVault()
+        val state = stateDir()
+        val deviceA = GoldenVaultStaging.randomDeviceUuid()
+        val sessionA = session(vaultA, deviceA)
+        val sessionB = session(vaultB)
+        sessionA.createBlock("only on A")
+        sessionB.createBlock("only on B")
+        assertEquals(SyncOutcome.AppliedAutomatically, UniffiVaultSyncPort(sessionB).sync(state.path, mergeClockMs))
+
+        assertEquals(SyncOutcome.SilentMerge, UniffiVaultSyncPort(sessionA).sync(state.path, mergeClockMs))
+
+        val clocks = syncStatus(state.path, GoldenVaultStaging.goldenVaultUuid(context)).deviceClocks
+        val counterA = clocks.single { it.deviceUuidHex == hexOfBytes(deviceA) }.counter
+        assertEquals("A's one write plus the merge tick, in $clocks", A_WRITES + MERGE_TICK, counterA)
+    }
+
+    private companion object {
+        const val A_WRITES = 1uL
+        const val MERGE_TICK = 1uL
     }
 }
