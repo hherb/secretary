@@ -26,6 +26,7 @@ fn sync_vault_in_and_commit_decisions_in_are_public_symbols() {
         &std::path::Path,
         &std::path::Path,
         secretary_core::crypto::secret::SecretBytes,
+        [u8; 16],
         u64,
     ) -> Result<
         secretary_ffi_bridge::SyncOutcomeDto,
@@ -38,6 +39,7 @@ fn sync_vault_in_and_commit_decisions_in_are_public_symbols() {
         secretary_core::crypto::secret::SecretBytes,
         Vec<secretary_ffi_bridge::VetoDecisionDto>,
         Vec<u8>,
+        [u8; 16],
         u64,
     ) -> Result<
         secretary_ffi_bridge::SyncOutcomeDto,

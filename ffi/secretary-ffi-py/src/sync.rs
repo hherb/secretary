@@ -192,6 +192,8 @@ pub(crate) fn sync_status(state_dir: PathBuf, vault_uuid: Vec<u8>) -> PyResult<S
 /// - `password` — vault master password as raw bytes; zeroized by the bridge
 ///   immediately after use. The caller's buffer remains the caller's
 ///   responsibility.
+/// - `device_uuid` — this device's 16-byte per-vault device UUID, the one its
+///   writes pass. A merge ticks it on the vector clocks (#744).
 /// - `now_ms` — wall-clock millisecond timestamp for the merge.
 ///
 /// # Raises
@@ -204,22 +206,22 @@ pub(crate) fn sync_status(state_dir: PathBuf, vault_uuid: Vec<u8>) -> PyResult<S
 ///   sync is rejected to prevent rollback.
 /// - `VaultSyncInProgress` — a concurrent sync pass is already running.
 /// - `VaultSyncFailed` — IO or other unrecoverable sync error.
+/// - `ValueError` — `device_uuid` is not 16 bytes.
 #[pyfunction]
 #[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required to move into SecretBytes
 pub(crate) fn sync_vault(
     state_dir: PathBuf,
     vault_folder: PathBuf,
     password: Vec<u8>,
+    device_uuid: Vec<u8>,
     now_ms: u64,
 ) -> PyResult<SyncOutcomeDto> {
-    secretary_ffi_bridge::sync_vault_in(
-        &state_dir,
-        &vault_folder,
-        SecretBytes::new(password),
-        now_ms,
-    )
-    .map(outcome_from_bridge)
-    .map_err(ffi_vault_error_to_pyerr)
+    // Wrapped before the fallible uuid check so `Drop` wipes it on that exit too.
+    let password = SecretBytes::new(password);
+    let device_uuid = uuid_array_or_value_error(&device_uuid, "device_uuid")?;
+    secretary_ffi_bridge::sync_vault_in(&state_dir, &vault_folder, password, device_uuid, now_ms)
+        .map(outcome_from_bridge)
+        .map_err(ffi_vault_error_to_pyerr)
 }
 
 /// Commit tombstone-veto decisions for a paused `ConflictsPending` sync pass.
@@ -240,6 +242,7 @@ pub(crate) fn sync_vault(
 ///   returned by the prior `sync_vault` call).
 /// - `manifest_hash` — 32-byte freshness token from the prior
 ///   `ConflictsPending` result.
+/// - `device_uuid` — the merging device, as for `sync_vault`.
 /// - `now_ms` — wall-clock millisecond timestamp for the resumed merge.
 ///
 /// # Raises
@@ -252,6 +255,7 @@ pub(crate) fn sync_vault(
 /// - `VaultWrongPasswordOrCorrupt` — password wrong or integrity failure.
 /// - `VaultSyncStateVaultMismatch` — state file belongs to a different vault.
 /// - `VaultSyncStateCorrupt` — state file exists but failed to decode.
+/// - `ValueError` — `device_uuid` is not 16 bytes.
 #[pyfunction]
 #[allow(clippy::needless_pass_by_value)] // owned Vec<u8> required to move into SecretBytes / freshness check
 pub(crate) fn sync_commit_decisions(
@@ -260,14 +264,19 @@ pub(crate) fn sync_commit_decisions(
     password: Vec<u8>,
     decisions: Vec<VetoDecisionDto>,
     manifest_hash: Vec<u8>,
+    device_uuid: Vec<u8>,
     now_ms: u64,
 ) -> PyResult<SyncOutcomeDto> {
+    // Wrapped before the fallible uuid check so `Drop` wipes it on that exit too.
+    let password = SecretBytes::new(password);
+    let device_uuid = uuid_array_or_value_error(&device_uuid, "device_uuid")?;
     secretary_ffi_bridge::sync_commit_decisions_in(
         &state_dir,
         &vault_folder,
-        SecretBytes::new(password),
+        password,
         decisions_to_bridge(decisions),
         manifest_hash,
+        device_uuid,
         now_ms,
     )
     .map(outcome_from_bridge)
@@ -322,11 +331,19 @@ pub(crate) fn sync_vault_with_session(
     state_dir: PathBuf,
     identity: &UnlockedIdentity,
     manifest: &OpenVaultManifest,
+    device_uuid: Vec<u8>,
     now_ms: u64,
 ) -> PyResult<SyncOutcomeDto> {
-    secretary_ffi_bridge::sync_vault_with_session_in(&state_dir, &identity.0, &manifest.0, now_ms)
-        .map(outcome_from_bridge)
-        .map_err(ffi_vault_error_to_pyerr)
+    let device_uuid = uuid_array_or_value_error(&device_uuid, "device_uuid")?;
+    secretary_ffi_bridge::sync_vault_with_session_in(
+        &state_dir,
+        &identity.0,
+        &manifest.0,
+        device_uuid,
+        now_ms,
+    )
+    .map(outcome_from_bridge)
+    .map_err(ffi_vault_error_to_pyerr)
 }
 
 /// Commit veto decisions for a paused pass through the open session, then
@@ -344,14 +361,17 @@ pub(crate) fn sync_commit_decisions_with_session(
     manifest: &OpenVaultManifest,
     decisions: Vec<VetoDecisionDto>,
     manifest_hash: Vec<u8>,
+    device_uuid: Vec<u8>,
     now_ms: u64,
 ) -> PyResult<SyncOutcomeDto> {
+    let device_uuid = uuid_array_or_value_error(&device_uuid, "device_uuid")?;
     secretary_ffi_bridge::sync_commit_decisions_with_session_in(
         &state_dir,
         &identity.0,
         &manifest.0,
         decisions_to_bridge(decisions),
         manifest_hash,
+        device_uuid,
         now_ms,
     )
     .map(outcome_from_bridge)

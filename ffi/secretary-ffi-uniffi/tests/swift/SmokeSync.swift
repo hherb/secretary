@@ -76,6 +76,7 @@ func runSyncAsserts(env: SmokeEnv) {
             stateDir: stateDir.path,
             vaultFolder: vaultDir.path,
             password: env.password001,
+            deviceUuid: Data(repeating: 0x5E, count: 16),
             nowMs: 1_715_000_000_000
         )
         if case .appliedAutomatically = outcome {

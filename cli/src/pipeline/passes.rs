@@ -30,6 +30,10 @@ use crate::veto::VetoUx;
 /// Either way the trait method takes `&mut self`, so the same UX
 /// instance can adjudicate multiple records in one call.
 ///
+/// `merging_device` is this device's per-vault device UUID. A merge ticks it
+/// on each concurrent per-block fold step and once on the written manifest
+/// clock (crypto-design §10 / §11.2, #744); the other arms ignore it.
+///
 /// `now_ms` is forwarded into the underlying merge timestamp; callers
 /// without a wall-clock requirement may pass `0` (the C.1 era pre-
 /// merge-timestamp default — `sync_once` itself currently does not
@@ -53,8 +57,9 @@ use crate::veto::VetoUx;
 /// - [`RunOutcome::SilentMerge`] / [`RunOutcome::MergedAndCommitted`] —
 ///   a merged manifest is written and `state` becomes its clock: the LUB
 ///   of the canonical disk clock, every conflict-copy clock and the
-///   prior local-seen (see `commit_merge`). `SilentMerge` is the arm
-///   where no block diverged, so only the manifest is rewritten (#730).
+///   prior local-seen (see `commit_merge`), plus one for
+///   `merging_device`. `SilentMerge` is the arm where no block diverged,
+///   so only the manifest is rewritten (#730).
 ///
 /// On `Err`, `state` may have been partially mutated only if the error
 /// came from `commit_with_decisions` after state was updated — but
@@ -68,6 +73,7 @@ pub fn run_one(
     identity: &UnlockedIdentity,
     state: &mut SyncState,
     veto_ux: &mut dyn VetoUx,
+    merging_device: [u8; 16],
     now_ms: u64,
 ) -> Result<RunOutcome, SyncError> {
     let outcome = sync_once(vault_folder, identity, state, now_ms)?;
@@ -88,10 +94,18 @@ pub fn run_one(
             // Concurrent clocks with no diverging block: nothing to
             // re-encrypt, but §10 still requires the merge to be written.
             if plan.diverging_blocks.is_empty() {
-                commit_manifest_only_merge(vault_folder, identity, state, &bundle, &plan, now_ms)?;
+                commit_manifest_only_merge(
+                    vault_folder,
+                    identity,
+                    state,
+                    &bundle,
+                    &plan,
+                    merging_device,
+                    now_ms,
+                )?;
                 return Ok(RunOutcome::SilentMerge);
             }
-            let draft = prepare_merge(vault_folder, identity, &bundle, &plan)?;
+            let draft = prepare_merge(vault_folder, identity, &bundle, &plan, merging_device)?;
             let vetoes_count = draft.vetoes.len();
             let decisions = veto_ux.decide(&draft.vetoes);
             commit_merge(vault_folder, identity, state, draft, decisions, now_ms)?;
@@ -119,6 +133,7 @@ pub fn sync_pass_pause_on_conflict(
     vault_folder: &Path,
     identity: &UnlockedIdentity,
     state: &mut SyncState,
+    merging_device: [u8; 16],
     now_ms: u64,
 ) -> Result<SyncPassOutcome, SyncError> {
     let outcome = sync_once(vault_folder, identity, state, now_ms)?;
@@ -137,10 +152,18 @@ pub fn sync_pass_pause_on_conflict(
             local_highest_seen: _,
         } => {
             if plan.diverging_blocks.is_empty() {
-                commit_manifest_only_merge(vault_folder, identity, state, &bundle, &plan, now_ms)?;
+                commit_manifest_only_merge(
+                    vault_folder,
+                    identity,
+                    state,
+                    &bundle,
+                    &plan,
+                    merging_device,
+                    now_ms,
+                )?;
                 return Ok(SyncPassOutcome::SilentMerge);
             }
-            let draft = prepare_merge(vault_folder, identity, &bundle, &plan)?;
+            let draft = prepare_merge(vault_folder, identity, &bundle, &plan, merging_device)?;
             if !draft.vetoes.is_empty() {
                 return Ok(SyncPassOutcome::ConflictsPending {
                     veto_count: draft.vetoes.len(),
@@ -175,6 +198,7 @@ pub fn sync_pass_inspect(
     vault_folder: &Path,
     identity: &UnlockedIdentity,
     state: &mut SyncState,
+    merging_device: [u8; 16],
     now_ms: u64,
 ) -> Result<InspectOutcome, SyncError> {
     let outcome = sync_once(vault_folder, identity, state, now_ms)?;
@@ -193,10 +217,18 @@ pub fn sync_pass_inspect(
             local_highest_seen: _,
         } => {
             if plan.diverging_blocks.is_empty() {
-                commit_manifest_only_merge(vault_folder, identity, state, &bundle, &plan, now_ms)?;
+                commit_manifest_only_merge(
+                    vault_folder,
+                    identity,
+                    state,
+                    &bundle,
+                    &plan,
+                    merging_device,
+                    now_ms,
+                )?;
                 return Ok(InspectOutcome::SilentMerge);
             }
-            let draft = prepare_merge(vault_folder, identity, &bundle, &plan)?;
+            let draft = prepare_merge(vault_folder, identity, &bundle, &plan, merging_device)?;
             if !draft.vetoes.is_empty() {
                 // Read the detail BEFORE `draft` is consumed below. On the
                 // no-veto branch `commit_with_decisions` takes `draft` by
@@ -279,6 +311,7 @@ pub fn sync_pass_commit_decisions(
     state: &mut SyncState,
     expected_manifest_hash: ManifestHash,
     decisions: Vec<VetoDecision>,
+    merging_device: [u8; 16],
     now_ms: u64,
 ) -> Result<SyncPassOutcome, SyncError> {
     let outcome = sync_once(vault_folder, identity, state, now_ms)?;
@@ -297,7 +330,15 @@ pub fn sync_pass_commit_decisions(
             local_highest_seen: _,
         } => {
             if plan.diverging_blocks.is_empty() {
-                commit_manifest_only_merge(vault_folder, identity, state, &bundle, &plan, now_ms)?;
+                commit_manifest_only_merge(
+                    vault_folder,
+                    identity,
+                    state,
+                    &bundle,
+                    &plan,
+                    merging_device,
+                    now_ms,
+                )?;
                 return Ok(SyncPassOutcome::SilentMerge);
             }
             // Freshness gate FIRST: if a concurrent writer advanced the
@@ -306,7 +347,7 @@ pub fn sync_pass_commit_decisions(
             if manifest_hash != expected_manifest_hash {
                 return Err(SyncError::EvidenceStale);
             }
-            let draft = prepare_merge(vault_folder, identity, &bundle, &plan)?;
+            let draft = prepare_merge(vault_folder, identity, &bundle, &plan, merging_device)?;
             commit_merge(vault_folder, identity, state, draft, decisions, now_ms)?;
             Ok(SyncPassOutcome::MergedClean)
         }
@@ -325,16 +366,18 @@ fn commit_manifest_only_merge(
     state: &mut SyncState,
     bundle: &VaultBundle,
     plan: &DiffPlan,
+    merging_device: [u8; 16],
     now_ms: u64,
 ) -> Result<(), SyncError> {
-    let draft = prepare_merge(vault_folder, identity, bundle, plan)?;
+    let draft = prepare_merge(vault_folder, identity, bundle, plan, merging_device)?;
     commit_merge(vault_folder, identity, state, draft, Vec::new(), now_ms)
 }
 
 /// Commit `draft` and adopt the written clock as `state`.
 ///
 /// The written manifest clock folds in `state`'s prior highest-seen clock as
-/// well as the canonical and conflict-copy clocks `prepare_merge` folded. A
+/// well as the canonical and conflict-copy clocks `prepare_merge` folded, and
+/// `commit_with_decisions` then adds one for the draft's merging device. A
 /// concurrent prior clock is ahead of the disk on some entry (a write the
 /// cloud dropped, say); writing it keeps the saved clock equal to the disk
 /// clock, so §10 neither forgets what this device has seen nor later reads
@@ -353,8 +396,8 @@ fn commit_merge(
     Ok(())
 }
 
-/// The clock a merge writes: the merged peer clocks joined with this device's
-/// prior highest-seen clock.
+/// The merged peer clocks joined with this device's prior highest-seen clock:
+/// the clock a merge writes, before the commit's merging-device tick.
 fn fold_local_clock(
     merged: &[VectorClockEntry],
     prior_local_seen: &[VectorClockEntry],

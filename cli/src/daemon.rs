@@ -338,6 +338,7 @@ pub fn run_against_vault(
     state: &mut SyncState,
     veto_ux: &mut dyn VetoUx,
     state_dir: &Path,
+    merging_device: [u8; 16],
     config: DaemonConfig,
     ready_window: Duration,
 ) -> Result<(), SyncError> {
@@ -379,7 +380,14 @@ pub fn run_against_vault(
                     return;
                 }
             }
-            let result = run_one(vault_folder, identity, state, veto_ux, now_ms());
+            let result = run_one(
+                vault_folder,
+                identity,
+                state,
+                veto_ux,
+                merging_device,
+                now_ms(),
+            );
             let mut save = |s: &SyncState| state::save(state_dir, s);
             after_sync(result, state, &mut save);
         },

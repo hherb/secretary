@@ -66,7 +66,7 @@ pub type BlockId = [u8; 16];
 #[derive(Debug, Clone, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct DraftMerge {
     /// Vault UUID; mirrors `bundle.canonical.manifest.vault_uuid`. The
-    /// commit returns a `SyncState` built from this + `post_merge_clock`.
+    /// commit returns a `SyncState` built from this and the written clock.
     #[zeroize(skip)]
     pub vault_uuid: [u8; 16],
     /// Forwarded from `SyncOutcome::ConcurrentDetected`.
@@ -96,11 +96,18 @@ pub struct DraftMerge {
     #[zeroize(skip)]
     pub collisions: Vec<RecordCollisionSummary>,
     /// Component-wise max of canonical + every copy's manifest-level
-    /// vector clock. Becomes the manifest's `vector_clock` post-commit
-    /// (caller's local `SyncState.highest_vector_clock_seen` advances
-    /// to match).
+    /// vector clock, unticked. The commit writes it plus one for
+    /// `merging_device` as the manifest's `vector_clock`, and the returned
+    /// `SyncState` carries that written clock.
     #[zeroize(skip)]
     pub post_merge_clock: Vec<VectorClockEntry>,
+    /// The device performing this merge: this device's per-vault device
+    /// UUID, the same one its block writes tick. `prepare_merge` ticks it on
+    /// each concurrent per-block fold step (crypto-design §11.2), and
+    /// `commit_with_decisions` ticks it on the written manifest clock, after
+    /// `post_merge_clock` (§10, #744). Not secret.
+    #[zeroize(skip)]
+    pub merging_device: [u8; 16],
     /// Per-affected-block vector clock — the merged per-block clock
     /// `prepare_merge` produced for each `block_uuid` in
     /// `plan.diverging_blocks`. Empty for the silent-merge (no
@@ -350,6 +357,7 @@ mod tests {
             vetoes: Vec::new(),
             collisions: Vec::new(),
             post_merge_clock: Vec::new(),
+            merging_device: [7; 16],
             per_block_clocks: per_block_clocks.clone(),
             per_block_records: per_block_records.clone(),
             merged_trash: Vec::new(),
@@ -370,6 +378,7 @@ mod tests {
         assert!(d.merged_records.is_empty());
         assert!(d.vetoes.is_empty());
         assert!(d.post_merge_clock.is_empty());
+        assert_eq!(d.merging_device, [7; 16]);
         assert_eq!(d.per_block_clocks, per_block_clocks);
         assert_eq!(d.per_block_records, per_block_records);
     }

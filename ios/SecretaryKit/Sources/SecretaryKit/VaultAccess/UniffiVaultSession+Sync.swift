@@ -28,9 +28,10 @@ extension UniffiVaultSession: VaultSyncPort {
 
     public func sync(stateDir: String, nowMs: UInt64) async throws -> SyncOutcome {
         try await runOffMainActor {
-            try self.syncLocked { identity, manifest in
+            try self.syncLocked { identity, manifest, dev in
                 try SecretaryKit.syncVaultWithSession(
-                    stateDir: stateDir, identity: identity, manifest: manifest, nowMs: nowMs)
+                    stateDir: stateDir, identity: identity, manifest: manifest,
+                    deviceUuid: dev, nowMs: nowMs)
             }
         }
     }
@@ -41,10 +42,11 @@ extension UniffiVaultSession: VaultSyncPort {
             VetoDecisionDto(recordUuidHex: $0.recordUuidHex, keepLocal: $0.keepLocal)
         }
         return try await runOffMainActor {
-            try self.syncLocked { identity, manifest in
+            try self.syncLocked { identity, manifest, dev in
                 try SecretaryKit.syncCommitDecisionsWithSession(
                     stateDir: stateDir, identity: identity, manifest: manifest,
-                    decisions: dtoDecisions, manifestHash: Data(manifestHash), nowMs: nowMs)
+                    decisions: dtoDecisions, manifestHash: Data(manifestHash),
+                    deviceUuid: dev, nowMs: nowMs)
             }
         }
     }
@@ -59,13 +61,22 @@ extension UniffiVaultSession: VaultSyncPort {
     }
 
     /// Run a session sync call on the live handles under the lock, mapping its
-    /// `VaultError` onto `VaultSyncError` and its DTO onto `SyncOutcome`.
+    /// `VaultError` onto `VaultSyncError` and its DTO onto `SyncOutcome`. The
+    /// body gets this vault's device UUID, the one writes tick: a merge ticks it
+    /// on the vector clocks (#744). A device-UUID store failure is `.failed`.
     private func syncLocked(
-        _ body: (UnlockedIdentity, OpenVaultManifest) throws -> SyncOutcomeDto
+        _ body: (UnlockedIdentity, OpenVaultManifest, Data) throws -> SyncOutcomeDto
     ) throws -> SyncOutcome {
         do {
             return Self.mapOutcome(try withLiveHandles(onWiped: Self.wipedError) {
-                try body(identity, manifest)
+                let dev: [UInt8]
+                do {
+                    dev = try deviceUuid()
+                } catch {
+                    throw VaultSyncError.failed(
+                        "device-uuid resolve failed: \(diagnosticDetail(error))")
+                }
+                return try body(identity, manifest, Data(dev))
             })
         } catch let e as VaultError {
             throw mapVaultSyncError(e)

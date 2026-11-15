@@ -53,6 +53,12 @@ pub struct CommonArgs {
     #[arg(long)]
     pub state_dir: Option<PathBuf>,
 
+    /// This device's UUID for the vault, as 32 hex digits. Merges tick it on
+    /// the vector clock. Defaults to <vault_uuid_hex>.device in the state dir,
+    /// created on first use. Never reuse another device's UUID.
+    #[arg(long, value_parser = crate::device::parse_device_uuid_hex)]
+    pub device_uuid: Option<[u8; 16]>,
+
     /// Log output format.
     #[arg(long, default_value = "human")]
     pub log_format: LogFormat,
@@ -141,11 +147,27 @@ mod tests {
                 assert!(!common.password_stdin);
                 assert!(!common.non_interactive);
                 assert!(common.state_dir.is_none());
+                assert!(common.device_uuid.is_none());
                 assert_eq!(common.log_format, LogFormat::Human);
                 assert_eq!(common.verbose, 0);
             }
             _ => panic!("expected Once subcommand"),
         }
+    }
+
+    /// `--device-uuid` parses 32 hex digits and rejects anything else (#744).
+    #[test]
+    fn parse_device_uuid_flag() {
+        let hex = "5e".repeat(16);
+        let cli = Cli::try_parse_from(["secretary-sync", "once", "--device-uuid", &hex, "/v"])
+            .expect("parse failed");
+        let Command::Once { common, .. } = cli.command else {
+            panic!("expected Once subcommand");
+        };
+        assert_eq!(common.device_uuid, Some([0x5e; 16]));
+
+        let bad = ["secretary-sync", "once", "--device-uuid", "abcd", "/v"];
+        assert!(Cli::try_parse_from(bad).is_err());
     }
 
     /// `secretary-sync run` with all flags parses each correctly.

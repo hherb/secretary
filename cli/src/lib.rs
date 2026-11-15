@@ -8,6 +8,7 @@
 //!
 //! Spec: [`docs/superpowers/specs/2026-05-23-c2-headless-sync-cli-design.md`](../../docs/superpowers/specs/2026-05-23-c2-headless-sync-cli-design.md).
 
+pub mod device;
 pub mod exit;
 pub mod pipeline;
 pub mod state;

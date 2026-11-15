@@ -27,6 +27,8 @@ use secretary_core::vault::{open_vault, Record, RecordField, RecordFieldValue, U
 mod fixtures;
 mod sync_helpers;
 
+use sync_helpers::TEST_MERGING_DEVICE;
+
 use fixtures::extract_vault_uuid;
 
 /// Record UUID shared across all four Task 13 fixtures. Single byte
@@ -225,7 +227,8 @@ fn commit_with_decisions_keep_local_overrides_peer_tombstone() {
     let (folder, identity, bundle, plan, _tmp) = make_veto_fixture();
     let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&folder);
 
-    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE)
+        .expect("prepare_merge");
     assert_eq!(
         draft.vetoes.len(),
         1,
@@ -314,7 +317,8 @@ fn commit_with_decisions_accept_tombstone_finalizes_peer_delete() {
     let (folder, identity, bundle, plan, _tmp) = make_veto_fixture();
     let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&folder);
 
-    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE)
+        .expect("prepare_merge");
     assert_eq!(
         draft.vetoes.len(),
         1,
@@ -385,7 +389,8 @@ fn commit_with_decisions_missing_veto_decision_aborts_with_typed_error() {
     let (folder, identity, bundle, plan, _tmp) = make_veto_fixture();
     let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&folder);
 
-    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE)
+        .expect("prepare_merge");
     assert_eq!(
         draft.vetoes.len(),
         1,
@@ -450,7 +455,8 @@ fn commit_with_decisions_unknown_veto_decision_aborts_with_typed_error() {
     let (folder, identity, bundle, plan, _tmp) = make_veto_fixture();
     let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&folder);
 
-    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE)
+        .expect("prepare_merge");
     assert_eq!(
         draft.vetoes.len(),
         1,

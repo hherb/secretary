@@ -20,6 +20,8 @@ use secretary_core::vault::{open_vault, Record, RecordField, RecordFieldValue, U
 mod fixtures;
 mod sync_helpers;
 
+use sync_helpers::TEST_MERGING_DEVICE;
+
 use fixtures::extract_vault_uuid;
 
 /// Concurrent canonical + sibling manifests with no per-block changes:
@@ -81,7 +83,8 @@ fn prepare_merge_on_two_concurrent_manifests_returns_draft_with_no_vetoes() {
         other => panic!("expected ConcurrentDetected, got {other:?}"),
     };
 
-    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE)
+        .expect("prepare_merge");
 
     assert!(
         draft.vetoes.is_empty(),
@@ -253,7 +256,8 @@ fn prepare_merge_after_canonical_block_rewrite_with_no_per_block_divergence_retu
         "plan must match bundle on empty diverging_blocks",
     );
 
-    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE)
+        .expect("prepare_merge");
     assert!(draft.vetoes.is_empty(), "no vetoes when no blocks diverge",);
     assert!(
         draft.merged_records.is_empty(),
@@ -331,7 +335,8 @@ fn commit_with_decisions_empty_vetoes_writes_merged_state() {
         other => panic!("expected ConcurrentDetected, got {other:?}"),
     };
 
-    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE)
+        .expect("prepare_merge");
     assert!(
         draft.vetoes.is_empty(),
         "no vetoes expected when no blocks diverge",
@@ -445,7 +450,8 @@ fn commit_with_decisions_stale_manifest_hash_aborts_with_no_disk_writes() {
         other => panic!("expected ConcurrentDetected, got {other:?}"),
     };
 
-    let draft = prepare_merge(&folder, &identity, &bundle, &plan).expect("prepare_merge");
+    let draft = prepare_merge(&folder, &identity, &bundle, &plan, TEST_MERGING_DEVICE)
+        .expect("prepare_merge");
 
     // Open the race window: rewrite the canonical manifest with a new
     // clock so the on-disk envelope hash diverges from

@@ -35,6 +35,7 @@ use crate::sync::state::SyncState;
 use crate::unlock::bundle::IdentityBundle;
 use crate::unlock::UnlockedIdentity;
 use crate::vault::block::VectorClockEntry;
+use crate::vault::conflict::{conflict_to_vault_error, tick_for_device};
 use crate::vault::io::write_atomic;
 use crate::vault::manifest::Manifest;
 use crate::vault::orchestrators::{
@@ -66,11 +67,13 @@ const SCHEMA_VERSION_V1: u32 = 1;
 /// re-encrypts every diverging block with a fresh AEAD nonce and BLAKE3-
 /// fingerprints the new bytes, builds a new manifest body (updated
 /// `BlockEntry.fingerprint` / `vector_clock_summary` / `last_mod_ms`
-/// plus the manifest-level `vector_clock`), hybrid-signs the manifest,
+/// plus the manifest-level `vector_clock`, which is `draft.post_merge_clock`
+/// plus one for `draft.merging_device` per crypto-design §10), hybrid-signs
+/// the manifest,
 /// and atomically writes block-first then manifest-last.
 ///
-/// On success, returns the new [`SyncState`] the caller persists into
-/// the OS keystore.
+/// On success, returns the new [`SyncState`], whose clock is the written
+/// manifest clock, for the caller to persist into the OS keystore.
 ///
 /// # Errors
 ///
@@ -132,6 +135,13 @@ pub fn commit_with_decisions(
     // before any disk writes happen.
     let post_decision_records = apply_decisions(&draft, &decisions)?;
 
+    // §10 (#744): the written clock is the merged clock plus one for the
+    // merging device. This is the last change to the clock, so a caller's
+    // fold into `post_merge_clock` cannot absorb the tick, and it runs
+    // before step 5 so an overflow fails before any file is written.
+    let written_clock = tick_for_device(draft.post_merge_clock.clone(), draft.merging_device)
+        .map_err(|e| SyncError::Vault(conflict_to_vault_error(e)))?;
+
     // Step 4: derive owner sender + recipient keys once. The golden
     // single-owner v1 model means author == recipient; the recipient
     // list contains exactly the owner, mirroring save_block / share_block.
@@ -159,7 +169,7 @@ pub fn commit_with_decisions(
     // replace top-level vector_clock, update each affected block's
     // BlockEntry with the new fingerprint + per-block clock + last_mod_ms.
     let mut new_manifest = verified.manifest.clone();
-    new_manifest.vector_clock = draft.post_merge_clock.clone();
+    new_manifest.vector_clock = written_clock.clone();
     for entry in new_manifest.blocks.iter_mut() {
         if let Some(new) = new_block_entries.get(&entry.block_uuid) {
             entry.fingerprint = new.fingerprint;
@@ -212,7 +222,6 @@ pub fn commit_with_decisions(
         })
     })?;
 
-    let post_merge_clock = draft.post_merge_clock.clone();
     let vault_uuid = draft.vault_uuid;
     // Drop `draft` and `bag` explicitly so secret-bearing fields wipe
     // on drop in source order. `draft` holds plaintext `Record`s with
@@ -222,7 +231,7 @@ pub fn commit_with_decisions(
     drop(draft);
     drop(bag);
 
-    SyncState::new(vault_uuid, post_merge_clock)
+    SyncState::new(vault_uuid, written_clock)
 }
 
 /// Stash of owner sender + recipient keys derived once per

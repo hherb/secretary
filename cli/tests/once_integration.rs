@@ -272,6 +272,66 @@ fn once_creates_lockfile_in_state_dir() {
     assert_eq!(lockfiles.len(), 1, "exactly one .lock file expected");
 }
 
+/// Every `*.device` file in `state_dir` (#744).
+fn device_files(state_dir: &Path) -> Vec<PathBuf> {
+    fs::read_dir(state_dir)
+        .expect("read state dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "device"))
+        .collect()
+}
+
+/// The default run creates one 16-byte `<vault_uuid_hex>.device` file, and a
+/// second run reuses it unchanged (#744).
+#[test]
+fn once_creates_and_reuses_the_device_file() {
+    let state = TempDir::new().expect("state tempdir");
+    let (_vault_tmp, vault_dir) = stage_golden_vault();
+    run_once_with_password(state.path(), &vault_dir, &golden_vault_password()).success();
+    let files = device_files(state.path());
+    assert_eq!(files.len(), 1, "exactly one .device file: {files:?}");
+    let first = fs::read(&files[0]).expect("read device file");
+    assert_eq!(first.len(), 16);
+
+    run_once_with_password(state.path(), &vault_dir, &golden_vault_password()).success();
+    assert_eq!(fs::read(&files[0]).expect("re-read"), first);
+}
+
+/// `--device-uuid` bypasses the device file entirely (#744).
+#[test]
+fn once_with_device_uuid_flag_creates_no_device_file() {
+    let state = TempDir::new().expect("state tempdir");
+    let (_vault_tmp, vault_dir) = stage_golden_vault();
+    Command::cargo_bin(BIN_NAME)
+        .expect("binary built")
+        .args(ONCE_NON_INTERACTIVE_ARGS)
+        .arg(state.path())
+        .args(["--device-uuid", &"5e".repeat(16)])
+        .arg(&vault_dir)
+        .write_stdin(golden_vault_password())
+        .assert()
+        .success();
+    assert!(device_files(state.path()).is_empty());
+}
+
+/// A malformed device file fails the run and is left as it was: replacing it
+/// would silently fork this device's identity (#744).
+#[test]
+fn once_with_malformed_device_file_fails_and_leaves_it() {
+    let state = TempDir::new().expect("state tempdir");
+    let (_vault_tmp, vault_dir) = stage_golden_vault();
+    run_once_with_password(state.path(), &vault_dir, &golden_vault_password()).success();
+    let files = device_files(state.path());
+    assert_eq!(files.len(), 1);
+    fs::write(&files[0], [0u8; 3]).expect("corrupt device file");
+
+    run_once_with_password(state.path(), &vault_dir, &golden_vault_password())
+        .failure()
+        .stderr(predicate::str::contains("device UUID load failed"));
+    assert_eq!(fs::read(&files[0]).expect("re-read"), [0u8; 3]);
+}
+
 /// `--help` lists both `once` and `run` subcommands. Pins the
 /// clap-derive `Subcommand` enum stays exported in the operator-facing
 /// help text — a refactor that accidentally hides one of them would

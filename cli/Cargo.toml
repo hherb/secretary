@@ -43,6 +43,9 @@ dirs = "5"
 # the SyncState file. Same exact-pin rule as `core` — bump only via
 # deliberate changelog review (CLAUDE.md "exact pins on security-critical paths").
 tempfile = "=3.27.0"
+# OS randomness for the per-vault device UUID (`src/device.rs`, #744). Already in
+# the tree through `secretary-core`; listed so the CLI names what it uses.
+rand_core = { version = "0.6", features = ["getrandom"] }
 rpassword = { version = "7", optional = true }
 # `serde_json` is a forward-reservation: no file in `cli/src/` currently
 # calls it directly, but C.2 spec §D12 specifies structured JSON output for

@@ -14,6 +14,9 @@
 //! (flock(LOCK_EX | LOCK_NB) on Unix, LockFileEx on Windows). Kernel
 //! auto-releases on process death; no stale-PID handling required.
 //!
+//! Beside them sits `<vault_uuid_hex>.device`, this CLI's per-vault device
+//! UUID (`crate::device`, #744), read or created only under the lockfile.
+//!
 //! fs4 1.x API note: the trait is `fs4::FileExt` (re-exported at the
 //! crate root; no `fs_std` module in v1, unlike the early plan draft).
 //! The exclusive try-variant is `try_lock()` and returns
@@ -144,7 +147,7 @@ pub fn resolve_state_dir(
 /// plain recursive create. An already-existing directory is left as-is
 /// (its mode is not changed), matching the spec wording "created on first
 /// run with mode 0700".
-fn create_dir_secure(path: &Path) -> std::io::Result<()> {
+pub(crate) fn create_dir_secure(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;

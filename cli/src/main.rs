@@ -31,6 +31,7 @@ use tracing::error;
 
 use secretary_cli::args::{Cli, Command, CommonArgs, RunArgs};
 use secretary_cli::daemon::{self, DaemonConfig, DEFAULT_SHUTDOWN_POLL_INTERVAL};
+use secretary_cli::device;
 use secretary_cli::exit::ExitCode;
 use secretary_cli::pipeline::{run_one, RunOutcome};
 use secretary_cli::state::{self, LockfileGuard, StateError};
@@ -139,6 +140,15 @@ fn run(cli: Cli) -> ExitCode {
         Err(e) => return fail_generic(format_args!("lockfile acquire failed: {e}")),
     };
 
+    // Resolved under the lockfile, so no other CLI process races the create.
+    let merging_device = match common.device_uuid {
+        Some(uuid) => uuid,
+        None => match device::load_or_create(&state_dir, vault_uuid) {
+            Ok(uuid) => uuid,
+            Err(e) => return fail_generic(format_args!("device UUID load failed: {e}")),
+        },
+    };
+
     let interactive = !common.non_interactive;
     let exit_code = match daemon_args {
         Some(run_args) => dispatch_run_subcommand(
@@ -147,9 +157,10 @@ fn run(cli: Cli) -> ExitCode {
             &identity,
             &mut state,
             &state_dir,
+            merging_device,
             interactive,
         ),
-        None => dispatch_once_subcommand(vault, &identity, &mut state, interactive),
+        None => dispatch_once_subcommand(vault, &identity, &mut state, merging_device, interactive),
     };
 
     let exit_code = match state::save(&state_dir, &state) {
@@ -251,15 +262,16 @@ fn dispatch_once_subcommand(
     vault: &Path,
     identity: &UnlockedIdentity,
     state: &mut SyncState,
+    merging_device: [u8; 16],
     interactive: bool,
 ) -> ExitCode {
     let now = now_ms();
     let result = if interactive {
         let mut ux = TtyVetoUx::new(io::BufReader::new(io::stdin()), io::stderr());
-        run_one(vault, identity, state, &mut ux, now)
+        run_one(vault, identity, state, &mut ux, merging_device, now)
     } else {
         let mut ux = AutoKeepLocalVetoUx;
-        run_one(vault, identity, state, &mut ux, now)
+        run_one(vault, identity, state, &mut ux, merging_device, now)
     };
     match result {
         Ok(outcome) => once_ok_exit_code(outcome),
@@ -291,6 +303,7 @@ fn dispatch_run_subcommand(
     identity: &UnlockedIdentity,
     state: &mut SyncState,
     state_dir: &Path,
+    merging_device: [u8; 16],
     interactive: bool,
 ) -> ExitCode {
     let guard = match cli_signal::install_shutdown_handlers() {
@@ -316,6 +329,7 @@ fn dispatch_run_subcommand(
             state,
             &mut ux,
             state_dir,
+            merging_device,
             config,
             ready_window,
         )
@@ -327,6 +341,7 @@ fn dispatch_run_subcommand(
             state,
             &mut ux,
             state_dir,
+            merging_device,
             config,
             ready_window,
         )

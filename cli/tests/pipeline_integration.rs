@@ -36,6 +36,9 @@ use secretary_core::vault::block::VectorClockEntry;
 use secretary_core::vault::{open_vault, Unlocker};
 use secretary_test_utils::{copy_dir_recursive, core_test_data_dir};
 
+/// The merging device every `run_one` call here passes (#744).
+const TEST_MERGING_DEVICE: [u8; 16] = [0x5E; 16];
+
 /// Filename of the golden vault folder under `core/tests/data/`.
 const GOLDEN_VAULT_DIRNAME: &str = "golden_vault_001";
 
@@ -99,8 +102,15 @@ fn run_one_returns_applied_automatically_on_fresh_state() {
     let mut ux = AutoKeepLocalVetoUx;
 
     let pre_clock = state.highest_vector_clock_seen.clone();
-    let outcome = run_one(&vault_dir, &identity, &mut state, &mut ux, TEST_NOW_MS)
-        .expect("run_one must succeed on golden vault");
+    let outcome = run_one(
+        &vault_dir,
+        &identity,
+        &mut state,
+        &mut ux,
+        TEST_MERGING_DEVICE,
+        TEST_NOW_MS,
+    )
+    .expect("run_one must succeed on golden vault");
 
     assert_eq!(outcome, RunOutcome::AppliedAutomatically);
     assert_ne!(
@@ -124,13 +134,27 @@ fn run_one_returns_nothing_to_do_on_second_call() {
     let mut state = SyncState::empty(vault_uuid);
     let mut ux = AutoKeepLocalVetoUx;
 
-    let first = run_one(&vault_dir, &identity, &mut state, &mut ux, TEST_NOW_MS)
-        .expect("first run_one must succeed");
+    let first = run_one(
+        &vault_dir,
+        &identity,
+        &mut state,
+        &mut ux,
+        TEST_MERGING_DEVICE,
+        TEST_NOW_MS,
+    )
+    .expect("first run_one must succeed");
     assert_eq!(first, RunOutcome::AppliedAutomatically);
 
     let clock_after_first = state.highest_vector_clock_seen.clone();
-    let second = run_one(&vault_dir, &identity, &mut state, &mut ux, TEST_NOW_MS)
-        .expect("second run_one must succeed");
+    let second = run_one(
+        &vault_dir,
+        &identity,
+        &mut state,
+        &mut ux,
+        TEST_MERGING_DEVICE,
+        TEST_NOW_MS,
+    )
+    .expect("second run_one must succeed");
     assert_eq!(second, RunOutcome::NothingToDo);
     assert_eq!(
         state.highest_vector_clock_seen, clock_after_first,
@@ -152,8 +176,15 @@ fn run_one_returns_rollback_rejected_when_state_dominates() {
     // First, advance state to disk's clock so we know what's there.
     let mut state = SyncState::empty(vault_uuid);
     let mut ux = AutoKeepLocalVetoUx;
-    let first = run_one(&vault_dir, &identity, &mut state, &mut ux, TEST_NOW_MS)
-        .expect("first run_one must succeed");
+    let first = run_one(
+        &vault_dir,
+        &identity,
+        &mut state,
+        &mut ux,
+        TEST_MERGING_DEVICE,
+        TEST_NOW_MS,
+    )
+    .expect("first run_one must succeed");
     assert_eq!(first, RunOutcome::AppliedAutomatically);
 
     // Inject a synthetic entry with a higher counter on a DIFFERENT
@@ -184,6 +215,7 @@ fn run_one_returns_rollback_rejected_when_state_dominates() {
         &identity,
         &mut dominating_state,
         &mut ux,
+        TEST_MERGING_DEVICE,
         TEST_NOW_MS,
     )
     .expect("run_one must succeed (rollback returns Ok, not Err)");
@@ -205,8 +237,15 @@ fn run_one_threads_autokeeplocal_through_dyn_boundary() {
     let mut state = SyncState::empty(vault_uuid);
     let mut ux = AutoKeepLocalVetoUx;
     let ux_ref: &mut dyn secretary_cli::veto::VetoUx = &mut ux;
-    let outcome = run_one(&vault_dir, &identity, &mut state, ux_ref, TEST_NOW_MS)
-        .expect("run_one with dyn-trait UX must succeed");
+    let outcome = run_one(
+        &vault_dir,
+        &identity,
+        &mut state,
+        ux_ref,
+        TEST_MERGING_DEVICE,
+        TEST_NOW_MS,
+    )
+    .expect("run_one with dyn-trait UX must succeed");
     assert_eq!(outcome, RunOutcome::AppliedAutomatically);
 }
 
@@ -225,8 +264,15 @@ fn run_one_silent_merge_writes_the_merge_and_the_next_pass_is_nothing_to_do() {
     let mut state = SyncState::new(vault_uuid, vec![local.clone()]).expect("canonical clock");
     let mut ux = AutoKeepLocalVetoUx;
 
-    let first = run_one(&vault_dir, &identity, &mut state, &mut ux, TEST_NOW_MS)
-        .expect("first run_one must succeed");
+    let first = run_one(
+        &vault_dir,
+        &identity,
+        &mut state,
+        &mut ux,
+        TEST_MERGING_DEVICE,
+        TEST_NOW_MS,
+    )
+    .expect("first run_one must succeed");
     assert_eq!(first, RunOutcome::SilentMerge);
 
     let password = golden_vault_password();
@@ -236,12 +282,67 @@ fn run_one_silent_merge_writes_the_merge_and_the_next_pass_is_nothing_to_do() {
         disk.contains(&local),
         "disk clock {disk:?} lacks the local entry"
     );
+    assert!(
+        disk.contains(&VectorClockEntry {
+            device_uuid: TEST_MERGING_DEVICE,
+            counter: 1,
+        }),
+        "disk clock {disk:?} lacks the merging device's tick (#744)"
+    );
     assert_eq!(
         &state.highest_vector_clock_seen, disk,
         "saved clock == disk clock"
     );
 
-    let second = run_one(&vault_dir, &identity, &mut state, &mut ux, TEST_NOW_MS)
-        .expect("second run_one must succeed");
+    let second = run_one(
+        &vault_dir,
+        &identity,
+        &mut state,
+        &mut ux,
+        TEST_MERGING_DEVICE,
+        TEST_NOW_MS,
+    )
+    .expect("second run_one must succeed");
     assert_eq!(second, RunOutcome::NothingToDo);
+}
+
+/// The merging device's tick lands AFTER the prior local clock is folded in
+/// (#744): a prior entry for this device at 5 is written as 6. Ticking before
+/// the fold would write max(1, 5) = 5, a merge clock with no +1 for its device.
+#[test]
+fn run_one_ticks_the_merging_device_after_folding_the_prior_clock() {
+    let (_tmp, vault_dir, identity, vault_uuid) = stage_and_unlock_golden();
+    let prior = vec![
+        VectorClockEntry {
+            device_uuid: TEST_MERGING_DEVICE,
+            counter: 5,
+        },
+        VectorClockEntry {
+            device_uuid: [0xEE; 16],
+            counter: 2,
+        },
+    ];
+    let mut state = SyncState::new(vault_uuid, prior).expect("canonical clock");
+    let mut ux = AutoKeepLocalVetoUx;
+
+    let outcome = run_one(
+        &vault_dir,
+        &identity,
+        &mut state,
+        &mut ux,
+        TEST_MERGING_DEVICE,
+        TEST_NOW_MS,
+    )
+    .expect("run_one must succeed");
+    assert_eq!(outcome, RunOutcome::SilentMerge);
+
+    let password = golden_vault_password();
+    let opened = open_vault(&vault_dir, Unlocker::Password(&password), None).expect("open");
+    let mine = opened
+        .manifest
+        .vector_clock
+        .iter()
+        .find(|e| e.device_uuid == TEST_MERGING_DEVICE)
+        .expect("merging device entry on disk");
+    assert_eq!(mine.counter, 6);
 }

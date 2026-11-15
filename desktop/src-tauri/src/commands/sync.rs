@@ -72,8 +72,8 @@ fn sync_now_core(
     let session = lock_session(state)?;
     session.with_unlocked(|u| {
         let outcome = match state_dir {
-            Some(d) => bridge_sync_vault_in(d, &u.identity, &u.manifest, now_ms),
-            None => bridge_sync_vault(&u.identity, &u.manifest, now_ms),
+            Some(d) => bridge_sync_vault_in(d, &u.identity, &u.manifest, u.device_uuid, now_ms),
+            None => bridge_sync_vault(&u.identity, &u.manifest, u.device_uuid, now_ms),
         }
         .map_err(map_ffi_error)?;
         Ok(SyncOutcomeDto::from(outcome))
@@ -137,6 +137,7 @@ fn sync_commit_core(
                 &u.manifest,
                 bridge_decisions,
                 manifest_hash,
+                u.device_uuid,
                 now_ms,
             ),
             None => bridge_sync_commit_decisions(
@@ -144,6 +145,7 @@ fn sync_commit_core(
                 &u.manifest,
                 bridge_decisions,
                 manifest_hash,
+                u.device_uuid,
                 now_ms,
             ),
         }
