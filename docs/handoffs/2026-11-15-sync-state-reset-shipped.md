@@ -13,8 +13,8 @@ Decisions asked and answered at session start (recorded on #746):
   check read `dirs::data_dir()/secretary/sync`, but Android's sync writes
   `filesDir/sync-state`, so §10 was inactive at open on Android.
 
-No spec edit: crypto-design §10 and vault-format §10 already require an
-explicit "I am restoring from a backup; accept anyway" override. This
+No spec edit: crypto-design §10 and vault-format §4.3 step 10 already
+specify an explicit "I am restoring from a backup; accept anyway" override. This
 implements it.
 
 ---
@@ -23,12 +23,12 @@ implements it.
 
 | SHA | What |
 |---|---|
-| `4edf9464` | **bridge**: `FfiVaultError::RollbackDetected`, now raised by the app-facing open check (it was folded into `CorruptVault`; other `VaultError::Rollback` paths still fold). `vault/reset.rs`: `reset_sync_state_and_open_with_password[_in]` does a full password open, then deletes the state file under the lockfile, then returns the handles. `state_dir.rs`: `set_platform_state_dir`, a once-per-process override that every implicit-dir path resolves through (open check, repair gate, password sync, `sync_status`). **cli**: `state::delete`. **uniffi**: the variant plus both functions. **pyo3** and the desktop `AppError`: the variant. The KAT helper and the Swift/Kotlin conformance error switches are updated. |
+| `4edf9464` | **bridge**: `FfiVaultError::RollbackDetected`, now raised by the app-facing open check (it was folded into `CorruptVault`; other `VaultError::Rollback` paths still fold). `vault/reset.rs`: `reset_sync_state_and_open_with_password[_in]` does a full password open, then deletes the state file under the lockfile, then returns the handles (the review round below changed the delete to a save of the verified clock). `state_dir.rs`: `set_platform_state_dir`, a once-per-process override that every implicit-dir path resolves through (the opens, repair and its preview, every sync pass, `refresh_manifest`, `sync_status`, the reset). **cli**: `state::delete` (removed again in the review round). **uniffi**: the variant plus both functions. **pyo3** and the desktop `AppError`: the variant. The KAT helper and the Swift/Kotlin conformance error switches are updated. |
 | `1be43f2f` | The CLI rollback log line names `<state-dir>/<vault-uuid-hex>.state.cbor` as the manual remedy. The core `VaultError::Rollback` doc points at the implementation. |
 | `894b2ff9` | **Desktop**: `reset_sync_state_and_unlock` command, which shares the unlock path's approval gate, path validation and session setup. `Unlock.svelte` adds the prompt. `writeCommands.ts` classifies the command as `session`. |
 | `a72a40ab` | **iOS + macOS**: `VaultAccessError.rollbackDetected`, `UnlockViewModel` `.rollbackResetPrompt`, `VaultOpenPort.resetSyncStateAndOpen`, and both unlock views. |
 | `207a0c21` | **Android**: `MainActivity.onCreate` calls `installPlatformSyncStateDir`. `VaultBrowseError.RollbackDetected`, the `UnlockScreen` dialog, and `UnlockCredential.Password(resetSyncState = true)`, which routes to `resetSyncStateAndOpenWithPassword`. |
-| `bfc79bd9` | README row, ROADMAP entry, a CLAUDE.md note, and the `cli/src/state.rs` tests moved verbatim to `state/tests.rs` (20 state tests before and after). |
+| `bfc79bd9` | README row, ROADMAP entry, a CLAUDE.md note, and the `cli/src/state.rs` tests moved verbatim to `state/tests.rs` (20 state tests before and after the move; 18 on `main`, the two `delete` tests were added in `4edf9464` and removed again in the review round, so 18 now). |
 | (this commit) | This handoff and the symlink retarget. |
 
 **How it behaves:**
@@ -46,14 +46,14 @@ implements it.
   - a wrong password leaves the file alone;
   - a held lockfile leaves the file alone.
 - Bridge `tests/platform_state_dir.rs`: the override reaches the open check, then the reset recovers. It runs in its own binary because the override is set once per process.
-- Desktop `tests/reset_sync_state_integration.rs` (3 tests) and `tests/UnlockRollback.test.ts` (5 tests).
+- Desktop `tests/reset_sync_state_integration.rs` (3 tests) and `tests/UnlockRollback.test.ts` (5 tests; 6 after the review round).
 - Swift:
   - 7 `UnlockViewModelTests`;
   - mapping and description tests;
   - `ResetSyncStateOpenTests`: real FFI, a golden-vault copy and a temp state dir.
 - Android:
   - JVM: `UnlockCredentialTest`, `BrowseMappingTest`, `UniffiVaultOpenPortResetTest`, `UnlockMessagesTest`, `AppSyncStateDirTest`.
-  - Emulator: `UnlockScreenRollbackUiTest` (3 tests) and `:kit` `RollbackResetInstrumentedTest`. With the startup setter removed, the latter fails (`expected:<RollbackDetected> but was:<null>`), as Android did before #746.
+  - Emulator: `UnlockScreenRollbackUiTest` (3 tests) and `:kit` `RollbackResetInstrumentedTest`. With its own `setPlatformSyncStateDir` call removed, the latter fails (`expected:<RollbackDetected> but was:<null>`), as Android did before #746. Nothing pins that `MainActivity.onCreate` makes the call (#756).
 - `scripts/mutate.py` (self-test 20/20), two rows, both `RED_AS_EXPECTED`:
   - R1: wiping the state before authentication reds `a_wrong_password_leaves_the_state_file_alone`.
   - R2: ignoring the override reds `the_override_reaches_the_open_check_and_the_reset_recovers`.
@@ -86,6 +86,68 @@ implements it.
 - `conformance.py`: no spec, Python or fixture change.
 - No manual GUI pass on any platform.
 
+## (1b) PR #752 review round (`/finalcheck`)
+
+Five review agents (code, silent failures, tests, comments, types). Fixed:
+
+- **The reset re-arms §10 instead of disarming it.** It used to delete the
+  state file, leaving no baseline until the next successful sync, and desktop
+  syncs only when asked: an older snapshot served after the reset opened with
+  no prompt. `vault/reset.rs` now saves `SyncState::new(vault_uuid,
+  manifest.vector_clock)` under the lock, which is what a sync would record.
+  `cli::state::delete` lost its only caller and is gone (18 state tests, as on
+  `main`). Every test that asserted "file deleted" now asserts the saved clock
+  equals the verified one (bridge, `platform_state_dir`, desktop), or that a
+  failed reset leaves the bytes unchanged (the file exists in both cases now).
+- **`state_dir.rs` fixes the dir on the first READ** (`OnceLock<Option<_>>`,
+  `get_or_init`), so a set after an open fails instead of silently
+  disagreeing, and refuses a relative path. This immediately caught the `:kit`
+  instrumented APK setting the override after earlier tests had opened
+  vaults; `StateDirTestRunner` now sets it before any test, like
+  `MainActivity`.
+- **iOS and macOS install their own dir** at app startup
+  (`installPlatformSyncStateDir()` in `SyncStateDirectory.swift`), so the
+  reset (which passes `defaultSyncStateDir()`) and the bridge's check cannot
+  read different dirs. They matched before only by coincidence.
+- **Structural test** `no_bridge_path_reads_the_dirs_default_directly`
+  (scans the bridge's `src/`, floor of 20 files).
+- **CLI daemon remedy**: the daemon keeps state in memory and saves it on
+  exit, so deleting the file while it runs did nothing. The message now says
+  to stop `secretary-sync` first. `ROLLBACK_REMEDY` had also been inserted
+  inside `log_outcome`'s doc comment; moved above it.
+- **Desktop**: the prompt renders its copy from `errors.ts` (one source); a
+  vitest that choosing another folder withdraws the prompt (mutation-checked:
+  it reds with the `onSelect` clear removed); the Cancel test also asserts no
+  further `invoke`.
+- **Docs**: six doc comments said "delete, then open" (the order is the
+  safety property); fixed in reset.rs, uniffi, the UDL, `ipc.ts`, and both
+  `VaultOpenPort`s. Also the stale `error/vault/tests.rs` comment, `pass.rs`'s
+  helper doc, the "six possible variants" docs, the device open's error list,
+  and this handoff's spec citation, emulator-test claim and path lists.
+
+Filed instead of fixed: **#753** (a corrupt or mismatched state file skips
+the open check silently; no reset offered), **#754** (crash residue plus a
+stale baseline loops), **#755** (a failed reset shows a generic message on
+iOS and Android; desktop's `sync_in_progress` hint ignores a running daemon),
+**#756** (test gaps: `MainActivity`'s setter, `AppRoot` routing, iOS
+`DeviceUnlockOpen`), and a comment on **#734** (refresh, writes and repair
+still fold `Rollback`).
+
+Mutation rows (`scripts/mutate.py`, self-test 20/20; spec in the session
+scratchpad), all `RED_AS_EXPECTED`:
+- R3: dropping the `save` reds `reset_recovers_a_device_whose_baseline_dominates_the_disk`.
+- R4: a non-freezing `platform_state_dir` reds `a_set_after_the_first_read_is_refused`.
+- R5: `default_state_dir()` in `pass.rs` reds `no_bridge_path_reads_the_dirs_default_directly`.
+
+Gates after the round, each exit 0: `cargo fmt --check`, both clippy runs,
+rustdoc, `cargo build --release --workspace`, `cargo test --release
+--workspace` (107 binaries, 2330 passed), the hygiene guards and CI wiring,
+desktop `pnpm test` (797), `svelte-check`, eslint, `build-xcframework.sh`,
+`swift test` (SecretaryKit 62, SecretaryVaultAccess 183), `build-app.sh`,
+`build-macos-app.sh`, Android JVM (610), `:app:assembleDebug`,
+`:kit:connectedDebugAndroidTest` (26/26). `:app:connectedDebugAndroidTest`
+is 43/44, the same `BrowseWithSyncScreenUiTest` failure as before (#743).
+
 ## (2) What is next
 
 1. **Merge this PR.** Acceptance: all 25 required checks green.
@@ -99,7 +161,7 @@ implements it.
 4. **#749**: one test per app that a SilentMerge's written clock contains the session's device UUID.
 5. **#751** (spec question, ask the user): N concurrent copies of one block tick its clock N times.
 6. **#737 / #729** size caps. This PR grew four over-cap files; they are listed on #737.
-7. #736, #734, #740 / #741 / #742, #747 / #748, #738, #731. Carried over: #649, #683, #677, #668 / #693 (spec questions), #699 / #701-#705.
+7. #736, #734 (open path done here; refresh, writes and repair still fold), #740 / #741 / #742, #747 / #748, #738, #731. Carried over: #649, #683, #677, #668 / #693 (spec questions), #699 / #701-#705.
 
 ## (3) Open decisions and risks
 
@@ -107,7 +169,7 @@ implements it.
 - **Android now enforces §10 at open.** A device that synced to a newer clock and then sees an older disk now gets the prompt instead of a silent open. That is correct, but it is new behaviour for Android users.
 - **`set_platform_state_dir` is once per process.**
   - Tests that need it run in their own binary or process.
-  - The Android `:kit` instrumented test uses a fixed dir and cleans up the golden vault's baseline afterwards.
+  - The bridge fixes it on its first read, so it must be set before any open. The Android `:kit` instrumented APK does that in `StateDirTestRunner` and cleans up the golden vault's baseline after the rollback test.
   - A new bridge path that calls `secretary_cli::state::default_state_dir()` directly reopens the Android gap (CLAUDE.md note).
 - **The iOS `SecretaryDeviceUnlock` package's `UniffiVaultDeviceSlotPort`** still folds a rollback into `.other`. Its only user, `DeviceUnlockScreen`, is not wired into either app.
 - **#746 is closed in code.** The issue stays open until a human closes it.
