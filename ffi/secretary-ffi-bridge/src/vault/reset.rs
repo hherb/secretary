@@ -10,9 +10,11 @@
 //! What it does, in order:
 //! 1. A full password open: unlock, manifest decrypt and hybrid verify. A
 //!    wrong password changes nothing.
-//! 2. Under the per-vault lockfile, delete this vault's state file. §10 then
-//!    treats this device as never synced, so the manifest it just verified is
-//!    accepted; the next sync records a fresh baseline from it.
+//! 2. Under the per-vault lockfile, overwrite this vault's state file with the
+//!    clock of the manifest it just verified. That is the baseline a sync pass
+//!    would record, so §10 is armed again at once: a later open of an older
+//!    snapshot is still refused, with no sync needed in between (desktop syncs
+//!    only when asked).
 //! 3. Return the open handles. The rollback check is deliberately skipped.
 //!
 //! It accepts whatever signed manifest is on disk, including a replayed older
@@ -24,8 +26,9 @@
 
 use std::path::Path;
 
-use secretary_cli::state::{delete, LockfileGuard};
+use secretary_cli::state::{save, LockfileGuard, StateError};
 use secretary_core::crypto::secret::SecretBytes;
+use secretary_core::sync::SyncState;
 use secretary_core::vault::Unlocker;
 
 use super::orchestration::{split_core_open_vault, OpenVaultOutput};
@@ -33,16 +36,18 @@ use crate::error::FfiVaultError;
 use crate::sync::pass::default_state_dir_or_err;
 use crate::sync::status::map_state_error;
 
-/// Open `folder` with its master password, deleting this device's sync state
-/// for the vault first so the current on-disk manifest is accepted. See the
-/// module docs for when the apps offer it.
+/// Open `folder` with its master password, then replace this device's sync
+/// baseline for the vault with the verified manifest's clock, so the current
+/// on-disk manifest is accepted. See the module docs for when the apps offer
+/// it.
 ///
 /// # Errors
 ///
 /// The password open's errors (a wrong password, a corrupt vault), plus
 /// [`FfiVaultError::SyncInProgress`] if a sync holds the lockfile and
-/// [`FfiVaultError::SyncFailed`] if the state file cannot be deleted. On any
-/// error the state file is left as it was.
+/// [`FfiVaultError::SyncFailed`] if this platform has no sync-state dir or
+/// the state file cannot be written. On any error the state file is left as
+/// it was.
 pub fn reset_sync_state_and_open_with_password(
     folder: &Path,
     password: &[u8],
@@ -62,7 +67,11 @@ pub fn reset_sync_state_and_open_with_password_in(
     let core_out = secretary_core::vault::open_vault(folder, Unlocker::Password(&pw), None)?;
     let vault_uuid = core_out.manifest.vault_uuid;
     let _guard = LockfileGuard::acquire(state_dir, vault_uuid).map_err(map_state_error)?;
-    delete(state_dir, vault_uuid).map_err(map_state_error)?;
+    // The decoder has already checked the clock is canonical, so `new` cannot
+    // refuse it in practice; map it like any other state error if it does.
+    let baseline = SyncState::new(vault_uuid, core_out.manifest.vector_clock.clone())
+        .map_err(|e| map_state_error(StateError::Encode(e)))?;
+    save(state_dir, &baseline).map_err(map_state_error)?;
     Ok(split_core_open_vault(core_out, folder.to_path_buf()))
 }
 
@@ -71,9 +80,8 @@ mod tests {
     use super::*;
     use crate::vault::orchestration::enforce_rollback_resistance_in;
     use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
-    use secretary_cli::state::{save, state_file_path};
+    use secretary_cli::state::{load, state_file_path};
     use secretary_core::crypto::kdf::Argon2idParams;
-    use secretary_core::sync::SyncState;
     use secretary_core::vault::{create_vault, open_vault, VectorClockEntry};
 
     const PASSWORD: &[u8] = b"correct horse battery";
@@ -110,11 +118,15 @@ mod tests {
         let out = reset_sync_state_and_open_with_password_in(state.path(), vault.path(), PASSWORD)
             .expect("reset opens");
         assert_eq!(out.manifest.vault_uuid(), uuid.to_vec());
-        assert!(!state_file_path(state.path(), uuid).exists());
 
-        // The next ordinary open's rollback check now passes.
+        // The baseline is re-armed at exactly the clock the reset verified.
         let pw = SecretBytes::new(PASSWORD.to_vec());
         let reopened = open_vault(vault.path(), Unlocker::Password(&pw), None).unwrap();
+        assert_eq!(
+            load(state.path(), uuid).unwrap().highest_vector_clock_seen,
+            reopened.manifest.vector_clock
+        );
+        // The next ordinary open's rollback check now passes.
         assert!(enforce_rollback_resistance_in(state.path(), &reopened).is_ok());
     }
 
@@ -130,7 +142,7 @@ mod tests {
             matches!(err, FfiVaultError::WrongPasswordOrCorrupt),
             "got {err:?}"
         );
-        assert!(state_file_path(state.path(), uuid).exists());
+        assert_poisoned_baseline_kept(state.path(), vault.path(), uuid);
     }
 
     #[test]
@@ -143,6 +155,18 @@ mod tests {
         let err = reset_sync_state_and_open_with_password_in(state.path(), vault.path(), PASSWORD)
             .unwrap_err();
         assert!(matches!(err, FfiVaultError::SyncInProgress), "got {err:?}");
-        assert!(state_file_path(state.path(), uuid).exists());
+        assert_poisoned_baseline_kept(state.path(), vault.path(), uuid);
+    }
+
+    /// The failed reset left the poisoned baseline in place: the file now
+    /// always exists, so only the open check can tell the two apart.
+    fn assert_poisoned_baseline_kept(state_dir: &Path, dir: &Path, uuid: [u8; 16]) {
+        assert!(state_file_path(state_dir, uuid).exists());
+        let pw = SecretBytes::new(PASSWORD.to_vec());
+        let open = open_vault(dir, Unlocker::Password(&pw), None).unwrap();
+        assert!(matches!(
+            enforce_rollback_resistance_in(state_dir, &open),
+            Err(FfiVaultError::RollbackDetected)
+        ));
     }
 }

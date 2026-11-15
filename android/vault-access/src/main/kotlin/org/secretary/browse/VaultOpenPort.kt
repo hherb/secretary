@@ -23,8 +23,8 @@ interface VaultOpenPort {
     suspend fun openWithDeviceSecret(vaultFolder: String, deviceUuid: ByteArray, deviceSecret: ByteArray): VaultSession
 
     /**
-     * Deletes this device's saved sync baseline for the vault, then opens it with [password],
-     * accepting the vault on disk (#746). Offered ONLY after an open failed with
+     * Opens the vault with [password], then replaces this device's saved sync baseline for it with
+     * the clock just verified, accepting the vault on disk (#746). Offered ONLY after an open failed with
      * [VaultBrowseError.RollbackDetected] and the user confirmed; never call it automatically. A
      * wrong password changes nothing. Runs off the main thread (Argon2id) like [openWithPassword];
      * [password] is forwarded per call and never retained.

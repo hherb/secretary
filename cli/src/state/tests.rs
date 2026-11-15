@@ -192,25 +192,6 @@ fn resolve_rejects_state_dir_inside_vault() {
     assert!(matches!(err, StateDirError::InsideVault { .. }));
 }
 
-/// #746: `delete` removes a saved state, after which `load` is empty again.
-#[test]
-fn delete_removes_a_saved_state() {
-    let dir = TempDir::new().unwrap();
-    let uuid = [0x5a; 16];
-    save(dir.path(), &SyncState::empty(uuid)).unwrap();
-    assert!(state_file_path(dir.path(), uuid).exists());
-    delete(dir.path(), uuid).unwrap();
-    assert!(!state_file_path(dir.path(), uuid).exists());
-}
-
-/// #746: a missing state file (or state dir) is already the reset state.
-#[test]
-fn delete_of_a_missing_state_is_ok() {
-    let dir = TempDir::new().unwrap();
-    delete(dir.path(), [0x5b; 16]).unwrap();
-    delete(&dir.path().join("never-created"), [0x5b; 16]).unwrap();
-}
-
 #[cfg(unix)]
 #[test]
 fn create_dir_secure_sets_0700() {

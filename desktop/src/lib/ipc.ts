@@ -288,9 +288,10 @@ export async function unlockWithPassword(
 
 /**
  * The user-confirmed recovery from `rollback_detected` (#746): a full password
- * open that first deletes this device's sync state for the vault, so the
- * on-disk manifest is accepted. Same shape as `unlockWithPassword`. Call it
- * only from the explicit "Reset and open" confirmation, never automatically.
+ * open, then this device's sync baseline for the vault is replaced with the
+ * verified clock, so the on-disk manifest is accepted. Same shape as
+ * `unlockWithPassword`. Call it only from the explicit "Reset and open"
+ * confirmation, never automatically.
  */
 export async function resetSyncStateAndUnlock(
   folderPath: string,

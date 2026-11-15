@@ -10,20 +10,23 @@ use crate::errors::VaultError;
 use crate::wrappers::identity::UnlockedIdentity;
 use crate::wrappers::vault::{OpenVaultManifest, OpenVaultOutput};
 
-/// Make `state_dir` the directory the bridge's opens read this device's §10
-/// baseline from. Android calls it once at startup with the dir it passes to
-/// every sync call; desktop and iOS keep the default. uniffi-projected (#746).
+/// Make `state_dir` the directory every bridge call without an explicit
+/// `state_dir` reads this device's §10 baseline from: the opens, and repair and
+/// its preview. Android, iOS and macOS call it once at startup with the dir
+/// they pass to every sync call. uniffi-projected (#746).
 ///
 /// # Errors
-/// [`VaultError::SyncFailed`] if a different directory is already set.
+/// [`VaultError::SyncFailed`] if `state_dir` is relative, or a different
+/// directory is already fixed (set, or read as the default by an earlier
+/// call).
 pub fn set_platform_state_dir(state_dir: String) -> Result<(), VaultError> {
     secretary_ffi_bridge::set_platform_state_dir(Path::new(&state_dir)).map_err(VaultError::from)
 }
 
-/// Open with the master password after deleting this vault's sync state in
-/// `state_dir`, so the on-disk manifest is accepted. The apps offer it only
-/// from `VaultError::RollbackDetected`, after the user confirms.
-/// uniffi-projected (#746).
+/// Open with the master password, then replace this vault's sync baseline in
+/// `state_dir` with the clock just verified, so the on-disk manifest is
+/// accepted. The apps offer it only from `VaultError::RollbackDetected`, after
+/// the user confirms. uniffi-projected (#746).
 ///
 /// `password` is a zero-copy borrow of the foreign buffer (`[ByRef] bytes`,
 /// #307); the bridge wraps its one copy in `SecretBytes`.

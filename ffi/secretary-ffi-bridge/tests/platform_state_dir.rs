@@ -6,7 +6,7 @@
 //! `dirs::data_dir()`, a directory the Android app never writes, so §10 was
 //! inactive at open there.
 
-use secretary_cli::state::{save, state_file_path};
+use secretary_cli::state::{load, save};
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::sync::SyncState;
 use secretary_core::vault::{open_vault, Unlocker, VectorClockEntry};
@@ -50,6 +50,10 @@ fn the_override_reaches_the_open_check_and_the_reset_recovers() {
     );
 
     reset_sync_state_and_open_with_password(vault.path(), &password).expect("reset opens");
-    assert!(!state_file_path(state.path(), uuid).exists());
+    assert_eq!(
+        load(state.path(), uuid).unwrap().highest_vector_clock_seen,
+        core.manifest.vector_clock,
+        "the reset re-arms the baseline at the verified clock"
+    );
     open_vault_with_password(vault.path(), &password).expect("opens after the reset");
 }

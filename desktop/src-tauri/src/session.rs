@@ -226,7 +226,9 @@ impl VaultSession {
     /// Shared body of [`Self::unlock`] and the reset-sync-state unlock (#746):
     /// `open` produces the bridge handles (it runs only while locked), then the
     /// per-vault device UUID is resolved from the verified manifest and the
-    /// session is populated exactly as for an ordinary unlock.
+    /// session is populated exactly as for an ordinary unlock. If that
+    /// resolution fails after a reset, the baseline already holds the clock
+    /// the user accepted, so a retry opens normally.
     pub fn unlock_with(
         &mut self,
         folder: &Path,

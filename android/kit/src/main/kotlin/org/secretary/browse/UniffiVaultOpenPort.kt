@@ -60,7 +60,7 @@ import java.security.SecureRandom
  * call by [withDirectSecret] — uniffi 0.32's `[ByRef] bytes` zero-copy path (#307).
  *
  * [syncStateDir] is the directory this app's sync passes persist their state to (the one handed to
- * `makeVaultSync`). [resetSyncStateAndOpenWithPassword] deletes the vault's baseline THERE, so a
+ * `makeVaultSync`). [resetSyncStateAndOpenWithPassword] rewrites the vault's baseline THERE, so a
  * port built without it refuses the reset rather than guessing a directory (#746).
  */
 class UniffiVaultOpenPort(
@@ -484,6 +484,6 @@ fun uniffiVaultOpenPort(deviceUuids: DeviceUuidProvider): VaultOpenPort =
     UniffiVaultOpenPort(deviceUuids = deviceUuids)
 
 /** Production factory for the app's unlock paths: writes, plus the rollback reset (#746), which
- *  deletes the vault's sync baseline in [syncStateDir] — the same dir the app's sync writes to. */
+ *  rewrites the vault's sync baseline in [syncStateDir] — the same dir the app's sync writes to. */
 fun uniffiVaultOpenPort(deviceUuids: DeviceUuidProvider, syncStateDir: java.io.File): VaultOpenPort =
     UniffiVaultOpenPort(deviceUuids = deviceUuids, syncStateDir = syncStateDir)

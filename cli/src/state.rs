@@ -247,17 +247,6 @@ pub fn save(state_dir: &Path, state: &SyncState) -> Result<(), StateError> {
     Ok(())
 }
 
-/// Delete `<state-dir>/<vault_uuid_hex>.state.cbor`, returning this device to
-/// §10's "no baseline" state (#746). A missing file is already that state, so
-/// `NotFound` is success. Callers that share the state dir with a sync pass
-/// should hold the [`LockfileGuard`].
-pub fn delete(state_dir: &Path, vault_uuid: [u8; 16]) -> Result<(), StateError> {
-    match fs::remove_file(state_file_path(state_dir, vault_uuid)) {
-        Err(e) if e.kind() != ErrorKind::NotFound => Err(StateError::Io(e)),
-        _ => Ok(()),
-    }
-}
-
 /// RAII guard for the per-vault exclusive lockfile. Holds the locked file
 /// handle; releases on drop (kernel auto-releases flock when fd closes).
 #[derive(Debug)]

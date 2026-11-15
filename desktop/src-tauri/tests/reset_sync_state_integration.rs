@@ -3,7 +3,7 @@
 //! A device whose saved §10 baseline strictly dominates the vault on disk has
 //! its ordinary open refused (`rollback_detected`). The reset command is the
 //! user-confirmed recovery: a full password open, then this vault's sync-state
-//! file is deleted. Each test drives the explicit-state-dir core against an
+//! file is overwritten with the clock just verified. Each test drives the explicit-state-dir core against an
 //! ephemeral copy of the golden vault and a `TempDir` state dir, so nothing
 //! touches the user's real sync-state directory.
 
@@ -63,7 +63,7 @@ fn poison(state_dir: &Path, vault: &Path) -> PathBuf {
 }
 
 #[test]
-fn reset_sync_state_and_unlock_opens_a_poisoned_vault_and_deletes_its_state() {
+fn reset_sync_state_and_unlock_opens_a_poisoned_vault_and_rearms_its_state() {
     let vault_dir = secretary_test_utils::copy_dir_to_tempdir(&golden_vault_path());
     let state_dir = tempfile::tempdir().unwrap();
     let state_file = poison(state_dir.path(), vault_dir.path());
@@ -79,7 +79,14 @@ fn reset_sync_state_and_unlock_opens_a_poisoned_vault_and_deletes_its_state() {
 
     assert_eq!(dto.vault_uuid_hex.len(), 32);
     assert!(state.lock().unwrap().is_unlocked());
-    assert!(!state_file.exists(), "the reset must delete the state file");
+    let pw = SecretBytes::new(secretary_test_utils::golden_vault_001_password());
+    let disk = open_vault(vault_dir.path(), Unlocker::Password(&pw), None).unwrap();
+    let saved = secretary_cli::state::load(state_dir.path(), disk.manifest.vault_uuid).unwrap();
+    assert!(state_file.exists());
+    assert_eq!(
+        saved.highest_vector_clock_seen, disk.manifest.vector_clock,
+        "the reset must re-arm the baseline at the verified clock"
+    );
 }
 
 #[test]
@@ -87,6 +94,7 @@ fn reset_sync_state_and_unlock_with_a_wrong_password_leaves_the_state_file() {
     let vault_dir = secretary_test_utils::copy_dir_to_tempdir(&golden_vault_path());
     let state_dir = tempfile::tempdir().unwrap();
     let state_file = poison(state_dir.path(), vault_dir.path());
+    let before = std::fs::read(&state_file).unwrap();
     let (state, _dev) = approved_state(vault_dir.path());
 
     let err = unlock::reset_sync_state_and_unlock_in_impl(
@@ -99,7 +107,11 @@ fn reset_sync_state_and_unlock_with_a_wrong_password_leaves_the_state_file() {
 
     assert!(matches!(err, AppError::WrongPassword), "got {err:?}");
     assert!(!state.lock().unwrap().is_unlocked());
-    assert!(state_file.exists(), "a failed reset must change nothing");
+    assert_eq!(
+        std::fs::read(&state_file).unwrap(),
+        before,
+        "a failed reset must change nothing"
+    );
 }
 
 #[test]
@@ -107,6 +119,7 @@ fn reset_sync_state_and_unlock_refuses_an_unapproved_folder() {
     let vault_dir = secretary_test_utils::copy_dir_to_tempdir(&golden_vault_path());
     let state_dir = tempfile::tempdir().unwrap();
     let state_file = poison(state_dir.path(), vault_dir.path());
+    let before = std::fs::read(&state_file).unwrap();
     let device_dir = tempfile::tempdir().unwrap();
     let state = Mutex::new(VaultSession::new(device_dir.path().to_path_buf()));
 
@@ -122,5 +135,5 @@ fn reset_sync_state_and_unlock_refuses_an_unapproved_folder() {
         matches!(err, AppError::PathNotApproved { .. }),
         "got {err:?}"
     );
-    assert!(state_file.exists());
+    assert_eq!(std::fs::read(&state_file).unwrap(), before);
 }

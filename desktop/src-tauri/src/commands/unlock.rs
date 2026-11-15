@@ -88,8 +88,8 @@ pub async fn reset_sync_state_and_unlock(
 
 /// [`reset_sync_state_and_unlock`] against an explicit sync-state directory
 /// (hermetic tests). A full password open, then this vault's sync-state file
-/// is deleted so the on-disk manifest is accepted; a wrong password changes
-/// nothing. Same approval gate and path validation as an ordinary unlock.
+/// is overwritten with the verified clock so the on-disk manifest is accepted;
+/// a wrong password changes nothing. Same approval gate and path validation as an ordinary unlock.
 pub fn reset_sync_state_and_unlock_in_impl(
     state: &Mutex<VaultSession>,
     state_dir: &Path,
