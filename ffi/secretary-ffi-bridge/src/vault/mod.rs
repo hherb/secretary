@@ -50,10 +50,14 @@
 pub(crate) mod inner;
 pub(crate) mod manifest;
 pub mod orchestration;
+pub mod reset;
 
 pub use inner::BlockSummary;
 pub use manifest::OpenVaultManifest;
 pub use orchestration::{open_vault_with_password, open_vault_with_recovery, OpenVaultOutput};
+pub use reset::{
+    reset_sync_state_and_open_with_password, reset_sync_state_and_open_with_password_in,
+};
 
 #[cfg(test)]
 mod tests;

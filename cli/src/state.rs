@@ -247,6 +247,17 @@ pub fn save(state_dir: &Path, state: &SyncState) -> Result<(), StateError> {
     Ok(())
 }
 
+/// Delete `<state-dir>/<vault_uuid_hex>.state.cbor`, returning this device to
+/// §10's "no baseline" state (#746). A missing file is already that state, so
+/// `NotFound` is success. Callers that share the state dir with a sync pass
+/// should hold the [`LockfileGuard`].
+pub fn delete(state_dir: &Path, vault_uuid: [u8; 16]) -> Result<(), StateError> {
+    match fs::remove_file(state_file_path(state_dir, vault_uuid)) {
+        Err(e) if e.kind() != ErrorKind::NotFound => Err(StateError::Io(e)),
+        _ => Ok(()),
+    }
+}
+
 /// RAII guard for the per-vault exclusive lockfile. Holds the locked file
 /// handle; releases on drop (kernel auto-releases flock when fd closes).
 #[derive(Debug)]
@@ -476,6 +487,25 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, StateDirError::InsideVault { .. }));
+    }
+
+    /// #746: `delete` removes a saved state, after which `load` is empty again.
+    #[test]
+    fn delete_removes_a_saved_state() {
+        let dir = TempDir::new().unwrap();
+        let uuid = [0x5a; 16];
+        save(dir.path(), &SyncState::empty(uuid)).unwrap();
+        assert!(state_file_path(dir.path(), uuid).exists());
+        delete(dir.path(), uuid).unwrap();
+        assert!(!state_file_path(dir.path(), uuid).exists());
+    }
+
+    /// #746: a missing state file (or state dir) is already the reset state.
+    #[test]
+    fn delete_of_a_missing_state_is_ok() {
+        let dir = TempDir::new().unwrap();
+        delete(dir.path(), [0x5b; 16]).unwrap();
+        delete(&dir.path().join("never-created"), [0x5b; 16]).unwrap();
     }
 
     #[cfg(unix)]

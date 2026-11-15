@@ -120,6 +120,7 @@ pub mod revoke;
 pub mod save;
 pub mod settings;
 pub mod share;
+mod state_dir;
 pub mod sync;
 mod sync_helpers;
 #[cfg(test)]
@@ -188,6 +189,7 @@ pub use settings::{
     SETTINGS_FIELD_RETENTION_WINDOW_MS, SETTINGS_RECORD_TYPE,
 };
 pub use share::share_block;
+pub use state_dir::set_platform_state_dir;
 pub use sync::{
     refresh_manifest, refresh_manifest_in, sync_commit_decisions, sync_commit_decisions_in,
     sync_commit_decisions_with_session, sync_commit_decisions_with_session_in, sync_status,
@@ -197,6 +199,6 @@ pub use sync::{
 pub use trash::{list_trashed_blocks, trash_block, TrashedBlock};
 pub use unlock::{open_with_password, open_with_recovery};
 pub use vault::{
-    open_vault_with_password, open_vault_with_recovery, BlockSummary, OpenVaultManifest,
-    OpenVaultOutput,
+    open_vault_with_password, open_vault_with_recovery, reset_sync_state_and_open_with_password,
+    reset_sync_state_and_open_with_password_in, BlockSummary, OpenVaultManifest, OpenVaultOutput,
 };

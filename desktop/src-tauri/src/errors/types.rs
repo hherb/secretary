@@ -180,6 +180,12 @@ pub enum AppError {
     #[error("This vault changed on another device since you opened it. Sync, then try again.")]
     VaultChangedOnDisk,
 
+    /// §10 (#746): this device last saw a newer version of the vault than
+    /// the one on disk, so the open was refused. The unlock screen offers a
+    /// confirmed reset (`reset_sync_state_and_unlock`).
+    #[error("This vault is older than the version this device last saw.")]
+    RollbackDetected,
+
     #[error("Sync failed")]
     SyncFailed {
         #[serde(skip_serializing)]

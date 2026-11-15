@@ -78,10 +78,11 @@ pub use namespace::{
     preview_repair_with_password, preview_repair_with_recovery, purge_block, read_block,
     read_settings, reauth_window_default_ms, reauth_window_max_ms, reauth_window_min_ms,
     refresh_manifest, remove_device_slot, rename_block, repair_with_device_secret,
-    repair_with_password, repair_with_recovery, restore_block, resurrect_record,
-    retention_window_max_ms, retention_window_min_ms, save_block, share_block, share_block_to,
-    sync_commit_decisions, sync_commit_decisions_with_session, sync_status, sync_vault,
-    sync_vault_with_session, tombstone_record, trash_block, write_settings,
+    repair_with_password, repair_with_recovery, reset_sync_state_and_open_with_password,
+    restore_block, resurrect_record, retention_window_max_ms, retention_window_min_ms, save_block,
+    set_platform_state_dir, share_block, share_block_to, sync_commit_decisions,
+    sync_commit_decisions_with_session, sync_status, sync_vault, sync_vault_with_session,
+    tombstone_record, trash_block, write_settings,
 };
 pub use wrappers::block::{BlockReadOutput, FieldHandle, Record};
 pub use wrappers::device::{DeviceEnrollOutput, DeviceSecretOutput};

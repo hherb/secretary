@@ -336,6 +336,17 @@ pub enum FfiVaultError {
     #[error("the vault changed on disk since it was opened; sync, then retry")]
     VaultChangedOnDisk,
 
+    /// §10 (#352): this device's saved sync baseline strictly dominates the
+    /// manifest on disk, so the open was refused as a possible rollback. The
+    /// cloud host may be serving an older vault, or this device's sync state
+    /// may be stale (a restored backup, or a pre-#730 SilentMerge, #746). No
+    /// handle was returned. Only the app-facing opens raise it; everything
+    /// else that hits core's `VaultError::Rollback` still folds to
+    /// `CorruptVault`. Recovery, after the user confirms:
+    /// [`crate::vault::reset_sync_state_and_open_with_password`].
+    #[error("this vault is older than the version this device last saw")]
+    RollbackDetected,
+
     /// ADR 0009 (B.2): the requested device slot (`devices/<uuid>.wrap`) does
     /// not exist. Returned by `open_with_device_secret` / `remove_device_slot`.
     /// Benign "unknown device" caller condition, not a data-integrity failure.

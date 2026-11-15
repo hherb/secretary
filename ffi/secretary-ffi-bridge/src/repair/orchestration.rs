@@ -179,7 +179,7 @@ pub fn repair_vault_with_password(
     approvals: &[FfiApprovedWidening],
 ) -> Result<OpenVaultOutput, FfiVaultError> {
     repair_vault_with_password_in(
-        secretary_cli::state::default_state_dir().as_deref(),
+        crate::state_dir::platform_state_dir().as_deref(),
         folder,
         password,
         device_uuid,
@@ -240,7 +240,7 @@ pub fn repair_vault_with_recovery(
     approvals: &[FfiApprovedWidening],
 ) -> Result<OpenVaultOutput, FfiVaultError> {
     repair_vault_with_recovery_in(
-        secretary_cli::state::default_state_dir().as_deref(),
+        crate::state_dir::platform_state_dir().as_deref(),
         folder,
         mnemonic_bytes,
         device_uuid,
@@ -299,7 +299,7 @@ pub fn repair_vault_with_device_secret(
     approvals: &[FfiApprovedWidening],
 ) -> Result<OpenVaultOutput, FfiVaultError> {
     repair_vault_with_device_secret_in(
-        secretary_cli::state::default_state_dir().as_deref(),
+        crate::state_dir::platform_state_dir().as_deref(),
         folder,
         device_uuid,
         device_secret,

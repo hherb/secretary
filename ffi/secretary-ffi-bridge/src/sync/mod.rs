@@ -5,7 +5,7 @@
 
 pub mod dto;
 pub mod orchestration;
-mod pass;
+pub(crate) mod pass;
 pub mod session;
 pub mod status;
 

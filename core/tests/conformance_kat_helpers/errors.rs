@@ -33,6 +33,7 @@ pub fn variant_name_vault(e: &secretary_ffi_bridge::error::FfiVaultError) -> &'s
         E::SyncFailed { .. } => "SyncFailed",
         E::SyncDecisionsIncomplete => "SyncDecisionsIncomplete",
         E::VaultChangedOnDisk => "VaultChangedOnDisk",
+        E::RollbackDetected => "RollbackDetected",
         E::DeviceSlotNotFound => "DeviceSlotNotFound",
         E::WrongDeviceSecretOrCorrupt => "WrongDeviceSecretOrCorrupt",
         E::DeviceUuidMismatch { .. } => "DeviceUuidMismatch",

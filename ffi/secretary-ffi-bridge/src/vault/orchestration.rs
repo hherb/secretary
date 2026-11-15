@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use secretary_core::crypto::secret::{SecretBytes, Sensitive};
-use secretary_core::vault::{manifest::is_rollback, OpenVault, Unlocker, VaultError};
+use secretary_core::vault::{manifest::is_rollback, OpenVault, Unlocker};
 use zeroize::Zeroize as _;
 
 use crate::error::detail;
@@ -96,10 +96,11 @@ pub fn open_vault_with_recovery(
 /// closes the browse-without-sync gap.
 ///
 /// A never-synced device has no state file → an empty baseline → no false
-/// positive. A detected rollback surfaces as [`VaultError::Rollback`] →
-/// [`FfiVaultError::CorruptVault`] (fail-closed: the caller never receives a
+/// positive. A detected rollback surfaces as [`FfiVaultError::RollbackDetected`]
+/// (#746; it was a `CorruptVault` fold before, which left the apps no way to
+/// offer the reset) — fail-closed: the caller never receives a
 /// usable handle, and blocks are only read on-demand *after* this returns, so a
-/// rolled-back vault can never be browsed).
+/// rolled-back vault can never be browsed.
 ///
 /// The state directory is OS-local and outside the cloud-replay threat surface,
 /// so if it cannot be read (missing dir, corrupt/mismatched state file), the
@@ -107,7 +108,7 @@ pub fn open_vault_with_recovery(
 /// against a threat (local-state tampering) that already implies device
 /// compromise. `load` itself returns an empty state for a missing *file*.
 pub(crate) fn enforce_rollback_resistance(core_out: &OpenVault) -> Result<(), FfiVaultError> {
-    let Some(state_dir) = secretary_cli::state::default_state_dir() else {
+    let Some(state_dir) = crate::state_dir::platform_state_dir() else {
         return Ok(());
     };
     enforce_rollback_resistance_in(&state_dir, core_out)
@@ -125,11 +126,7 @@ pub(crate) fn enforce_rollback_resistance_in(
         &state.highest_vector_clock_seen,
         &core_out.manifest.vector_clock,
     ) {
-        return Err(VaultError::Rollback {
-            local_clock: state.highest_vector_clock_seen,
-            incoming_clock: core_out.manifest.vector_clock.clone(),
-        }
-        .into());
+        return Err(FfiVaultError::RollbackDetected);
     }
     Ok(())
 }
@@ -243,8 +240,8 @@ mod tests {
 
         let err = enforce_rollback_resistance_in(state_dir.path(), &core_out).unwrap_err();
         assert!(
-            matches!(err, FfiVaultError::CorruptVault { .. }),
-            "rollback must fail-closed as CorruptVault, got {err:?}",
+            matches!(err, FfiVaultError::RollbackDetected),
+            "rollback must fail closed as RollbackDetected, got {err:?}",
         );
     }
 

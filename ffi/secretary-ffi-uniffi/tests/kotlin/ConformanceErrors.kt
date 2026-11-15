@@ -37,6 +37,7 @@ internal fun vaultExceptionVariantName(e: VaultException): String = when (e) {
     is VaultException.SyncFailed -> "SyncFailed"
     is VaultException.SyncDecisionsIncomplete -> "SyncDecisionsIncomplete"
     is VaultException.VaultChangedOnDisk -> "VaultChangedOnDisk"
+    is VaultException.RollbackDetected -> "RollbackDetected"
     is VaultException.DeviceSlotNotFound -> "DeviceSlotNotFound"
     is VaultException.WrongDeviceSecretOrCorrupt -> "WrongDeviceSecretOrCorrupt"
     is VaultException.DeviceUuidMismatch -> "DeviceUuidMismatch"
@@ -81,6 +82,7 @@ internal fun vaultExceptionDetail(e: VaultException): String? = when (e) {
     is VaultException.SyncInProgress,
     is VaultException.SyncDecisionsIncomplete,
     is VaultException.VaultChangedOnDisk,
+    is VaultException.RollbackDetected,
     is VaultException.DeviceSlotNotFound,
     is VaultException.WrongDeviceSecretOrCorrupt,
     is VaultException.VaultFolderNotEmpty,

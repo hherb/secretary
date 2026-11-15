@@ -38,6 +38,9 @@ pub use sync::{
     sync_vault, sync_vault_with_session,
 };
 
+mod sync_state;
+pub use sync_state::{reset_sync_state_and_open_with_password, set_platform_state_dir};
+
 /// Unlock a vault using its master password. uniffi-projected.
 ///
 /// # Errors
