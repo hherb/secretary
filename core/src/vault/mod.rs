@@ -123,7 +123,9 @@ pub enum VaultError {
     /// clock seen for this vault" — every per-device counter is ≤ the
     /// local counterpart and at least one is strictly less. The UI
     /// SHOULD offer an explicit "I am restoring from a backup; accept
-    /// anyway" override before bypassing this guard.
+    /// anyway" override before bypassing this guard. The apps do, through
+    /// the FFI bridge's `reset_sync_state_and_open_with_password` (#746),
+    /// which deletes the local baseline after a full password open.
     ///
     /// `local_clock` is the per-vault highest-seen clock (OS keystore
     /// concern; out of scope for this module to compute or store).

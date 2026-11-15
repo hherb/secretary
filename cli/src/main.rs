@@ -457,6 +457,10 @@ mod tests {
             "once path must log the rollback forensic line; got: {logs:?}"
         );
         assert!(
+            logs.contains(".state.cbor"),
+            "rollback log must name the manual remedy (#746); got: {logs:?}"
+        );
+        assert!(
             logs.contains("disk_clock") && logs.contains("local_clock"),
             "rollback log must carry the disk-vs-local vector clocks; got: {logs:?}"
         );

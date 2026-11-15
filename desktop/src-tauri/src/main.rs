@@ -117,6 +117,7 @@ fn main() {
         .manage(Mutex::new(VaultSession::new(device_data_dir)))
         .invoke_handler(tauri::generate_handler![
             unlock::unlock_with_password,
+            unlock::reset_sync_state_and_unlock,
             repair::repair_vault,
             repair::preview_repair,
             vault::list_blocks,

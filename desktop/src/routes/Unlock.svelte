@@ -14,12 +14,14 @@
   import { onMount } from 'svelte';
   import {
     unlockWithPassword,
+    resetSyncStateAndUnlock,
     repairVault,
     previewRepair,
     getSettings,
     isAppError,
     useRecentVault,
     type ApprovedWideningDto,
+    type ManifestDto,
     type WideningReportDto
   } from '../lib/ipc';
   import type { AppError } from '../lib/errors';
@@ -117,6 +119,12 @@
 
   const formValid = $derived(folderPath.length > 0 && password.length > 0);
 
+  // #746: the unlock was refused with `rollback_detected` and the "This vault
+  // looks older than expected" confirmation is showing. Component-local (not
+  // derived from session state) so Cancel can dismiss it, and so it stays
+  // mounted while the reset is in flight. Never acted on without a click.
+  let rollbackPrompt = $state(false);
+
   // Load the this-device Touch ID preference (#277) for the write-reauth
   // gate, failing safe: a load error disables biometric for this session
   // (resetPresencePref) rather than blocking the unlock. Shared by the
@@ -130,10 +138,22 @@
     }
   }
 
+  // Shared success tail of unlock, repair and the #746 reset: the manifest
+  // only carries `warnings`, so the full settings DTO comes from
+  // `getSettings`; the password just proved presence, so seed the reauth
+  // grace-window clock.
+  async function completeUnlock(manifest: ManifestDto): Promise<void> {
+    const settings = await getSettings();
+    unlockSucceeded(manifest, settings);
+    seedReauthClock(Date.now());
+    await loadPresencePrefFailSafe();
+  }
+
   async function submit(e: SubmitEvent): Promise<void> {
     e.preventDefault();
     if (!formValid || submitting) return;
     submitting = true;
+    rollbackPrompt = false;
     beginUnlock();
     // #374: on `vault_needs_repair`, the "Repair now?" affordance reuses this
     // same password to call repairVault — keep the binding alive for that one
@@ -141,21 +161,14 @@
     // same as before.
     let keepPassword = false;
     try {
-      const manifest = await unlockWithPassword(folderPath, password);
-      // Manifest only carries `warnings`; the full settings DTO comes
-      // from `getSettings` so the post-unlock route has the auto-lock
-      // timeout (etc.) readily available.
-      const settings = await getSettings();
-      unlockSucceeded(manifest, settings);
-      // Seed the reauth grace-window clock: the unlock password proves
-      // presence, so a write within the grace window should not re-prompt.
-      seedReauthClock(Date.now());
-      await loadPresencePrefFailSafe();
+      await completeUnlock(await unlockWithPassword(folderPath, password));
     } catch (err) {
       // `unlockFailed` accepts `unknown` and narrows internally; no cast
       // required at the call site.
       unlockFailed(err);
-      keepPassword = isAppError(err) && err.code === 'vault_needs_repair';
+      // #746: the reset confirmation reuses this password too.
+      rollbackPrompt = isAppError(err) && err.code === 'rollback_detected';
+      keepPassword = rollbackPrompt || (isAppError(err) && err.code === 'vault_needs_repair');
     } finally {
       // Password lifetime ends here regardless of outcome (unless the
       // repair affordance needs it) — strip the binding immediately so a
@@ -226,11 +239,7 @@
   // afterwards regardless of outcome.
   async function finishRepair(approvals: ApprovedWideningDto[]): Promise<void> {
     try {
-      const manifest = await repairVault(folderPath, password, approvals);
-      const settings = await getSettings();
-      unlockSucceeded(manifest, settings);
-      seedReauthClock(Date.now());
-      await loadPresencePrefFailSafe();
+      await completeUnlock(await repairVault(folderPath, password, approvals));
     } catch (err) {
       unlockFailed(err);
     } finally {
@@ -239,6 +248,31 @@
       repairing = false;
       consentWidenings = [];
     }
+  }
+
+  // #746 "Reset and open": the user confirmed accepting the vault as it is on
+  // disk. Reuses the password still bound from the refused unlock; guarded on
+  // `formValid` like `confirmRepair` (the binding resets on remount).
+  async function confirmReset(): Promise<void> {
+    if (!formValid || submitting) return;
+    submitting = true;
+    beginUnlock();
+    try {
+      await completeUnlock(await resetSyncStateAndUnlock(folderPath, password));
+    } catch (err) {
+      unlockFailed(err);
+    } finally {
+      password = '';
+      submitting = false;
+      rollbackPrompt = false;
+    }
+  }
+
+  // #746 Cancel: no command at all. Drops the reused password; the rollback
+  // explanation stays on screen without its buttons.
+  function cancelReset(): void {
+    rollbackPrompt = false;
+    password = '';
   }
 
   // RepairConsentDialog's Grant callback. The approvals are built VERBATIM
@@ -297,7 +331,32 @@
         </div>
       {/if}
 
-      {#if needsRepair || repairing}
+      {#if rollbackPrompt}
+        <!-- #746: the device's sync baseline is newer than the vault on disk.
+             Copy from errors.ts (shared verbatim with iOS/Android); resetting
+             needs a click. -->
+        {@const rollback = userMessageFor({ code: 'rollback_detected' })}
+        <div class="unlock__error unlock__rollback" role="alert">
+          <div class="unlock__error-title">{rollback.title}</div>
+          <div class="unlock__error-detail">{rollback.actionHint}</div>
+          <button
+            type="button"
+            class="unlock__error-action"
+            disabled={submitting || !formValid}
+            onclick={confirmReset}
+          >
+            {submitting ? 'Resetting…' : 'Reset and open'}
+          </button>
+          <button
+            type="button"
+            class="unlock__error-action"
+            disabled={submitting}
+            onclick={cancelReset}
+          >
+            Cancel
+          </button>
+        </div>
+      {:else if needsRepair || repairing}
         <!-- #374: an interrupted write left adoptable crash residue — offer
              an in-place fix instead of a hard error. `confirmRepair` reuses
              the password still bound to the form field below. `|| repairing`
@@ -342,7 +401,11 @@
         <PathPicker
           value={folderPath}
           command="pick_vault_folder"
-          onSelect={(p) => (folderPath = p)}
+          onSelect={(p) => {
+            folderPath = p;
+            // #746: a confirmation is for the folder it was shown for.
+            rollbackPrompt = false;
+          }}
           disabled={submitting}
         />
       </label>

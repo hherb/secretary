@@ -33,6 +33,7 @@ import uniffi.secretary.reauthWindowDefaultMs as ffiReauthWindowDefaultMs
 import uniffi.secretary.reauthWindowMaxMs as ffiReauthWindowMaxMs
 import uniffi.secretary.reauthWindowMinMs as ffiReauthWindowMinMs
 import uniffi.secretary.renameBlock as ffiRenameBlock
+import uniffi.secretary.resetSyncStateAndOpenWithPassword as ffiResetSyncStateAndOpenWithPassword
 import uniffi.secretary.restoreBlock as ffiRestoreBlock
 import uniffi.secretary.resurrectRecord as ffiResurrectRecord
 import uniffi.secretary.retentionWindowMaxMs as ffiRetentionWindowMaxMs
@@ -57,6 +58,10 @@ import java.security.SecureRandom
  *
  * The secret argument crosses the FFI as a direct [java.nio.ByteBuffer] minted (and scrubbed) per
  * call by [withDirectSecret] — uniffi 0.32's `[ByRef] bytes` zero-copy path (#307).
+ *
+ * [syncStateDir] is the directory this app's sync passes persist their state to (the one handed to
+ * `makeVaultSync`). [resetSyncStateAndOpenWithPassword] rewrites the vault's baseline THERE, so a
+ * port built without it refuses the reset rather than guessing a directory (#746).
  */
 class UniffiVaultOpenPort(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -64,6 +69,8 @@ class UniffiVaultOpenPort(
     private val openFn: (ByteArray, java.nio.ByteBuffer) -> OpenVaultOutput = ::openVaultWithPassword,
     private val recoveryFn: (ByteArray, java.nio.ByteBuffer) -> OpenVaultOutput = ::openVaultWithRecovery,
     private val deviceSecretFn: (ByteArray, ByteArray, java.nio.ByteBuffer) -> OpenVaultOutput = ::ffiOpenWithDeviceSecret,
+    private val syncStateDir: java.io.File? = null,
+    private val resetFn: (String, ByteArray, java.nio.ByteBuffer) -> OpenVaultOutput = ::ffiResetSyncStateAndOpenWithPassword,
 ) : VaultOpenPort {
     override suspend fun openWithPassword(vaultFolder: String, password: ByteArray): VaultSession =
         withContext(ioDispatcher) {
@@ -98,6 +105,19 @@ class UniffiVaultOpenPort(
             }
             UniffiVaultSession(output, ioDispatcher, deviceUuids)
         }
+
+    override suspend fun resetSyncStateAndOpenWithPassword(vaultFolder: String, password: ByteArray): VaultSession {
+        val stateDir = syncStateDir
+            ?: throw VaultBrowseError.Failed("no sync state directory configured; cannot reset sync state")
+        return withContext(ioDispatcher) {
+            val output = mapErrors {
+                withDirectSecret(password) { pw ->
+                    resetFn(stateDir.path, vaultFolder.toByteArray(Charsets.UTF_8), pw)
+                }
+            }
+            UniffiVaultSession(output, ioDispatcher, deviceUuids)
+        }
+    }
 }
 
 /**
@@ -462,3 +482,8 @@ fun uniffiVaultOpenPort(): VaultOpenPort = UniffiVaultOpenPort()
 /** Production factory that supports writes (delete/restore/edit): inject a device-uuid provider. */
 fun uniffiVaultOpenPort(deviceUuids: DeviceUuidProvider): VaultOpenPort =
     UniffiVaultOpenPort(deviceUuids = deviceUuids)
+
+/** Production factory for the app's unlock paths: writes, plus the rollback reset (#746), which
+ *  rewrites the vault's sync baseline in [syncStateDir] — the same dir the app's sync writes to. */
+fun uniffiVaultOpenPort(deviceUuids: DeviceUuidProvider, syncStateDir: java.io.File): VaultOpenPort =
+    UniffiVaultOpenPort(deviceUuids = deviceUuids, syncStateDir = syncStateDir)

@@ -26,6 +26,12 @@ final class VaultErrorMappingDeviceTests: XCTestCase {
         XCTAssertEqual(mapVaultAccessError(.VaultChangedOnDisk), .vaultChangedOnDisk)
     }
 
+    // #746: a refused rollback must stay typed so the unlock screen can offer
+    // the user-confirmed reset, NOT slide into `.other` or `.corruptVault`.
+    func testRollbackDetectedMapsToRollbackDetected() {
+        XCTAssertEqual(mapVaultAccessError(.RollbackDetected), .rollbackDetected)
+    }
+
     // #374: the open path promotes crash residue out of CorruptVault into
     // these two dedicated arms. With no repair UI on iOS they must map back to
     // `.corruptVault` (pre-#374 classification), NOT slide into `.other`.

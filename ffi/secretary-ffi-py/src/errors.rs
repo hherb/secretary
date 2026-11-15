@@ -70,6 +70,8 @@ create_exception!(secretary_ffi_py, VaultSyncFailed, PyException);
 create_exception!(secretary_ffi_py, VaultSyncDecisionsIncomplete, PyException);
 // A manifest write was refused: the vault changed on disk since it was opened.
 create_exception!(secretary_ffi_py, VaultChangedOnDisk, PyException);
+// An app-facing open was refused as a possible rollback (§10, #746).
+create_exception!(secretary_ffi_py, VaultRollbackDetected, PyException);
 // ADR 0009 (B.2) device-slot error surface — 3 typed exception classes
 // mirroring the bridge's new FfiVaultError device variants.
 create_exception!(secretary_ffi_py, VaultDeviceSlotNotFound, PyException);
@@ -195,6 +197,7 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         FfiVaultError::SyncInProgress => VaultSyncInProgress::new_err(e.to_string()),
         FfiVaultError::SyncFailed { .. } => VaultSyncFailed::new_err(e.to_string()),
         FfiVaultError::VaultChangedOnDisk => VaultChangedOnDisk::new_err(e.to_string()),
+        FfiVaultError::RollbackDetected => VaultRollbackDetected::new_err(e.to_string()),
         FfiVaultError::SyncDecisionsIncomplete => {
             VaultSyncDecisionsIncomplete::new_err(e.to_string())
         }

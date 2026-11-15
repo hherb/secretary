@@ -13,5 +13,9 @@ public enum UnlockState {
     case busy
     /// Opened — carries the live session handed to the browse screen.
     case unlocked(VaultSession)
+    /// A password open was refused as `.rollbackDetected` (#746). The view shows
+    /// `RollbackResetCopy` with confirm (`confirmRollbackReset`) and cancel
+    /// (`cancelRollbackReset`). Holds no secret: confirm takes the password again.
+    case rollbackResetPrompt
     case failed(VaultAccessError)
 }

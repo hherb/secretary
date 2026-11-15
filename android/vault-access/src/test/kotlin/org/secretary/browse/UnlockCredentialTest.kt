@@ -18,6 +18,31 @@ class UnlockCredentialTest {
     }
 
     @Test
+    fun `a password credential confirmed for reset opens via the reset with the password bytes`() = runTest {
+        val port = FakeVaultOpenPort()
+        openWithCredential(port, "/vault", UnlockCredential.Password(byteArrayOf(1, 2, 3), resetSyncState = true))
+        assertEquals(1, port.resetWithPassword.size)
+        assertArrayEquals(byteArrayOf(1, 2, 3), port.resetWithPassword[0])
+        assertTrue(port.openedWithPassword.isEmpty(), "a reset must not also run the plain open")
+    }
+
+    @Test
+    fun `a plain password credential never resets sync state`() = runTest {
+        val port = FakeVaultOpenPort()
+        openWithCredential(port, "/vault", UnlockCredential.Password(byteArrayOf(1)))
+        assertTrue(port.resetWithPassword.isEmpty(), "the reset is never automatic")
+    }
+
+    @Test
+    fun `a failed reset propagates its error`() = runTest {
+        val port = FakeVaultOpenPort(resetError = VaultBrowseError.WrongPasswordOrCorrupt)
+        val thrown = runCatching {
+            openWithCredential(port, "/vault", UnlockCredential.Password(byteArrayOf(9), resetSyncState = true))
+        }.exceptionOrNull()
+        assertEquals(VaultBrowseError.WrongPasswordOrCorrupt, thrown)
+    }
+
+    @Test
     fun `a recovery credential opens via openWithRecovery with the phrase bytes`() = runTest {
         val port = FakeVaultOpenPort()
         openWithCredential(port, "/vault", UnlockCredential.Recovery(byteArrayOf(7, 7, 9)))

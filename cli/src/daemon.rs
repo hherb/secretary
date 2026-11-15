@@ -238,6 +238,16 @@ fn outcome_log(outcome: &RunOutcome) -> Option<OutcomeLog> {
     }
 }
 
+/// The manual recovery for a device whose saved baseline is ahead of a disk
+/// that is genuinely current (#746; e.g. a pre-#730 build saved a merge clock
+/// it never wrote): the apps offer it as a confirmed
+/// "Reset and open"; the CLI owns its state dir, so it names the file. The
+/// daemon holds its state in memory and saves it on exit, so a deletion while
+/// it runs is undone: the process must be stopped first.
+pub(crate) const ROLLBACK_REMEDY: &str = "Only if you restored this vault from a backup, or \
+     are sure the copy on disk is current: stop secretary-sync, delete \
+     <state-dir>/<vault-uuid-hex>.state.cbor, then start it again to accept the vault.";
+
 /// Emit the operator-visible log line (if any) for a successful sync
 /// outcome. The side-effecting edge over the pure `outcome_log`.
 ///
@@ -251,7 +261,8 @@ pub fn log_outcome(outcome: &RunOutcome) {
         Some(OutcomeLog::RollbackRejected { disk, local }) => tracing::warn!(
             disk_clock = ?disk,
             local_clock = ?local,
-            "manifest rollback rejected (threat-model §3.1 attack indicator); daemon continues",
+            "manifest rollback rejected (threat-model §3.1 attack indicator); daemon continues. \
+             {ROLLBACK_REMEDY}",
         ),
         Some(OutcomeLog::VetoesResolved(n)) => tracing::warn!(
             vetoes_resolved = n,

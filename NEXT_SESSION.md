@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-15-merge-clock-tick-shipped.md
+docs/handoffs/2026-11-15-sync-state-reset-shipped.md

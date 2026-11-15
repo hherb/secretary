@@ -87,10 +87,10 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
      *   labels.
      * - [Failed]: gated at construction — every producer passes `diagnosticDetail`
      *   output, a fixed Kotlin string literal, or both (never raw Rust/JDK content).
-     *   Nine producers: four gated (`BrowseMapping.kt:48, RecordEditModel.kt:117,162,
-     *   VaultBrowseModel.kt:113`); four literals (`UniffiVaultOpenPort.kt:238,249,377,
+     *   Ten producers: four gated (`BrowseMapping.kt:50, RecordEditModel.kt:117,162,
+     *   VaultBrowseModel.kt:113`); five literals (`UniffiVaultOpenPort.kt:111,298,309,437,
      *   UniffiVaultDeviceSlotPort.kt:34`); one hybrid, fixed prefix plus `diagnosticDetail`
-     *   (`UniffiVaultOpenPort.kt:253`). Scoped to `VaultBrowseError.Failed` ONLY.
+     *   (`UniffiVaultOpenPort.kt:313`). Scoped to `VaultBrowseError.Failed` ONLY.
      *   [org.secretary.sync.VaultSyncError] has its own arm of the same name
      *   ([org.secretary.sync.VaultSyncError.Failed]) that this verdict does NOT
      *   cover: one of ITS two Kotlin-side producers is a raw pass-through of the
@@ -134,6 +134,14 @@ sealed class VaultBrowseError(message: String? = null) : Exception(message), Sec
 
     /** The vault changed on disk since it was opened; the write was refused. Sync, then retry. */
     data object VaultChangedOnDisk : VaultBrowseError(VAULT_CHANGED_ON_DISK_MESSAGE)
+
+    /**
+     * The open was refused because this device's saved sync baseline is newer than the vault on
+     * disk (§10, #746): a restored backup, or a storage provider serving an old copy. A password
+     * open can recover via [VaultOpenPort.resetSyncStateAndOpenWithPassword] after the user
+     * confirms; never automatically. Fieldless, so it carries no payload to redact.
+     */
+    data object RollbackDetected : VaultBrowseError()
 
     /** The supplied folder path is not a readable vault folder. */
     data class FolderInvalid(val detail: String) : VaultBrowseError(detail)

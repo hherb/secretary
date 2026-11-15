@@ -407,3 +407,14 @@ fn map_ffi_error_routes_repair_rejected() {
     assert_eq!(block_uuid_hex, "11223344-5566-7788-99aa-bbccddeeff00");
     assert_eq!(detail, "clock relation Concurrent");
 }
+
+#[test]
+fn rollback_detected_serializes_code_and_is_promoted() {
+    // #746: the unlock screen keys its reset offer on this code.
+    let v = serde_json::to_value(AppError::RollbackDetected).unwrap();
+    assert_eq!(v, serde_json::json!({ "code": "rollback_detected" }));
+    assert!(matches!(
+        map_ffi_error(FfiVaultError::RollbackDetected),
+        AppError::RollbackDetected
+    ));
+}

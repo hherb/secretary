@@ -124,7 +124,7 @@ pub fn preview_repair_with_password(
     password: &[u8],
 ) -> Result<FfiRepairPreview, FfiVaultError> {
     preview_repair_with_password_in(
-        secretary_cli::state::default_state_dir().as_deref(),
+        crate::state_dir::platform_state_dir().as_deref(),
         folder,
         password,
     )
@@ -160,7 +160,7 @@ pub fn preview_repair_with_recovery(
     mnemonic_bytes: &[u8],
 ) -> Result<FfiRepairPreview, FfiVaultError> {
     preview_repair_with_recovery_in(
-        secretary_cli::state::default_state_dir().as_deref(),
+        crate::state_dir::platform_state_dir().as_deref(),
         folder,
         mnemonic_bytes,
     )
@@ -198,7 +198,7 @@ pub fn preview_repair_with_device_secret(
     device_secret: &[u8; 32],
 ) -> Result<FfiRepairPreview, FfiVaultError> {
     preview_repair_with_device_secret_in(
-        secretary_cli::state::default_state_dir().as_deref(),
+        crate::state_dir::platform_state_dir().as_deref(),
         folder,
         device_uuid,
         device_secret,

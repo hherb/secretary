@@ -102,6 +102,14 @@ class BrowseMappingTest {
     }
 
     @Test
+    fun `maps RollbackDetected to its domain counterpart, not the CorruptVault or Failed fold`() {
+        assertEquals(
+            VaultBrowseError.RollbackDetected,
+            mapVaultBrowseError(VaultException.RollbackDetected()),
+        )
+    }
+
+    @Test
     fun `maps the device-secret-relevant arms to their domain counterparts`() {
         assertEquals(
             VaultBrowseError.WrongDeviceSecretOrCorrupt,

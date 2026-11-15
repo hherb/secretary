@@ -79,6 +79,9 @@ private func vaultAccessFailureMessage(_ e: VaultAccessError) -> String {
         return "The device key couldn’t open this vault. Unlock with your password."
     case .folderInvalid:
         return "The vault folder is missing or unreadable."
+    case .rollbackDetected:
+        // The reset needs the master password, so it is never offered here (#746).
+        return VaultAccessError.rollbackDetected.errorDescription ?? ""
     default:
         return "Couldn’t open the vault. Unlock with your password."
     }

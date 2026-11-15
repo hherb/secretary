@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use secretary_cli::pipeline::{InspectOutcome, SyncPassOutcome};
-use secretary_cli::state::{default_state_dir, load, save, LockfileGuard};
+use secretary_cli::state::{load, save, LockfileGuard};
 use secretary_core::sync::{ManifestHash, SyncError, SyncState, VetoDecision};
 
 use crate::error::detail;
@@ -72,9 +72,10 @@ pub(crate) fn commit_advanced(o: &SyncPassOutcome) -> bool {
     }
 }
 
-/// The default state dir, or `SyncFailed` when the platform has none.
+/// This platform's state dir ([`crate::state_dir::platform_state_dir`]), or
+/// `SyncFailed` when there is none.
 pub(crate) fn default_state_dir_or_err() -> Result<PathBuf, FfiVaultError> {
-    default_state_dir().ok_or_else(|| FfiVaultError::SyncFailed {
+    crate::state_dir::platform_state_dir().ok_or_else(|| FfiVaultError::SyncFailed {
         detail: detail::literal("no platform data directory available for the sync state cache"),
     })
 }

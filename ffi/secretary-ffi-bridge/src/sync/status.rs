@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use secretary_cli::state::{default_state_dir, load, state_file_path, StateError};
+use secretary_cli::state::{load, state_file_path, StateError};
 
 use crate::error::detail;
 use crate::error::FfiVaultError;
@@ -38,9 +38,12 @@ pub struct SyncStatusDto {
 /// - [`FfiVaultError::SyncStateCorrupt`] — the CBOR failed to decode.
 /// - [`FfiVaultError::SyncFailed`] — no platform state dir, or an I/O error.
 pub fn sync_status(vault_uuid: [u8; 16]) -> Result<SyncStatusDto, FfiVaultError> {
-    let state_dir = default_state_dir().ok_or_else(|| FfiVaultError::SyncFailed {
-        detail: detail::literal("no platform data directory available for the sync state cache"),
-    })?;
+    let state_dir =
+        crate::state_dir::platform_state_dir().ok_or_else(|| FfiVaultError::SyncFailed {
+            detail: detail::literal(
+                "no platform data directory available for the sync state cache",
+            ),
+        })?;
     sync_status_in(&state_dir, vault_uuid)
 }
 

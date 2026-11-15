@@ -242,11 +242,10 @@ fn from_core_vault_error_clock_overflow_maps_to_corrupt_vault() {
 
 #[test]
 fn from_core_vault_error_rollback_maps_to_corrupt_vault() {
-    // Issue #40 explicit-arm pin: §10 rollback-resistance rejection
-    // currently folds to CorruptVault. (Future UI work may want a
-    // dedicated typed variant so the foreign side can show a
-    // "restoring from backup; accept anyway" affordance — until
-    // then, drift-prevention tests pin the current routing.)
+    // Issue #40 explicit-arm pin: core's `VaultError::Rollback` still
+    // folds to CorruptVault through `From` (refresh, writes, repair; #734).
+    // The app-facing open check raises `FfiVaultError::RollbackDetected`
+    // directly (#746) and never goes through this conversion.
     let ffi: FfiVaultError = VaultError::Rollback {
         local_clock: vec![],
         incoming_clock: vec![],

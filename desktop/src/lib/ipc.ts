@@ -287,6 +287,20 @@ export async function unlockWithPassword(
 }
 
 /**
+ * The user-confirmed recovery from `rollback_detected` (#746): a full password
+ * open, then this device's sync baseline for the vault is replaced with the
+ * verified clock, so the on-disk manifest is accepted. Same shape as
+ * `unlockWithPassword`. Call it only from the explicit "Reset and open"
+ * confirmation, never automatically.
+ */
+export async function resetSyncStateAndUnlock(
+  folderPath: string,
+  password: string
+): Promise<ManifestDto> {
+  return call<ManifestDto>('reset_sync_state_and_unlock', { folderPath, password });
+}
+
+/**
  * Adopt crash residue in a vault whose most recent open failed with
  * `vault_needs_repair` (#374). Same shape as `unlockWithPassword` — on
  * success the returned `ManifestDto` populates the session exactly like a

@@ -47,6 +47,7 @@ describe('userMessageFor', () => {
     { code: 'cannot_revoke_owner' },
     { code: 'vault_needs_repair', block_uuid_hex: 'ab' },
     { code: 'repair_rejected', block_uuid_hex: 'ab', detail: 'recipient set widened' },
+    { code: 'rollback_detected' },
     { code: 'internal' }
   ];
 
@@ -103,6 +104,14 @@ describe('userMessageFor', () => {
     expect(userMessageFor({ code: 'vault_changed_on_disk' })).toEqual({
       title: 'The vault changed on another device',
       actionHint: 'This vault changed on another device since you opened it. Sync, then try again.'
+    });
+  });
+
+  it('rollback_detected carries the verbatim shared copy (#746)', () => {
+    expect(userMessageFor({ code: 'rollback_detected' })).toEqual({
+      title: 'This vault looks older than expected',
+      actionHint:
+        'This device last saw a newer version of this vault. That can happen after restoring a backup, but it can also mean your storage provider is serving an old copy. Only continue if you restored this vault from a backup or are sure this copy is current.'
     });
   });
 });
@@ -304,6 +313,7 @@ describe('error code allowlists', () => {
       'invalid_argument',
       'vault_needs_repair',
       'repair_rejected',
+      'rollback_detected',
       'internal'
     ];
     expect([...APP_ERROR_CODES].sort()).toEqual([...sweepCodes].sort());

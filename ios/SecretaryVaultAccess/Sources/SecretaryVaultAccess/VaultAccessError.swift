@@ -33,6 +33,12 @@ public enum VaultAccessError: Error, Equatable {
     /// The vault changed on disk since it was opened; the write was refused.
     /// Sync, then retry.
     case vaultChangedOnDisk
+    /// The vault on disk is older than this device's saved sync baseline (§10),
+    /// so the open was refused. A restored backup or a storage provider serving
+    /// a stale copy both produce it; the app cannot tell them apart. The only
+    /// remedy is the user-confirmed reset behind a master-password unlock
+    /// (`VaultOpenPort.resetSyncStateAndOpen`, #746). No payload.
+    case rollbackDetected
     /// Biometric re-auth before a write failed or was cancelled. Carries a short
     /// human label derived from the underlying `DeviceUnlockError`. The write was
     /// NOT performed. Local to this Swift enum — NOT a Rust-bridge `FfiVaultError`.
@@ -82,6 +88,8 @@ extension VaultAccessError: LocalizedError {
             return "That folder isn’t a Secretary vault."
         case .vaultChangedOnDisk:
             return "This vault changed on another device since you opened it. Sync, then try again."
+        case .rollbackDetected:
+            return "This vault looks older than this device last saw. Unlock with your master password to review it."
         case .reauthFailed:
             return "Re-authentication didn’t complete, so the change wasn’t saved."
         case .other:

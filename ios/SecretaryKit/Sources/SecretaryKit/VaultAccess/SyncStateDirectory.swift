@@ -25,3 +25,11 @@ public func defaultSyncStateDir() throws -> URL {
                                            appropriateFor: nil, create: true)
     return try defaultSyncStateDir(applicationSupport: base)
 }
+
+/// Make `defaultSyncStateDir()` the bridge's sync-state dir for this process
+/// (#746), so its open-time rollback check and repair read the same baseline
+/// this app's sync calls and "Reset and open" write. Call once at app startup,
+/// before any open: the bridge refuses a set after its first read.
+public func installPlatformSyncStateDir() throws {
+    try setPlatformStateDir(stateDir: defaultSyncStateDir().path)
+}

@@ -13,6 +13,13 @@ public protocol VaultOpenPort: Sendable {
     func openWithPassword(vaultPath: Data, password: [UInt8]) async throws -> VaultSession
     func openWithRecovery(vaultPath: Data, phrase: [UInt8]) async throws -> VaultSession
 
+    /// Open the vault with the master password WITHOUT the rollback check, then
+    /// replace this device's sync baseline for it with the clock just verified,
+    /// accepting the copy on disk (#746). A wrong password changes nothing. Offered only after a password
+    /// open threw `.rollbackDetected` and the user confirmed; never automatic.
+    /// Runs Argon2id, so conformers offload like `openWithPassword`.
+    func resetSyncStateAndOpen(vaultPath: Data, password: [UInt8]) async throws -> VaultSession
+
     /// Open a vault with a biometric-released device secret (B.2 device slot),
     /// producing the SAME `VaultSession` type as the password/recovery arms.
     /// `async` for contract uniformity; conformers offload for consistency.

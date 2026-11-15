@@ -29,7 +29,8 @@ android {
 
     defaultConfig {
         minSdk = 26
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // #746: sets the bridge's sync-state dir before any test, as MainActivity does.
+        testInstrumentationRunner = "org.secretary.sync.StateDirTestRunner"
     }
 
     // Kotlin/JVM 21 bytecode (matches :vault-access jvmToolchain(21)).

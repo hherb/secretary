@@ -127,6 +127,11 @@ pub enum VaultError {
     #[error("the vault changed on disk since it was opened; sync, then retry")]
     VaultChangedOnDisk,
 
+    /// The open was refused: this device last saw a newer vault (§10, #746).
+    /// Mirrors `FfiVaultError::RollbackDetected`.
+    #[error("this vault is older than the version this device last saw")]
+    RollbackDetected,
+
     /// ADR 0009 (B.2): the requested device slot does not exist.
     /// Mirrors `FfiVaultError::DeviceSlotNotFound`.
     #[error("device slot not found")]
@@ -230,6 +235,7 @@ impl From<FfiVaultError> for VaultError {
             },
             FfiVaultError::SyncDecisionsIncomplete => VaultError::SyncDecisionsIncomplete,
             FfiVaultError::VaultChangedOnDisk => VaultError::VaultChangedOnDisk,
+            FfiVaultError::RollbackDetected => VaultError::RollbackDetected,
             FfiVaultError::DeviceSlotNotFound => VaultError::DeviceSlotNotFound,
             FfiVaultError::WrongDeviceSecretOrCorrupt => VaultError::WrongDeviceSecretOrCorrupt,
             FfiVaultError::DeviceUuidMismatch { detail } => VaultError::DeviceUuidMismatch {

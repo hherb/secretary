@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 
 use secretary_ffi_bridge::vault::open_vault_with_password;
-use secretary_ffi_bridge::{OpenVaultManifest, UnlockedIdentity};
+use secretary_ffi_bridge::{FfiVaultError, OpenVaultManifest, OpenVaultOutput, UnlockedIdentity};
 
 use crate::auto_lock::{now_ms, IdleTracker};
 use crate::errors::{AppError, AppWarning};
@@ -220,11 +220,25 @@ impl VaultSession {
     /// vault access, since the user's only recourse is the Settings dialog
     /// which is itself gated on a successful unlock.
     pub fn unlock(&mut self, folder: &Path, password: &[u8]) -> Result<(), AppError> {
+        self.unlock_with(folder, || open_vault_with_password(folder, password))
+    }
+
+    /// Shared body of [`Self::unlock`] and the reset-sync-state unlock (#746):
+    /// `open` produces the bridge handles (it runs only while locked), then the
+    /// per-vault device UUID is resolved from the verified manifest and the
+    /// session is populated exactly as for an ordinary unlock. If that
+    /// resolution fails after a reset, the baseline already holds the clock
+    /// the user accepted, so a retry opens normally.
+    pub fn unlock_with(
+        &mut self,
+        folder: &Path,
+        open: impl FnOnce() -> Result<OpenVaultOutput, FfiVaultError>,
+    ) -> Result<(), AppError> {
         if self.inner.is_some() {
             return Err(AppError::AlreadyUnlocked);
         }
 
-        let output = open_vault_with_password(folder, password)?;
+        let output = open()?;
         let vault_uuid_bytes = output.manifest.vault_uuid();
         let device_uuid =
             settings::load_or_create_device_uuid_in(&self.device_data_dir, &vault_uuid_bytes)?;
