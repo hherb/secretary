@@ -52,6 +52,7 @@ export const APP_ERROR_CODES = [
   'invalid_argument',
   'vault_needs_repair',
   'repair_rejected',
+  'rollback_detected',
   'internal'
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
@@ -105,6 +106,7 @@ export type AppError =
   | { code: 'vault_changed_on_disk' }
   | { code: 'vault_needs_repair'; block_uuid_hex: string }
   | { code: 'repair_rejected'; block_uuid_hex: string; detail: string }
+  | { code: 'rollback_detected' }
   | { code: 'internal' };
 
 export type AppWarning =
@@ -310,6 +312,14 @@ export function userMessageFor(err: AppError): UserMessage {
         title: 'Repair was refused',
         detail: err.detail,
         actionHint: 'This needs manual review — there is no automatic fix.'
+      };
+    case 'rollback_detected':
+      // #746: Unlock.svelte renders this with an explicit "Reset and open"
+      // confirmation; the copy is shared verbatim with iOS and Android.
+      return {
+        title: 'This vault looks older than expected',
+        actionHint:
+          'This device last saw a newer version of this vault. That can happen after restoring a backup, but it can also mean your storage provider is serving an old copy. Only continue if you restored this vault from a backup or are sure this copy is current.'
       };
     case 'internal':
       return {

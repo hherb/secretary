@@ -1,4 +1,4 @@
-//! `unlock_with_password` command.
+//! `unlock_with_password` and `reset_sync_state_and_unlock` (#746) commands.
 //!
 //! Constructs path-aware `AppError::VaultPathNotFound` /
 //! `AppError::VaultPathNotAVault` at the IPC boundary rather than relying
@@ -12,6 +12,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use secretary_ffi_bridge::{
+    reset_sync_state_and_open_with_password, reset_sync_state_and_open_with_password_in,
+};
 use tauri::State;
 
 use crate::commands::shared::lock_session;
@@ -64,6 +67,60 @@ pub fn unlock_with_password_impl(
     folder_path: &str,
     password: &[u8],
 ) -> Result<ManifestDto, AppError> {
+    open_approved_folder(state, folder_path, |session, folder| {
+        session.unlock(folder, password)
+    })
+}
+
+/// Tauri-side entry point for the user-confirmed recovery from
+/// `rollback_detected` (#746). Same argument shape as
+/// [`unlock_with_password`]; the frontend reaches it only from the explicit
+/// "Reset and open" confirmation, never automatically. Uses the default
+/// sync-state dir, the one `sync_now` uses.
+#[tauri::command]
+pub async fn reset_sync_state_and_unlock(
+    state: State<'_, Mutex<VaultSession>>,
+    folder_path: String,
+    password: Password,
+) -> Result<ManifestDto, AppError> {
+    reset_sync_state_and_unlock_core(state.inner(), None, &folder_path, password.expose())
+}
+
+/// [`reset_sync_state_and_unlock`] against an explicit sync-state directory
+/// (hermetic tests). A full password open, then this vault's sync-state file
+/// is deleted so the on-disk manifest is accepted; a wrong password changes
+/// nothing. Same approval gate and path validation as an ordinary unlock.
+pub fn reset_sync_state_and_unlock_in_impl(
+    state: &Mutex<VaultSession>,
+    state_dir: &Path,
+    folder_path: &str,
+    password: &[u8],
+) -> Result<ManifestDto, AppError> {
+    reset_sync_state_and_unlock_core(state, Some(state_dir), folder_path, password)
+}
+
+fn reset_sync_state_and_unlock_core(
+    state: &Mutex<VaultSession>,
+    state_dir: Option<&Path>,
+    folder_path: &str,
+    password: &[u8],
+) -> Result<ManifestDto, AppError> {
+    open_approved_folder(state, folder_path, |session, folder| {
+        session.unlock_with(folder, || match state_dir {
+            Some(d) => reset_sync_state_and_open_with_password_in(d, folder, password),
+            None => reset_sync_state_and_open_with_password(folder, password),
+        })
+    })
+}
+
+/// Shared shell of every password-style unlock command: the #353 approval
+/// gate, then [`validate_vault_path`], then `open` under the session mutex,
+/// then the [`ManifestDto`] (with pending warnings) of the opened session.
+fn open_approved_folder(
+    state: &Mutex<VaultSession>,
+    folder_path: &str,
+    open: impl FnOnce(&mut VaultSession, &Path) -> Result<(), AppError>,
+) -> Result<ManifestDto, AppError> {
     let folder = PathBuf::from(folder_path);
     // #353: the folder must be one the user picked via pick_vault_folder.
     {
@@ -78,7 +135,7 @@ pub fn unlock_with_password_impl(
 
     let mut session = lock_session(state)?;
 
-    session.unlock(&folder, password)?;
+    open(&mut session, &folder)?;
 
     session.with_unlocked(|u| {
         Ok(ManifestDto::from_manifest_with_warnings(

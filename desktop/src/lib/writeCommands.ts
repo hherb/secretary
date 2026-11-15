@@ -113,6 +113,7 @@ export const COMMAND_CLASSIFICATION: Record<string, CommandClass> = {
 
   // --- session / auth ---
   unlock_with_password: { kind: 'session' },
+  reset_sync_state_and_unlock: { kind: 'session' },
   lock: { kind: 'session' },
   notify_activity: { kind: 'session' },
   verify_password: { kind: 'session' },
