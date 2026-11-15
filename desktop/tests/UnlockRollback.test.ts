@@ -89,12 +89,27 @@ describe('Unlock — #746 rollback_detected confirmation', () => {
   it('Cancel invokes no command, hides the confirmation and clears the password', async () => {
     const { findByRole, getByLabelText, queryByRole } = await renderRefusedUnlock();
 
+    await findByRole('button', { name: 'Cancel' });
+    const invokesBefore = invokeMock.mock.calls.length;
     await fireEvent.click(await findByRole('button', { name: 'Cancel' }));
 
     expect(resetMock).not.toHaveBeenCalled();
+    expect(unlockMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock.mock.calls.length).toBe(invokesBefore);
     expect(queryByRole('button', { name: 'Reset and open' })).toBeNull();
     expect((getByLabelText(/password/i) as HTMLInputElement).value).toBe('');
     expect(get(sessionState).status).toBe('locked');
+  });
+
+  it('choosing another folder withdraws the confirmation', async () => {
+    const { findByRole, getByRole, queryByRole } = await renderRefusedUnlock();
+    await findByRole('button', { name: 'Reset and open' });
+
+    invokeMock.mockResolvedValueOnce('/home/alice/other-vault');
+    await fireEvent.click(getByRole('button', { name: /choose/i }));
+
+    await waitFor(() => expect(queryByRole('button', { name: 'Reset and open' })).toBeNull());
+    expect(resetMock).not.toHaveBeenCalled();
   });
 
   it('Reset and open invokes the reset command with the typed password and unlocks', async () => {

@@ -268,8 +268,8 @@
     }
   }
 
-  // #746 Cancel: no command at all. Drops the reused password; the refused
-  // unlock's generic message stays on screen.
+  // #746 Cancel: no command at all. Drops the reused password; the rollback
+  // explanation stays on screen without its buttons.
   function cancelReset(): void {
     rollbackPrompt = false;
     password = '';
@@ -333,12 +333,12 @@
 
       {#if rollbackPrompt}
         <!-- #746: the device's sync baseline is newer than the vault on disk.
-             Copy shared verbatim with iOS/Android; resetting needs a click. -->
+             Copy from errors.ts (shared verbatim with iOS/Android); resetting
+             needs a click. -->
+        {@const rollback = userMessageFor({ code: 'rollback_detected' })}
         <div class="unlock__error unlock__rollback" role="alert">
-          <div class="unlock__error-title">This vault looks older than expected</div>
-          <div class="unlock__error-detail">
-            This device last saw a newer version of this vault. That can happen after restoring a backup, but it can also mean your storage provider is serving an old copy. Only continue if you restored this vault from a backup or are sure this copy is current.
-          </div>
+          <div class="unlock__error-title">{rollback.title}</div>
+          <div class="unlock__error-detail">{rollback.actionHint}</div>
           <button
             type="button"
             class="unlock__error-action"

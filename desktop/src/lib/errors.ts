@@ -314,8 +314,9 @@ export function userMessageFor(err: AppError): UserMessage {
         actionHint: 'This needs manual review — there is no automatic fix.'
       };
     case 'rollback_detected':
-      // #746: Unlock.svelte renders this with an explicit "Reset and open"
-      // confirmation; the copy is shared verbatim with iOS and Android.
+      // #746: Unlock.svelte renders this copy twice: with "Reset and open" and
+      // Cancel while the confirmation is up, then alone after Cancel. Shared
+      // verbatim with iOS and Android.
       return {
         title: 'This vault looks older than expected',
         actionHint:
