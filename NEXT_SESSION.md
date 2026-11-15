@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-15-silent-merge-commit-shipped.md
+docs/handoffs/2026-11-15-merge-clock-tick-shipped.md
