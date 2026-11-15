@@ -564,6 +564,8 @@ The pseudocode above pins the field-level merge core. The remaining record-level
 | `vector_clock` | Component-wise max of the two clocks, then `+1` for the merging device's component (a fresh entry is added when the merging device has none). |
 | `unknown` (forward-compat) | Per-key. A key present in only one side is kept verbatim. A key present in both sides with differing values takes the **lex-larger canonical-CBOR-encoded value bytes**. |
 
+**N-way merge.** A merge that folds more than two copies of one block (the local copy plus two or more conflict copies) is one merge event, and its `vector_clock` gets one tick: the component-wise max over every folded copy, then `+1` once for the merging device. The tick is applied iff at least one pairwise step of the fold is concurrent; a fold in which every step is equal or dominated adopts the dominating clock unchanged, as for two copies. Each step's clock relation is taken against the running max of the copies folded so far, never against a ticked intermediate, because the tick is an event no copy has observed. The manifest's vector clock (§10) is likewise ticked once per merge, however many conflict copies it folds.
+
 ### 11.3 Tombstone tie-break and the death-clock staleness filter
 
 For a pairwise merge where one side is tombstoned at record-level `last_mod_ms = T_d` and the other is live at `last_mod_ms = T_l`:
