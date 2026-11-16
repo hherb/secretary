@@ -115,8 +115,10 @@ workflow runs it.
 - **#760 (CI, found by this PR's first runs).** `ubuntu-latest` moved
   from 24.04 to 26.04 between `main`'s last run and this PR's. rust-cache
   keyed only on `runner.os`, so the 26.04 runner restored a 24.04 `target/`
-  and pyo3 linked `-lpython3.12`. Every `Swatinem/rust-cache` step now keys
-  on `${{ env.ImageOS }}` as well. The first cold run on 26.04 is the proof
+  and pyo3 linked `-lpython3.12`. Every `Swatinem/rust-cache` step now hashes
+  the runner's `ImageOS` variable into its key (`env-vars: ImageOS`; a
+  first attempt with `key: ${{ env.ImageOS }}` expanded to nothing, because
+  the `env` context holds only workflow-defined variables). The first cold run on 26.04 is the proof
   that pyo3 links against that image's Python. If it needs
   `libpython3.*-dev`, add it to `.github/scripts/install-tauri-linux-deps.sh`.
 - **#759 (filed in the review, predates this slice).**

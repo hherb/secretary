@@ -55,10 +55,12 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          # The runner image is part of the key, so an image bump (ubuntu-latest
-          # 24.04 -> 26.04) starts cold instead of reusing a target whose
-          # build-script output names the old image's libraries (#760).
-          key: ${{ env.ImageOS }}
+          # The runner image (the runner process env var ImageOS, e.g. ubuntu24 /
+          # ubuntu26) is hashed into the key, so an image bump starts cold instead
+          # of reusing a target whose build-script output names the old image's
+          # libraries (#760). It must be `env-vars`, not `key: ${{ env.ImageOS }}`:
+          # the `env` expression context holds only workflow-defined variables.
+          env-vars: ImageOS
       # `error_payload_hygiene_parity` (core/tests/) shells out to `uv run
       # python` to exercise the Python allowlist parser in
       # scripts/check-error-payload-hygiene.py and prove it agrees with the
@@ -212,10 +214,12 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          # The runner image is part of the key, so an image bump (ubuntu-latest
-          # 24.04 -> 26.04) starts cold instead of reusing a target whose
-          # build-script output names the old image's libraries (#760).
-          key: ${{ env.ImageOS }}
+          # The runner image (the runner process env var ImageOS, e.g. ubuntu24 /
+          # ubuntu26) is hashed into the key, so an image bump starts cold instead
+          # of reusing a target whose build-script output names the old image's
+          # libraries (#760). It must be `env-vars`, not `key: ${{ env.ImageOS }}`:
+          # the `env` expression context holds only workflow-defined variables.
+          env-vars: ImageOS
       # Builds only the uniffi cdylib (no Tauri desktop crate → no GUI deps);
       # swiftc comes from the pinned Xcode above.
       - name: Swift uniffi conformance KAT replay
@@ -230,10 +234,12 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          # The runner image is part of the key, so an image bump (ubuntu-latest
-          # 24.04 -> 26.04) starts cold instead of reusing a target whose
-          # build-script output names the old image's libraries (#760).
-          key: ${{ env.ImageOS }}
+          # The runner image (the runner process env var ImageOS, e.g. ubuntu24 /
+          # ubuntu26) is hashed into the key, so an image bump starts cold instead
+          # of reusing a target whose build-script output names the old image's
+          # libraries (#760). It must be `env-vars`, not `key: ${{ env.ImageOS }}`:
+          # the `env` expression context holds only workflow-defined variables.
+          env-vars: ImageOS
       # JDK 17+ is required for Kotlin 2.x output (the script checks for it).
       - name: Install JDK
         uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
