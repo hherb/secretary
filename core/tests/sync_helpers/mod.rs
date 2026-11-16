@@ -60,7 +60,8 @@ pub static CANONICAL_NONCE_A: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(ran
 pub static SIBLING_NONCE_B: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_nonce);
 
 /// Nonce for the second sibling manifest in N-way fixtures. Consumed by
-/// [`fresh_vault_four_concurrent_manifests`] in C.1.1a integration tests.
+/// [`fresh_vault_four_concurrent_manifests`] in C.1.1a integration tests
+/// and by [`add_concurrent_block_sibling`] (#751).
 #[allow(dead_code)]
 pub static SIBLING_NONCE_C: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_nonce);
 
@@ -84,6 +85,12 @@ pub static BLOCK_NONCE_E: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_no
 /// as [`BLOCK_NONCE_E`], and distinct from it (see [`rand_nonce`]).
 #[allow(dead_code)]
 pub static BLOCK_NONCE_F: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_nonce);
+
+/// Rewrite-seed for a second sibling block envelope, written by
+/// [`add_concurrent_block_sibling`] (#751). Same semantics as
+/// [`BLOCK_NONCE_E`], and distinct from E and F (see [`rand_nonce`]).
+#[allow(dead_code)]
+pub static BLOCK_NONCE_G: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_nonce);
 
 /// Recursively copies `golden_vault_001/` into a fresh temp dir, then
 /// rewrites the canonical manifest's vector clock to `new_clock`
@@ -794,6 +801,70 @@ pub fn fresh_vault_two_concurrent_blocks(
 
     drop(open);
     (folder, tmp)
+}
+
+/// Add one more conflict copy of `block_uuid` to a vault built by
+/// [`fresh_vault_two_concurrent_blocks`], so a merge folds three copies
+/// (#751). Writes a sibling block at `blocks/<uuid>.cbor.enc<block_suffix>`
+/// and a sibling manifest at `manifest_filename` whose `BlockEntry` binds
+/// it, under [`BLOCK_NONCE_G`] / [`SIBLING_NONCE_C`].
+///
+/// The canonical manifest and block are untouched, so the vault still
+/// opens; `manifest_filename` and `block_suffix` MUST differ from the
+/// first sibling's, or this overwrites it. Call it at most once per
+/// vault: every call encrypts under the same [`BLOCK_NONCE_G`] /
+/// [`SIBLING_NONCE_C`], so a second call would reuse a key and nonce.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub fn add_concurrent_block_sibling(
+    folder: &Path,
+    block_uuid: [u8; SYNC_HELPERS_UUID_LEN],
+    records: Vec<secretary_core::vault::Record>,
+    block_clock: Vec<VectorClockEntry>,
+    manifest_clock: Vec<VectorClockEntry>,
+    manifest_filename: &str,
+    block_suffix: &str,
+    now_ms: u64,
+) {
+    let password = fixtures::golden_vault_001_password();
+    let open = open_vault(folder, Unlocker::Password(&password), None).expect("open_vault");
+    let entry = open
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .cloned()
+        .expect("block_uuid not in canonical manifest");
+
+    let (fp, bytes) = encrypt_block_bytes_for_uuid(
+        &open,
+        block_uuid,
+        records,
+        block_clock.clone(),
+        entry.block_name,
+        entry.created_at_ms,
+        now_ms,
+        &BLOCK_NONCE_G,
+    );
+    let canonical_path = block_file_path(folder, &block_uuid);
+    let name = canonical_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .expect("canonical path utf-8");
+    let sibling_path = canonical_path.with_file_name(format!("{name}{block_suffix}"));
+    std::fs::write(&sibling_path, &bytes).expect("write sibling block");
+
+    write_manifest_with_block_entry(
+        folder,
+        &open,
+        manifest_filename,
+        block_uuid,
+        fp,
+        block_clock,
+        manifest_clock,
+        now_ms,
+        &SIBLING_NONCE_C,
+    );
 }
 
 /// Build + sign a manifest from a cached `OpenVault`, replacing one

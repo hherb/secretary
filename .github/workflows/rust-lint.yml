@@ -64,6 +64,13 @@ jobs:
         run: bash .github/scripts/install-tauri-linux-deps.sh
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The runner image (the runner process env var ImageOS, e.g. ubuntu24 /
+          # ubuntu26) is hashed into the key, so an image bump starts cold instead
+          # of reusing a target whose build-script output names the old image's
+          # libraries (#760). It must be `env-vars`, not `key: ${{ env.ImageOS }}`:
+          # the `env` expression context holds only workflow-defined variables.
+          env-vars: ImageOS
       - name: Clippy (lib + tests, deny warnings)
         run: cargo clippy --release --locked --workspace --tests -- -D warnings
       # The line above does NOT lint `core/tests/differential_replay.rs`, and
@@ -116,6 +123,13 @@ jobs:
         run: bash .github/scripts/install-tauri-linux-deps.sh
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The runner image (the runner process env var ImageOS, e.g. ubuntu24 /
+          # ubuntu26) is hashed into the key, so an image bump starts cold instead
+          # of reusing a target whose build-script output names the old image's
+          # libraries (#760). It must be `env-vars`, not `key: ${{ env.ImageOS }}`:
+          # the `env` expression context holds only workflow-defined variables.
+          env-vars: ImageOS
       - name: cargo doc --no-deps --workspace
         run: cargo doc --no-deps --locked --workspace
 

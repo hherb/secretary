@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-15-sync-device-uuid-tests-shipped.md
+docs/handoffs/2026-11-16-nway-merge-tick-once-shipped.md

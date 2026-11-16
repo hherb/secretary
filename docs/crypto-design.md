@@ -561,8 +561,10 @@ The pseudocode above pins the field-level merge core. The remaining record-level
 | `block_version`, `schema_version` | `max` of the two values. Both are monotonic version numbers that only increase across releases. |
 | `block_name` | The **lex-larger byte string** wins (compared as UTF-8 bytes). v1 writers do not version `block_name`, so divergence here is rare; the deterministic rule keeps the merge commutative. |
 | `records` | Per-record union + per-field LWW per the pseudocode. |
-| `vector_clock` | Component-wise max of the two clocks, then `+1` for the merging device's component (a fresh entry is added when the merging device has none). |
+| `vector_clock` | If the two clocks are concurrent: component-wise max of the two, then `+1` for the merging device's component (a fresh entry is added when the merging device has none). If they are equal, or one dominates the other, no per-field merge runs: the merge adopts the dominating side whole, records and clock alike, and applies no tick. |
 | `unknown` (forward-compat) | Per-key. A key present in only one side is kept verbatim. A key present in both sides with differing values takes the **lex-larger canonical-CBOR-encoded value bytes**. |
+
+**N-way merge.** A merge that folds more than two copies of one block (the local copy plus two or more conflict copies) is one merge event, and its `vector_clock` is the component-wise max over every folded copy, ticked at most once. If that max equals the clock of one of the folded copies, that copy dominates or equals every other, the merge adopts it whole and applies no tick. Otherwise `+1` is applied once for the merging device. Whether the tick is applied therefore depends only on the set of folded copies, never on the order they are folded in: a rule keyed on whether some pairwise step was concurrent would tick a dominating copy folded after a concurrent pair and not the same copy folded first. Each step's clock relation is taken against the running max of the copies folded so far, never against a ticked intermediate, because the tick is an event no copy has observed. The manifest's vector clock (§10) is likewise ticked once per merge, however many conflict copies it folds.
 
 ### 11.3 Tombstone tie-break and the death-clock staleness filter
 

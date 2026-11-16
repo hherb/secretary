@@ -413,7 +413,7 @@ Seven targets: `vault_toml`, `record`, `contact_card`, `bundle_file`, `manifest_
 `docs/crypto-design.md` and `docs/vault-format.md` are not generated docs — they're the contract. A clean-room implementation in any other language must be possible by reading `docs/` alone, and that property is enforced by `core/tests/python/conformance.py`, which depends on no `secretary` code — only generic crypto primitives declared via its PEP 723 header (`cryptography`, `pynacl`, `pqcrypto`, `argon2-cffi`, `blake3`, `cbor2`; top-level imports stay stdlib-only, these are lazy-imported) — to:
 
 1. Decap + AEAD-decrypt + hybrid-verify the `core/tests/data/golden_vault_001/` reference vault.
-2. Replay 11 CRDT merge KATs from `core/tests/data/conflict_kat.json` cross-language.
+2. Replay 12 CRDT merge KATs from `core/tests/data/conflict_kat.json` cross-language.
 3. Run the `--diff-replay` mode used by the fuzz harness for decoder-agreement checks.
 
 Practical consequence: when a Rust change alters observable byte format or merge semantics, the spec doc is the first thing to update, and `conformance.py` is the test that proves the docs and code still agree. **Don't fix divergence by changing one side silently.** A disagreement is one of: Rust bug, Python bug, or spec ambiguity — all three need to be resolved explicitly.

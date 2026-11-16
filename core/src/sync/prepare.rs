@@ -28,7 +28,8 @@ use crate::sync::outcome::DiffPlan;
 use crate::unlock::UnlockedIdentity;
 use crate::vault::block::{decode_block_file, decrypt_block, BlockPlaintext, VectorClockEntry};
 use crate::vault::conflict::{
-    conflict_to_vault_error, merge_block, merge_vector_clocks, ConflictError,
+    clock_relation, conflict_to_vault_error, merge_block, merge_vector_clocks, tick_for_device,
+    ClockRelation, ConflictError,
 };
 use crate::vault::orchestrators::read_vault_manifest_full;
 use crate::vault::record::Record;
@@ -302,6 +303,17 @@ fn parent_block_clock(
     })
 }
 
+/// Lift a merge-layer error: a clock overflow keeps its typed
+/// `VaultError::ClockOverflow`, anything else is a structural bundle error.
+fn merge_error(e: ConflictError) -> SyncError {
+    match e {
+        ConflictError::ClockOverflow { .. } => SyncError::Vault(conflict_to_vault_error(e)),
+        e => SyncError::InvalidArgument {
+            detail: format!("merge_block: {e}"),
+        },
+    }
+}
+
 /// Turn the C.1.1a [`VaultBundle`] into a [`DraftMerge`]. AEAD-decrypts
 /// each diverging block envelope on demand, composes pairwise merges
 /// via the existing [`merge_block`] primitive, and surfaces
@@ -321,10 +333,11 @@ fn parent_block_clock(
 ///   [`crate::sync::sync_once`]; its `diverging_blocks` field drives
 ///   the per-block iteration order.
 /// - `merging_device`: this device's per-vault device UUID (the one its
-///   block writes tick). Each concurrent per-block fold step gets `+1`
-///   for it (crypto-design §11.2), and it rides on the draft so
-///   `commit_with_decisions` ticks the manifest clock for it too (§10,
-///   #744).
+///   block writes tick). A diverging block whose merged clock is no
+///   single copy's clock gets `+1` for it once, however many copies
+///   were folded (crypto-design §11.2 "N-way merge", #751), and it
+///   rides on the draft so `commit_with_decisions` ticks the manifest
+///   clock for it too (§10, #744).
 ///
 /// # Algorithm
 ///
@@ -332,8 +345,10 @@ fn parent_block_clock(
 ///    (see `derive_block_reader_keys`).
 /// 2. For each `block_uuid` in `plan.diverging_blocks`, AEAD-decrypt the
 ///    canonical envelope and every copy envelope, then iteratively merge
-///    via [`merge_block`]; the accumulator's records + per-block vector
-///    clock advance per fold step. Run `tombstone_veto_set` across
+///    via [`merge_block`]; the accumulator's records advance per fold
+///    step, and its block clock is the unticked running max of the copies'
+///    clocks, ticked once for `merging_device` after the fold iff that
+///    max equals no folded copy's clock. Run `tombstone_veto_set` across
 ///    the merged record set vs the per-copy plaintexts for the same
 ///    `record_uuid` and collect any vetoes. Extend the running
 ///    `merged_records` map (keyed by `record_uuid` — `merge_block`
@@ -416,6 +431,13 @@ pub fn prepare_merge(
             .cloned()
             .map(|r| (r.record_uuid, r))
             .collect();
+        // The running max of the copies folded so far, never ticked inside
+        // the loop: an N-way fold is one merge event and gets one tick, after
+        // the loop (crypto-design §11.2 "N-way merge", #751). Each step's
+        // relation is taken against this unticked max, since no copy has
+        // observed the tick. `folded_clocks` decides that tick from the SET
+        // of copies, so it cannot depend on fold order.
+        let mut folded_clocks = vec![canonical_block_clock.clone()];
         let mut acc_clock = canonical_block_clock;
         let mut acc_unknown = canonical_pt.unknown.clone();
         let acc_block_name = canonical_pt.block_name.clone();
@@ -451,12 +473,7 @@ pub fn prepare_merge(
                 &copy_block_clock,
                 merging_device,
             )
-            .map_err(|e| match e {
-                ConflictError::ClockOverflow { .. } => SyncError::Vault(conflict_to_vault_error(e)),
-                e => SyncError::InvalidArgument {
-                    detail: format!("merge_block: {e}"),
-                },
-            })?;
+            .map_err(merge_error)?;
 
             // Capture metadata-only field collisions BEFORE `merged` is
             // moved into `acc_records`. Projects already-computed LWW
@@ -475,9 +492,28 @@ pub fn prepare_merge(
                 .into_iter()
                 .map(|r| (r.record_uuid, r))
                 .collect();
-            acc_clock = merged.vector_clock;
+            // `merged.vector_clock` is ticked on a concurrent step; the
+            // accumulator takes the unticked max instead (see above).
+            acc_clock = merge_vector_clocks(&acc_clock, &copy_block_clock);
             acc_unknown = merged.merged.unknown;
+            folded_clocks.push(copy_block_clock);
             copy_plaintexts.push(copy_pt);
+        }
+
+        // A max equal to one folded copy's clock means that copy dominates
+        // every other and the fold adopted it whole, so its clock stands
+        // untouched; otherwise some step was concurrent and the merge ticks
+        // once. Compared by relation, not `Vec` equality, so a zero-counter
+        // entry cannot make two equal clocks look different.
+        // shortcut: `merge_block` still ticks (and discards) on a concurrent
+        // step, so a merging-device counter at u64::MAX can fail closed with
+        // ClockOverflow in one fold order and not another; untick merge_block
+        // if counters that high ever become reachable.
+        let adopted_one_copy = folded_clocks
+            .iter()
+            .any(|c| clock_relation(c, &acc_clock) == ClockRelation::Equal);
+        if !adopted_one_copy {
+            acc_clock = tick_for_device(acc_clock, merging_device).map_err(merge_error)?;
         }
 
         // Per-record veto pass. Walk the CANONICAL (pre-merge) records
