@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-16-nway-merge-tick-once-shipped.md
+docs/handoffs/2026-11-17-merge-plaintext-clock-shipped.md
