@@ -85,6 +85,11 @@ jobs:
           xcode-version: '26.5'   # Swift 6.3 — the macos-26 image default AND the code's target
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The runner image is part of the key, so an image bump (ubuntu-latest
+          # 24.04 -> 26.04) starts cold instead of reusing a target whose
+          # build-script output names the old image's libraries (#760).
+          key: ${{ env.ImageOS }}
       # build-macos-app.sh hard-requires xcodegen (it errors 'brew install
       # xcodegen' if absent) and it has never run in this repo's CI before.
       # Explicit provisioning gives deterministic presence rather than relying on

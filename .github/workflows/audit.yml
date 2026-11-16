@@ -47,6 +47,11 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # The runner image is part of the key, so an image bump (ubuntu-latest
+          # 24.04 -> 26.04) starts cold instead of reusing a target whose
+          # build-script output names the old image's libraries (#760).
+          key: ${{ env.ImageOS }}
       - name: Install cargo-audit
         # --locked pins cargo-audit's own transitives; the compile is cached
         # across runs by rust-cache. Kept in the caret range so patch/minor
