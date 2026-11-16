@@ -36,7 +36,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::sync::bundle::ManifestHash;
 use crate::sync::outcome::DiffPlan;
 use crate::vault::block::VectorClockEntry;
-use crate::vault::record::Record;
+use crate::vault::record::{Record, UnknownValue};
 
 /// 16-byte record identifier alias. Records carry `record_uuid:
 /// [u8; 16]` inline; this alias makes the API surface read self-
@@ -102,10 +102,12 @@ pub struct DraftMerge {
     #[zeroize(skip)]
     pub post_merge_clock: Vec<VectorClockEntry>,
     /// The device performing this merge: this device's per-vault device
-    /// UUID, the same one its block writes tick. `prepare_merge` ticks it on
-    /// each concurrent per-block fold step (crypto-design §11.2), and
-    /// `commit_with_decisions` ticks it on the written manifest clock, after
-    /// `post_merge_clock` (§10, #744). Not secret.
+    /// UUID, the same one its block writes tick. `prepare_merge` ticks it
+    /// once on each diverging block whose merged clock is no single copy's
+    /// (crypto-design §11.2 "N-way merge"), and `commit_with_decisions`
+    /// ticks it on the written manifest clock, after `post_merge_clock`
+    /// (§10, #744), and on any adopted block a keep-local decision changes
+    /// (§11.2 "Writing a merge", #759). Not secret.
     #[zeroize(skip)]
     pub merging_device: [u8; 16],
     /// Per-affected-block vector clock — the merged per-block clock
@@ -129,6 +131,16 @@ pub struct DraftMerge {
     /// values are 16-byte public UUIDs.
     #[zeroize(skip)]
     pub per_block_records: BTreeMap<[u8; 16], Vec<RecordId>>,
+    /// Per-affected-block plaintext metadata the fold produced, keyed like
+    /// `per_block_clocks` (#759). `commit_with_decisions` writes the merged
+    /// `block_name` and `unknown` map rather than the canonical copy's.
+    ///
+    /// `#[zeroize(skip)]` — `BTreeMap` lacks blanket `Zeroize`, and
+    /// [`UnknownValue`] has no `Zeroize` impl (the open item the
+    /// memory-hygiene memo records); the records it sits beside are skipped
+    /// for the same reason.
+    #[zeroize(skip)]
+    pub per_block_meta: BTreeMap<[u8; 16], MergedBlockMeta>,
     /// Union of `bundle.canonical.manifest.trash` and every
     /// `bundle.copies[*].manifest.trash`, reconciled by
     /// `trash_merge::merge_trash_lists` (#401). `commit_with_decisions`
@@ -138,6 +150,23 @@ pub struct DraftMerge {
     /// same as the vector-clock fields.
     #[zeroize(skip)]
     pub merged_trash: Vec<crate::vault::manifest::TrashEntry>,
+}
+
+/// The block-level plaintext fields of one merged block, beside its
+/// records and clock (crypto-design §11.2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergedBlockMeta {
+    /// The merged `block_name`: the lex-larger name on a concurrent step,
+    /// the adopted copy's on an adopting one.
+    pub block_name: String,
+    /// The merged block-level forward-compat `unknown` map.
+    pub unknown: BTreeMap<String, UnknownValue>,
+    /// The block's merged clock is one folded copy's clock, untouched: the
+    /// fold adopted that copy whole and applied no tick. A commit that then
+    /// writes different records must tick the block clock itself, or the
+    /// adopted copy's clock would cover two plaintexts (§11.2 "Writing a
+    /// merge").
+    pub adopted_copy_clock: bool,
 }
 
 /// One record that the merge would tombstone if accepted as-is, but
@@ -360,6 +389,7 @@ mod tests {
             merging_device: [7; 16],
             per_block_clocks: per_block_clocks.clone(),
             per_block_records: per_block_records.clone(),
+            per_block_meta: BTreeMap::new(),
             merged_trash: Vec::new(),
         };
         assert_eq!(d.vault_uuid, [9; 16]);

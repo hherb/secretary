@@ -86,7 +86,8 @@ const SCHEMA_VERSION_V1: u32 = 1;
 /// - [`SyncError::InvalidArgument`] — structural mismatch between
 ///   `draft` and the on-disk manifest (a `block_uuid` in
 ///   `draft.plan.diverging_blocks` missing from `draft.per_block_clocks`
-///   / `draft.per_block_records` or from the verified on-disk manifest).
+///   / `draft.per_block_meta` / `draft.per_block_records` or from the
+///   verified on-disk manifest).
 /// - [`SyncError::Vault`] — wraps any re-verification, AEAD encrypt,
 ///   encoding, signing, or `write_atomic` failure.
 ///
@@ -142,6 +143,10 @@ pub fn commit_with_decisions(
     let written_clock = tick_for_device(draft.post_merge_clock.clone(), draft.merging_device)
         .map_err(|e| SyncError::Vault(conflict_to_vault_error(e)))?;
 
+    // §11.2 "Writing a merge" (#759): each block's written clock, computed
+    // before any file is written so an overflow cannot leave a partial commit.
+    let block_clocks = written_block_clocks(&draft, &decisions)?;
+
     // Step 4: derive owner sender + recipient keys once. The golden
     // single-owner v1 model means author == recipient; the recipient
     // list contains exactly the owner, mirroring save_block / share_block.
@@ -158,6 +163,7 @@ pub fn commit_with_decisions(
             &verified.manifest,
             &bag,
             *block_uuid,
+            &block_clocks,
             &draft,
             &post_decision_records,
             now_ms,
@@ -173,6 +179,7 @@ pub fn commit_with_decisions(
     for entry in new_manifest.blocks.iter_mut() {
         if let Some(new) = new_block_entries.get(&entry.block_uuid) {
             entry.fingerprint = new.fingerprint;
+            entry.block_name = new.block_name.clone();
             entry.last_mod_ms = now_ms;
             entry.vector_clock_summary = new.vector_clock.clone();
         }
@@ -299,6 +306,60 @@ impl OwnerKeyBag {
 struct NewBlockEntry {
     fingerprint: [u8; 32],
     vector_clock: Vec<VectorClockEntry>,
+    block_name: String,
+}
+
+/// The clock each diverging block is written under: the fold's clock, plus
+/// one for `draft.merging_device` on a block whose fold adopted one copy
+/// whole (`MergedBlockMeta::adopted_copy_clock`) when a `KeepLocal`
+/// decision restores one of its records. The written records then differ
+/// from that copy's, so its clock alone would cover two plaintexts
+/// (crypto-design §11.2 "Writing a merge", vault-format §6.5.1). A fold
+/// that already ticked needs no second tick: its clock is this merge's own.
+///
+/// Call after `apply_decisions`, which has checked that every decision
+/// names a veto.
+fn written_block_clocks(
+    draft: &DraftMerge,
+    decisions: &[VetoDecision],
+) -> Result<BTreeMap<[u8; 16], Vec<VectorClockEntry>>, SyncError> {
+    let kept_local: BTreeSet<RecordId> = decisions
+        .iter()
+        .filter_map(|d| match d {
+            VetoDecision::KeepLocal { record_id } => Some(*record_id),
+            VetoDecision::AcceptTombstone { .. } => None,
+        })
+        .collect();
+    let changed_blocks: BTreeSet<[u8; 16]> = draft
+        .vetoes
+        .iter()
+        .filter(|v| kept_local.contains(&v.record_id))
+        .map(|v| v.block_id)
+        .collect();
+
+    let mut clocks = BTreeMap::new();
+    for block_uuid in &draft.plan.diverging_blocks {
+        let missing = |what: &str| SyncError::InvalidArgument {
+            detail: format!("draft.{what} missing block {block_uuid:02x?}"),
+        };
+        let clock = draft
+            .per_block_clocks
+            .get(block_uuid)
+            .cloned()
+            .ok_or_else(|| missing("per_block_clocks"))?;
+        let meta = draft
+            .per_block_meta
+            .get(block_uuid)
+            .ok_or_else(|| missing("per_block_meta"))?;
+        let clock = if meta.adopted_copy_clock && changed_blocks.contains(block_uuid) {
+            tick_for_device(clock, draft.merging_device)
+                .map_err(|e| SyncError::Vault(conflict_to_vault_error(e)))?
+        } else {
+            clock
+        };
+        clocks.insert(*block_uuid, clock);
+    }
+    Ok(clocks)
 }
 
 /// Re-encrypt a single diverging block: filter `post_decision_records`
@@ -314,17 +375,15 @@ fn rewrite_one_block(
     manifest: &Manifest,
     bag: &OwnerKeyBag,
     block_uuid: [u8; 16],
+    block_clocks: &BTreeMap<[u8; 16], Vec<VectorClockEntry>>,
     draft: &DraftMerge,
     post_decision_records: &[Record],
     now_ms: u64,
 ) -> Result<NewBlockEntry, SyncError> {
-    let block_clock = draft
-        .per_block_clocks
-        .get(&block_uuid)
-        .cloned()
-        .ok_or_else(|| SyncError::InvalidArgument {
-            detail: format!("draft.per_block_clocks missing block {block_uuid:02x?}"),
-        })?;
+    // Both lookups are infallible: `written_block_clocks` filled one entry
+    // per diverging block and failed on any block missing `per_block_meta`.
+    let block_clock = block_clocks[&block_uuid].clone();
+    let meta = &draft.per_block_meta[&block_uuid];
     let record_uuids =
         draft
             .per_block_records
@@ -361,10 +420,10 @@ fn rewrite_one_block(
     let plaintext = BlockPlaintext {
         block_version: BLOCK_VERSION_V1,
         block_uuid,
-        block_name: existing_entry.block_name.clone(),
+        block_name: meta.block_name.clone(),
         schema_version: SCHEMA_VERSION_V1,
         records: records_for_block,
-        unknown: BTreeMap::new(),
+        unknown: meta.unknown.clone(),
     };
 
     let recipients = bag.recipient_keys();
@@ -407,5 +466,6 @@ fn rewrite_one_block(
     Ok(NewBlockEntry {
         fingerprint,
         vector_clock: block_clock,
+        block_name: meta.block_name.clone(),
     })
 }

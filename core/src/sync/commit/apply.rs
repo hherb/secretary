@@ -163,6 +163,7 @@ mod tests {
             merging_device: [0; 16],
             per_block_clocks: BTreeMap::new(),
             per_block_records: BTreeMap::new(),
+            per_block_meta: BTreeMap::new(),
             merged_trash: Vec::new(),
         }
     }
