@@ -96,13 +96,29 @@ new §11.2 paragraph is checked only by the Rust tests.
 
 - **Any `KeepLocal` on an adopted block ticks, whether or not the record
   changed.** A spurious tick is safe: the invariant only needs "no tick ⇒
-  identical plaintext". On an adopted block the veto's record is always
-  the copy's tombstoned one, so the restore always changes it.
+  identical plaintext". In a 2-way fold the veto's record is the adopted
+  copy's tombstoned one. In an N-way fold it may be a dominated copy's
+  tombstone, with the adopted copy holding a newer live edit (#763). Either
+  way the restored canonical record differs from the adopted copy's, so
+  the tick is needed.
 - **A crash between block and manifest writes, followed by a retry with a
   different decision, rewrites a fold-ticked block under the same clock.**
   The first write never committed (the manifest is the commit point), so
   it is residue, not a second committed plaintext. This predates #759.
 - **#761**: the version downgrade above.
+- **#764**: an Equal-arm fold step can keep a concurrent step's merged
+  plaintext under a real copy's clock with no tick, and set
+  `adopted_copy_clock`. Theoretical: it needs a copy whose clock is
+  exactly the pointwise max. Pre-existing (#751's fold).
+- **PR #762 review round.** It added three tests to
+  `core/tests/sync_merge_write.rs`. Two keep-locals in one adopted block
+  tick once. A draft missing `per_block_meta` / `per_block_clocks` is
+  refused as `InvalidArgument` with nothing written. A keep-local tick
+  that overflows writes nothing. A mutation kills each one under
+  `scripts/mutate.py`. The round also made `apply_decisions` return
+  `InvalidArgument` instead of panicking when a veto's record is absent
+  from `merged_records`. That `expect` could be reached, and the comment
+  defending it was stale.
 - **#751 / #759 are closed in code.** Their issues stay open until a human
   closes them.
 
