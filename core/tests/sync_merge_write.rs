@@ -10,13 +10,13 @@
 use std::collections::BTreeMap;
 
 use secretary_core::sync::{
-    commit_with_decisions, prepare_merge, sync_once, DraftMerge, SyncOutcome, SyncState,
+    commit_with_decisions, prepare_merge, sync_once, DraftMerge, SyncError, SyncOutcome, SyncState,
     VetoDecision,
 };
 use secretary_core::unlock::{open_with_password, UnlockedIdentity};
 use secretary_core::vault::block::VectorClockEntry;
 use secretary_core::vault::record::UnknownValue;
-use secretary_core::vault::{open_vault, BlockPlaintext, Record, Unlocker};
+use secretary_core::vault::{open_vault, BlockPlaintext, Record, Unlocker, VaultError};
 
 mod fixtures;
 mod sync_helpers;
@@ -192,24 +192,39 @@ fn the_merged_block_name_and_unknown_keys_are_written() {
 fn vault_with_a_later_tombstone(
     sibling_block_clock: Vec<VectorClockEntry>,
 ) -> (std::path::PathBuf, tempfile::TempDir, [u8; 16]) {
+    vault_with_later_tombstones(&[VETO_RECORD], sibling_block_clock)
+}
+
+/// [`vault_with_a_later_tombstone`] over several records: each of
+/// `record_ids` is live on the canonical side and tombstoned later by the
+/// sibling, so each fires its own veto.
+fn vault_with_later_tombstones(
+    record_ids: &[[u8; 16]],
+    sibling_block_clock: Vec<VectorClockEntry>,
+) -> (std::path::PathBuf, tempfile::TempDir, [u8; 16]) {
     let (probe, _probe_tmp) = sync_helpers::fresh_vault_with_clock(Vec::new());
     let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&probe);
-    let mut tombstoned =
-        sync_helpers::live_record(VETO_RECORD, SIBLING_DEVICE, DISK_TOMBSTONE_AT_MS, "gone");
-    tombstoned.tombstone = true;
-    tombstoned.tombstoned_at_ms = DISK_TOMBSTONE_AT_MS;
+    let live = record_ids
+        .iter()
+        .map(|id| sync_helpers::live_record(*id, CANONICAL_DEVICE, LOCAL_LAST_MOD_MS, "local"))
+        .collect();
+    let tombstoned = record_ids
+        .iter()
+        .map(|id| {
+            let mut r =
+                sync_helpers::live_record(*id, SIBLING_DEVICE, DISK_TOMBSTONE_AT_MS, "gone");
+            r.tombstone = true;
+            r.tombstoned_at_ms = DISK_TOMBSTONE_AT_MS;
+            r
+        })
+        .collect();
 
     let (folder, tmp) = sync_helpers::fresh_vault_two_concurrent_blocks(
         block_uuid,
-        vec![sync_helpers::live_record(
-            VETO_RECORD,
-            CANONICAL_DEVICE,
-            LOCAL_LAST_MOD_MS,
-            "local",
-        )],
+        live,
         vec![vc(CANONICAL_DEVICE, 1)],
         vec![vc(CANONICAL_DEVICE, 1)],
-        vec![tombstoned],
+        tombstoned,
         sibling_block_clock,
         vec![vc(SIBLING_DEVICE, 1)],
         SIBLING_MANIFEST,
@@ -283,4 +298,135 @@ fn a_keep_local_ticks_the_merging_device_once_per_block() {
         assert_eq!(only_record(&plaintext).tombstone, want_tombstone, "{label}");
         assert_eq!(clock, want_clock, "{label}: written clock");
     }
+}
+
+/// Two vetoed records in one adopted block. The tick is per changed block,
+/// not per `KeepLocal`: two keep-locals tick once (§11.2 ticks a merge at
+/// most once), and a keep-local beside an accept-tombstone ticks once too.
+#[test]
+fn several_keep_locals_in_one_adopted_block_tick_once() {
+    const SECOND_RECORD: [u8; 16] = [0xAB; 16];
+    let adopted = vec![vc(CANONICAL_DEVICE, 1), vc(SIBLING_DEVICE, 1)];
+    let ticked = vec![
+        vc(CANONICAL_DEVICE, 1),
+        vc(SIBLING_DEVICE, 1),
+        vc(MERGING_DEVICE, 1),
+    ];
+    let keep = |record_id| VetoDecision::KeepLocal { record_id };
+    let accept = |record_id| VetoDecision::AcceptTombstone { record_id };
+    // (decisions, tombstoned records after the commit)
+    let cases = [
+        (vec![keep(VETO_RECORD), keep(SECOND_RECORD)], vec![]),
+        (
+            vec![keep(VETO_RECORD), accept(SECOND_RECORD)],
+            vec![SECOND_RECORD],
+        ),
+    ];
+    for (decisions, want_tombstoned) in cases {
+        let label = format!("{decisions:?}");
+        let (folder, _tmp, block_uuid) =
+            vault_with_later_tombstones(&[VETO_RECORD, SECOND_RECORD], adopted.clone());
+        let identity = identity_for(&folder);
+        let draft = prepare(&folder, &identity);
+        assert_eq!(draft.vetoes.len(), 2, "{label}: both records vetoed");
+        assert_eq!(draft.per_block_clocks[&block_uuid], adopted, "{label}");
+        commit_with_decisions(&folder, &identity, draft, decisions, COMMIT_NOW_MS)
+            .expect("commit_with_decisions");
+
+        let (plaintext, clock, _) = disk_block(&folder, block_uuid);
+        let tombstoned: Vec<[u8; 16]> = plaintext
+            .records
+            .iter()
+            .filter(|r| r.tombstone)
+            .map(|r| r.record_uuid)
+            .collect();
+        assert_eq!(plaintext.records.len(), 2, "{label}");
+        assert_eq!(tombstoned, want_tombstoned, "{label}");
+        assert_eq!(clock, ticked, "{label}: written clock");
+    }
+}
+
+/// The bytes a refused commit must leave alone: the merged block file and
+/// the canonical manifest.
+fn commit_targets(folder: &std::path::Path, block_uuid: [u8; 16]) -> (Vec<u8>, Vec<u8>) {
+    (
+        std::fs::read(sync_helpers::block_file_path(folder, &block_uuid)).expect("read block"),
+        std::fs::read(folder.join("manifest.cbor.enc")).expect("read manifest"),
+    )
+}
+
+/// A draft missing a diverging block's `per_block_meta` or
+/// `per_block_clocks` (`DraftMerge`'s fields are public) is refused as
+/// `InvalidArgument` naming the map, before any file is written, rather
+/// than panicking at `rewrite_one_block`'s lookups or writing a default.
+#[test]
+fn a_draft_missing_a_blocks_meta_or_clock_is_refused_before_any_write() {
+    type Clear = fn(&mut DraftMerge);
+    let cases: [(&str, Clear); 2] = [
+        ("per_block_meta", |d| d.per_block_meta.clear()),
+        ("per_block_clocks", |d| d.per_block_clocks.clear()),
+    ];
+    for (map, clear) in cases {
+        let (folder, _tmp, block_uuid) =
+            vault_with_a_later_tombstone(vec![vc(CANONICAL_DEVICE, 1), vc(SIBLING_DEVICE, 1)]);
+        let identity = identity_for(&folder);
+        let mut draft = prepare(&folder, &identity);
+        clear(&mut draft);
+        let before = commit_targets(&folder, block_uuid);
+        let decision = VetoDecision::KeepLocal {
+            record_id: VETO_RECORD,
+        };
+        match commit_with_decisions(&folder, &identity, draft, vec![decision], COMMIT_NOW_MS) {
+            Err(SyncError::InvalidArgument { detail }) => {
+                assert!(detail.contains(map), "{map}: detail {detail:?}")
+            }
+            other => panic!("{map}: expected InvalidArgument, got {other:?}"),
+        }
+        assert!(
+            commit_targets(&folder, block_uuid) == before,
+            "{map}: nothing written"
+        );
+    }
+}
+
+/// The keep-local tick is computed before the first file write, so a block
+/// clock at `u64::MAX` for the merging device fails the commit with nothing
+/// written. The same fixture with `AcceptTombstone` commits, which shows the
+/// overflow comes from the conditional tick alone.
+#[test]
+fn a_keep_local_tick_that_overflows_writes_nothing() {
+    let at_max = vec![
+        vc(CANONICAL_DEVICE, 1),
+        vc(SIBLING_DEVICE, 1),
+        vc(MERGING_DEVICE, u64::MAX),
+    ];
+
+    let (folder, _tmp, block_uuid) = vault_with_a_later_tombstone(at_max.clone());
+    let identity = identity_for(&folder);
+    let draft = prepare(&folder, &identity);
+    assert_eq!(draft.per_block_clocks[&block_uuid], at_max, "adopted fold");
+    let before = commit_targets(&folder, block_uuid);
+    let keep = VetoDecision::KeepLocal {
+        record_id: VETO_RECORD,
+    };
+    match commit_with_decisions(&folder, &identity, draft, vec![keep], COMMIT_NOW_MS) {
+        Err(SyncError::Vault(VaultError::ClockOverflow { device_uuid })) => {
+            assert_eq!(device_uuid, MERGING_DEVICE)
+        }
+        other => panic!("expected ClockOverflow, got {other:?}"),
+    }
+    assert!(
+        commit_targets(&folder, block_uuid) == before,
+        "nothing written"
+    );
+
+    let (folder, _tmp, block_uuid) = vault_with_a_later_tombstone(at_max.clone());
+    let identity = identity_for(&folder);
+    let draft = prepare(&folder, &identity);
+    let accept = VetoDecision::AcceptTombstone {
+        record_id: VETO_RECORD,
+    };
+    commit_with_decisions(&folder, &identity, draft, vec![accept], COMMIT_NOW_MS)
+        .expect("accept-tombstone commits");
+    assert_eq!(disk_block(&folder, block_uuid).1, at_max);
 }
