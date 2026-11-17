@@ -79,20 +79,23 @@ pub(crate) fn apply_decisions(
         match d {
             VetoDecision::AcceptTombstone { .. } => {}
             VetoDecision::KeepLocal { record_id } => {
-                // Both lookups are infallible by construction:
-                //  - vetoes_by_id: the bijection check above guarantees
-                //    every decision.record_id is a key.
-                //  - records_by_id: prepare_merge only emits a veto for
-                //    a record_id it has just placed in merged_records
-                //    (see prepare.rs::prepare_merge — the veto pass is
-                //    nested inside `for (record_uuid, _) in acc_records`,
-                //    and acc_records flows into merged_records).
+                // Infallible: the bijection check above guarantees every
+                // decision.record_id is a key.
                 let veto = vetoes_by_id
                     .get(record_id)
                     .expect("bijection check guarantees a veto for this decision.record_id");
-                let slot = records_by_id
-                    .get_mut(record_id)
-                    .expect("prepare_merge guarantees veto.record_id is in merged_records");
+                // Fallible: prepare_merge's veto pass walks the canonical
+                // copy's records, so a fold whose dominating copy dropped
+                // a record (an owner-signed copy no legitimate writer
+                // produces) can veto a record absent from merged_records.
+                let slot =
+                    records_by_id
+                        .get_mut(record_id)
+                        .ok_or_else(|| SyncError::InvalidArgument {
+                            detail: format!(
+                                "veto record {record_id:02x?} is not in draft.merged_records"
+                            ),
+                        })?;
                 *slot = veto.local_state.clone();
             }
         }
@@ -219,6 +222,20 @@ mod tests {
             .expect("ok");
         assert_eq!(out.len(), 1);
         assert!(out[0].tombstone);
+    }
+
+    /// A veto whose record is absent from `merged_records` (a dominating
+    /// copy that dropped it) is refused as `InvalidArgument` on
+    /// `KeepLocal`, not a panic.
+    #[test]
+    fn keep_local_on_a_record_absent_from_the_merge_is_invalid_argument() {
+        let d = draft_with_vetoes(vec![veto(1)], vec![rec(2, 100)]);
+        let err = apply_decisions(&d, &[VetoDecision::KeepLocal { record_id: [1; 16] }])
+            .expect_err("expected invalid argument");
+        assert!(
+            matches!(err, SyncError::InvalidArgument { .. }),
+            "unexpected: {err:?}"
+        );
     }
 
     /// Two vetoes, one decision → `MissingVetoDecision` points at the
