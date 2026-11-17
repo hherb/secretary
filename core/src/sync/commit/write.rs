@@ -64,13 +64,15 @@ const SCHEMA_VERSION_V1: u32 = 1;
 /// §D6; no password, no Argon2id), re-hashes the on-disk
 /// manifest envelope for TOCTOU freshness against `draft.manifest_hash`,
 /// applies the caller's [`VetoDecision`] slice via `apply_decisions`,
-/// re-encrypts every diverging block with a fresh AEAD nonce and BLAKE3-
-/// fingerprints the new bytes, builds a new manifest body (updated
-/// `BlockEntry.fingerprint` / `vector_clock_summary` / `last_mod_ms`
-/// plus the manifest-level `vector_clock`, which is `draft.post_merge_clock`
-/// plus one for `draft.merging_device` per crypto-design §10), hybrid-signs
-/// the manifest,
-/// and atomically writes block-first then manifest-last.
+/// re-encrypts every diverging block with a fresh AEAD nonce, its merged
+/// `block_name` and `unknown` map, and its written clock (the fold's, plus
+/// one for `draft.merging_device` on an adopted block a keep-local changes;
+/// crypto-design §11.2 "Writing a merge"), BLAKE3-fingerprints the new
+/// bytes, builds a new manifest body (updated `BlockEntry.fingerprint` /
+/// `block_name` / `vector_clock_summary` / `last_mod_ms` plus the
+/// manifest-level `vector_clock`, which is `draft.post_merge_clock` plus
+/// one for `draft.merging_device` per crypto-design §10), hybrid-signs the
+/// manifest, and atomically writes block-first then manifest-last.
 ///
 /// On success, returns the new [`SyncState`], whose clock is the written
 /// manifest clock, for the caller to persist into the OS keystore.
@@ -173,7 +175,8 @@ pub fn commit_with_decisions(
 
     // Step 6: build the new manifest body. Copy the cached manifest,
     // replace top-level vector_clock, update each affected block's
-    // BlockEntry with the new fingerprint + per-block clock + last_mod_ms.
+    // BlockEntry with the new fingerprint + block_name + per-block clock +
+    // last_mod_ms.
     let mut new_manifest = verified.manifest.clone();
     new_manifest.vector_clock = written_clock.clone();
     for entry in new_manifest.blocks.iter_mut() {
@@ -366,8 +369,8 @@ fn written_block_clocks(
 /// by the per-block record assignment in the draft, build the
 /// [`BlockHeader`] + [`BlockPlaintext`], encrypt + sign, atomic-write
 /// the new bytes to `blocks/<uuid>.cbor.enc`. Returns the new
-/// BLAKE3-256 fingerprint and the per-block vector clock for the
-/// manifest body update.
+/// BLAKE3-256 fingerprint, the per-block vector clock and the merged
+/// `block_name` for the manifest body update.
 #[allow(clippy::too_many_arguments)]
 fn rewrite_one_block(
     vault_folder: &Path,
@@ -381,7 +384,8 @@ fn rewrite_one_block(
     now_ms: u64,
 ) -> Result<NewBlockEntry, SyncError> {
     // Both lookups are infallible: `written_block_clocks` filled one entry
-    // per diverging block and failed on any block missing `per_block_meta`.
+    // per diverging block and failed on any block missing `per_block_clocks`
+    // or `per_block_meta`.
     let block_clock = block_clocks[&block_uuid].clone();
     let meta = &draft.per_block_meta[&block_uuid];
     let record_uuids =
