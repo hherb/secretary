@@ -370,6 +370,7 @@ pub fn rewrite_block_with_records(
         entry.vector_clock_summary.clone(),
         entry.block_name.clone(),
         BTreeMap::new(),
+        V1_BLOCK_VERSIONS,
         entry.created_at_ms,
         entry.last_mod_ms,
         aead_nonce,
@@ -385,6 +386,11 @@ pub fn rewrite_block_with_records(
 
     fp
 }
+
+/// `(block_version, schema_version)` for a v1 block plaintext (§6.3), the
+/// pair every fixture block carries unless a test sets another.
+#[allow(dead_code)]
+pub const V1_BLOCK_VERSIONS: (u32, u32) = (1, 1);
 
 /// Pure-encryption variant of [`rewrite_block_with_records`]: build a
 /// `BlockHeader` + `BlockPlaintext` from the supplied parameters, encrypt
@@ -424,6 +430,7 @@ fn encrypt_block_bytes_for_uuid(
     block_clock: Vec<VectorClockEntry>,
     block_name: String,
     unknown: BTreeMap<String, secretary_core::vault::record::UnknownValue>,
+    versions: (u32, u32),
     created_at_ms: u64,
     last_mod_ms: u64,
     aead_seed: &[u8; AEAD_NONCE_LEN],
@@ -435,12 +442,6 @@ fn encrypt_block_bytes_for_uuid(
         encode_block_file, encrypt_block, BlockHeader, BlockPlaintext, RecipientPublicKeys,
         FILE_KIND_BLOCK,
     };
-
-    // Spec-pinned protocol version literals for §6.3 BlockPlaintext;
-    // every other call site in the codebase uses these same constants
-    // (`save_block` core path, `save_block.rs` test fixtures).
-    const BLOCK_VERSION_V1: u32 = 1;
-    const SCHEMA_VERSION_V1: u32 = 1;
 
     // Re-derive owner sender keys (mirrors save_block step 4 setup).
     let owner_card_bytes = open.owner_card.to_canonical_cbor().expect("card cbor");
@@ -478,10 +479,10 @@ fn encrypt_block_bytes_for_uuid(
         vector_clock: block_clock,
     };
     let plaintext = BlockPlaintext {
-        block_version: BLOCK_VERSION_V1,
+        block_version: versions.0,
         block_uuid,
         block_name,
-        schema_version: SCHEMA_VERSION_V1,
+        schema_version: versions.1,
         records: new_records,
         unknown,
     };
@@ -739,6 +740,7 @@ pub fn fresh_vault_two_concurrent_blocks(
         canonical_block_clock.clone(),
         golden_entry.block_name.clone(),
         BTreeMap::new(),
+        V1_BLOCK_VERSIONS,
         golden_entry.created_at_ms,
         now_ms,
         &BLOCK_NONCE_E,
@@ -750,6 +752,7 @@ pub fn fresh_vault_two_concurrent_blocks(
         sibling_block_clock.clone(),
         golden_entry.block_name.clone(),
         BTreeMap::new(),
+        V1_BLOCK_VERSIONS,
         golden_entry.created_at_ms,
         now_ms,
         &BLOCK_NONCE_F,
@@ -838,6 +841,7 @@ pub fn add_concurrent_block_sibling(
         records,
         None,
         BTreeMap::new(),
+        V1_BLOCK_VERSIONS,
         block_clock,
         manifest_clock,
         manifest_filename,
@@ -847,8 +851,9 @@ pub fn add_concurrent_block_sibling(
 }
 
 /// [`add_concurrent_block_sibling`], with the copy's plaintext
-/// `block_name` (`None` keeps the canonical one) and block-level
-/// `unknown` map set by the caller (#759). The copy's manifest
+/// `block_name` (`None` keeps the canonical one), block-level `unknown`
+/// map (#759) and `(block_version, schema_version)` pair (#761) set by
+/// the caller. The copy's manifest
 /// `BlockEntry.block_name` is left as the canonical one, as a real
 /// writer's would not be; `prepare_merge` reads the name from the
 /// plaintext only. Same single-call nonce rule.
@@ -860,6 +865,7 @@ pub fn add_block_sibling_with_meta(
     records: Vec<secretary_core::vault::Record>,
     block_name: Option<&str>,
     unknown: BTreeMap<String, secretary_core::vault::record::UnknownValue>,
+    versions: (u32, u32),
     block_clock: Vec<VectorClockEntry>,
     manifest_clock: Vec<VectorClockEntry>,
     manifest_filename: &str,
@@ -883,6 +889,7 @@ pub fn add_block_sibling_with_meta(
         block_clock.clone(),
         block_name.map_or(entry.block_name, str::to_string),
         unknown,
+        versions,
         entry.created_at_ms,
         now_ms,
         &BLOCK_NONCE_G,

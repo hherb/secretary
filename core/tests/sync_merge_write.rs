@@ -44,6 +44,9 @@ const RENAMED_BLOCK: &str = "\u{10FFFF} renamed by the third copy";
 const EXTENSION_KEY: &str = "x_v2_extension";
 /// Canonical CBOR for the unsigned integer 7.
 const EXTENSION_VALUE_CBOR: [u8; 1] = [0x07];
+/// `(block_version, schema_version)` of a block a later client wrote: each
+/// above v1's, and different from each other so a swapped pair is caught.
+const LATER_VERSIONS: (u32, u32) = (2, 3);
 
 fn vc(device_uuid: [u8; 16], counter: u64) -> VectorClockEntry {
     VectorClockEntry {
@@ -101,9 +104,11 @@ fn extension_map() -> BTreeMap<String, UnknownValue> {
 }
 
 /// Canonical `{C1}` and a concurrent `{S1}` copy, plus a third copy carrying
-/// a new `block_name` and a block-level `unknown` key under `third_clock`.
+/// a new `block_name`, a block-level `unknown` key and `third_versions`
+/// (`(block_version, schema_version)`) under `third_clock`.
 fn vault_with_a_renamed_extended_copy(
     third_clock: Vec<VectorClockEntry>,
+    third_versions: (u32, u32),
 ) -> (std::path::PathBuf, tempfile::TempDir, [u8; 16]) {
     let (probe, _probe_tmp) = sync_helpers::fresh_vault_with_clock(Vec::new());
     let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&probe);
@@ -140,6 +145,7 @@ fn vault_with_a_renamed_extended_copy(
         ],
         Some(RENAMED_BLOCK),
         extension_map(),
+        third_versions,
         third_clock.clone(),
         third_clock,
         THIRD_MANIFEST,
@@ -170,7 +176,10 @@ fn the_merged_block_name_and_unknown_keys_are_written() {
         vc(THIRD_DEVICE, 1),
     ];
     for (third_clock, want_clock) in [(dominating.clone(), dominating), (concurrent, ticked)] {
-        let (folder, _tmp, block_uuid) = vault_with_a_renamed_extended_copy(third_clock.clone());
+        let (folder, _tmp, block_uuid) = vault_with_a_renamed_extended_copy(
+            third_clock.clone(),
+            sync_helpers::V1_BLOCK_VERSIONS,
+        );
         let identity = identity_for(&folder);
         let draft = prepare(&folder, &identity);
         commit_with_decisions(&folder, &identity, draft, Vec::new(), COMMIT_NOW_MS)
@@ -182,6 +191,36 @@ fn the_merged_block_name_and_unknown_keys_are_written() {
         assert_eq!(plaintext.block_name, RENAMED_BLOCK, "{label}");
         assert_eq!(manifest_name, RENAMED_BLOCK, "{label}");
         assert_eq!(clock, want_clock, "{label}");
+    }
+}
+
+/// A third copy written by a later client, with `block_version` and
+/// `schema_version` above v1's. §11.2 merges both as `max`, so the commit
+/// writes the copy's pair rather than v1's. Writing `1` was a downgrade,
+/// and when the fold adopted the copy whole (its clock stands untouched)
+/// also a second plaintext under that copy's clock (#761).
+#[test]
+fn the_merged_block_and_schema_versions_are_written() {
+    let dominating = vec![
+        vc(CANONICAL_DEVICE, 1),
+        vc(SIBLING_DEVICE, 1),
+        vc(THIRD_DEVICE, 1),
+    ];
+    let concurrent = vec![vc(THIRD_DEVICE, 1)];
+    for third_clock in [dominating, concurrent] {
+        let (folder, _tmp, block_uuid) =
+            vault_with_a_renamed_extended_copy(third_clock.clone(), LATER_VERSIONS);
+        let identity = identity_for(&folder);
+        let draft = prepare(&folder, &identity);
+        commit_with_decisions(&folder, &identity, draft, Vec::new(), COMMIT_NOW_MS)
+            .expect("commit_with_decisions");
+
+        let (plaintext, _, _) = disk_block(&folder, block_uuid);
+        assert_eq!(
+            (plaintext.block_version, plaintext.schema_version),
+            LATER_VERSIONS,
+            "third copy clock {third_clock:?}"
+        );
     }
 }
 

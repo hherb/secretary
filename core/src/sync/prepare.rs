@@ -442,8 +442,8 @@ pub fn prepare_merge(
         let mut acc_clock = canonical_block_clock;
         let mut acc_unknown = canonical_pt.unknown.clone();
         let mut acc_block_name = canonical_pt.block_name.clone();
-        let acc_block_version = canonical_pt.block_version;
-        let acc_schema_version = canonical_pt.schema_version;
+        let mut acc_block_version = canonical_pt.block_version;
+        let mut acc_schema_version = canonical_pt.schema_version;
 
         // Per-copy plaintexts retained across the iterative fold so the
         // veto pass at the bottom of the loop can compare the merged
@@ -498,6 +498,8 @@ pub fn prepare_merge(
             acc_clock = merge_vector_clocks(&acc_clock, &copy_block_clock);
             acc_unknown = merged.merged.unknown;
             acc_block_name = merged.merged.block_name;
+            acc_block_version = merged.merged.block_version;
+            acc_schema_version = merged.merged.schema_version;
             folded_clocks.push(copy_block_clock);
             copy_plaintexts.push(copy_pt);
         }
@@ -567,6 +569,8 @@ pub fn prepare_merge(
             MergedBlockMeta {
                 block_name: acc_block_name,
                 unknown: acc_unknown,
+                block_version: acc_block_version,
+                schema_version: acc_schema_version,
                 adopted_copy_clock: adopted_one_copy,
             },
         );
