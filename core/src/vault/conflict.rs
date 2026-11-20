@@ -939,8 +939,10 @@ pub(crate) fn conflict_to_vault_error(e: ConflictError) -> super::VaultError {
 /// Mirrors the orchestrator layer's private `tick_clock` but is pure
 /// (takes `clock` by value, returns a new `Vec`) and produces a
 /// layer-local error rather than `VaultError` so this module stays
-/// independent of the umbrella enum. Two callers: [`merge_block`]'s
-/// concurrent arm, and `sync::commit::write`'s manifest-clock tick (#744).
+/// independent of the umbrella enum. Four callers: [`merge_block`]'s
+/// concurrent arm, `sync::prepare`'s once-per-merge N-way tick (#751), and
+/// `sync::commit::write`'s manifest-clock tick (#744) and keep-local
+/// block-clock tick (#759).
 pub(crate) fn tick_for_device(
     clock: Vec<VectorClockEntry>,
     device: [u8; 16],

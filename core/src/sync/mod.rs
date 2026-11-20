@@ -45,7 +45,9 @@ pub use bundle::{
     VaultBundle,
 };
 pub use commit::commit_with_decisions;
-pub use draft::{BlockId, DraftMerge, RecordId, RecordTombstoneVeto, VetoDecision};
+pub use draft::{
+    BlockId, DraftMerge, MergedBlockMeta, RecordId, RecordTombstoneVeto, VetoDecision,
+};
 pub use error::SyncError;
 #[doc(hidden)]
 pub use once::__test_dispatch;

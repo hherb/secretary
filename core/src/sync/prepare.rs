@@ -21,7 +21,7 @@ use crate::crypto::sig::MlDsa65Public;
 use crate::identity::fingerprint::fingerprint;
 use crate::sync::bundle::{compute_manifest_hash, ManifestSnapshot, VaultBundle};
 use crate::sync::draft::{
-    BlockId, DraftMerge, RecordCollisionSummary, RecordId, RecordTombstoneVeto,
+    BlockId, DraftMerge, MergedBlockMeta, RecordCollisionSummary, RecordId, RecordTombstoneVeto,
 };
 use crate::sync::error::SyncError;
 use crate::sync::outcome::DiffPlan;
@@ -404,6 +404,7 @@ pub fn prepare_merge(
     let mut vetoes: Vec<RecordTombstoneVeto> = Vec::new();
     let mut per_block_clocks: BTreeMap<[u8; 16], Vec<VectorClockEntry>> = BTreeMap::new();
     let mut per_block_records: BTreeMap<[u8; 16], Vec<RecordId>> = BTreeMap::new();
+    let mut per_block_meta: BTreeMap<[u8; 16], MergedBlockMeta> = BTreeMap::new();
     // Metadata-only field-collision accumulator: record_uuid → sorted,
     // deduped set of colliding field names across the per-copy fold.
     // Projected into `DraftMerge.collisions` at the end — carries no
@@ -440,7 +441,7 @@ pub fn prepare_merge(
         let mut folded_clocks = vec![canonical_block_clock.clone()];
         let mut acc_clock = canonical_block_clock;
         let mut acc_unknown = canonical_pt.unknown.clone();
-        let acc_block_name = canonical_pt.block_name.clone();
+        let mut acc_block_name = canonical_pt.block_name.clone();
         let acc_block_version = canonical_pt.block_version;
         let acc_schema_version = canonical_pt.schema_version;
 
@@ -496,6 +497,7 @@ pub fn prepare_merge(
             // accumulator takes the unticked max instead (see above).
             acc_clock = merge_vector_clocks(&acc_clock, &copy_block_clock);
             acc_unknown = merged.merged.unknown;
+            acc_block_name = merged.merged.block_name;
             folded_clocks.push(copy_block_clock);
             copy_plaintexts.push(copy_pt);
         }
@@ -560,6 +562,14 @@ pub fn prepare_merge(
         // re-encrypt; collecting the keys preserves that order.
         per_block_clocks.insert(*block_uuid, acc_clock.clone());
         per_block_records.insert(*block_uuid, acc_records.keys().copied().collect());
+        per_block_meta.insert(
+            *block_uuid,
+            MergedBlockMeta {
+                block_name: acc_block_name,
+                unknown: acc_unknown,
+                adopted_copy_clock: adopted_one_copy,
+            },
+        );
 
         merged_records.extend(acc_records);
     }
@@ -598,6 +608,7 @@ pub fn prepare_merge(
         merging_device,
         per_block_clocks,
         per_block_records,
+        per_block_meta,
         merged_trash,
     })
 }
