@@ -103,10 +103,12 @@ fn extension_map() -> BTreeMap<String, UnknownValue> {
     BTreeMap::from([(EXTENSION_KEY.to_string(), value)])
 }
 
-/// Canonical `{C1}` and a concurrent `{S1}` copy, plus a third copy carrying
-/// a new `block_name`, a block-level `unknown` key and `third_versions`
-/// (`(block_version, schema_version)`) under `third_clock`.
+/// Canonical `{C1}` carrying `canonical_versions` and a concurrent v1
+/// `{S1}` copy, plus a third copy carrying a new `block_name`, a
+/// block-level `unknown` key and `third_versions` under `third_clock`.
+/// Each versions pair is `(block_version, schema_version)`.
 fn vault_with_a_renamed_extended_copy(
+    canonical_versions: (u32, u32),
     third_clock: Vec<VectorClockEntry>,
     third_versions: (u32, u32),
 ) -> (std::path::PathBuf, tempfile::TempDir, [u8; 16]) {
@@ -114,7 +116,7 @@ fn vault_with_a_renamed_extended_copy(
     let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&probe);
 
     let canonical_clock = vec![vc(CANONICAL_DEVICE, 1)];
-    let (folder, tmp) = sync_helpers::fresh_vault_two_concurrent_blocks(
+    let (folder, tmp) = sync_helpers::fresh_vault_two_concurrent_blocks_with_versions(
         block_uuid,
         vec![sync_helpers::live_record(
             [0xAA; 16],
@@ -124,6 +126,7 @@ fn vault_with_a_renamed_extended_copy(
         )],
         canonical_clock.clone(),
         canonical_clock,
+        canonical_versions,
         vec![sync_helpers::live_record(
             [0xBB; 16],
             SIBLING_DEVICE,
@@ -177,6 +180,7 @@ fn the_merged_block_name_and_unknown_keys_are_written() {
     ];
     for (third_clock, want_clock) in [(dominating.clone(), dominating), (concurrent, ticked)] {
         let (folder, _tmp, block_uuid) = vault_with_a_renamed_extended_copy(
+            sync_helpers::V1_BLOCK_VERSIONS,
             third_clock.clone(),
             sync_helpers::V1_BLOCK_VERSIONS,
         );
@@ -194,11 +198,19 @@ fn the_merged_block_name_and_unknown_keys_are_written() {
     }
 }
 
-/// A third copy written by a later client, with `block_version` and
-/// `schema_version` above v1's. §11.2 merges both as `max`, so the commit
-/// writes the copy's pair rather than v1's. Writing `1` was a downgrade,
-/// and when the fold adopted the copy whole (its clock stands untouched)
-/// also a second plaintext under that copy's clock (#761).
+/// The commit writes the merged `(block_version, schema_version)`, not
+/// v1's. §11.2 takes the `max` on a concurrent fold step and adopts an
+/// equal or dominating copy whole, versions included. Writing `1` was a
+/// downgrade of a later client's block, and when the fold adopted a copy
+/// whole (its clock stands untouched) also a second plaintext under that
+/// copy's clock (#761). Each row breaks a plausible wrong rule:
+///
+/// - a later third copy, dominating and concurrent: the v1 constant;
+/// - a later canonical copy, each copy later in one field: last-copy-wins
+///   and a constant initial value (canonical `(3, 1)`, third `(1, 4)`);
+/// - a dominating third copy LOWER than the canonical: max over every
+///   copy, which would write the canonical's pair under the third copy's
+///   untouched clock.
 #[test]
 fn the_merged_block_and_schema_versions_are_written() {
     let dominating = vec![
@@ -207,20 +219,37 @@ fn the_merged_block_and_schema_versions_are_written() {
         vc(THIRD_DEVICE, 1),
     ];
     let concurrent = vec![vc(THIRD_DEVICE, 1)];
-    for third_clock in [dominating, concurrent] {
-        let (folder, _tmp, block_uuid) =
-            vault_with_a_renamed_extended_copy(third_clock.clone(), LATER_VERSIONS);
+    let v1 = sync_helpers::V1_BLOCK_VERSIONS;
+    let cases = [
+        (dominating.clone(), v1, LATER_VERSIONS, LATER_VERSIONS),
+        (concurrent.clone(), v1, LATER_VERSIONS, LATER_VERSIONS),
+        (concurrent, (3, 1), (1, 4), (3, 4)),
+        (dominating.clone(), LATER_VERSIONS, v1, v1),
+    ];
+    for (third_clock, canonical_versions, third_versions, want) in cases {
+        let (folder, _tmp, block_uuid) = vault_with_a_renamed_extended_copy(
+            canonical_versions,
+            third_clock.clone(),
+            third_versions,
+        );
         let identity = identity_for(&folder);
         let draft = prepare(&folder, &identity);
         commit_with_decisions(&folder, &identity, draft, Vec::new(), COMMIT_NOW_MS)
             .expect("commit_with_decisions");
 
-        let (plaintext, _, _) = disk_block(&folder, block_uuid);
+        let (plaintext, clock, _) = disk_block(&folder, block_uuid);
+        let label = format!(
+            "third copy clock {third_clock:?}, canonical {canonical_versions:?}, \
+             third {third_versions:?}"
+        );
         assert_eq!(
             (plaintext.block_version, plaintext.schema_version),
-            LATER_VERSIONS,
-            "third copy clock {third_clock:?}"
+            want,
+            "{label}"
         );
+        if third_clock == dominating {
+            assert_eq!(clock, dominating, "adopted whole, untouched: {label}");
+        }
     }
 }
 

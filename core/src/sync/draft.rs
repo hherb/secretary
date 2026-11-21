@@ -161,11 +161,13 @@ pub struct MergedBlockMeta {
     pub block_name: String,
     /// The merged block-level forward-compat `unknown` map.
     pub unknown: BTreeMap<String, UnknownValue>,
-    /// The merged `block_version`: the `max` over every folded copy
-    /// (§11.2), written as is even above v1's, since writing v1's value
-    /// would downgrade a later client's block (#761).
+    /// The merged `block_version`: the `max` on a concurrent fold step and
+    /// the adopted copy's on an equal or dominating one (§11.2), so not
+    /// the max over every folded copy. Written as is even above v1's,
+    /// since writing v1's value would downgrade a later client's block
+    /// (#761).
     pub block_version: u32,
-    /// The merged `schema_version`, the `max` like `block_version`.
+    /// The merged `schema_version`, merged like `block_version`.
     pub schema_version: u32,
     /// The block's merged clock is one folded copy's clock, untouched: the
     /// fold adopted that copy whole and applied no tick. A commit that then
