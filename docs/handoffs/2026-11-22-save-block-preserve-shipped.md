@@ -1,4 +1,4 @@
-# NEXT_SESSION.md: a whole-block save keeps what the caller cannot see (#766)
+# NEXT_SESSION.md: a whole-block save keeps the hidden state of what it is sent (#766)
 
 Branch `feature/save-block-preserve`, worktree
 `.worktrees/save-block-preserve`, base `c81883a5` (`main`, the #765
@@ -11,8 +11,9 @@ the older `merge-plaintext-clock` one were removed, with their branches.
 
 | SHA | What |
 |---|---|
-| `cad43617` | **Code + tests + ROADMAP/README.** One pure `edit/rebuild.rs::rebuild_record(prior, ..)` now builds every record from caller content. `edit_record`, `append_record` and the bridge's whole-block `save_block` share it, and the three copies are gone (`build_new_record`, `RecordInput::into_core_record`). On an update `save_block` decrypts the block's current copy and keeps what the caller cannot see. |
-| (this commit) | This handoff and the symlink retarget. |
+| `cad43617` | **Code + tests + ROADMAP/README.** One pure `edit/rebuild.rs::rebuild_record(prior, ..)` now builds every record from caller content. `edit_record`, `append_record` and the bridge's whole-block `save_block` share it, and the three copies are gone (`build_new_record`, `RecordInput::into_core_record`). On an update `save_block` decrypts the block's current copy and keeps the hidden state of every record it is sent. |
+| `0b019003` | This handoff and the symlink retarget. |
+| (this commit) | `/finalcheck` review fixes: see "PR review round" below. |
 
 **Owner ruling (this session):** the whole-block save gets the edit
 primitives' semantics, not just the versions and `unknown` maps #766 named.
@@ -22,17 +23,23 @@ On an update, `BlockInput::into_block_plaintext(prior, ..)` keeps:
 - per record matched by `record_uuid`: `created_at_ms`, `tombstoned_at_ms`
   (a resurrection keeps its death clock, as `resurrect_record` does), the
   record-level `unknown`, and per field matched by name the field `unknown`;
-- the `last_mod` / `device_uuid` of every field whose value did not change.
+- the `last_mod` / `device_uuid` of every field whose value did not change
+  AND whose clock is after the prior death clock (a clock at or before it is
+  dead to the merge's staleness filter, so it is re-clocked; see the review
+  round).
   Before this, `write_settings` rewrote all four settings fields at `now`, so
   a settings change on one device could overwrite another device's
   concurrent change to a different setting (field merge is last-write-wins).
 
 A new block is still written at v1 with empty maps. A record left out of the
-input is still removed (whole-block replace, unchanged).
+input is still removed (whole-block replace, unchanged), including a
+tombstoned record a caller never saw because it read with
+`include_deleted = false`; a peer's live copy then resurrects it (#768).
 
 **Behaviour change:** an update over a block that cannot be read and verified
 (decrypt failure, fingerprint mismatch, missing file) now fails with
-`CorruptVault` and leaves the file alone. It used to overwrite the block with
+`CorruptVault` (an IO error other than not-found gives `FolderInvalid`) and
+leaves the file alone. It used to overwrite the block with
 a fresh v1 copy. `read_settings` already failed on such a block, so no app
 flow that worked before now breaks, but a corrupt settings block can no longer
 be "repaired" by saving settings over it.
@@ -84,7 +91,45 @@ Every row was `RED_AS_EXPECTED`, live by artifact, harness exit 0:
 - `uv run core/tests/python/conformance.py`: PASS
 
 `edit/mod.rs` went from 558 to 479 lines (under the cap). `save/input.rs` is
-252 lines; the new `save/tests.rs` is 243.
+252 lines. After the review round `save/tests.rs` is 325 and `edit/rebuild.rs`
+231; `tests/save_block.rs` went 558 -> 559, already over the threshold on
+`main` (#772).
+
+## PR review round (`/finalcheck`)
+
+Three review agents (code, tests, silent failures and comments). Fixed:
+
+- **Stale field clocks on resurrection (a regression in the first version).**
+  `rebuild_record` kept the clock of an unchanged field even when it sat at
+  or before the prior death clock. Core's staleness filter
+  (`conflict.rs`, `alive = death_clock == 0 || f.last_mod > death_clock`)
+  then dropped that field on the next merge, even `merge_record(r, r)`. The
+  old `save_block` bumped every clock and so never hit it. Now such a field
+  is re-clocked. Pinned by
+  `rebuild.rs::a_field_dead_under_the_death_clock_is_re_clocked_even_if_unchanged`
+  (red before the fix, including a merge-idempotence check). The old
+  carry-forward test asserted the buggy behaviour (a tombstoned prior with
+  every field below its death clock); its prior is now a resurrected record
+  with live fields.
+- **Matching by `record_uuid` was not pinned**: the save test sent records in
+  the seed's order, so index matching passed. The input is now reordered, and
+  the two seeded records differ in `created_at_ms` and record `unknown`.
+- **Removal by omission** and **a missing block file** now have tests
+  (`an_update_removes_a_record_left_out_of_the_input`,
+  `an_update_over_a_missing_block_file_is_refused`).
+- **Stale `# Errors` docs** for the new read step: the bridge `save_block`,
+  ffi-py `save_block`, the uniffi `save_block`, and `write_settings`.
+- **Overclaims**: "keeps what the caller cannot see" narrowed in the
+  orchestration doc, README, ROADMAP and here; the `drop(prior)` comment no
+  longer claims a full wipe.
+- **A test that could hang**: `tests/save_block.rs`'s mid-call hook wait is
+  now bounded (60 s), so a save that fails before the hook fails the test.
+
+Filed, not fixed: #768 (omitted tombstones), #769 (`resurrect_record` has
+the same stale-clock shape), #770 (duplicate `record_uuid` in the input),
+#771 (save over a trashed uuid writes a live block), #772 (`tests/save_block.rs`
+over the size threshold). The mutation table above
+predates this round.
 
 ## (2) What is next
 
@@ -117,9 +162,10 @@ Every row was `RED_AS_EXPECTED`, live by artifact, harness exit 0:
   decide whether v1 may edit such a block at all (sync commit, edit paths and
   `save_block` alike).
 - **`UnknownValue` is still not zeroize-typed** (memory-hygiene memo's open
-  list). The update path now clones `unknown` maps from a decrypted block,
-  the same as `edit_record` always did; nothing new, but the clone count on
-  this path went from zero to one.
+  list). The update path now clones the block-, record- and field-level
+  `unknown` maps of a decrypted block, the same as `edit_record` always did;
+  this path cloned none before. Only the prior's field VALUES zeroize when it
+  is dropped; field names, tags and `unknown` values are freed unwiped.
 
 ## (4) How to resume
 

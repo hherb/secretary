@@ -16,6 +16,7 @@ use crate::test_support::open_writable_golden_001;
 const ORIG_DEVICE: [u8; 16] = [0x07; 16];
 const SAVE_DEVICE: [u8; 16] = [0x09; 16];
 const SEED_MS: u64 = 1_000;
+const DEAD_CREATED_MS: u64 = 1_200;
 const TOMBSTONED_MS: u64 = 1_500;
 const SAVE_MS: u64 = 2_000;
 /// Distinct from v1 and from each other, so a swap or a v1 reset is caught.
@@ -77,11 +78,11 @@ fn seed_plaintext() -> BlockPlaintext {
         record_type: "login".to_string(),
         fields: BTreeMap::new(),
         tags: vec![],
-        created_at_ms: SEED_MS,
+        created_at_ms: DEAD_CREATED_MS,
         last_mod_ms: TOMBSTONED_MS,
         tombstone: true,
         tombstoned_at_ms: TOMBSTONED_MS,
-        unknown: BTreeMap::new(),
+        unknown: unknown_map("x_dead"),
     };
     BlockPlaintext {
         block_version: LATER_BLOCK_VERSION,
@@ -117,13 +118,15 @@ fn an_update_carries_forward_what_the_caller_cannot_see() {
     let input = BlockInput {
         block_uuid: BLOCK,
         block_name: "Later".to_string(),
+        // Not the seed's order: each record must find its prior copy by
+        // `record_uuid`, not by position.
         records: vec![
+            record_input(NEW, vec![text_input("fresh", "x")]),
+            record_input(DEAD, vec![text_input("back", "again")]),
             record_input(
                 LIVE,
                 vec![text_input("keep", "same"), text_input("change", "v1")],
             ),
-            record_input(DEAD, vec![text_input("back", "again")]),
-            record_input(NEW, vec![text_input("fresh", "x")]),
         ],
     };
     save_block(
@@ -155,7 +158,11 @@ fn an_update_carries_forward_what_the_caller_cannot_see() {
 
     // An existing live record.
     let live = rec(LIVE);
-    assert!(live.unknown.contains_key("x_rec"), "record-level unknown");
+    assert_eq!(
+        live.unknown.keys().collect::<Vec<_>>(),
+        ["x_rec"],
+        "record-level unknown, from this record's own prior copy"
+    );
     assert_eq!(live.created_at_ms, SEED_MS, "created_at_ms preserved");
     assert_eq!(live.last_mod_ms, SAVE_MS, "last_mod_ms bumped");
     let keep = &live.fields["keep"];
@@ -185,7 +192,8 @@ fn an_update_carries_forward_what_the_caller_cannot_see() {
         dead.tombstoned_at_ms, TOMBSTONED_MS,
         "death clock preserved"
     );
-    assert_eq!(dead.created_at_ms, SEED_MS);
+    assert_eq!(dead.created_at_ms, DEAD_CREATED_MS);
+    assert_eq!(dead.unknown.keys().collect::<Vec<_>>(), ["x_dead"]);
 
     // A record new to the block starts fresh.
     let new = rec(NEW);
@@ -240,4 +248,78 @@ fn an_update_over_an_unreadable_block_is_refused() {
         tampered,
         "the unreadable block must not be overwritten"
     );
+}
+
+/// A record the caller leaves out of an update is removed (the documented
+/// whole-block semantics), while the records it does send keep their state.
+#[test]
+fn an_update_removes_a_record_left_out_of_the_input() {
+    let (_tmp, opened) = open_writable_golden_001();
+    crate::edit::save_plaintext(
+        &opened.identity,
+        &opened.manifest,
+        seed_plaintext(),
+        ORIG_DEVICE,
+        SEED_MS,
+    )
+    .expect("seed a later client's block");
+
+    let input = BlockInput {
+        block_uuid: BLOCK,
+        block_name: "Later".to_string(),
+        records: vec![record_input(LIVE, vec![text_input("keep", "same")])],
+    };
+    save_block(
+        &opened.identity,
+        &opened.manifest,
+        input,
+        SAVE_DEVICE,
+        SAVE_MS,
+    )
+    .expect("save_block over the existing block");
+
+    let after =
+        decrypt_block_plaintext(&opened.identity, &opened.manifest, &BLOCK).expect("decrypt");
+    let uuids: Vec<[u8; 16]> = after.records.iter().map(|r| r.record_uuid).collect();
+    assert_eq!(uuids, [LIVE], "the omitted record is removed");
+    assert_eq!(after.records[0].created_at_ms, SEED_MS);
+}
+
+/// A block the manifest lists but whose file is gone is not an insert: the
+/// save must refuse rather than write a fresh v1 block in its place.
+#[test]
+fn an_update_over_a_missing_block_file_is_refused() {
+    let (tmp, opened) = open_writable_golden_001();
+    crate::edit::save_plaintext(
+        &opened.identity,
+        &opened.manifest,
+        seed_plaintext(),
+        ORIG_DEVICE,
+        SEED_MS,
+    )
+    .expect("seed a later client's block");
+    let path = tmp.path().join("blocks").join(format!(
+        "{}.cbor.enc",
+        crate::record::orchestration::uuid_hyphenated(&BLOCK)
+    ));
+    std::fs::remove_file(&path).expect("remove block file");
+
+    let input = BlockInput {
+        block_uuid: BLOCK,
+        block_name: "Later".to_string(),
+        records: vec![record_input(LIVE, vec![text_input("keep", "same")])],
+    };
+    let err = save_block(
+        &opened.identity,
+        &opened.manifest,
+        input,
+        SAVE_DEVICE,
+        SAVE_MS,
+    )
+    .expect_err("an update over a missing block file must fail");
+    assert!(
+        matches!(err, crate::error::FfiVaultError::CorruptVault { .. }),
+        "expected CorruptVault, got {err:?}"
+    );
+    assert!(!path.exists(), "no replacement block may be written");
 }

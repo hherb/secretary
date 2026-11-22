@@ -20,8 +20,12 @@ use super::RecordContent;
 /// byte-identical to the prior one also keeps its `last_mod` and
 /// `device_uuid`: core's field merge is last-write-wins on `last_mod`, so
 /// bumping an untouched field would let this copy clobber a concurrent edit
-/// of that field on another device. A field absent from `content` is dropped
-/// (the user removed it). The result is live, with `last_mod_ms = now_ms`.
+/// of that field on another device. That holds only for a field alive under
+/// the prior death clock: one whose clock is at or before `tombstoned_at_ms`
+/// is dead to the merge, so it is re-clocked to `now_ms` like a changed one,
+/// or a resurrected record would lose it on its next merge. A field absent
+/// from `content` is dropped (the user removed it). The result is live, with
+/// `last_mod_ms = now_ms`.
 ///
 /// Without `prior`: a fresh record, every clock `now_ms`, every `unknown`
 /// empty, `tombstoned_at_ms = 0`.
@@ -32,6 +36,7 @@ pub(crate) fn rebuild_record(
     device_uuid: [u8; 16],
     now_ms: u64,
 ) -> Record {
+    let death = prior.map_or(0, |p| p.tombstoned_at_ms);
     let mut fields: BTreeMap<String, RecordField> = BTreeMap::new();
     for f in content.fields {
         let value = f.value.into_core_value();
@@ -39,8 +44,12 @@ pub(crate) fn rebuild_record(
         // `RecordFieldValue`'s `==` is constant-time (its `SecretString` /
         // `SecretBytes` payloads compare via `subtle::ConstantTimeEq`), so the
         // unchanged-value gate adds no value-dependent timing side channel.
+        // A clock at or before the death clock is one the merge treats as
+        // dead (`conflict.rs`'s staleness filter), so it is never kept.
         let (last_mod, field_device_uuid, unknown) = match prior_field {
-            Some(p) if p.value == value => (p.last_mod, p.device_uuid, p.unknown.clone()),
+            Some(p) if p.value == value && (death == 0 || p.last_mod > death) => {
+                (p.last_mod, p.device_uuid, p.unknown.clone())
+            }
             Some(p) => (now_ms, device_uuid, p.unknown.clone()),
             None => (now_ms, device_uuid, BTreeMap::new()),
         };
@@ -72,6 +81,7 @@ mod tests {
     use super::*;
 
     use secretary_core::crypto::secret::SecretString;
+    use secretary_core::vault::conflict::merge_record;
     use secretary_core::vault::record::{RecordFieldValue, UnknownValue};
 
     use crate::save::input::{FieldInput, FieldInputValue};
@@ -80,6 +90,8 @@ mod tests {
     const NOW_DEVICE: [u8; 16] = [0x09; 16];
     const PRIOR_MS: u64 = 1_000;
     const DEATH_MS: u64 = 1_500;
+    /// A field clock after the death clock: the field was re-edited live.
+    const ALIVE_MS: u64 = 1_800;
     const NOW_MS: u64 = 2_000;
     const UUID: [u8; 16] = [0x11; 16];
 
@@ -102,13 +114,19 @@ mod tests {
         BTreeMap::from([(key.to_string(), v)])
     }
 
-    fn prior() -> Record {
-        let field = |text: &str, key: &str| RecordField {
+    fn field(text: &str, last_mod: u64, key: &str) -> RecordField {
+        RecordField {
             value: RecordFieldValue::Text(SecretString::from(text)),
-            last_mod: PRIOR_MS,
+            last_mod,
             device_uuid: PRIOR_DEVICE,
             unknown: unknown(key),
-        };
+        }
+    }
+
+    /// A record deleted at `DEATH_MS` and since resurrected, every field
+    /// edited after the death (so every field is alive under merge).
+    fn prior() -> Record {
+        let field = |text: &str, key: &str| field(text, ALIVE_MS, key);
         Record {
             record_uuid: UUID,
             record_type: "old".to_string(),
@@ -119,8 +137,8 @@ mod tests {
             ]),
             tags: vec![],
             created_at_ms: PRIOR_MS,
-            last_mod_ms: DEATH_MS,
-            tombstone: true,
+            last_mod_ms: ALIVE_MS,
+            tombstone: false,
             tombstoned_at_ms: DEATH_MS,
             unknown: unknown("x_rec"),
         }
@@ -158,7 +176,7 @@ mod tests {
         assert!(r.unknown.contains_key("x_rec"));
 
         let same = &r.fields["same"];
-        assert_eq!((same.last_mod, same.device_uuid), (PRIOR_MS, PRIOR_DEVICE));
+        assert_eq!((same.last_mod, same.device_uuid), (ALIVE_MS, PRIOR_DEVICE));
         assert!(same.unknown.contains_key("x_same"));
 
         let changed = &r.fields["changed"];
@@ -175,6 +193,39 @@ mod tests {
         assert!(
             !r.fields.contains_key("dropped"),
             "an omitted field is dropped"
+        );
+    }
+
+    /// A field the merge would treat as dead (its clock at or before the
+    /// death clock) must not keep that clock when the caller sends it back:
+    /// kept, the next merge would drop the field from the live record.
+    #[test]
+    fn a_field_dead_under_the_death_clock_is_re_clocked_even_if_unchanged() {
+        let mut p = prior();
+        p.tombstone = true;
+        p.last_mod_ms = DEATH_MS;
+        p.fields = BTreeMap::from([
+            ("stale".to_string(), field("a", PRIOR_MS, "x_stale")),
+            ("edge".to_string(), field("b", DEATH_MS, "x_edge")),
+        ]);
+        let r = rebuild_record(
+            Some(&p),
+            UUID,
+            content(&[("stale", "a"), ("edge", "b")]),
+            NOW_DEVICE,
+            NOW_MS,
+        );
+        assert_eq!(r.tombstoned_at_ms, DEATH_MS, "the death clock survives");
+        for name in ["stale", "edge"] {
+            let f = &r.fields[name];
+            assert_eq!((f.last_mod, f.device_uuid), (NOW_MS, NOW_DEVICE), "{name}");
+            assert!(f.unknown.contains_key(&format!("x_{name}")), "{name}");
+        }
+        let merged = merge_record(&r, &r).merged;
+        assert_eq!(
+            merged.fields.keys().collect::<Vec<_>>(),
+            ["edge", "stale"],
+            "a merge must keep every field the save wrote"
         );
     }
 }

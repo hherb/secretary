@@ -30,12 +30,13 @@ use crate::vault::OpenVaultManifest;
 /// # Behavior
 ///
 /// An update (a `block_uuid` already in the manifest) replaces the block's
-/// records with `input`'s, but keeps what the caller cannot see: the
-/// block's `block_version`, `schema_version` and `unknown`, and, per record
-/// matched by `record_uuid`, everything the edit primitives keep (its
+/// records with `input`'s, but keeps the hidden state of what it is sent:
+/// the block's `block_version`, `schema_version` and `unknown`, and, per
+/// record matched by `record_uuid`, everything the edit primitives keep (its
 /// `created_at_ms`, death clock, `unknown` maps, and the clock of every
-/// field whose value did not change). A record left out of `input` is
-/// removed, as before (#766).
+/// live field whose value did not change). A record left out of `input` is
+/// removed, as before, INCLUDING a tombstoned one a caller never saw because
+/// it read with `include_deleted = false` (#766).
 ///
 /// On `Ok(())`: the block file is written to
 /// `<vault>/blocks/<uuid>.cbor.enc` and the manifest is re-signed and
@@ -54,7 +55,9 @@ use crate::vault::OpenVaultManifest;
 ///   an update) the existing block cannot be read and verified: an update
 ///   carries that block's hidden state forward, so it refuses rather than
 ///   overwrite a block it could not read.
-/// - [`FfiVaultError::FolderInvalid`] — IO failure during atomic write.
+/// - [`FfiVaultError::FolderInvalid`] — IO failure reading the existing
+///   block (other than its file being missing, which is `CorruptVault`) or
+///   during the atomic write.
 /// - [`FfiVaultError::SaveCryptoFailure`] — crypto/encoding failure on
 ///   already-validated inputs (clock overflow, post-unlock memory
 ///   corruption, encoder failure on freshly-built struct, signature
@@ -98,7 +101,7 @@ pub fn save_block(
         Err(e) => return Err(e),
     };
     let plaintext = input.into_block_plaintext(prior.as_ref(), now_ms, device_uuid);
-    drop(prior); // wipe the old plaintext before the crypto below
+    drop(prior); // free it now; only its field values zeroize on drop
 
     // Step 4: build the temporary OpenVault from clones. The manifest +
     // manifest_file clones are the unmodified-on-failure invariant: if

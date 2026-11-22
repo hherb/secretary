@@ -187,8 +187,10 @@ impl BlockInput {
 /// - `ValueError` — `device_uuid` length ≠ 16. (Length-check on
 ///   `block_uuid` / `record_uuid` already ran inside the input
 ///   constructors, so the only remaining wrong-length case is here.)
-/// - `VaultCorruptVault` — either handle has been wiped.
-/// - `VaultFolderInvalid` — IO failure during atomic write.
+/// - `VaultCorruptVault` — either handle has been wiped, or (on an update)
+///   the existing block cannot be read and verified.
+/// - `VaultFolderInvalid` — IO failure reading the existing block or during
+///   the atomic write.
 /// - `VaultSaveCryptoFailure` — crypto / encoding failure on already-
 ///   validated inputs.
 #[pyfunction]

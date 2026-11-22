@@ -117,8 +117,9 @@ pub fn read_settings(
 /// next load and is not a security surface.
 ///
 /// # Errors
-/// Propagates `save_block`'s errors (`CorruptVault` on a wiped handle,
-/// `FolderInvalid` on I/O, `SaveCryptoFailure` on crypto/encoding).
+/// Propagates `save_block`'s errors (`CorruptVault` on a wiped handle or an
+/// existing settings block that cannot be read and verified, `FolderInvalid`
+/// on I/O, `SaveCryptoFailure` on crypto/encoding).
 pub fn write_settings(
     identity: &UnlockedIdentity,
     manifest: &OpenVaultManifest,
