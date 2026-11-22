@@ -23,11 +23,13 @@ pub use rename::rename_block;
 mod move_record;
 pub use move_record::move_record;
 
+mod rebuild;
+pub(crate) use rebuild::rebuild_record;
+
 use std::collections::BTreeMap;
 
 use rand_core::OsRng;
 use secretary_core::vault::block::BlockPlaintext;
-use secretary_core::vault::record::{Record, RecordField};
 use secretary_core::vault::OpenVault;
 
 use crate::error::detail;
@@ -37,10 +39,11 @@ use crate::record::orchestration::decrypt_block_plaintext;
 use crate::save::orchestration::map_core_vault_error;
 use crate::vault::OpenVaultManifest;
 
-/// v1 block-body version (matches `BlockInput::into_block_plaintext`).
-const BLOCK_VERSION_V1: u32 = 1;
-/// v1 record-schema version (matches `BlockInput::into_block_plaintext`).
-const SCHEMA_VERSION_V1: u32 = 1;
+/// v1 block-body version, written on a NEW block (here and by
+/// `BlockInput::into_block_plaintext`). An existing block keeps its own.
+pub(crate) const BLOCK_VERSION_V1: u32 = 1;
+/// v1 record-schema version, written on a NEW block (see above).
+pub(crate) const SCHEMA_VERSION_V1: u32 = 1;
 
 /// Create a brand-new (empty) block. Insert path: the caller is expected to
 /// pass a fresh `block_uuid` (a 128-bit random UUID minted by the command
@@ -97,7 +100,7 @@ pub fn append_record(
     now_ms: u64,
 ) -> Result<(), FfiVaultError> {
     let mut plaintext = decrypt_block_plaintext(identity, manifest, &block_uuid)?;
-    let record = build_new_record(record_uuid, content, device_uuid, now_ms);
+    let record = rebuild_record(None, record_uuid, content, device_uuid, now_ms);
     plaintext.records.push(record);
     save_plaintext(identity, manifest, plaintext, device_uuid, now_ms)
 }
@@ -109,15 +112,10 @@ pub fn append_record(
 /// it). Siblings are untouched. The record-level `last_mod_ms` bumps to
 /// `now_ms`.
 ///
-/// Per-field clocks are bumped only on a genuine change: a field whose
-/// value is byte-identical to the prior record keeps its prior `last_mod`
-/// and `device_uuid` (the editing device touched the record but not that
-/// field's value). This matters under cross-device sync — core's
-/// field-level merge is `last_mod` last-write-wins, so bumping an
-/// untouched field's clock here would let this device's stale-but-newer
-/// copy clobber a concurrent edit of that field on another device. Only
-/// fields whose value actually changed (or are newly added) get `now_ms`
-/// and the editing `device_uuid`.
+/// Per-field clocks are bumped only on a genuine change, so an untouched
+/// field cannot clobber a concurrent edit under core's last-write-wins field
+/// merge. The rules live in `rebuild::rebuild_record`, which `save_block`
+/// shares (#766).
 ///
 /// # Errors
 ///
@@ -142,91 +140,14 @@ pub fn edit_record(
             uuid_hex: detail::uuid_hex(&record_uuid),
         })?;
 
-    let existing = &plaintext.records[idx];
-    let created_at_ms = existing.created_at_ms;
-    let tombstoned_at_ms = existing.tombstoned_at_ms;
-    let record_unknown = existing.unknown.clone();
-    // Snapshot the prior fields by name so the rebuild below can, per field:
-    // carry forward its forward-compat `unknown`, and — when the new value is
-    // byte-identical — preserve its `last_mod` / `device_uuid`. A field absent
-    // from the delta is simply not looked up here, so it (and its unknowns) is
-    // dropped — the user deleted it.
-    let prior_fields: BTreeMap<String, RecordField> = existing.fields.clone();
-
-    let mut fields_map: BTreeMap<String, RecordField> = BTreeMap::new();
-    for f in content.fields {
-        let value = f.value.into_core_value();
-        // `RecordFieldValue`'s `==` is constant-time (its `SecretString` /
-        // `SecretBytes` payloads compare via `subtle::ConstantTimeEq`), so the
-        // unchanged-value gate adds no value-dependent timing side channel.
-        let (last_mod, field_device_uuid, unknown) = match prior_fields.get(&f.name) {
-            // Unchanged value: keep the prior field clock + authoring device.
-            Some(prior) if prior.value == value => {
-                (prior.last_mod, prior.device_uuid, prior.unknown.clone())
-            }
-            // Changed value (same field name): bump the clock to this edit,
-            // but still carry forward the field's forward-compat `unknown`.
-            Some(prior) => (now_ms, device_uuid, prior.unknown.clone()),
-            // Newly added field: fresh clock, empty unknown.
-            None => (now_ms, device_uuid, BTreeMap::new()),
-        };
-        fields_map.insert(
-            f.name,
-            RecordField {
-                value,
-                last_mod,
-                device_uuid: field_device_uuid,
-                unknown,
-            },
-        );
-    }
-
-    plaintext.records[idx] = Record {
+    plaintext.records[idx] = rebuild_record(
+        Some(&plaintext.records[idx]),
         record_uuid,
-        record_type: content.record_type,
-        fields: fields_map,
-        tags: content.tags,
-        created_at_ms,
-        last_mod_ms: now_ms,
-        tombstone: false,
-        tombstoned_at_ms,
-        unknown: record_unknown,
-    };
+        content,
+        device_uuid,
+        now_ms,
+    );
     save_plaintext(identity, manifest, plaintext, device_uuid, now_ms)
-}
-
-/// Build a fresh `core::Record` from a `RecordContent` delta. New records
-/// get empty record-level and per-field `unknown` maps and a zero
-/// `tombstoned_at_ms` (mirrors `RecordInput::into_core_record`).
-fn build_new_record(
-    record_uuid: [u8; 16],
-    content: RecordContent,
-    device_uuid: [u8; 16],
-    now_ms: u64,
-) -> Record {
-    let mut fields_map: BTreeMap<String, RecordField> = BTreeMap::new();
-    for f in content.fields {
-        fields_map.insert(
-            f.name,
-            RecordField {
-                value: f.value.into_core_value(),
-                last_mod: now_ms,
-                device_uuid,
-                unknown: BTreeMap::new(),
-            },
-        );
-    }
-    Record {
-        record_uuid,
-        record_type: content.record_type,
-        fields: fields_map,
-        tags: content.tags,
-        created_at_ms: now_ms,
-        last_mod_ms: now_ms,
-        tombstone: false,
-        tombstoned_at_ms: 0,
-        unknown: BTreeMap::new(),
-    }
 }
 
 /// Shared save tail: snapshot the manifest, build the temporary
@@ -234,7 +155,7 @@ fn build_new_record(
 /// the mutated manifest back into the handle. Mirrors
 /// [`crate::save::save_block`]'s machinery (its Steps 1, 2, 4, 5, 6) over a
 /// pre-built native `BlockPlaintext` rather than a `BlockInput`.
-fn save_plaintext(
+pub(crate) fn save_plaintext(
     identity: &UnlockedIdentity,
     manifest: &OpenVaultManifest,
     plaintext: BlockPlaintext,
@@ -289,7 +210,7 @@ mod tests {
     use super::*;
 
     use secretary_core::crypto::secret::SecretString;
-    use secretary_core::vault::record::{RecordFieldValue, UnknownValue};
+    use secretary_core::vault::record::{Record, RecordField, RecordFieldValue, UnknownValue};
 
     use crate::save::input::{FieldInput, FieldInputValue};
     use crate::test_support::open_writable_golden_001;
