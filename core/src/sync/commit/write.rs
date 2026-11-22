@@ -48,14 +48,6 @@ use crate::vault::{
     BlockPlaintext, ManifestHeader, RecipientPublicKeys, FILE_KIND_BLOCK,
 };
 
-/// Block plaintext `block_version` for v1 (§6.3). v1 is the only value
-/// v1 clients write.
-const BLOCK_VERSION_V1: u32 = 1;
-
-/// Block plaintext `schema_version` for v1 (§6.3). v1 is the only value
-/// v1 clients write.
-const SCHEMA_VERSION_V1: u32 = 1;
-
 /// Atomic commit of a merged + decided vault state.
 ///
 /// Re-verifies the vault from the already-unlocked `identity` via
@@ -422,10 +414,10 @@ fn rewrite_one_block(
         vector_clock: block_clock.clone(),
     };
     let plaintext = BlockPlaintext {
-        block_version: BLOCK_VERSION_V1,
+        block_version: meta.block_version,
         block_uuid,
         block_name: meta.block_name.clone(),
-        schema_version: SCHEMA_VERSION_V1,
+        schema_version: meta.schema_version,
         records: records_for_block,
         unknown: meta.unknown.clone(),
     };

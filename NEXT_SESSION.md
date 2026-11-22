@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-17-merge-plaintext-clock-shipped.md
+docs/handoffs/2026-11-21-merge-block-versions-shipped.md
