@@ -18,6 +18,7 @@ use secretary_core::vault::{OpenVault, VaultError};
 use crate::error::detail;
 use crate::error::FfiVaultError;
 use crate::identity::UnlockedIdentity;
+use crate::record::orchestration::decrypt_block_plaintext;
 use crate::save::input::BlockInput;
 use crate::vault::OpenVaultManifest;
 
@@ -27,6 +28,15 @@ use crate::vault::OpenVaultManifest;
 /// v1 single-author: recipients are owner-only; multi-recipient is B.4d.
 ///
 /// # Behavior
+///
+/// An update (a `block_uuid` already in the manifest) replaces the block's
+/// records with `input`'s, but keeps the hidden state of what it is sent:
+/// the block's `block_version`, `schema_version` and `unknown`, and, per
+/// record matched by `record_uuid`, everything the edit primitives keep (its
+/// `created_at_ms`, death clock, `unknown` maps, and the clock of every
+/// live field whose value did not change). A record left out of `input` is
+/// removed, as before, INCLUDING a tombstoned one a caller never saw because
+/// it read with `include_deleted = false` (#766).
 ///
 /// On `Ok(())`: the block file is written to
 /// `<vault>/blocks/<uuid>.cbor.enc` and the manifest is re-signed and
@@ -41,8 +51,13 @@ use crate::vault::OpenVaultManifest;
 ///
 /// # Errors
 ///
-/// - [`FfiVaultError::CorruptVault`] — either handle has been wiped.
-/// - [`FfiVaultError::FolderInvalid`] — IO failure during atomic write.
+/// - [`FfiVaultError::CorruptVault`] — either handle has been wiped, or (on
+///   an update) the existing block cannot be read and verified: an update
+///   carries that block's hidden state forward, so it refuses rather than
+///   overwrite a block it could not read.
+/// - [`FfiVaultError::FolderInvalid`] — IO failure reading the existing
+///   block (other than its file being missing, which is `CorruptVault`) or
+///   during the atomic write.
 /// - [`FfiVaultError::SaveCryptoFailure`] — crypto/encoding failure on
 ///   already-validated inputs (clock overflow, post-unlock memory
 ///   corruption, encoder failure on freshly-built struct, signature
@@ -74,11 +89,19 @@ pub fn save_block(
                 detail: detail::literal("identity handle has been closed"),
             })?;
 
-    // Step 3: build BlockPlaintext from BlockInput. The conversion moves
-    // the SecretString / SecretBytes wrappers into core::RecordFieldValue
-    // (no plaintext reallocation; zeroize-on-drop preserved through the
-    // move).
-    let plaintext = input.into_block_plaintext(now_ms, device_uuid);
+    // Step 3: build BlockPlaintext from BlockInput. An update carries
+    // forward the existing block's versions and `unknown` maps and each
+    // record's hidden state (#766), so decrypt the current copy first; a
+    // block not yet in the manifest is an insert. The conversion moves the
+    // SecretString / SecretBytes wrappers into core::RecordFieldValue (no
+    // plaintext reallocation; zeroize-on-drop preserved through the move).
+    let prior = match decrypt_block_plaintext(identity, manifest, &input.block_uuid) {
+        Ok(p) => Some(p),
+        Err(FfiVaultError::BlockNotFound { .. }) => None,
+        Err(e) => return Err(e),
+    };
+    let plaintext = input.into_block_plaintext(prior.as_ref(), now_ms, device_uuid);
+    drop(prior); // free it now; only its field values zeroize on drop
 
     // Step 4: build the temporary OpenVault from clones. The manifest +
     // manifest_file clones are the unmodified-on-failure invariant: if

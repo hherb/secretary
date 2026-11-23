@@ -9,3 +9,6 @@ pub mod orchestration;
 
 pub use input::{BlockInput, FieldInput, FieldInputValue, RecordInput};
 pub use orchestration::save_block;
+
+#[cfg(test)]
+mod tests;

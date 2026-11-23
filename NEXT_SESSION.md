@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-21-merge-block-versions-shipped.md
+docs/handoffs/2026-11-22-save-block-preserve-shipped.md

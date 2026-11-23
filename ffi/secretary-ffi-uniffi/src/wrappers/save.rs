@@ -53,7 +53,8 @@ pub struct FieldInput {
 /// `record_uuid` must be exactly 16 bytes; wrong-length input surfaces as
 /// [`crate::VaultError::InvalidArgument`] from
 /// [`crate::namespace::save_block`]. Duplicate field names inside `fields`
-/// collapse to last-write-wins per the bridge's `into_core_record` helper.
+/// collapse to last-write-wins (the bridge builds each record by name into
+/// a map; see its `rebuild_record`).
 pub struct RecordInput {
     /// 16-byte record UUID (validated as length-16 by the namespace fn).
     pub record_uuid: Vec<u8>,

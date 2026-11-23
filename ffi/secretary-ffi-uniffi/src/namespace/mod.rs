@@ -306,8 +306,10 @@ pub fn read_block(
 ///
 /// - [`VaultError::InvalidArgument`] — wrong-length `device_uuid`,
 ///   `input.block_uuid`, or any `RecordInput.record_uuid`.
-/// - [`VaultError::CorruptVault`] — either handle has been wiped.
-/// - [`VaultError::FolderInvalid`] — IO failure during atomic write.
+/// - [`VaultError::CorruptVault`] — either handle has been wiped, or (on an
+///   update) the existing block cannot be read and verified.
+/// - [`VaultError::FolderInvalid`] — IO failure reading the existing block
+///   or during the atomic write.
 /// - [`VaultError::SaveCryptoFailure`] — crypto / encoding failure on
 ///   already-validated inputs.
 pub fn save_block(

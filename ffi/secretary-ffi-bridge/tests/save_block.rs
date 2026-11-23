@@ -484,9 +484,10 @@ impl MidCallRace {
         Self { rx_ready, tx_go }
     }
 
+    /// Bounded: the hook holds `tx_ready`, so a save failing early would hang.
     fn wait_for_worker_at_hook(&self) {
         self.rx_ready
-            .recv()
+            .recv_timeout(std::time::Duration::from_secs(60))
             .expect("worker never reached the mid-call hook");
     }
 
