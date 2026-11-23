@@ -72,6 +72,16 @@ ignore = [
   # using askama — re-check on every uniffi bump.
   "RUSTSEC-2026-0374", # basic-toml unmaintained
 
+  # --- chrono unmaintained, LOCKFILE-ONLY via serde_with (desktop/Tauri) ---
+  # Informational, no fixed version. chrono sits in Cargo.lock only as an
+  # OPTIONAL dependency of serde_with (pulled by tauri-utils) whose feature
+  # nothing enables: `cargo tree -i chrono --workspace -e all --target all`
+  # prints nothing (2026-11-23, #774), so it is compiled into no artifact.
+  # cargo-audit scans the lockfile, which is why it fires. Exit criteria:
+  # serde_with drops the optional dep, or a lock refresh removes the entry.
+  # If that `cargo tree` ever prints a path, this acceptance is void.
+  "RUSTSEC-2026-0543", # chrono unmaintained
+
   # --- unic-* unmaintained, via urlpattern -> tauri-utils -> tauri (desktop) ---
   "RUSTSEC-2025-0075", # unic-char-range unmaintained
   "RUSTSEC-2025-0080", # unic-common unmaintained
