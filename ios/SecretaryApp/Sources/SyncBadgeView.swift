@@ -29,6 +29,8 @@ struct SyncBadgeView: View {
             }
         }
         .disabled(state == .syncing)
+        // Toolbars render a Label icon-only by default; the text is the point here.
+        .labelStyle(.titleAndIcon)
         .font(.footnote)
     }
 
