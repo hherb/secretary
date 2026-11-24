@@ -22,6 +22,7 @@ use crate::crypto::aead::{AeadKey, AEAD_TAG_LEN};
 use crate::crypto::sig::{Ed25519Public, MlDsa65Public};
 use crate::identity::fingerprint::Fingerprint;
 use crate::sync::bundle::{BlockDivergence, BlockEnvelope, ManifestSnapshot, VaultBundle};
+use crate::vault::block::VectorClockEntry;
 use crate::vault::orchestrators::MANIFEST_FILENAME;
 use crate::vault::{
     clock_relation, decode_block_file, decode_manifest_file, decrypt_manifest_body,
@@ -379,11 +380,10 @@ pub(crate) fn ingest_block_divergence(
                 Some(e) => e,
                 None => continue,
             };
-            let rel = clock_relation(
+            if copy_version_is_uncovered(
                 &canonical_entry.vector_clock_summary,
                 &copy_entry.vector_clock_summary,
-            );
-            if !matches!(rel, ClockRelation::Equal | ClockRelation::IncomingDominated) {
+            ) {
                 diverges = true;
                 break;
             }
@@ -457,6 +457,22 @@ pub(crate) fn ingest_block_divergence(
     }
 
     Ok(out)
+}
+
+/// Whether a copy's version of a block, at `copy_clock`, holds content the
+/// canonical version at `canonical_clock` does not: true unless the two
+/// clocks are equal or the canonical one dominates. A block diverges iff
+/// some copy's version is uncovered, and a merge must read every uncovered
+/// version (#781).
+#[must_use]
+pub(crate) fn copy_version_is_uncovered(
+    canonical_clock: &[VectorClockEntry],
+    copy_clock: &[VectorClockEntry],
+) -> bool {
+    !matches!(
+        clock_relation(canonical_clock, copy_clock),
+        ClockRelation::Equal | ClockRelation::IncomingDominated
+    )
 }
 
 /// Extract sorted block UUIDs from the bundle's `diverging_blocks`

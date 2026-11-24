@@ -14,6 +14,8 @@ use std::path::Path;
 
 use zeroize::Zeroize;
 
+mod completeness;
+
 use crate::crypto::hash::hash as blake3_hash;
 use crate::crypto::kem::{MlKem768Secret, X25519Secret};
 use crate::crypto::secret::Sensitive;
@@ -386,6 +388,11 @@ fn merge_error(e: ConflictError) -> SyncError {
 ///   a `BlockEntry` for a divergent block_uuid, or when a copy block
 ///   envelope's fingerprint matches no copy manifest's `BlockEntry`
 ///   (orphan sibling — see `parent_block_clock`).
+/// - `SyncError::BlockCopyUnavailable` fires when a copy manifest claims
+///   a version of a diverging block that the canonical one does not
+///   cover and no copy envelope carries it (its sibling file has not
+///   arrived, or failed to authenticate): merging without it would lose
+///   that content for good (#781).
 ///
 /// # Purity & cost
 ///
@@ -427,6 +434,12 @@ pub fn prepare_merge(
 
         let canonical_block_clock =
             block_clock_on_manifest(&bundle.canonical.manifest, block_uuid, "canonical")?;
+        completeness::ensure_uncovered_copies_are_readable(
+            block_uuid,
+            &canonical_block_clock,
+            &bundle.copies,
+            &divergence.copy_envelopes,
+        )?;
         let canonical_pt = decrypt_block_envelope(&divergence.canonical_envelope.bytes, &keys)?;
 
         let mut acc_records: BTreeMap<[u8; 16], Record> = canonical_pt

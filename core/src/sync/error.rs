@@ -66,6 +66,18 @@ pub enum SyncError {
     /// of silently dropping records.
     #[error("merge produced no draft records but vetoes are non-empty (internal invariant)")]
     EmptyDraftWithVetoes,
+
+    /// A conflict-copy manifest claims a version of this block that the
+    /// canonical one does not cover, and no readable sibling block file
+    /// holds it: missing, out of size bounds, or failing authentication.
+    /// Cloud sync can deliver a manifest before its blocks. Merging
+    /// without that version would write a manifest clock that covers the
+    /// copy while dropping its content, and no later sync would read the
+    /// file (#781), so `prepare_merge` refuses. Nothing is written and the
+    /// sync state is not advanced: the caller retries once the file has
+    /// arrived.
+    #[error("a conflict copy's version of block {block_uuid:02x?} is not readable yet")]
+    BlockCopyUnavailable { block_uuid: [u8; 16] },
 }
 
 #[cfg(test)]

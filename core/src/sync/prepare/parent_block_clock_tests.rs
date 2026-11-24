@@ -12,7 +12,7 @@ use crate::vault::{BlockEntry, KdfParamsRef, Manifest};
 use std::path::PathBuf;
 
 /// Empty-on-everything Manifest; tests populate `blocks` per case.
-fn empty_manifest() -> Manifest {
+pub(super) fn empty_manifest() -> Manifest {
     Manifest {
         manifest_version: 1,
         vault_uuid: [0u8; 16],
@@ -35,7 +35,7 @@ fn empty_manifest() -> Manifest {
 /// Wrap a manifest in a ManifestSnapshot with placeholder envelope
 /// bytes and source_path — `parent_block_clock` only inspects
 /// `manifest.blocks`.
-fn snapshot(manifest: Manifest) -> ManifestSnapshot {
+pub(super) fn snapshot(manifest: Manifest) -> ManifestSnapshot {
     ManifestSnapshot {
         manifest,
         raw_envelope_bytes: vec![],
@@ -43,7 +43,11 @@ fn snapshot(manifest: Manifest) -> ManifestSnapshot {
     }
 }
 
-fn block_entry(block_uuid: [u8; 16], fp: [u8; 32], clock: Vec<VectorClockEntry>) -> BlockEntry {
+pub(super) fn block_entry(
+    block_uuid: [u8; 16],
+    fp: [u8; 32],
+    clock: Vec<VectorClockEntry>,
+) -> BlockEntry {
     BlockEntry {
         block_uuid,
         block_name: String::new(),

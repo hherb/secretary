@@ -148,7 +148,8 @@ fn map_sync_error(e: SyncError) -> FfiVaultError {
         // it to SyncFailed.
         SyncError::InvalidArgument { .. }
         | SyncError::ConflictCopyScanIoFailed { .. }
-        | SyncError::EmptyDraftWithVetoes => FfiVaultError::SyncFailed {
+        | SyncError::EmptyDraftWithVetoes
+        | SyncError::BlockCopyUnavailable { .. } => FfiVaultError::SyncFailed {
             detail: detail::gated(&e),
         },
     }
