@@ -22,21 +22,24 @@ verified two ways:
 
 - **Content.** A script compared the whitespace-stripped old file with the
   new files. It reported identical, apart from one `use super::*;` per
-  submodule and `pub(super)` on the three private items two submodules share
-  (`SYNC_HELPERS_UUID_LEN`, `encrypt_block_bytes_for_uuid`,
-  `write_manifest_with_block_entry`). The one-line `//!` headers were added
-  after that check.
+  submodule and `pub(super)` on the three private items several submodules
+  share (`SYNC_HELPERS_UUID_LEN`, `encrypt_block_bytes_for_uuid`,
+  `write_manifest_with_block_entry`). rustfmt also re-joined three statements
+  the dedent left short, which is whitespace-only. The `//!` headers were
+  added after that check.
 - **Test names.** The lib set was 696 before and after. The full
   `secretary-core --tests` multiset was 1233 before (listed from a detached
-  `origin/main` checkout) and 1233 after, with an empty diff.
-  `sync_helpers::helper_tests` keeps its module path in all 14 binaries that
+  `origin/main` checkout) and 1233 after, with an empty diff. The PR #778
+  review re-listed `cargo test -p secretary-core -- --list` (doctests
+  included) from the merge-base and the head: 1241 each, identical.
+  `sync_helpers::helper_tests` keeps its module path in all 13 binaries that
   declare `mod sync_helpers`.
 
 `sync_helpers` layout: `mod.rs` (shared constants; re-exports), `nonces`
-60, `manifests` 110, `block` 191, `block_encrypt` 134, `block_manifest` 123,
+61, `manifests` 110, `block` 192, `block_encrypt` 134, `block_manifest` 123,
 `concurrent_blocks` 211, `block_siblings` 171, `helper_tests` 317. #95 asked
 for submodules of at most 300 lines. `helper_tests.rs` is 317 because it is
-the three helper tests moved whole. It is under the repo's 500 threshold, and
+the five helper tests moved whole. It is under the repo's 500 threshold, and
 splitting it would rename test paths.
 
 **Gates, each exit 0, after the last edit:** `cargo test --release --locked
