@@ -156,16 +156,17 @@ pub struct DraftMerge {
 /// records and clock (crypto-design §11.2).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergedBlockMeta {
-    /// The merged `block_name`: the lex-larger name on a concurrent step,
-    /// the adopted copy's on an adopting one.
+    /// The merged `block_name`: the adopted copy's when the fold adopts
+    /// one copy whole (its clock equals the max), else the pairwise fold's
+    /// (the lex-larger name on each concurrent step).
     pub block_name: String,
     /// The merged block-level forward-compat `unknown` map.
     pub unknown: BTreeMap<String, UnknownValue>,
-    /// The merged `block_version`: the `max` on a concurrent fold step and
-    /// the adopted copy's on an equal or dominating one (§11.2), so not
-    /// the max over every folded copy. Written as is even above v1's,
-    /// since writing v1's value would downgrade a later client's block
-    /// (#761).
+    /// The merged `block_version`: the adopted copy's when the fold adopts
+    /// one copy whole, else the pairwise fold's (the `max` on each
+    /// concurrent step) (§11.2), so not the max over every folded copy.
+    /// Written as is even above v1's, since writing v1's value would
+    /// downgrade a later client's block (#761).
     pub block_version: u32,
     /// The merged `schema_version`, merged like `block_version`.
     pub schema_version: u32,

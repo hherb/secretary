@@ -348,9 +348,11 @@ fn merge_error(e: ConflictError) -> SyncError {
 ///    via [`merge_block`]; the accumulator's records advance per fold
 ///    step, and its block clock is the unticked running max of the copies'
 ///    clocks, ticked once for `merging_device` after the fold iff that
-///    max equals no folded copy's clock. Run `tombstone_veto_set` across
-///    the merged record set vs the per-copy plaintexts for the same
-///    `record_uuid` and collect any vetoes. Extend the running
+///    max equals no folded copy's clock. If it equals one, that copy's
+///    records, `unknown`, name and versions replace the accumulator and
+///    the block's collisions are dropped (#764). Run `tombstone_veto_set`
+///    across the canonical records vs the per-copy plaintexts for the
+///    same `record_uuid` and collect any vetoes. Extend the running
 ///    `merged_records` map (keyed by `record_uuid` — `merge_block`
 ///    already dedupes per block; this outer map dedupes across blocks).
 /// 3. Fold the manifest-level vector clocks: `post_merge_clock =
@@ -406,7 +408,8 @@ pub fn prepare_merge(
     let mut per_block_records: BTreeMap<[u8; 16], Vec<RecordId>> = BTreeMap::new();
     let mut per_block_meta: BTreeMap<[u8; 16], MergedBlockMeta> = BTreeMap::new();
     // Metadata-only field-collision accumulator: record_uuid → sorted,
-    // deduped set of colliding field names across the per-copy fold.
+    // deduped set of colliding field names across each block's fold, for
+    // folds that merged (an adopting fold reports none).
     // Projected into `DraftMerge.collisions` at the end — carries no
     // secret values (the `merge_block` step keeps `winner`/`loser`).
     let mut collisions: BTreeMap<[u8; 16], BTreeSet<String>> = BTreeMap::new();
@@ -445,9 +448,9 @@ pub fn prepare_merge(
         let mut acc_block_version = canonical_pt.block_version;
         let mut acc_schema_version = canonical_pt.schema_version;
 
-        // Per-copy plaintexts retained across the iterative fold so the
-        // veto pass at the bottom of the loop can compare the merged
-        // accumulator against every copy's original record state.
+        // Per-copy plaintexts retained across the iterative fold for the
+        // veto pass (canonical records vs every copy's) and for adopting
+        // one copy whole after the fold.
         let mut copy_plaintexts: Vec<BlockPlaintext> =
             Vec::with_capacity(divergence.copy_envelopes.len());
         // This block's collisions, kept only if the fold merged (see below).
@@ -480,7 +483,7 @@ pub fn prepare_merge(
 
             // Capture metadata-only field collisions BEFORE `merged` is
             // moved into `acc_records`. Projects already-computed LWW
-            // collision metadata into the accumulator; touches no merge
+            // collision metadata into `block_collisions`; touches no merge
             // logic and copies only field-name strings, never values.
             for rc in &merged.collisions {
                 let entry = block_collisions.entry(rc.record_uuid).or_default();
@@ -507,10 +510,11 @@ pub fn prepare_merge(
         }
 
         // A max equal to one folded copy's clock means that copy dominates
-        // every other and the fold adopted it whole, so its clock stands
-        // untouched; otherwise some step was concurrent and the merge ticks
-        // once. Compared by relation, not `Vec` equality, so a zero-counter
-        // entry cannot make two equal clocks look different.
+        // or equals every other, so the merge adopts it whole (below) and
+        // its clock stands untouched; otherwise some step was concurrent
+        // and the merge ticks once. Compared by relation, not `Vec`
+        // equality, so a zero-counter entry cannot make two equal clocks
+        // look different.
         // shortcut: `merge_block` still ticks (and discards) on a concurrent
         // step, so a merging-device counter at u64::MAX can fail closed with
         // ClockOverflow in one fold order and not another; untick merge_block
@@ -520,9 +524,9 @@ pub fn prepare_merge(
         // accumulator: an `Equal` step keeps the accumulator, which after a
         // concurrent step holds merged content, and writing that under the
         // copy's own clock would pair one clock with two plaintexts
-        // (vault-format §6.5.1, #764). Its collisions are dropped for the same
-        // reason: they came from steps whose result was not kept, and only
-        // some fold orders take such steps.
+        // (vault-format §6.5.1, #764). That block's collisions are dropped
+        // for the same reason: they came from steps whose result was not
+        // kept, and only some fold orders take such steps.
         let adopted = folded_clocks
             .iter()
             .position(|c| clock_relation(c, &acc_clock) == ClockRelation::Equal);

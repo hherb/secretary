@@ -14,7 +14,8 @@ comment.
 | SHA | What |
 |---|---|
 | `20e64ad9` | `prepare_merge`: an adopting fold takes the adopted copy's plaintext whole; collisions are kept only when the fold merged. Tests, ROADMAP, README. |
-| (this commit) | This handoff and the symlink retarget. |
+| `8a03b998` | This handoff and the symlink retarget. |
+| (review fix) | `/finalcheck` review fixes: comment corrections, equal-to-max meta rows, the `i == 0` test, and the `sync_merge_write.rs` split. Follow-ups #780-#782 filed. |
 
 **The bug (#764).** In this fold, the canonical copy `{C1}` and copy 1
 `{S1}` were concurrent. Copy 2's clock was exactly their unticked max,
@@ -48,8 +49,41 @@ adopted copy's records, and no collisions. Two tests call it:
   now also checks collisions). On the old code it was red: a collision on
   0xAA was reported when the copy folded last.
 
-Each half of the fix is pinned. With both halves absent, the first test
-failed on records and the second on collisions.
+With both halves absent, the first test failed on records and the second
+on collisions.
+
+**PR review (`/finalcheck`).** The review found that the equal-to-max case
+left the adopted `unknown`, `block_name` and both versions unpinned:
+deleting those four assignments kept every sync test green. The fix
+followed in four parts:
+
+- Equal-to-max `{C1,S1}` rows were added to
+  `the_merged_block_name_and_unknown_keys_are_written` and
+  `the_merged_block_and_schema_versions_are_written`. Both go red on that
+  mutation.
+- Those rows pushed `sync_merge_write.rs` to 512 lines, so its two
+  block-metadata tests moved verbatim into the new
+  `core/tests/sync_merge_write_meta.rs` (259 lines, with its own copies of
+  the four small helpers). `sync_merge_write.rs` is now 383 lines.
+  All six test names are unchanged (4 + 2).
+- A new test,
+  `sync_merge_write.rs::a_diverging_block_with_no_readable_copy_keeps_the_canonical_copy`,
+  covers the `i == 0` arm. That arm is reachable when a copy manifest
+  claims a block whose sibling file is missing. The test goes red with
+  `0 => &copy_plaintexts[0]`.
+- Comments were corrected across `prepare_merge`, including a pre-existing
+  error: the rustdoc said the veto reads "the merged record set" when it
+  reads the canonical records. `MergedBlockMeta`'s docs now give the
+  fold-level rule, not a per-step one, and the ROADMAP no longer says
+  "every merge ticks".
+
+The review also found three issues outside this PR's scope, which were
+filed:
+
+- #780: `merged_records` is keyed by `record_uuid` across blocks.
+- #781: a missing sibling file merges as the canonical copy alone, and the
+  copy's content may be lost.
+- #782: a ticked fold still reports collisions from discarded steps.
 
 **Gates, each exit 0, after the last code edit:** `cargo test --release --locked
 --workspace` (109 binaries, 2354 passed, 0 failed: the previous 2353 plus the
@@ -80,11 +114,12 @@ No spec, KAT or wire change.
    this fix added 33. Acceptance as in the issue: a verbatim move and an
    unchanged lib test-name set.
 4. **Still over 500 and tracked:** #737's four files, #772, #729, #686 and
-   #688. Re-measure before quoting any count. `core/tests/sync_merge_write.rs`
-   is exactly 500. `sync_merge_tick.rs` is 481.
+   #688. Re-measure before quoting any count. `sync_merge_tick.rs` is 481.
+   `sync_merge_write.rs` was split by the review fix (see above).
 5. **Carried over:** #768-#771, #753-#756, #736, #734, #740-#742, #747 /
    #748, #738, #731, #649, #683, #677, #668 / #693 (spec questions),
-   #699 / #701-#705 and #763.
+   #699 / #701-#705, #763, and the review's #780-#782 (#781 may be
+   data loss, so check it first).
 
 ## (3) Open decisions and risks
 
