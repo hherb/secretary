@@ -257,27 +257,27 @@ fn a_three_way_block_merge_ticks_the_merging_device_once() {
 }
 
 /// Canonical `{C1}` plus two conflict copies of one block: one concurrent
-/// with it (`{S1}`) and one that has seen both and dominates them
-/// (`{C1,S1,E1}`). `dominating_first` puts the dominating copy in the
-/// sibling that folds first (`-bb`), else in the one that folds last
-/// (`-ee`); siblings fold in path order. The dominating copy's version of
-/// record 0xAA carries an OLDER `last_mod` than the canonical one, so a
-/// per-field LWW merge would pick the canonical value and adopting the copy
-/// whole would not.
+/// with it (`{S1}`) and one carrying `dominating_clock`, which has seen both.
+/// `dominating_first` puts the dominating copy in the sibling that folds
+/// first (`-bb`), else in the one that folds last (`-ee`); siblings fold in
+/// path order. The dominating copy's version of record 0xAA carries an OLDER
+/// `last_mod` than the canonical and concurrent ones, so a per-field LWW
+/// merge would pick another value and adopting the copy whole would not. The
+/// canonical and concurrent versions of 0xAA differ, so folding that pair
+/// records a field collision.
 fn vault_with_a_dominating_copy(
     dominating_first: bool,
+    dominating_clock: Vec<VectorClockEntry>,
 ) -> (std::path::PathBuf, tempfile::TempDir, [u8; 16]) {
     let (probe, _probe_tmp) = sync_helpers::fresh_vault_with_clock(Vec::new());
     let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&probe);
 
     let canonical_clock = vec![vc(CANONICAL_DEVICE, 1)];
     let concurrent = (
-        vec![sync_helpers::live_record(
-            [0xBB; 16],
-            SIBLING_DEVICE,
-            200,
-            "sibling",
-        )],
+        vec![
+            sync_helpers::live_record([0xAA; 16], SIBLING_DEVICE, 150, "concurrent"),
+            sync_helpers::live_record([0xBB; 16], SIBLING_DEVICE, 200, "sibling"),
+        ],
         vec![vc(SIBLING_DEVICE, 1)],
     );
     let dominating = (
@@ -286,11 +286,7 @@ fn vault_with_a_dominating_copy(
             sync_helpers::live_record([0xBB; 16], SIBLING_DEVICE, 200, "sibling"),
             sync_helpers::live_record([0xCC; 16], SECOND_SIBLING_DEVICE, 300, "second"),
         ],
-        vec![
-            vc(CANONICAL_DEVICE, 1),
-            vc(SIBLING_DEVICE, 1),
-            vc(SECOND_SIBLING_DEVICE, 1),
-        ],
+        dominating_clock,
     );
     let (first, last) = if dominating_first {
         (dominating, concurrent)
@@ -327,25 +323,28 @@ fn vault_with_a_dominating_copy(
     (folder, tmp, block_uuid)
 }
 
-/// A copy that dominates every other copy is adopted whole with its clock
-/// untouched, whichever position it folds in: the tick is a function of the
-/// set of copies, not of fold order (crypto-design §11.2 "N-way merge").
-/// Keying the tick on "some step was concurrent" ticked the dominating copy
-/// only when it folded after the concurrent pair.
-#[test]
-fn a_dominating_copy_is_adopted_untouched_in_either_fold_order() {
+/// Builds [`vault_with_a_dominating_copy`] in both fold orders and checks
+/// the merge adopts the dominating copy whole: its clock untouched, its
+/// plaintext (record 0xAA is its own, `last_mod` 50), and no field collision
+/// reported, since a fold that adopts one copy merged nothing.
+fn assert_the_dominating_copy_is_adopted_whole(dominating_clock: Vec<VectorClockEntry>) {
     for dominating_first in [false, true] {
-        let (folder, _tmp, block_uuid) = vault_with_a_dominating_copy(dominating_first);
-
-        merge_and_commit(&folder, vec![vc(LOCAL_SEEN_DEVICE, 1)]);
+        let (folder, _tmp, block_uuid) =
+            vault_with_a_dominating_copy(dominating_first, dominating_clock.clone());
+        let identity = identity_for(&folder);
+        let draft =
+            prepare(&folder, &identity, vec![vc(LOCAL_SEEN_DEVICE, 1)]).expect("prepare_merge");
+        assert!(
+            draft.per_block_meta[&block_uuid].adopted_copy_clock,
+            "dominating_first = {dominating_first}"
+        );
+        let collisions = draft.collisions.clone();
+        commit_with_decisions(&folder, &identity, draft, Vec::new(), COMMIT_NOW_MS)
+            .expect("commit_with_decisions");
 
         assert_eq!(
             disk_block_clock(&folder, block_uuid),
-            vec![
-                vc(CANONICAL_DEVICE, 1),
-                vc(SIBLING_DEVICE, 1),
-                vc(SECOND_SIBLING_DEVICE, 1),
-            ],
+            dominating_clock,
             "dominating_first = {dominating_first}"
         );
         let records = disk_block_records(&folder, block_uuid);
@@ -358,7 +357,39 @@ fn a_dominating_copy_is_adopted_untouched_in_either_fold_order() {
             records[0].fields["k"].last_mod, 50,
             "dominating_first = {dominating_first}: record 0xAA must be the dominating copy's"
         );
+        assert!(
+            collisions.is_empty(),
+            "dominating_first = {dominating_first}: got {collisions:?}"
+        );
     }
+}
+
+/// A copy that dominates every other copy is adopted whole with its clock
+/// untouched, whichever position it folds in: the tick is a function of the
+/// set of copies, not of fold order (crypto-design §11.2 "N-way merge").
+/// Keying the tick on "some step was concurrent" ticked the dominating copy
+/// only when it folded after the concurrent pair.
+#[test]
+fn a_dominating_copy_is_adopted_untouched_in_either_fold_order() {
+    assert_the_dominating_copy_is_adopted_whole(vec![
+        vc(CANONICAL_DEVICE, 1),
+        vc(SIBLING_DEVICE, 1),
+        vc(SECOND_SIBLING_DEVICE, 1),
+    ]);
+}
+
+/// The same when the dominating copy's clock is EXACTLY the unticked max of
+/// the others, `{C1,S1}` (#764). Folded after the concurrent pair, its step
+/// is `Equal`, which keeps the accumulator: the merged content of that pair,
+/// not this copy's. The commit then wrote that content under `{C1,S1}` with
+/// no tick while the copy's own, different plaintext sits at the same clock.
+/// Equal clocks with different plaintext is what vault-format §6.5.1 forbids.
+#[test]
+fn a_copy_equal_to_the_max_is_adopted_whole_in_either_fold_order() {
+    assert_the_dominating_copy_is_adopted_whole(vec![
+        vc(CANONICAL_DEVICE, 1),
+        vc(SIBLING_DEVICE, 1),
+    ]);
 }
 
 /// A merge whose `+1` would overflow the merging device's counter fails as

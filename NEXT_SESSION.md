@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-24-size-caps-shipped.md
+docs/handoffs/2026-11-24-equal-arm-adopt-shipped.md
