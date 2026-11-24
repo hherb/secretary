@@ -99,6 +99,8 @@ fun badgeIcon(state: SyncBadgeState): ImageVector = when (state) {
 fun syncErrorLabel(error: VaultSyncError): String = when (error) {
     is VaultSyncError.WrongPasswordOrCorrupt -> "Wrong password, or the vault is corrupt."
     is VaultSyncError.EvidenceStale -> "The vault changed while resolving — please try again."
+    is VaultSyncError.BlockCopyUnavailable ->
+        "Some vault files are still syncing. Try again once they have arrived."
     is VaultSyncError.DecisionsIncomplete -> "Choose an option for every record."
     is VaultSyncError.InProgress -> "A sync is already running."
     is VaultSyncError.StateVaultMismatch -> "Sync state belongs to a different vault."

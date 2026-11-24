@@ -34,6 +34,7 @@ func vaultErrorName(_ e: VaultError) -> String {
     case .SyncStateVaultMismatch: return "SyncStateVaultMismatch"
     case .SyncStateCorrupt: return "SyncStateCorrupt"
     case .SyncEvidenceStale: return "SyncEvidenceStale"
+    case .SyncBlockCopyUnavailable: return "SyncBlockCopyUnavailable"
     case .SyncInProgress: return "SyncInProgress"
     case .SyncFailed: return "SyncFailed"
     case .SyncDecisionsIncomplete: return "SyncDecisionsIncomplete"

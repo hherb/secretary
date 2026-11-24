@@ -33,6 +33,7 @@ internal fun vaultExceptionVariantName(e: VaultException): String = when (e) {
     is VaultException.SyncStateVaultMismatch -> "SyncStateVaultMismatch"
     is VaultException.SyncStateCorrupt -> "SyncStateCorrupt"
     is VaultException.SyncEvidenceStale -> "SyncEvidenceStale"
+    is VaultException.SyncBlockCopyUnavailable -> "SyncBlockCopyUnavailable"
     is VaultException.SyncInProgress -> "SyncInProgress"
     is VaultException.SyncFailed -> "SyncFailed"
     is VaultException.SyncDecisionsIncomplete -> "SyncDecisionsIncomplete"
@@ -79,6 +80,7 @@ internal fun vaultExceptionDetail(e: VaultException): String? = when (e) {
     is VaultException.CannotDeleteOwnerContact,
     is VaultException.SyncStateVaultMismatch,
     is VaultException.SyncEvidenceStale,
+    is VaultException.SyncBlockCopyUnavailable,
     is VaultException.SyncInProgress,
     is VaultException.SyncDecisionsIncomplete,
     is VaultException.VaultChangedOnDisk,

@@ -110,6 +110,10 @@ pub enum VaultError {
     /// Mirrors `FfiVaultError::SyncEvidenceStale`.
     #[error("vault changed on disk during sync; retry")]
     SyncEvidenceStale,
+    /// A conflict copy's block file has not arrived yet; no write occurred, retry.
+    /// Mirrors `FfiVaultError::SyncBlockCopyUnavailable`.
+    #[error("some vault files are still syncing; retry once they have arrived")]
+    SyncBlockCopyUnavailable,
     /// Another process holds the per-vault sync lockfile; no write occurred.
     /// Mirrors `FfiVaultError::SyncInProgress`.
     #[error("another sync is already in progress for this vault")]
@@ -229,6 +233,7 @@ impl From<FfiVaultError> for VaultError {
                 detail: detail::project(detail),
             },
             FfiVaultError::SyncEvidenceStale => VaultError::SyncEvidenceStale,
+            FfiVaultError::SyncBlockCopyUnavailable => VaultError::SyncBlockCopyUnavailable,
             FfiVaultError::SyncInProgress => VaultError::SyncInProgress,
             FfiVaultError::SyncFailed { detail } => VaultError::SyncFailed {
                 detail: detail::project(detail),

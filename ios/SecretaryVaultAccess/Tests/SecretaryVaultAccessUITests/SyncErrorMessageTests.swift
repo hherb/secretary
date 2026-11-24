@@ -23,4 +23,12 @@ final class SyncErrorMessageTests: XCTestCase {
     func testFoldedCaseKeepsTheDamagePossibilityVisible() {
         XCTAssertTrue(syncErrorMessage(.wrongPasswordOrCorrupt).contains("damaged"))
     }
+
+    // A missing conflict-copy block file is retryable (#781), so the copy must
+    // say to wait, not report a bare failure.
+    func testBlockCopyUnavailableSaysToWaitForFiles() {
+        let message = syncErrorMessage(.blockCopyUnavailable)
+        XCTAssertNotEqual(message, syncErrorMessage(.failed("x")))
+        XCTAssertTrue(message.contains("still syncing"))
+    }
 }

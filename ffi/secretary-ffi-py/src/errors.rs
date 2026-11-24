@@ -63,6 +63,8 @@ create_exception!(secretary_ffi_py, VaultCannotDeleteOwnerContact, PyException);
 create_exception!(secretary_ffi_py, VaultSyncStateVaultMismatch, PyException);
 create_exception!(secretary_ffi_py, VaultSyncStateCorrupt, PyException);
 create_exception!(secretary_ffi_py, VaultSyncEvidenceStale, PyException);
+// A conflict copy's block file has not arrived yet (#781); retryable.
+create_exception!(secretary_ffi_py, VaultSyncBlockCopyUnavailable, PyException);
 create_exception!(secretary_ffi_py, VaultSyncInProgress, PyException);
 create_exception!(secretary_ffi_py, VaultSyncFailed, PyException);
 // Interactive conflict-resolution commit path — decisions did not cover the
@@ -194,6 +196,9 @@ pub(crate) fn ffi_vault_error_to_pyerr(e: FfiVaultError) -> PyErr {
         }
         FfiVaultError::SyncStateCorrupt { .. } => VaultSyncStateCorrupt::new_err(e.to_string()),
         FfiVaultError::SyncEvidenceStale => VaultSyncEvidenceStale::new_err(e.to_string()),
+        FfiVaultError::SyncBlockCopyUnavailable => {
+            VaultSyncBlockCopyUnavailable::new_err(e.to_string())
+        }
         FfiVaultError::SyncInProgress => VaultSyncInProgress::new_err(e.to_string()),
         FfiVaultError::SyncFailed { .. } => VaultSyncFailed::new_err(e.to_string()),
         FfiVaultError::VaultChangedOnDisk => VaultChangedOnDisk::new_err(e.to_string()),

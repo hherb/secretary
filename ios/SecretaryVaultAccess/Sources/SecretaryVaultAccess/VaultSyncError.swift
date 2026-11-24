@@ -21,6 +21,10 @@ public enum VaultSyncError: Error, Equatable {
     case stateCorrupt(String)
     /// The freshness token no longer matches on-disk state (TOCTOU gate tripped).
     case evidenceStale
+    /// A conflict copy's block file has not arrived in the folder yet, so the
+    /// pass refused to merge without it (#781). Nothing was written; retry once
+    /// the cloud client has finished syncing.
+    case blockCopyUnavailable
     /// The supplied decisions did not exactly cover the recomputed veto set.
     case decisionsIncomplete
     /// FFI input-shape error (e.g. wrong-length vault UUID / manifest hash).

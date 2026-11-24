@@ -418,3 +418,14 @@ fn rollback_detected_serializes_code_and_is_promoted() {
         AppError::RollbackDetected
     ));
 }
+
+#[test]
+fn sync_block_copy_unavailable_serializes_code_and_maps_from_ffi() {
+    let v = serde_json::to_value(AppError::SyncBlockCopyUnavailable).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({ "code": "sync_block_copy_unavailable" })
+    );
+    let mapped = map_ffi_error(FfiVaultError::SyncBlockCopyUnavailable);
+    assert!(matches!(mapped, AppError::SyncBlockCopyUnavailable));
+}

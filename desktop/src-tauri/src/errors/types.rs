@@ -171,6 +171,9 @@ pub enum AppError {
     #[error("Vault changed on disk during sync; retry")]
     SyncEvidenceStale,
 
+    #[error("Some vault files are still syncing; retry once they have arrived")]
+    SyncBlockCopyUnavailable,
+
     #[error("Another sync is already in progress for this vault")]
     SyncInProgress,
 

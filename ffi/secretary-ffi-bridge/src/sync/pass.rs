@@ -130,6 +130,9 @@ fn map_sync_error(e: SyncError) -> FfiVaultError {
             }
         }
         SyncError::EvidenceStale => FfiVaultError::SyncEvidenceStale,
+        // A conflict copy's block file is still in flight (#781): retryable,
+        // and the caller should say so rather than report a bare failure.
+        SyncError::BlockCopyUnavailable { .. } => FfiVaultError::SyncBlockCopyUnavailable,
         SyncError::Vault(ve) => ve.into(),
         // Decision-coverage failures on the commit path: the supplied
         // decisions did not bijectively cover the recomputed veto set (a UI
@@ -148,8 +151,7 @@ fn map_sync_error(e: SyncError) -> FfiVaultError {
         // it to SyncFailed.
         SyncError::InvalidArgument { .. }
         | SyncError::ConflictCopyScanIoFailed { .. }
-        | SyncError::EmptyDraftWithVetoes
-        | SyncError::BlockCopyUnavailable { .. } => FfiVaultError::SyncFailed {
+        | SyncError::EmptyDraftWithVetoes => FfiVaultError::SyncFailed {
             detail: detail::gated(&e),
         },
     }
@@ -179,6 +181,13 @@ mod tests {
         );
         // A still-folded variant stays SyncFailed (pins the un-collapse didn't
         // accidentally widen the SyncDecisionsIncomplete bucket).
+        let unavailable = map_sync_error(SyncError::BlockCopyUnavailable {
+            block_uuid: [2u8; 16],
+        });
+        assert!(
+            matches!(unavailable, FfiVaultError::SyncBlockCopyUnavailable),
+            "got {unavailable:?}"
+        );
         let other = map_sync_error(SyncError::EmptyDraftWithVetoes);
         assert!(
             matches!(other, FfiVaultError::SyncFailed { .. }),

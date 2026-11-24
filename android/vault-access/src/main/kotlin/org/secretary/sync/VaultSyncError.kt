@@ -100,6 +100,12 @@ sealed class VaultSyncError(message: String? = null) : Exception(message), Secre
     /** The vault changed on disk mid-pass; the TOCTOU freshness gate tripped. Retry. */
     data object EvidenceStale : VaultSyncError()
 
+    /**
+     * A conflict copy's block file has not arrived in the folder yet, so the pass refused to
+     * merge without it (#781). Nothing was written; retry once the cloud client has synced.
+     */
+    data object BlockCopyUnavailable : VaultSyncError()
+
     /** The supplied decisions did not cover the pending conflicts. */
     data object DecisionsIncomplete : VaultSyncError()
 

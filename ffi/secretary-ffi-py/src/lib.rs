@@ -82,10 +82,10 @@ use errors::{
     VaultFolderNotEmpty, VaultInvalidMnemonic, VaultMismatch, VaultMismatchFolder,
     VaultMissingRecipientCard, VaultNeedsRepair, VaultNotAuthor, VaultRecipientAlreadyPresent,
     VaultRecipientNotPresent, VaultRecordNotFound, VaultRepairRejected, VaultRollbackDetected,
-    VaultSaveCryptoFailure, VaultSyncDecisionsIncomplete, VaultSyncEvidenceStale, VaultSyncFailed,
-    VaultSyncInProgress, VaultSyncStateCorrupt, VaultSyncStateVaultMismatch,
-    VaultWrongDeviceSecretOrCorrupt, VaultWrongMnemonicOrCorrupt, VaultWrongPasswordOrCorrupt,
-    WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
+    VaultSaveCryptoFailure, VaultSyncBlockCopyUnavailable, VaultSyncDecisionsIncomplete,
+    VaultSyncEvidenceStale, VaultSyncFailed, VaultSyncInProgress, VaultSyncStateCorrupt,
+    VaultSyncStateVaultMismatch, VaultWrongDeviceSecretOrCorrupt, VaultWrongMnemonicOrCorrupt,
+    VaultWrongPasswordOrCorrupt, WrongMnemonicOrCorrupt, WrongPasswordOrCorrupt,
 };
 use identity::UnlockedIdentity;
 use purge::{empty_trash, purge_block, EmptyTrashReport, PurgeReport};
@@ -331,10 +331,10 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(import_contact_card, m)?)?;
     m.add_function(wrap_pyfunction!(share_block_to, m)?)?;
 
-    // Sync error surface — 6 typed exception classes mirroring the bridge's
+    // Sync error surface — 7 typed exception classes mirroring the bridge's
     // FfiVaultError sync variants: the five from D.1.13 (StateVaultMismatch /
-    // StateCorrupt / EvidenceStale / InProgress / Failed) plus
-    // SyncDecisionsIncomplete from D.1.15.
+    // StateCorrupt / EvidenceStale / InProgress / Failed), plus
+    // SyncDecisionsIncomplete from D.1.15 and SyncBlockCopyUnavailable (#781).
     m.add(
         "VaultSyncStateVaultMismatch",
         py.get_type::<VaultSyncStateVaultMismatch>(),
@@ -346,6 +346,10 @@ fn secretary_ffi_py(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "VaultSyncEvidenceStale",
         py.get_type::<VaultSyncEvidenceStale>(),
+    )?;
+    m.add(
+        "VaultSyncBlockCopyUnavailable",
+        py.get_type::<VaultSyncBlockCopyUnavailable>(),
     )?;
     m.add("VaultSyncInProgress", py.get_type::<VaultSyncInProgress>())?;
     m.add("VaultSyncFailed", py.get_type::<VaultSyncFailed>())?;

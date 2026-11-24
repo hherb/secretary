@@ -4,13 +4,14 @@ import { APP_ERROR_CODES, userMessageFor, type AppError } from '../src/lib/error
 const SYNC_CODES = [
   'sync_in_progress',
   'sync_evidence_stale',
+  'sync_block_copy_unavailable',
   'sync_state_vault_mismatch',
   'sync_state_corrupt',
   'sync_failed'
 ] as const;
 
 describe('errors.ts — D.1.14 sync variants', () => {
-  it('registers all five sync codes in APP_ERROR_CODES', () => {
+  it('registers every sync code in APP_ERROR_CODES', () => {
     for (const code of SYNC_CODES) {
       expect(APP_ERROR_CODES).toContain(code);
     }

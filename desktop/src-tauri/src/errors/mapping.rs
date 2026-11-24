@@ -149,6 +149,7 @@ pub fn map_ffi_error(e: FfiVaultError) -> AppError {
             detail: detail.into_string(),
         },
         FfiVaultError::SyncEvidenceStale => AppError::SyncEvidenceStale,
+        FfiVaultError::SyncBlockCopyUnavailable => AppError::SyncBlockCopyUnavailable,
         FfiVaultError::SyncInProgress => AppError::SyncInProgress,
         FfiVaultError::SyncFailed { detail } => AppError::SyncFailed {
             detail: detail.into_string(),
