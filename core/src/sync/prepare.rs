@@ -450,6 +450,8 @@ pub fn prepare_merge(
         // accumulator against every copy's original record state.
         let mut copy_plaintexts: Vec<BlockPlaintext> =
             Vec::with_capacity(divergence.copy_envelopes.len());
+        // This block's collisions, kept only if the fold merged (see below).
+        let mut block_collisions: BTreeMap<[u8; 16], BTreeSet<String>> = BTreeMap::new();
 
         for copy_env in &divergence.copy_envelopes {
             // Pair the envelope with its parent manifest's
@@ -481,7 +483,7 @@ pub fn prepare_merge(
             // collision metadata into the accumulator; touches no merge
             // logic and copies only field-name strings, never values.
             for rc in &merged.collisions {
-                let entry = collisions.entry(rc.record_uuid).or_default();
+                let entry = block_collisions.entry(rc.record_uuid).or_default();
                 for fc in &rc.field_collisions {
                     entry.insert(fc.field_name.clone());
                 }
@@ -513,11 +515,42 @@ pub fn prepare_merge(
         // step, so a merging-device counter at u64::MAX can fail closed with
         // ClockOverflow in one fold order and not another; untick merge_block
         // if counters that high ever become reachable.
-        let adopted_one_copy = folded_clocks
+        //
+        // An adopting fold takes that copy's plaintext whole, not the
+        // accumulator: an `Equal` step keeps the accumulator, which after a
+        // concurrent step holds merged content, and writing that under the
+        // copy's own clock would pair one clock with two plaintexts
+        // (vault-format §6.5.1, #764). Its collisions are dropped for the same
+        // reason: they came from steps whose result was not kept, and only
+        // some fold orders take such steps.
+        let adopted = folded_clocks
             .iter()
-            .any(|c| clock_relation(c, &acc_clock) == ClockRelation::Equal);
-        if !adopted_one_copy {
-            acc_clock = tick_for_device(acc_clock, merging_device).map_err(merge_error)?;
+            .position(|c| clock_relation(c, &acc_clock) == ClockRelation::Equal);
+        let adopted_one_copy = adopted.is_some();
+        match adopted {
+            // `folded_clocks[0]` is the canonical clock; copy `i` is at `i + 1`.
+            Some(i) => {
+                let pt = match i {
+                    0 => &canonical_pt,
+                    _ => &copy_plaintexts[i - 1],
+                };
+                acc_records = pt
+                    .records
+                    .iter()
+                    .cloned()
+                    .map(|r| (r.record_uuid, r))
+                    .collect();
+                acc_unknown = pt.unknown.clone();
+                acc_block_name = pt.block_name.clone();
+                acc_block_version = pt.block_version;
+                acc_schema_version = pt.schema_version;
+            }
+            None => {
+                acc_clock = tick_for_device(acc_clock, merging_device).map_err(merge_error)?;
+                for (record_uuid, names) in block_collisions {
+                    collisions.entry(record_uuid).or_default().extend(names);
+                }
+            }
         }
 
         // Per-record veto pass. Walk the CANONICAL (pre-merge) records
