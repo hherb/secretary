@@ -15,6 +15,7 @@ use std::path::Path;
 use zeroize::Zeroize;
 
 mod completeness;
+mod new_block;
 
 use crate::crypto::hash::hash as blake3_hash;
 use crate::crypto::kem::{MlKem768Secret, X25519Secret};
@@ -35,7 +36,6 @@ use crate::vault::conflict::{
 };
 use crate::vault::orchestrators::read_vault_manifest_full;
 use crate::vault::record::Record;
-use crate::vault::BlockEntry;
 
 /// Pure-function veto check: given the local (canonical) record and
 /// the per-copy peer records that share its `record_uuid`, return a
@@ -263,21 +263,11 @@ fn parent_block_clock(
     block_uuid: &[u8; 16],
     copies: &[ManifestSnapshot],
 ) -> Result<Vec<VectorClockEntry>, SyncError> {
-    parent_block_entry(envelope_bytes, block_uuid, copies).map(|e| e.vector_clock_summary.clone())
-}
-
-/// The copy manifest `BlockEntry` that authored `envelope_bytes`, paired as
-/// [`parent_block_clock`] pairs it, and with its errors.
-fn parent_block_entry<'a>(
-    envelope_bytes: &[u8],
-    block_uuid: &[u8; 16],
-    copies: &'a [ManifestSnapshot],
-) -> Result<&'a BlockEntry, SyncError> {
     let envelope_fp = *blake3_hash(envelope_bytes).as_bytes();
     for copy in copies {
         for entry in &copy.manifest.blocks {
             if entry.block_uuid == *block_uuid && entry.fingerprint == envelope_fp {
-                return Ok(entry);
+                return Ok(entry.vector_clock_summary.clone());
             }
         }
     }
@@ -332,9 +322,10 @@ fn merge_error(e: ConflictError) -> SyncError {
 ///    (see `derive_block_reader_keys`).
 /// 2. For each `block_uuid` in `plan.diverging_blocks`, AEAD-decrypt the
 ///    canonical envelope and every copy envelope (for a block new to this
-///    device, crypto-design §11.7, the canonical envelope is a copy
-///    version, its clock and entry are that copy's, and no veto is raised:
-///    there is no local record to protect), then iteratively merge
+///    device, crypto-design §11.7, the canonical envelope is the block's
+///    own file, its clock is that file's header clock, its entry a copy's,
+///    and no veto is raised: there is no local record to protect), then
+///    iteratively merge
 ///    via [`merge_block`]; the accumulator's records advance per fold
 ///    step, and its block clock is the unticked running max of the copies'
 ///    clocks, ticked once for `merging_device` after the fold iff that
@@ -422,8 +413,8 @@ pub fn prepare_merge(
                 })?;
 
         // A block the canonical manifest does not list is new to this device
-        // (crypto-design §11.7): the copy version in its own file stands in
-        // for the local side, and its entry is carried into the merge.
+        // (crypto-design §11.7): the version in its own file stands in for
+        // the local side, and a copy's entry is carried into the merge.
         let canonical_entry = bundle
             .canonical
             .manifest
@@ -433,12 +424,12 @@ pub fn prepare_merge(
         let (canonical_block_clock, added_entry) = match canonical_entry {
             Some(entry) => (entry.vector_clock_summary.clone(), None),
             None => {
-                let entry = parent_block_entry(
-                    &divergence.canonical_envelope.bytes,
+                let (clock, entry) = new_block::new_block_seed(
                     block_uuid,
+                    &divergence.canonical_envelope.bytes,
                     &bundle.copies,
                 )?;
-                (entry.vector_clock_summary.clone(), Some(entry.clone()))
+                (clock, Some(entry))
             }
         };
         completeness::ensure_uncovered_copies_are_readable(

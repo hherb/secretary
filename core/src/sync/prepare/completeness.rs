@@ -14,6 +14,7 @@ use crate::sync::error::SyncError;
 use crate::sync::ingest::{blocks_new_to_canonical, copy_version_is_uncovered};
 use crate::sync::outcome::DiffPlan;
 use crate::vault::block::VectorClockEntry;
+use crate::vault::BlockEntry;
 
 /// Check that every block new to the canonical manifest (crypto-design
 /// §11.7) is in `plan`. Ingest leaves one out when its own block file is
@@ -35,9 +36,11 @@ pub(super) fn ensure_new_blocks_are_planned(
     }
 }
 
-/// Check that every version of `block_uuid` a copy manifest claims and
-/// `canonical_clock` does not cover has an envelope in `envelopes`, matched
-/// by BLAKE3-256 fingerprint as `parent_block_clock` pairs them.
+/// Check that every version of `block_uuid` a copy manifest claims is
+/// covered by one the fold will read: its clock is equal to or dominated by
+/// `canonical_clock`, or by the clock of a version with an envelope in
+/// `envelopes` (matched by BLAKE3-256 fingerprint, as `parent_block_clock`
+/// pairs them). Its own envelope counts, so an uncovered version needs one.
 ///
 /// # Errors
 ///
@@ -54,13 +57,28 @@ pub(super) fn ensure_uncovered_copies_are_readable(
         .iter()
         .map(|e| *blake3_hash(&e.bytes).as_bytes())
         .collect();
-    let all_readable = copies
+    let versions: Vec<&BlockEntry> = copies
         .iter()
         .flat_map(|c| c.manifest.blocks.iter())
         .filter(|entry| entry.block_uuid == *block_uuid)
-        .filter(|entry| copy_version_is_uncovered(canonical_clock, &entry.vector_clock_summary))
-        .all(|entry| readable.contains(&entry.fingerprint));
-    if all_readable {
+        .collect();
+    // The clocks of the versions the fold will read: canonical's, and every
+    // copy version whose file arrived.
+    let read_clocks: Vec<&[VectorClockEntry]> = std::iter::once(canonical_clock)
+        .chain(
+            versions
+                .iter()
+                .filter(|e| readable.contains(&e.fingerprint))
+                .map(|e| e.vector_clock_summary.as_slice()),
+        )
+        .collect();
+    // A version some read version dominates or equals holds nothing new.
+    let all_covered = versions.iter().all(|e| {
+        read_clocks
+            .iter()
+            .any(|c| !copy_version_is_uncovered(c, &e.vector_clock_summary))
+    });
+    if all_covered {
         Ok(())
     } else {
         Err(SyncError::BlockCopyUnavailable {
@@ -140,6 +158,17 @@ mod tests {
             copy_holding(b"same", vec![vc(CANONICAL_DEVICE, 2)]),
         ];
         assert!(check(&copies, &[]).is_ok());
+    }
+
+    /// A version another readable copy dominates is subsumed by it, so its
+    /// own missing file must not hold up the merge (#781 review).
+    #[test]
+    fn a_version_a_readable_copy_dominates_needs_no_envelope() {
+        let copies = [
+            copy_holding(b"newer", vec![vc(COPY_DEVICE, 1), vc(OTHER_COPY_DEVICE, 2)]),
+            copy_holding(b"older", vec![vc(OTHER_COPY_DEVICE, 1)]),
+        ];
+        assert!(check(&copies, &[envelope(b"newer")]).is_ok());
     }
 
     #[test]

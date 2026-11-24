@@ -159,6 +159,28 @@ pub fn rewrite_block_with_records(
     new_records: Vec<secretary_core::vault::Record>,
     aead_nonce: &[u8; AEAD_NONCE_LEN],
 ) -> [u8; 32] {
+    let clock = open
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .expect("block_uuid not in manifest")
+        .vector_clock_summary
+        .clone();
+    rewrite_block_with_records_at_clock(folder, open, block_uuid, new_records, clock, aead_nonce)
+}
+
+/// [`rewrite_block_with_records`], with the block header's vector clock set
+/// by the caller instead of taken from the manifest entry.
+#[allow(dead_code)]
+pub fn rewrite_block_with_records_at_clock(
+    folder: &Path,
+    open: &secretary_core::vault::OpenVault,
+    block_uuid: [u8; SYNC_HELPERS_UUID_LEN],
+    new_records: Vec<secretary_core::vault::Record>,
+    block_clock: Vec<VectorClockEntry>,
+    aead_nonce: &[u8; AEAD_NONCE_LEN],
+) -> [u8; 32] {
     let entry = open
         .manifest
         .blocks
@@ -171,7 +193,7 @@ pub fn rewrite_block_with_records(
         open,
         block_uuid,
         new_records,
-        entry.vector_clock_summary.clone(),
+        block_clock,
         entry.block_name.clone(),
         BTreeMap::new(),
         V1_BLOCK_VERSIONS,

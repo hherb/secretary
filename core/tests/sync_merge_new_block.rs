@@ -24,6 +24,10 @@ const SIBLING_DEVICE: [u8; 16] = [0x0B; 16];
 const LOCAL_SEEN_DEVICE: [u8; 16] = [0x0C; 16];
 const MERGING_DEVICE: [u8; 16] = [0x0D; 16];
 const THIRD_DEVICE: [u8; 16] = [0x0E; 16];
+/// The device that edits the new block again before its manifest lands.
+const NEWER_EDIT_DEVICE: [u8; 16] = [0x0F; 16];
+const NEWER_RECORD: [u8; 16] = [0xCC; 16];
+const NEWER_LAST_MOD_MS: u64 = 300;
 const SIBLING_MANIFEST: &str = "manifest.cbor.enc.sync-conflict-from-device-bb";
 const SIBLING_BLOCK_SUFFIX: &str = ".sync-conflict-from-device-bb";
 const THIRD_MANIFEST: &str = "manifest.cbor.enc.sync-conflict-from-device-ee";
@@ -223,4 +227,87 @@ fn a_block_new_to_this_device_raises_no_veto() {
         .find(|r| r.record_uuid == TOMBSTONED_RECORD)
         .expect("merged record");
     assert!(merged.tombstone);
+}
+
+/// The new block's own file holds a version newer than any manifest names:
+/// its device edited it again and the file landed before the manifest, or a
+/// commit wrote the merged block and crashed before the manifest. Pairing
+/// that file to a manifest entry by fingerprint finds none; its owner-signed
+/// header clock dominates the copy's entry, so the merge adopts it whole
+/// rather than refusing every retry (#781 review).
+#[test]
+fn a_new_block_whose_file_is_newer_than_every_manifest_is_adopted() {
+    let (folder, _tmp) = sync_helpers::fresh_vault_with_clock(Vec::new());
+    let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&folder);
+    let password = fixtures::golden_vault_001_password();
+    let cached = open_vault(&folder, Unlocker::Password(&password), None).expect("open_vault");
+    let copy_entry = cached
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .cloned()
+        .expect("golden block entry");
+    let mut newer_records = sync_helpers::decrypt_block_using_open(
+        &cached,
+        &std::fs::read(sync_helpers::block_file_path(&folder, &block_uuid)).expect("read block"),
+    )
+    .expect("decrypt block")
+    .records;
+    newer_records.push(sync_helpers::live_record(
+        NEWER_RECORD,
+        NEWER_EDIT_DEVICE,
+        NEWER_LAST_MOD_MS,
+        "newer",
+    ));
+    let mut newer_clock = copy_entry.vector_clock_summary.clone();
+    newer_clock.push(vc(NEWER_EDIT_DEVICE, 1));
+    newer_clock.sort_by_key(|e| e.device_uuid);
+
+    sync_helpers::write_manifest_at(
+        &folder,
+        SIBLING_MANIFEST,
+        vec![vc(SIBLING_DEVICE, 1)],
+        &sync_helpers::SIBLING_NONCE_B,
+    );
+    sync_helpers::write_manifest_at_with(
+        &folder,
+        sync_helpers::MANIFEST_FILENAME,
+        vec![vc(CANONICAL_DEVICE, 1)],
+        &sync_helpers::SIBLING_NONCE_C,
+        |m| m.blocks.retain(|b| b.block_uuid != block_uuid),
+    );
+    sync_helpers::rewrite_block_with_records_at_clock(
+        &folder,
+        &cached,
+        block_uuid,
+        newer_records,
+        newer_clock.clone(),
+        &sync_helpers::BLOCK_NONCE_E,
+    );
+
+    let identity = identity_for(&folder);
+    let (bundle, plan) = concurrent_bundle(&folder, &identity);
+    let draft =
+        prepare_merge(&folder, &identity, &bundle, &plan, MERGING_DEVICE).expect("prepare_merge");
+    commit_with_decisions(&folder, &identity, draft, Vec::new(), COMMIT_NOW_MS)
+        .expect("commit_with_decisions");
+
+    let open = open_vault(&folder, Unlocker::Password(&password), None).expect("reopen");
+    let merged = open
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .expect("the new block reaches the merged manifest");
+    assert_eq!(merged.vector_clock_summary, newer_clock);
+    let plaintext = sync_helpers::decrypt_block_using_open(
+        &open,
+        &std::fs::read(sync_helpers::block_file_path(&folder, &block_uuid)).expect("read"),
+    )
+    .expect("decrypt merged block");
+    assert!(plaintext
+        .records
+        .iter()
+        .any(|r| r.record_uuid == NEWER_RECORD));
 }
