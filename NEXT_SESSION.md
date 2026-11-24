@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-24-equal-arm-adopt-shipped.md
+docs/handoffs/2026-11-25-merge-completeness-shipped.md
