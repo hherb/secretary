@@ -176,6 +176,11 @@ pub struct MergedBlockMeta {
     /// adopted copy's clock would cover two plaintexts (§11.2 "Writing a
     /// merge").
     pub adopted_copy_clock: bool,
+    /// `Some` for a block the canonical manifest does not list, new to this
+    /// device (crypto-design §11.7): the copy manifest entry its merge
+    /// started from. The commit adds it to the merged manifest, keeping its
+    /// `created_at_ms` and recipients, before rewriting the block.
+    pub added_entry: Option<crate::vault::BlockEntry>,
 }
 
 /// One record that the merge would tombstone if accepted as-is, but

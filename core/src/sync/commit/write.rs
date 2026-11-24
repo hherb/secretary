@@ -146,6 +146,17 @@ pub fn commit_with_decisions(
     // list contains exactly the owner, mirroring save_block / share_block.
     let bag = OwnerKeyBag::derive(&identity.identity, &verified.owner_card)?;
 
+    // The manifest the merge writes over: the verified one, plus the entry of
+    // each block new to this device (crypto-design §11.7), which the merge
+    // carries from the copy it came from.
+    let mut base_manifest = verified.manifest.clone();
+    base_manifest.blocks.extend(
+        draft
+            .per_block_meta
+            .values()
+            .filter_map(|meta| meta.added_entry.clone()),
+    );
+
     // Step 5: per-affected-block re-encrypt + atomic write. Block-first
     // ordering — the manifest write is the commit point (D6).
     let mut rng = OsRng;
@@ -154,7 +165,7 @@ pub fn commit_with_decisions(
         let new_entry = rewrite_one_block(
             vault_folder,
             &mut rng,
-            &verified.manifest,
+            &base_manifest,
             &bag,
             *block_uuid,
             &block_clocks,
@@ -169,7 +180,7 @@ pub fn commit_with_decisions(
     // replace top-level vector_clock, update each affected block's
     // BlockEntry with the new fingerprint + block_name + per-block clock +
     // last_mod_ms.
-    let mut new_manifest = verified.manifest.clone();
+    let mut new_manifest = base_manifest;
     new_manifest.vector_clock = written_clock.clone();
     for entry in new_manifest.blocks.iter_mut() {
         if let Some(new) = new_block_entries.get(&entry.block_uuid) {

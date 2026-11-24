@@ -9,10 +9,31 @@
 use std::collections::BTreeSet;
 
 use crate::crypto::hash::hash as blake3_hash;
-use crate::sync::bundle::{BlockEnvelope, ManifestSnapshot};
+use crate::sync::bundle::{BlockEnvelope, ManifestSnapshot, VaultBundle};
 use crate::sync::error::SyncError;
-use crate::sync::ingest::copy_version_is_uncovered;
+use crate::sync::ingest::{blocks_new_to_canonical, copy_version_is_uncovered};
+use crate::sync::outcome::DiffPlan;
 use crate::vault::block::VectorClockEntry;
+
+/// Check that every block new to the canonical manifest (crypto-design
+/// §11.7) is in `plan`. Ingest leaves one out when its own block file is
+/// missing or fails authentication.
+///
+/// # Errors
+///
+/// [`SyncError::BlockCopyUnavailable`] for the first such block not planned.
+pub(super) fn ensure_new_blocks_are_planned(
+    bundle: &VaultBundle,
+    plan: &DiffPlan,
+) -> Result<(), SyncError> {
+    match blocks_new_to_canonical(&bundle.canonical.manifest, &bundle.copies)
+        .into_iter()
+        .find(|uuid| !plan.diverging_blocks.contains(uuid))
+    {
+        Some(block_uuid) => Err(SyncError::BlockCopyUnavailable { block_uuid }),
+        None => Ok(()),
+    }
+}
 
 /// Check that every version of `block_uuid` a copy manifest claims and
 /// `canonical_clock` does not cover has an envelope in `envelopes`, matched

@@ -629,6 +629,13 @@ Because each field merge is a join over a total order and the key set is unioned
 - if the merged trash entry is purged (`purged_at_ms` is `Some`), **purge wins**: the block is removed from `blocks` and kept purged-in-`trash` — a permanent purge is terminal and beats a concurrent restore or edit;
 - otherwise **live wins**: the trash entry is dropped and the block stays live.
 
+### 11.7 Completeness of a conflict-copy merge
+
+The merged manifest's vector clock covers every copy it folds, so a later sync does not offer those copies again: anything the merge leaves out of a copy is lost. Two rules follow.
+
+- **A block new to the merging device is carried.** A block that a conflict copy lists in `blocks`, and that the local manifest lists in neither `blocks` nor `trash`, was created on a device the merging device has not yet merged with. The merged manifest lists it in `blocks`. Its versions are merged by §11.2 across the copies that hold it, one of them standing in for the local side, and its `BlockEntry` keeps the `created_at_ms` of the copy entry it came from. (A block the local manifest has trashed is reconciled by §11.6, not by this rule.)
+- **Every version the merge must cover is read.** A copy's version of a block needs merging when the local manifest does not list that block, or lists it at a clock that neither equals nor dominates the copy's. If the block file holding such a version cannot be read, because it is missing, out of bounds or fails authentication, the merge MUST NOT commit. A cloud client can deliver a manifest before the blocks it names, so this is an ordinary transient state: the merge is retried once the file arrives, and nothing is written in the meantime.
+
 ---
 
 ## 12. Cipher-suite migration

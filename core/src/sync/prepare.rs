@@ -35,6 +35,7 @@ use crate::vault::conflict::{
 };
 use crate::vault::orchestrators::read_vault_manifest_full;
 use crate::vault::record::Record;
+use crate::vault::BlockEntry;
 
 /// Pure-function veto check: given the local (canonical) record and
 /// the per-copy peer records that share its `record_uuid`, return a
@@ -218,32 +219,6 @@ fn decrypt_block_envelope(
     Ok(plaintext)
 }
 
-/// Look up a block's `vector_clock_summary` on a manifest by block_uuid.
-/// Returns [`SyncError::InvalidArgument`] if the manifest doesn't carry
-/// an entry for `block_uuid` — that would mean the bundle's
-/// `diverging_blocks` map references a block that doesn't exist on the
-/// referenced manifest, which is a structural bundle bug (1a ingestion
-/// only inserts block_uuids present on both sides).
-///
-/// Linear scan over `manifest.blocks` (O(N) per lookup); acceptable at
-/// v1 scale (handful of blocks per manifest). If Task 15's property
-/// tests show this in a hot path, consider a `BTreeMap` keyed lookup
-/// or memoising on the snapshot.
-fn block_clock_on_manifest(
-    manifest: &crate::vault::Manifest,
-    block_uuid: &[u8; 16],
-    context: &str,
-) -> Result<Vec<VectorClockEntry>, SyncError> {
-    manifest
-        .blocks
-        .iter()
-        .find(|b| b.block_uuid == *block_uuid)
-        .map(|b| b.vector_clock_summary.clone())
-        .ok_or_else(|| SyncError::InvalidArgument {
-            detail: format!("{context} manifest missing block {block_uuid:02x?}"),
-        })
-}
-
 /// Pair a copy block envelope with its parent manifest's
 /// `vector_clock_summary` by matching the envelope's BLAKE3-256
 /// fingerprint against `BlockEntry::fingerprint` on each copy manifest.
@@ -288,11 +263,21 @@ fn parent_block_clock(
     block_uuid: &[u8; 16],
     copies: &[ManifestSnapshot],
 ) -> Result<Vec<VectorClockEntry>, SyncError> {
+    parent_block_entry(envelope_bytes, block_uuid, copies).map(|e| e.vector_clock_summary.clone())
+}
+
+/// The copy manifest `BlockEntry` that authored `envelope_bytes`, paired as
+/// [`parent_block_clock`] pairs it, and with its errors.
+fn parent_block_entry<'a>(
+    envelope_bytes: &[u8],
+    block_uuid: &[u8; 16],
+    copies: &'a [ManifestSnapshot],
+) -> Result<&'a BlockEntry, SyncError> {
     let envelope_fp = *blake3_hash(envelope_bytes).as_bytes();
     for copy in copies {
         for entry in &copy.manifest.blocks {
             if entry.block_uuid == *block_uuid && entry.fingerprint == envelope_fp {
-                return Ok(entry.vector_clock_summary.clone());
+                return Ok(entry);
             }
         }
     }
@@ -346,7 +331,10 @@ fn merge_error(e: ConflictError) -> SyncError {
 /// 1. Derive the owner public-key material + reader secret keys once
 ///    (see `derive_block_reader_keys`).
 /// 2. For each `block_uuid` in `plan.diverging_blocks`, AEAD-decrypt the
-///    canonical envelope and every copy envelope, then iteratively merge
+///    canonical envelope and every copy envelope (for a block new to this
+///    device, crypto-design §11.7, the canonical envelope is a copy
+///    version, its clock and entry are that copy's, and no veto is raised:
+///    there is no local record to protect), then iteratively merge
 ///    via [`merge_block`]; the accumulator's records advance per fold
 ///    step, and its block clock is the unticked running max of the copies'
 ///    clocks, ticked once for `merging_device` after the fold iff that
@@ -407,6 +395,7 @@ pub fn prepare_merge(
     plan: &DiffPlan,
     merging_device: [u8; 16],
 ) -> Result<DraftMerge, SyncError> {
+    completeness::ensure_new_blocks_are_planned(bundle, plan)?;
     let keys = derive_block_reader_keys(vault_folder, identity)?;
 
     let mut merged_records: BTreeMap<[u8; 16], Record> = BTreeMap::new();
@@ -432,8 +421,26 @@ pub fn prepare_merge(
                 ),
                 })?;
 
-        let canonical_block_clock =
-            block_clock_on_manifest(&bundle.canonical.manifest, block_uuid, "canonical")?;
+        // A block the canonical manifest does not list is new to this device
+        // (crypto-design §11.7): the copy version in its own file stands in
+        // for the local side, and its entry is carried into the merge.
+        let canonical_entry = bundle
+            .canonical
+            .manifest
+            .blocks
+            .iter()
+            .find(|b| b.block_uuid == *block_uuid);
+        let (canonical_block_clock, added_entry) = match canonical_entry {
+            Some(entry) => (entry.vector_clock_summary.clone(), None),
+            None => {
+                let entry = parent_block_entry(
+                    &divergence.canonical_envelope.bytes,
+                    block_uuid,
+                    &bundle.copies,
+                )?;
+                (entry.vector_clock_summary.clone(), Some(entry.clone()))
+            }
+        };
         completeness::ensure_uncovered_copies_are_readable(
             block_uuid,
             &canonical_block_clock,
@@ -593,7 +600,12 @@ pub fn prepare_merge(
         // Acceptable at v1 scale (a handful of copies × tens of records);
         // a per-copy `BTreeMap<record_uuid, &Record>` index would be the
         // tighter shape if Task 15's proptests show this in a hot path.
-        for canonical_rec in canonical_pt.records.iter() {
+        // A block new to this device has no local records to protect.
+        let local_records = match added_entry {
+            None => canonical_pt.records.as_slice(),
+            Some(_) => &[],
+        };
+        for canonical_rec in local_records {
             if canonical_rec.tombstone {
                 continue;
             }
@@ -622,6 +634,7 @@ pub fn prepare_merge(
                 block_version: acc_block_version,
                 schema_version: acc_schema_version,
                 adopted_copy_clock: adopted_one_copy,
+                added_entry,
             },
         );
 

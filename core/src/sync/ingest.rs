@@ -350,6 +350,11 @@ pub(crate) fn authenticate_block_envelope(
 /// concurrent (divergent histories). Non-divergent blocks are absent
 /// from the returned map.
 ///
+/// A block a copy lists and the canonical manifest lists in neither
+/// `blocks` nor `trash` is new to this device and diverges too
+/// (crypto-design §11.7): its own file is read, authenticated, as the
+/// canonical envelope (see `new_blocks`).
+///
 /// I/O errors during the canonical-block read are downgraded to a
 /// `tracing::warn!` and the block is skipped — a corrupt or missing
 /// canonical block file is recoverable by skipping divergence for
@@ -392,12 +397,7 @@ pub(crate) fn ingest_block_divergence(
             continue;
         }
 
-        let canonical_block_path = folder
-            .join(crate::vault::orchestrators::BLOCKS_SUBDIR)
-            .join(
-                crate::vault::orchestrators::format_uuid_hyphenated(&block_uuid)
-                    + crate::vault::orchestrators::BLOCK_FILE_EXTENSION,
-            );
+        let canonical_block_path = canonical_block_path(folder, &block_uuid);
         let canonical_bytes = match std::fs::read(&canonical_block_path) {
             Ok(b) => b,
             Err(err) => {
@@ -414,38 +414,13 @@ pub(crate) fn ingest_block_divergence(
             source_path: canonical_block_path,
         };
 
-        let sibling_paths = enumerate_block_siblings(folder, &block_uuid)?;
-        let mut copy_envelopes: Vec<BlockEnvelope> = Vec::with_capacity(sibling_paths.len());
-        for path in sibling_paths {
-            let bytes = match std::fs::read(&path) {
-                Ok(b) => b,
-                Err(err) => {
-                    tracing::debug!(
-                        path = %path.display(),
-                        error = %err,
-                        "block conflict-copy skipped: read error"
-                    );
-                    continue;
-                }
-            };
-            if bytes.is_empty() || bytes.len() > MAX_BLOCK_FILE_SIZE {
-                tracing::debug!(
-                    path = %path.display(),
-                    size = bytes.len(),
-                    "block conflict-copy skipped: size out of bounds"
-                );
-                continue;
-            }
-            if let Some(envelope) = authenticate_block_envelope(
-                &bytes,
-                path,
-                canonical_owner_fp,
-                owner_ed25519_pk,
-                owner_ml_dsa_65_pk,
-            ) {
-                copy_envelopes.push(envelope);
-            }
-        }
+        let copy_envelopes = read_sibling_envelopes(
+            folder,
+            &block_uuid,
+            canonical_owner_fp,
+            owner_ed25519_pk,
+            owner_ml_dsa_65_pk,
+        )?;
 
         out.insert(
             block_uuid,
@@ -456,6 +431,15 @@ pub(crate) fn ingest_block_divergence(
         );
     }
 
+    new_blocks::ingest_new_blocks(
+        folder,
+        canonical,
+        copies,
+        canonical_owner_fp,
+        owner_ed25519_pk,
+        owner_ml_dsa_65_pk,
+        &mut out,
+    )?;
     Ok(out)
 }
 
@@ -587,6 +571,11 @@ pub(crate) fn enumerate_block_siblings(
     out.sort();
     Ok(out)
 }
+
+mod block_files;
+mod new_blocks;
+use block_files::{canonical_block_path, read_sibling_envelopes};
+pub(crate) use new_blocks::blocks_new_to_canonical;
 
 #[cfg(test)]
 mod tests;
