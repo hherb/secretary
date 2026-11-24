@@ -18,8 +18,9 @@ fn rand_nonce() -> [u8; AEAD_NONCE_LEN] {
     n
 }
 
-/// Nonce for the canonical manifest written by helpers in this module. Tests
-/// don't share AEAD key + nonce pairs across rewrites (see [`rand_nonce`]).
+/// Nonce for the canonical manifest written by the `sync_helpers` manifest
+/// helpers (`manifests.rs`). Tests don't share AEAD key + nonce pairs across
+/// rewrites (see [`rand_nonce`]).
 pub static CANONICAL_NONCE_A: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_nonce);
 
 /// Nonce for the first sibling manifest — distinct from [`CANONICAL_NONCE_A`]
@@ -42,8 +43,8 @@ pub static SIBLING_NONCE_D: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_
 /// [`rewrite_block_with_records`], so each rewrite derives a distinct Block
 /// Content Key AND a distinct on-disk AEAD body nonce — no key+nonce collision
 /// when multiple blocks are rewritten in the same test (see the
-/// `AEAD-uniqueness` rationale in the module-level docstring and CLAUDE.md's
-/// atomic-write section).
+/// `AEAD-uniqueness` rationale in `sync_helpers/mod.rs`'s module docstring and
+/// CLAUDE.md's atomic-write section).
 #[allow(dead_code)]
 pub static BLOCK_NONCE_E: LazyLock<[u8; AEAD_NONCE_LEN]> = LazyLock::new(rand_nonce);
 

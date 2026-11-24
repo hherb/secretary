@@ -103,7 +103,7 @@ pub const BLOCK_FILE_EXTENSION: &str = ".cbor.enc";
 ///   (`crate::sync::ingest::enumerate_block_siblings`) can derive
 ///   canonical block filenames from a `block_uuid` without
 ///   re-implementing.
-/// - Integration tests in `tests/sync_helpers/mod.rs` can reuse the
+/// - Integration tests in `tests/sync_helpers/` can reuse the
 ///   same formatter without copying the body (`#[cfg(test)]` items on
 ///   the lib are invisible to `tests/*.rs`; `#[doc(hidden)] pub` is
 ///   the established cross-target test-hook pattern — see

@@ -11,8 +11,8 @@
 //! "Atomic-write contract" section of CLAUDE.md for the rationale.
 //!
 //! The helpers live in submodules (#95) and are re-exported here by glob,
-//! so a test binary still names each one as `sync_helpers::<item>`. The few
-//! private helpers two submodules share are `pub(super)`.
+//! so a test binary still names each one as `sync_helpers::<item>`. The three
+//! private items several submodules share are `pub(super)`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

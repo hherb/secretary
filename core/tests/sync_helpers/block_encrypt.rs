@@ -15,9 +15,9 @@ pub const V1_BLOCK_VERSIONS: (u32, u32) = (1, 1);
 /// where on disk to put the resulting envelope (canonical path,
 /// sibling-suffix path, etc.).
 ///
-/// Used by both [`rewrite_block_with_records`] (single canonical write)
-/// and [`fresh_vault_two_concurrent_blocks`] (canonical + sibling block
-/// pair). Splitting the encryption from the file write lets the
+/// Used by [`rewrite_block_with_records`] (single canonical write),
+/// [`fresh_vault_two_concurrent_blocks`] (canonical + sibling block
+/// pair) and [`add_block_sibling_with_meta`] (one sibling block). Splitting the encryption from the file write lets the
 /// two-block fixture vary `block_clock` and `block_seed` per envelope
 /// without re-deriving the owner keys.
 ///

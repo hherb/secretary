@@ -3,7 +3,8 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
-// C.1.1b: per-block rewrite helpers
+// C.1.1b: per-block rewrite helpers (continued in block_encrypt,
+// block_manifest, concurrent_blocks and block_siblings)
 // ---------------------------------------------------------------------------
 
 /// Number of UUID bytes used in vault on-disk identifiers (§4.2).
