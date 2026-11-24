@@ -72,7 +72,9 @@ struct VaultBrowseScreen: View {
     /// an inline `.toolbar { … }`.
     @ToolbarContentBuilder
     private var browseToolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
+        // Bottom bar, not the nav bar: up there, beside the lock and four or five
+        // trailing actions, the badge got squeezed to a bare glyph nobody read as sync.
+        ToolbarItem(placement: .bottomBar) {
             SyncBadgeView(state: syncModel.badge,
                           nowMs: UInt64(Date().timeIntervalSince1970 * 1_000),
                           onTap: { Task { await syncModel.syncNow() } })
