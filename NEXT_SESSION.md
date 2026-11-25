@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-25-merge-completeness-shipped.md
+docs/handoffs/2026-11-25-trash-vs-live-merge-shipped.md
