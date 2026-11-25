@@ -75,7 +75,48 @@ new code. Both were confirmed by a red test before the fix (`8cde53bb`):
 - A missing file for a version another readable copy supersedes blocked
   the merge.
 
+**Final review round (`/finalcheck`).** Five read-only review agents; the
+fixes, each pinned by a test:
+
+- A block the local manifest lists, which a copy diverges from and whose
+  own file had not landed, was left out of the plan with no refusal. If the
+  file landed before the commit's fingerprint check, the commit covered the
+  copy without folding it (#781's loss). `ensure_divergent_blocks_are_planned`
+  now requires every block whose manifests diverge, via the shared
+  `ingest::listed_block_diverges`. Mutation: dropping that half reds
+  `an_unplanned_diverging_listed_block_is_refused` and
+  `a_listed_diverging_block_whose_file_is_missing_is_refused`.
+- A copy version whose exact file another copy's trash entry records no
+  longer counts as new (`blocks_new_to_canonical`); it had refused every
+  retry, since trashing moves the file out of `blocks/`. crypto-design §11.7
+  says so.
+- A listed block's own file must match its manifest fingerprint in
+  `prepare_merge` (VL-2): `BlockFingerprintMismatch`, a repair case.
+- The commit refuses an `added_entry` the verified manifest already holds,
+  or one for an unplanned block, before any write (pinned by
+  `a_commit_refuses_an_added_entry_the_manifest_already_lists`, red
+  without the check).
+- `secretary-sync` exits 15 for `BlockCopyUnavailable` (was generic 1); the
+  C.2 design spec's table has the row.
+- The refusal logs a `warn!` naming the block.
+- New tests: a newer missing version over a readable older one; a new
+  block's own file older than its copy entry (refused, then adopted once
+  the newer file lands; red with the copy-clock seed); its own file failing
+  authentication; the header naming another block (unit test, golden block
+  file); two new blocks with one unplanned; the trash exclusions.
+- Docs: `new_block_seed` claimed the commit overwrites every differing
+  field (it keeps `recipients`, `suite_id`, `unknown`); `prepare_merge`'s
+  `# Errors`, `BlockCopyUnavailable`'s doc and the platform docs named
+  sibling files or "not arrived" only.
+- Filed: #786 (one variant for "in flight" and "never will authenticate"),
+  #787 (copy-order-dependent `recipients`/`unknown` for a new block; a
+  concurrently trashed version can still wedge one).
+
 **Gates**, each exit 0:
+- After the final review: `cargo test --release --workspace` (111 binaries,
+  0 failed); clippy `-D warnings` (workspace, and `-p secretary-core
+  --features differential-replay`); rustdoc `-D warnings`; `cargo fmt`; the
+  payload guard. FFI surface unchanged in that round (doc comments only).
 - On `8cde53bb`: `cargo test --release --locked --workspace` (111 binaries, 2376 passed, 0 failed: the 2374 plus the two review tests);
   `-p secretary-core` 61 binaries / 1242 passed; clippy `-D warnings`;
   rustdoc `-D warnings`; `cargo fmt --check`.
@@ -90,7 +131,7 @@ new code. Both were confirmed by a red test before the fix (`8cde53bb`):
 **Issues filed or updated:** #783 (trash-vs-live merge depends on which
 side is canonical), #784 (`ingest.rs` 581 production lines), #777
 re-measured (`prepare.rs` 678), #728 (cause found: the release `strip`),
-#642 re-measured (102).
+#642 re-measured (102), #786, #787.
 
 ## (2) What is next
 
@@ -105,7 +146,7 @@ re-measured (`prepare.rs` 678), #728 (cause found: the release `strip`),
    manifest syncs, edit another block on A. After A syncs, the new block
    must appear on both. Desktop and Android have never had the #745
    pass.
-4. **Splits:** #777 (`prepare.rs` 678) and #784 (`ingest.rs` 581).
+4. **Splits:** #777 (`prepare.rs` 697) and #784 (`ingest.rs` 582).
    Acceptance: a verbatim move and an unchanged test-name set.
 5. **#728:** make the conformance scripts survive the new `ld`. The cheapest
    option is to export the strip override into their own target dir.
@@ -121,14 +162,11 @@ re-measured (`prepare.rs` 678), #728 (cause found: the release `strip`),
   pass until the user removes the stale conflict-copy manifest. No UI
   explains that yet. A copy that fails authentication behaves the same
   (a hostile host can therefore stall sync, which it could already do by
-  deleting files).
+  deleting files); #786 tracks telling the two apart.
 - **Seed choice for a new block.** Its own file stands in for the local
   side, and siblings fold onto it. The §11.2 fold is order-independent for
   the tick and the records, so the choice should not matter. Only a
   two-version proptest would prove it, and none exists.
-- **Untested branch:** `new_block_seed` refuses a block file whose header
-  names a different block. No test covers it, because that needs a second
-  real block planted at the wrong path.
 - **The header clock is trusted for new blocks.** It is owner-signed, and a
   replayed old version only makes the copy's own version "uncovered", which
   fails closed. Normal writers keep the header clock equal to the manifest
