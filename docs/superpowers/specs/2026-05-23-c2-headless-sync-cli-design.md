@@ -242,6 +242,7 @@ secretary-sync run  [OPTIONS] <VAULT_FOLDER>
 | 12 | `EvidenceStale` after exhausted retry budget (3 attempts in a 5-minute window). |
 | 13 | `BlockFingerprintMismatch` on commit (partial-commit recovery failure). |
 | 14 | Lockfile held — another `secretary-sync` process is running on this vault. |
+| 15 | BlockCopyUnavailable — a block file the merge must read is unreadable (#781); retry once it has arrived. |
 
 ### Logging
 
