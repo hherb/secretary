@@ -50,13 +50,24 @@ fn identity_for(folder: &std::path::Path) -> UnlockedIdentity {
 
 /// Drive `sync_once` to `ConcurrentDetected` and prepare with `MERGING_DEVICE`.
 fn prepare(folder: &std::path::Path, identity: &UnlockedIdentity) -> DraftMerge {
+    let (bundle, plan) = concurrent_bundle(folder, identity);
+    prepare_merge(folder, identity, &bundle, &plan, MERGING_DEVICE).expect("prepare_merge")
+}
+
+/// Drive `sync_once` to `ConcurrentDetected` from a local clock no copy holds.
+fn concurrent_bundle(
+    folder: &std::path::Path,
+    identity: &UnlockedIdentity,
+) -> (
+    secretary_core::sync::VaultBundle,
+    secretary_core::sync::DiffPlan,
+) {
     let state = SyncState::new(extract_vault_uuid(folder), vec![vc(LOCAL_SEEN_DEVICE, 1)])
         .expect("SyncState::new");
-    let (bundle, plan) = match sync_once(folder, identity, &state, 0).expect("sync_once") {
+    match sync_once(folder, identity, &state, 0).expect("sync_once") {
         SyncOutcome::ConcurrentDetected { bundle, plan, .. } => (bundle, plan),
         other => panic!("expected ConcurrentDetected, got {other:?}"),
-    };
-    prepare_merge(folder, identity, &bundle, &plan, MERGING_DEVICE).expect("prepare_merge")
+    }
 }
 
 /// The committed block as it is on disk: its plaintext, its manifest
@@ -330,13 +341,14 @@ fn a_keep_local_tick_that_overflows_writes_nothing() {
     assert_eq!(disk_block(&folder, block_uuid).1, at_max);
 }
 
-/// A copy manifest can claim a diverging block whose sibling file is not
-/// on disk (it arrives after the manifest, or fails to authenticate), so
-/// the fold has no copy to merge. The only folded clock is then the
-/// canonical one, which the merge adopts: the canonical plaintext is
-/// written under its own clock, untouched, with no collision (#764).
+/// A copy manifest claims a diverging version of the block whose sibling
+/// file is not on disk yet (cloud sync can deliver the manifest first).
+/// Merging without it would write a manifest clock that covers the copy
+/// while the copy's content is missing, and no later sync would read the
+/// sibling: the merge is refused instead, and it succeeds, with the copy's
+/// record, once the sibling arrives (#781).
 #[test]
-fn a_diverging_block_with_no_readable_copy_keeps_the_canonical_copy() {
+fn a_diverging_copy_whose_block_file_is_missing_refuses_the_merge_until_it_arrives() {
     let (probe, _probe_tmp) = sync_helpers::fresh_vault_with_clock(Vec::new());
     let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&probe);
     let canonical_clock = vec![vc(CANONICAL_DEVICE, 1)];
@@ -349,7 +361,7 @@ fn a_diverging_block_with_no_readable_copy_keeps_the_canonical_copy() {
             "canonical",
         )],
         canonical_clock.clone(),
-        canonical_clock.clone(),
+        canonical_clock,
         vec![sync_helpers::live_record(
             [0xBB; 16],
             SIBLING_DEVICE,
@@ -367,18 +379,22 @@ fn a_diverging_block_with_no_readable_copy_keeps_the_canonical_copy() {
         .file_name()
         .and_then(|n| n.to_str())
         .expect("utf-8");
-    std::fs::remove_file(canonical_path.with_file_name(format!("{name}{SIBLING_BLOCK_SUFFIX}")))
-        .expect("remove sibling block");
+    let sibling = canonical_path.with_file_name(format!("{name}{SIBLING_BLOCK_SUFFIX}"));
+    let sibling_bytes = std::fs::read(&sibling).expect("read sibling block");
+    std::fs::remove_file(&sibling).expect("remove sibling block");
 
     let identity = identity_for(&folder);
+    let (bundle, plan) = concurrent_bundle(&folder, &identity);
+    match prepare_merge(&folder, &identity, &bundle, &plan, MERGING_DEVICE) {
+        Err(SyncError::BlockCopyUnavailable { block_uuid: got }) => assert_eq!(got, block_uuid),
+        other => panic!("expected BlockCopyUnavailable, got {other:?}"),
+    }
+
+    std::fs::write(&sibling, &sibling_bytes).expect("the sibling arrives");
     let draft = prepare(&folder, &identity);
-    assert!(draft.per_block_meta[&block_uuid].adopted_copy_clock);
-    assert!(draft.collisions.is_empty(), "got {:?}", draft.collisions);
     commit_with_decisions(&folder, &identity, draft, Vec::new(), COMMIT_NOW_MS)
         .expect("commit_with_decisions");
-
-    let (plaintext, clock, _) = disk_block(&folder, block_uuid);
-    assert_eq!(clock, canonical_clock);
-    assert_eq!(plaintext.records.len(), 1);
-    assert_eq!(only_record(&plaintext).record_uuid, [0xAA; 16]);
+    let (plaintext, _, _) = disk_block(&folder, block_uuid);
+    let uuids: Vec<[u8; 16]> = plaintext.records.iter().map(|r| r.record_uuid).collect();
+    assert_eq!(uuids, vec![[0xAA; 16], [0xBB; 16]]);
 }

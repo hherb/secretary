@@ -44,6 +44,7 @@ export const APP_ERROR_CODES = [
   'cannot_revoke_owner',
   'sync_in_progress',
   'sync_evidence_stale',
+  'sync_block_copy_unavailable',
   'sync_state_vault_mismatch',
   'sync_state_corrupt',
   'sync_failed',
@@ -99,6 +100,7 @@ export type AppError =
   | { code: 'cannot_revoke_owner' }
   | { code: 'sync_in_progress' }
   | { code: 'sync_evidence_stale' }
+  | { code: 'sync_block_copy_unavailable' }
   | { code: 'sync_state_vault_mismatch' }
   | { code: 'sync_state_corrupt' }
   | { code: 'sync_failed' }
@@ -272,6 +274,11 @@ export function userMessageFor(err: AppError): UserMessage {
       return {
         title: 'The vault changed during sync',
         actionHint: 'The vault was modified by another process during sync. Try again.'
+      };
+    case 'sync_block_copy_unavailable':
+      return {
+        title: 'Some vault files are still syncing',
+        actionHint: 'Another device changed this vault and its files have not all arrived yet. Try again once your cloud client has finished syncing.'
       };
     case 'sync_state_vault_mismatch':
       return {

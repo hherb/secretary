@@ -311,6 +311,13 @@ pub enum FfiVaultError {
     #[error("vault changed on disk during sync; retry")]
     SyncEvidenceStale,
 
+    /// A conflict copy holds a version of a block whose file has not
+    /// arrived in the vault folder yet (or failed to authenticate), so the
+    /// pass refused to merge without it. No write occurred; retry the pass
+    /// once the cloud client has finished syncing (#781).
+    #[error("some vault files are still syncing; retry once they have arrived")]
+    SyncBlockCopyUnavailable,
+
     /// Another process (a `secretary-sync` daemon, or a second client) holds
     /// the per-vault sync lockfile. No write occurred.
     #[error("another sync is already in progress for this vault")]

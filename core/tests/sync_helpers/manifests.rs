@@ -74,10 +74,23 @@ pub fn write_manifest_at(
     new_clock: Vec<VectorClockEntry>,
     aead_nonce: &[u8; AEAD_NONCE_LEN],
 ) {
+    write_manifest_at_with(folder, filename, new_clock, aead_nonce, |_| {});
+}
+
+/// [`write_manifest_at`], with `edit` applied to the manifest body after the
+/// clock is set and before it is signed (e.g. to drop a block entry).
+pub fn write_manifest_at_with(
+    folder: &Path,
+    filename: &str,
+    new_clock: Vec<VectorClockEntry>,
+    aead_nonce: &[u8; AEAD_NONCE_LEN],
+    edit: impl FnOnce(&mut secretary_core::vault::Manifest),
+) {
     let password = fixtures::golden_vault_001_password();
     let mut open = open_vault(folder, Unlocker::Password(&password), None).expect("open_vault");
 
     open.manifest.vector_clock = new_clock;
+    edit(&mut open.manifest);
 
     let owner_card_bytes = open.owner_card.to_canonical_cbor().expect("card cbor");
     let owner_fp = fingerprint(&owner_card_bytes);

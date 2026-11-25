@@ -23,6 +23,7 @@ internal func mapVaultSyncError(_ e: VaultError) -> VaultSyncError {
     case .SyncStateVaultMismatch:           return .stateVaultMismatch
     case .SyncStateCorrupt(let detail):     return .stateCorrupt(detail)
     case .SyncEvidenceStale:                return .evidenceStale
+    case .SyncBlockCopyUnavailable:         return .blockCopyUnavailable
     case .SyncDecisionsIncomplete:          return .decisionsIncomplete
     case .InvalidArgument(let detail):      return .invalidArgument(detail)
     case .SyncFailed(let detail):           return .failed(detail)

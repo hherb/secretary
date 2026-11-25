@@ -12,6 +12,7 @@ class VaultSyncErrorMappingTest {
         assertEquals(VaultSyncError.InProgress, mapVaultSyncError(VaultException.SyncInProgress()))
         assertEquals(VaultSyncError.StateVaultMismatch, mapVaultSyncError(VaultException.SyncStateVaultMismatch()))
         assertEquals(VaultSyncError.EvidenceStale, mapVaultSyncError(VaultException.SyncEvidenceStale()))
+        assertEquals(VaultSyncError.BlockCopyUnavailable, mapVaultSyncError(VaultException.SyncBlockCopyUnavailable()))
         assertEquals(VaultSyncError.DecisionsIncomplete, mapVaultSyncError(VaultException.SyncDecisionsIncomplete()))
     }
 

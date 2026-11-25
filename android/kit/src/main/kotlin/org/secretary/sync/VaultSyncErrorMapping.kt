@@ -24,6 +24,7 @@ internal fun mapVaultSyncError(e: VaultException): VaultSyncError = when (e) {
     is VaultException.SyncStateVaultMismatch -> VaultSyncError.StateVaultMismatch
     is VaultException.SyncStateCorrupt -> VaultSyncError.StateCorrupt(e.detail)
     is VaultException.SyncEvidenceStale -> VaultSyncError.EvidenceStale
+    is VaultException.SyncBlockCopyUnavailable -> VaultSyncError.BlockCopyUnavailable
     is VaultException.SyncDecisionsIncomplete -> VaultSyncError.DecisionsIncomplete
     is VaultException.InvalidArgument -> VaultSyncError.InvalidArgument(e.detail)
     is VaultException.SyncFailed -> VaultSyncError.Failed(e.detail)

@@ -17,6 +17,7 @@ use secretary_core::sync::SyncError;
 /// | 12 | EvidenceStale after retry budget exhausted. |
 /// | 13 | BlockFingerprintMismatch on commit. |
 /// | 14 | Lockfile held — another secretary-sync process is running on this vault. |
+/// | 15 | BlockCopyUnavailable — a block file the merge must read is unreadable; retry once it has arrived. |
 // As of C.2 Task 5, `ExitCode` is library-public (`secretary_cli::exit::ExitCode`)
 // and the discriminant table is locked in by the per-variant unit tests
 // below. Variants not yet referenced from `main.rs` will be wired by
@@ -34,6 +35,7 @@ pub enum ExitCode {
     EvidenceStale = 12,
     BlockFingerprintMismatch = 13,
     LockfileHeld = 14,
+    BlockCopyUnavailable = 15,
 }
 
 impl ExitCode {
@@ -43,6 +45,7 @@ impl ExitCode {
     pub fn from_sync_error(err: &SyncError) -> Self {
         match err {
             SyncError::EvidenceStale => Self::EvidenceStale,
+            SyncError::BlockCopyUnavailable { .. } => Self::BlockCopyUnavailable,
             SyncError::Vault(secretary_core::vault::VaultError::BlockFingerprintMismatch {
                 ..
             }) => Self::BlockFingerprintMismatch,
@@ -93,6 +96,19 @@ mod tests {
     #[test]
     fn lockfile_held_is_fourteen() {
         assert_eq!(ExitCode::LockfileHeld as i32, 14);
+    }
+
+    #[test]
+    fn block_copy_unavailable_is_fifteen() {
+        assert_eq!(ExitCode::BlockCopyUnavailable as i32, 15);
+    }
+
+    #[test]
+    fn block_copy_unavailable_error_maps() {
+        let mapped = ExitCode::from_sync_error(&SyncError::BlockCopyUnavailable {
+            block_uuid: [0x5A; 16],
+        });
+        assert_eq!(mapped, ExitCode::BlockCopyUnavailable);
     }
 
     #[test]

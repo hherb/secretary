@@ -32,6 +32,7 @@ class VaultSyncErrorTest {
             VaultSyncError.InProgress,
             VaultSyncError.StateVaultMismatch,
             VaultSyncError.EvidenceStale,
+            VaultSyncError.BlockCopyUnavailable,
             VaultSyncError.DecisionsIncomplete,
             VaultSyncError.NoPendingConflict,
         )

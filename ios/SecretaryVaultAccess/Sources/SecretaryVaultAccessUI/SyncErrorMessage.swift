@@ -19,6 +19,8 @@ public func syncErrorMessage(_ e: VaultSyncError) -> String {
         return "This device’s sync record couldn’t be read."
     case .evidenceStale:
         return "The vault changed while you were resolving conflicts. Sync again."
+    case .blockCopyUnavailable:
+        return "Some vault files are still syncing. Try again once they have arrived."
     case .decisionsIncomplete:
         return "Every conflict needs a decision before you apply."
     case .invalidArgument:

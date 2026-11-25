@@ -64,6 +64,8 @@ class SyncRenderHelpersTest {
         val cases = listOf(
             VaultSyncError.WrongPasswordOrCorrupt to "Wrong password, or the vault is corrupt.",
             VaultSyncError.EvidenceStale to "The vault changed while resolving — please try again.",
+            VaultSyncError.BlockCopyUnavailable to
+                "Some vault files are still syncing. Try again once they have arrived.",
             VaultSyncError.DecisionsIncomplete to "Choose an option for every record.",
             VaultSyncError.InProgress to "A sync is already running.",
             VaultSyncError.StateVaultMismatch to "Sync state belongs to a different vault.",

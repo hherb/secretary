@@ -29,6 +29,7 @@ pub fn variant_name_vault(e: &secretary_ffi_bridge::error::FfiVaultError) -> &'s
         E::SyncStateVaultMismatch => "SyncStateVaultMismatch",
         E::SyncStateCorrupt { .. } => "SyncStateCorrupt",
         E::SyncEvidenceStale => "SyncEvidenceStale",
+        E::SyncBlockCopyUnavailable => "SyncBlockCopyUnavailable",
         E::SyncInProgress => "SyncInProgress",
         E::SyncFailed { .. } => "SyncFailed",
         E::SyncDecisionsIncomplete => "SyncDecisionsIncomplete",

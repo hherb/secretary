@@ -629,6 +629,13 @@ Because each field merge is a join over a total order and the key set is unioned
 - if the merged trash entry is purged (`purged_at_ms` is `Some`), **purge wins**: the block is removed from `blocks` and kept purged-in-`trash` — a permanent purge is terminal and beats a concurrent restore or edit;
 - otherwise **live wins**: the trash entry is dropped and the block stays live.
 
+### 11.7 Completeness of a conflict-copy merge
+
+The merged manifest's vector clock covers every copy it folds, so a later sync does not offer those copies again: anything the merge leaves out of a copy is lost. Two rules follow.
+
+- **A block new to the merging device is carried.** A block that a conflict copy lists in `blocks`, and that the local manifest lists in neither `blocks` nor `trash`, was created on a device the merging device has not yet merged with. The merged manifest lists it in `blocks`. Its versions are merged by §11.2 across the copies that hold it, the version in the block's own file standing in for the local side, and its `BlockEntry` keeps the `created_at_ms` of the copy entry it came from. (A block the local manifest has trashed is reconciled by §11.6, not by this rule. So is a copy's version whose fingerprint a trash entry in any conflict copy records: that exact file was trashed and has left the block's own path.)
+- **Every version the merge must cover is read.** A copy's version of a block needs merging unless the local version, or another version the merge reads, has a clock that equals or dominates the copy's. This holds for a block the local manifest lists as much as for a new one. If the block file holding a version that needs merging cannot be read, because it is missing, out of bounds or fails authentication, the merge MUST NOT commit. For a block new to the merging device, the version in the block's own file stands in for the local one, and its clock is the file's own signed header clock: that file can hold a version no manifest names yet. A cloud client can deliver a manifest before the blocks it names, so this is an ordinary transient state: the merge is retried once the file arrives, and nothing is written in the meantime.
+
 ---
 
 ## 12. Cipher-suite migration

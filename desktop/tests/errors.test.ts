@@ -305,6 +305,7 @@ describe('error code allowlists', () => {
       'cannot_revoke_owner',
       'sync_in_progress',
       'sync_evidence_stale',
+      'sync_block_copy_unavailable',
       'sync_state_vault_mismatch',
       'sync_state_corrupt',
       'sync_failed',
