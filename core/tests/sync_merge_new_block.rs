@@ -311,3 +311,194 @@ fn a_new_block_whose_file_is_newer_than_every_manifest_is_adopted() {
         .iter()
         .any(|r| r.record_uuid == NEWER_RECORD));
 }
+
+fn expect_unavailable(folder: &std::path::Path, identity: &UnlockedIdentity, block_uuid: [u8; 16]) {
+    let (bundle, plan) = concurrent_bundle(folder, identity);
+    match prepare_merge(folder, identity, &bundle, &plan, MERGING_DEVICE) {
+        Err(SyncError::BlockCopyUnavailable { block_uuid: got }) => assert_eq!(got, block_uuid),
+        other => panic!("expected BlockCopyUnavailable, got {other:?}"),
+    }
+}
+
+/// The copy names a newer version than the block's own file holds: its
+/// device edited the block again and the manifest landed before the file.
+/// The file's header clock does not cover the copy's entry, so the merge
+/// refuses; once the newer file lands it is adopted.
+#[test]
+fn a_new_block_whose_file_is_older_than_its_copy_entry_is_refused_until_it_lands() {
+    let (folder, _tmp) = sync_helpers::fresh_vault_with_clock(Vec::new());
+    let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&folder);
+    let password = fixtures::golden_vault_001_password();
+    let cached = open_vault(&folder, Unlocker::Password(&password), None).expect("open_vault");
+    let copy_entry = cached
+        .manifest
+        .blocks
+        .iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .cloned()
+        .expect("golden block entry");
+    let mut newer_clock = copy_entry.vector_clock_summary.clone();
+    newer_clock.push(vc(NEWER_EDIT_DEVICE, 1));
+    newer_clock.sort_by_key(|e| e.device_uuid);
+
+    let claimed = newer_clock.clone();
+    sync_helpers::write_manifest_at_with(
+        &folder,
+        SIBLING_MANIFEST,
+        vec![vc(SIBLING_DEVICE, 1)],
+        &sync_helpers::SIBLING_NONCE_B,
+        |m| {
+            for b in m.blocks.iter_mut().filter(|b| b.block_uuid == block_uuid) {
+                b.vector_clock_summary = claimed.clone();
+            }
+        },
+    );
+    sync_helpers::write_manifest_at_with(
+        &folder,
+        sync_helpers::MANIFEST_FILENAME,
+        vec![vc(CANONICAL_DEVICE, 1)],
+        &sync_helpers::SIBLING_NONCE_C,
+        |m| m.blocks.retain(|b| b.block_uuid != block_uuid),
+    );
+
+    let identity = identity_for(&folder);
+    expect_unavailable(&folder, &identity, block_uuid);
+
+    let mut newer_records = sync_helpers::decrypt_block_using_open(
+        &cached,
+        &std::fs::read(sync_helpers::block_file_path(&folder, &block_uuid)).expect("read block"),
+    )
+    .expect("decrypt block")
+    .records;
+    newer_records.push(sync_helpers::live_record(
+        NEWER_RECORD,
+        NEWER_EDIT_DEVICE,
+        NEWER_LAST_MOD_MS,
+        "newer",
+    ));
+    sync_helpers::rewrite_block_with_records_at_clock(
+        &folder,
+        &cached,
+        block_uuid,
+        newer_records,
+        newer_clock,
+        &sync_helpers::BLOCK_NONCE_E,
+    );
+    let (bundle, plan) = concurrent_bundle(&folder, &identity);
+    let draft =
+        prepare_merge(&folder, &identity, &bundle, &plan, MERGING_DEVICE).expect("prepare_merge");
+    assert!(draft
+        .merged_records
+        .iter()
+        .any(|r| r.record_uuid == NEWER_RECORD));
+}
+
+/// A new block's own file that is present but fails authentication is
+/// refused like a missing one, not decrypted into a vault error.
+#[test]
+fn a_new_block_whose_file_fails_authentication_is_refused() {
+    let (folder, _tmp, copy_entry) = vault_with_a_block_only_the_copy_holds();
+    let block_path = sync_helpers::block_file_path(&folder, &copy_entry.block_uuid);
+    let mut bytes = std::fs::read(&block_path).expect("read block");
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0x01;
+    std::fs::write(&block_path, &bytes).expect("corrupt block");
+
+    let identity = identity_for(&folder);
+    expect_unavailable(&folder, &identity, copy_entry.block_uuid);
+}
+
+/// A block the local manifest lists, whose copy diverges, but whose own file
+/// has not landed: ingest leaves it out of the plan, and the merge must not
+/// cover the copy without it (#781 review).
+#[test]
+fn a_listed_diverging_block_whose_file_is_missing_is_refused() {
+    let (probe, _probe_tmp) = sync_helpers::fresh_vault_with_clock(Vec::new());
+    let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&probe);
+    let (folder, _tmp) = sync_helpers::fresh_vault_two_concurrent_blocks(
+        block_uuid,
+        vec![sync_helpers::live_record(
+            TOMBSTONED_RECORD,
+            CANONICAL_DEVICE,
+            LIVE_LAST_MOD_MS,
+            "canonical",
+        )],
+        vec![vc(CANONICAL_DEVICE, 1)],
+        vec![vc(CANONICAL_DEVICE, 1)],
+        vec![sync_helpers::live_record(
+            NEWER_RECORD,
+            SIBLING_DEVICE,
+            NEWER_LAST_MOD_MS,
+            "sibling",
+        )],
+        vec![vc(SIBLING_DEVICE, 1)],
+        vec![vc(SIBLING_DEVICE, 1)],
+        SIBLING_MANIFEST,
+        SIBLING_BLOCK_SUFFIX,
+        FIXTURE_NOW_MS,
+    );
+    let identity = identity_for(&folder);
+    let block_path = sync_helpers::block_file_path(&folder, &block_uuid);
+    std::fs::remove_file(&block_path).expect("remove canonical block");
+    expect_unavailable(&folder, &identity, block_uuid);
+}
+
+/// A draft whose added entry names a block the manifest already lists is
+/// refused before any file is written.
+#[test]
+fn a_commit_refuses_an_added_entry_the_manifest_already_lists() {
+    let (probe, _probe_tmp) = sync_helpers::fresh_vault_with_clock(Vec::new());
+    let block_uuid = sync_helpers::golden_vault_001_first_block_uuid(&probe);
+    let (folder, _tmp) = sync_helpers::fresh_vault_two_concurrent_blocks(
+        block_uuid,
+        vec![sync_helpers::live_record(
+            TOMBSTONED_RECORD,
+            CANONICAL_DEVICE,
+            LIVE_LAST_MOD_MS,
+            "canonical",
+        )],
+        vec![vc(CANONICAL_DEVICE, 1)],
+        vec![vc(CANONICAL_DEVICE, 1)],
+        vec![sync_helpers::live_record(
+            NEWER_RECORD,
+            SIBLING_DEVICE,
+            NEWER_LAST_MOD_MS,
+            "sibling",
+        )],
+        vec![vc(SIBLING_DEVICE, 1)],
+        vec![vc(SIBLING_DEVICE, 1)],
+        SIBLING_MANIFEST,
+        SIBLING_BLOCK_SUFFIX,
+        FIXTURE_NOW_MS,
+    );
+    let identity = identity_for(&folder);
+    let (bundle, plan) = concurrent_bundle(&folder, &identity);
+    let mut draft =
+        prepare_merge(&folder, &identity, &bundle, &plan, MERGING_DEVICE).expect("prepare_merge");
+    let listed = open_entries(&folder)
+        .into_iter()
+        .find(|b| b.block_uuid == block_uuid)
+        .expect("listed entry");
+    draft
+        .per_block_meta
+        .get_mut(&block_uuid)
+        .expect("meta")
+        .added_entry = Some(listed);
+
+    let block_path = sync_helpers::block_file_path(&folder, &block_uuid);
+    let block_before = std::fs::read(&block_path).expect("read block");
+    let manifest_path = folder.join(sync_helpers::MANIFEST_FILENAME);
+    let manifest_before = std::fs::read(&manifest_path).expect("read manifest");
+    assert!(matches!(
+        commit_with_decisions(&folder, &identity, draft, Vec::new(), COMMIT_NOW_MS),
+        Err(SyncError::InvalidArgument { .. })
+    ));
+    assert_eq!(
+        std::fs::read(&block_path).expect("reread block"),
+        block_before
+    );
+    assert_eq!(
+        std::fs::read(&manifest_path).expect("reread manifest"),
+        manifest_before
+    );
+}

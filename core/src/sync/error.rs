@@ -68,8 +68,10 @@ pub enum SyncError {
     EmptyDraftWithVetoes,
 
     /// A conflict-copy manifest claims a version of this block that the
-    /// canonical one does not cover, and no readable sibling block file
-    /// holds it: missing, out of size bounds, or failing authentication.
+    /// canonical one does not cover, and no readable block file holds it
+    /// (its own `blocks/<uuid>.cbor.enc`, or a sibling): missing, out of
+    /// size bounds, or failing authentication. Only the first clears on
+    /// retry; the refusal is logged at warn with the block's uuid.
     /// Cloud sync can deliver a manifest before its blocks. Merging
     /// without that version would write a manifest clock that covers the
     /// copy while dropping its content, and no later sync would read the

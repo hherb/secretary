@@ -356,11 +356,11 @@ pub(crate) fn authenticate_block_envelope(
 /// canonical envelope (see `new_blocks`).
 ///
 /// I/O errors during the canonical-block read are downgraded to a
-/// `tracing::warn!` and the block is skipped — a corrupt or missing
-/// canonical block file is recoverable by skipping divergence for
-/// that block (the C.1.1b merge layer handles fully-missing blocks
-/// in its own pass). I/O errors during sibling enumeration ARE
-/// propagated because they indicate a folder-level problem.
+/// `tracing::warn!` and the block is skipped. `prepare_merge` then
+/// refuses the merge with `SyncError::BlockCopyUnavailable`, since every
+/// block that diverges by its manifests must be in the plan (#781). I/O
+/// errors during sibling enumeration ARE propagated because they
+/// indicate a folder-level problem.
 pub(crate) fn ingest_block_divergence(
     folder: &Path,
     canonical: &Manifest,
@@ -373,27 +373,7 @@ pub(crate) fn ingest_block_divergence(
 
     for canonical_entry in &canonical.blocks {
         let block_uuid = canonical_entry.block_uuid;
-
-        let mut diverges = false;
-        for copy in copies {
-            let copy_entry = match copy
-                .manifest
-                .blocks
-                .iter()
-                .find(|e| e.block_uuid == block_uuid)
-            {
-                Some(e) => e,
-                None => continue,
-            };
-            if copy_version_is_uncovered(
-                &canonical_entry.vector_clock_summary,
-                &copy_entry.vector_clock_summary,
-            ) {
-                diverges = true;
-                break;
-            }
-        }
-        if !diverges {
+        if !listed_block_diverges(canonical_entry, copies) {
             continue;
         }
 
@@ -457,6 +437,27 @@ pub(crate) fn copy_version_is_uncovered(
         clock_relation(canonical_clock, copy_clock),
         ClockRelation::Equal | ClockRelation::IncomingDominated
     )
+}
+
+/// Whether a block `canonical` lists diverges: some copy lists a version of
+/// it that [`copy_version_is_uncovered`] by the canonical entry. Decided from
+/// the manifests alone, so ingest and `prepare_merge`'s completeness check
+/// agree on which blocks a merge must read.
+#[must_use]
+pub(crate) fn listed_block_diverges(
+    canonical_entry: &crate::vault::BlockEntry,
+    copies: &[ManifestSnapshot],
+) -> bool {
+    copies
+        .iter()
+        .flat_map(|c| c.manifest.blocks.iter())
+        .filter(|e| e.block_uuid == canonical_entry.block_uuid)
+        .any(|e| {
+            copy_version_is_uncovered(
+                &canonical_entry.vector_clock_summary,
+                &e.vector_clock_summary,
+            )
+        })
 }
 
 /// Extract sorted block UUIDs from the bundle's `diverging_blocks`

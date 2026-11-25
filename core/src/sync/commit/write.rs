@@ -148,14 +148,37 @@ pub fn commit_with_decisions(
 
     // The manifest the merge writes over: the verified one, plus the entry of
     // each block new to this device (crypto-design §11.7), which the merge
-    // carries from the copy it came from.
+    // carries from the copy it came from. Each must name a planned block the
+    // verified manifest lists in neither `blocks` nor `trash`; checked before
+    // any write, since a repeated `block_uuid` would otherwise surface only
+    // at signing, after the block files were written.
     let mut base_manifest = verified.manifest.clone();
-    base_manifest.blocks.extend(
-        draft
-            .per_block_meta
-            .values()
-            .filter_map(|meta| meta.added_entry.clone()),
-    );
+    for (block_uuid, meta) in &draft.per_block_meta {
+        let Some(entry) = &meta.added_entry else {
+            continue;
+        };
+        let known = verified
+            .manifest
+            .blocks
+            .iter()
+            .any(|b| b.block_uuid == *block_uuid)
+            || verified
+                .manifest
+                .trash
+                .iter()
+                .any(|t| t.block_uuid == *block_uuid);
+        if entry.block_uuid != *block_uuid
+            || known
+            || !draft.plan.diverging_blocks.contains(block_uuid)
+        {
+            return Err(SyncError::InvalidArgument {
+                detail: format!(
+                    "draft adds block {block_uuid:02x?}, which the manifest cannot take"
+                ),
+            });
+        }
+        base_manifest.blocks.push(entry.clone());
+    }
 
     // Step 5: per-affected-block re-encrypt + atomic write. Block-first
     // ordering — the manifest write is the commit point (D6).

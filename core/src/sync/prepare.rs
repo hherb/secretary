@@ -361,17 +361,21 @@ fn merge_error(e: ConflictError) -> SyncError {
 ///   A bundle that authenticated through 1a is structurally sound; a
 ///   decrypt failure here is either a programmer error (wrong
 ///   identity) or an attacker-supplied corrupted ciphertext.
+///   `SyncError::Vault(VaultError::BlockFingerprintMismatch)` fires when
+///   a listed block's own file is not the one the canonical manifest's
+///   entry commits to (crash residue or a rollback; repair, not retry).
 /// - `SyncError::InvalidArgument` fires when the plan references a
 ///   `block_uuid` not present in `bundle.diverging_blocks` (structural
-///   bundle/plan disagreement), when the canonical manifest is missing
-///   a `BlockEntry` for a divergent block_uuid, or when a copy block
-///   envelope's fingerprint matches no copy manifest's `BlockEntry`
-///   (orphan sibling — see `parent_block_clock`).
-/// - `SyncError::BlockCopyUnavailable` fires when a copy manifest claims
-///   a version of a diverging block that the canonical one does not
-///   cover and no copy envelope carries it (its sibling file has not
-///   arrived, or failed to authenticate): merging without it would lose
-///   that content for good (#781).
+///   bundle/plan disagreement), when a new block's file header names
+///   another block or no copy lists it (see `new_block_seed`), or when a
+///   copy block envelope's fingerprint matches no copy manifest's
+///   `BlockEntry` (orphan sibling — see `parent_block_clock`).
+/// - `SyncError::BlockCopyUnavailable` fires when a version the merge must
+///   read is unreadable (missing, out of size bounds, or failing
+///   authentication): a block that diverges by its manifests is not in the
+///   plan because its own file was unreadable at ingest, or a copy's
+///   version is covered by no version the fold reads. Merging without it
+///   would lose that content for good (#781).
 ///
 /// # Purity & cost
 ///
@@ -386,7 +390,7 @@ pub fn prepare_merge(
     plan: &DiffPlan,
     merging_device: [u8; 16],
 ) -> Result<DraftMerge, SyncError> {
-    completeness::ensure_new_blocks_are_planned(bundle, plan)?;
+    completeness::ensure_divergent_blocks_are_planned(bundle, plan)?;
     let keys = derive_block_reader_keys(vault_folder, identity)?;
 
     let mut merged_records: BTreeMap<[u8; 16], Record> = BTreeMap::new();
@@ -422,7 +426,22 @@ pub fn prepare_merge(
             .iter()
             .find(|b| b.block_uuid == *block_uuid);
         let (canonical_block_clock, added_entry) = match canonical_entry {
-            Some(entry) => (entry.vector_clock_summary.clone(), None),
+            // VL-2: the file read at ingest must be the one the canonical
+            // manifest commits to, or a stale owner-signed file would be
+            // folded under the manifest's newer clock.
+            Some(entry) => {
+                let got = *blake3_hash(&divergence.canonical_envelope.bytes).as_bytes();
+                if got != entry.fingerprint {
+                    return Err(SyncError::Vault(
+                        crate::vault::VaultError::BlockFingerprintMismatch {
+                            block_uuid: *block_uuid,
+                            expected: entry.fingerprint,
+                            got,
+                        },
+                    ));
+                }
+                (entry.vector_clock_summary.clone(), None)
+            }
             None => {
                 let (clock, entry) = new_block::new_block_seed(
                     block_uuid,

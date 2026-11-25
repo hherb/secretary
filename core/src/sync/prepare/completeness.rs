@@ -11,29 +11,53 @@ use std::collections::BTreeSet;
 use crate::crypto::hash::hash as blake3_hash;
 use crate::sync::bundle::{BlockEnvelope, ManifestSnapshot, VaultBundle};
 use crate::sync::error::SyncError;
-use crate::sync::ingest::{blocks_new_to_canonical, copy_version_is_uncovered};
+use crate::sync::ingest::{
+    blocks_new_to_canonical, copy_version_is_uncovered, listed_block_diverges,
+};
 use crate::sync::outcome::DiffPlan;
 use crate::vault::block::VectorClockEntry;
 use crate::vault::BlockEntry;
 
-/// Check that every block new to the canonical manifest (crypto-design
-/// §11.7) is in `plan`. Ingest leaves one out when its own block file is
-/// missing or fails authentication.
+/// Check that every block a merge must read is in `plan`: each block new to
+/// the canonical manifest (crypto-design §11.7), and each block it lists that
+/// a copy's version diverges from. Both are decided from the manifests alone.
+/// Ingest leaves a block out when the file standing in for its local side,
+/// `blocks/<uuid>.cbor.enc`, is missing, out of size bounds or fails
+/// authentication.
 ///
 /// # Errors
 ///
 /// [`SyncError::BlockCopyUnavailable`] for the first such block not planned.
-pub(super) fn ensure_new_blocks_are_planned(
+pub(super) fn ensure_divergent_blocks_are_planned(
     bundle: &VaultBundle,
     plan: &DiffPlan,
 ) -> Result<(), SyncError> {
-    match blocks_new_to_canonical(&bundle.canonical.manifest, &bundle.copies)
+    let canonical = &bundle.canonical.manifest;
+    let listed = canonical
+        .blocks
+        .iter()
+        .filter(|entry| listed_block_diverges(entry, &bundle.copies))
+        .map(|entry| entry.block_uuid);
+    match blocks_new_to_canonical(canonical, &bundle.copies)
         .into_iter()
+        .chain(listed)
         .find(|uuid| !plan.diverging_blocks.contains(uuid))
     {
-        Some(block_uuid) => Err(SyncError::BlockCopyUnavailable { block_uuid }),
+        Some(block_uuid) => Err(unavailable(block_uuid, "its own block file")),
         None => Ok(()),
     }
+}
+
+/// The refusal, logged at warn so the stuck block is named somewhere: the
+/// FFI projection carries no payload, and a file that fails authentication
+/// will not clear on retry.
+fn unavailable(block_uuid: [u8; 16], what: &'static str) -> SyncError {
+    tracing::warn!(
+        block_uuid = %crate::vault::orchestrators::format_uuid_hyphenated(&block_uuid),
+        missing = what,
+        "merge refused: a version it must read is unreadable (missing, out of size bounds, or failing authentication)"
+    );
+    SyncError::BlockCopyUnavailable { block_uuid }
 }
 
 /// Check that every version of `block_uuid` a copy manifest claims is
@@ -81,9 +105,7 @@ pub(super) fn ensure_uncovered_copies_are_readable(
     if all_covered {
         Ok(())
     } else {
-        Err(SyncError::BlockCopyUnavailable {
-            block_uuid: *block_uuid,
-        })
+        Err(unavailable(*block_uuid, "a conflict copy's block file"))
     }
 }
 
@@ -91,6 +113,8 @@ pub(super) fn ensure_uncovered_copies_are_readable(
 mod tests {
     use super::*;
     use crate::sync::prepare::parent_block_clock_tests::{block_entry, empty_manifest, snapshot};
+    use crate::vault::Manifest;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     const BLOCK: [u8; 16] = [0xAA; 16];
@@ -112,7 +136,7 @@ mod tests {
         }
     }
 
-    /// A copy manifest holding `BLOCK` at `clock`, authored by `bytes`.
+    /// A copy manifest holding `BLOCK` at `clock`, its fingerprint `BLAKE3(bytes)`.
     fn copy_holding(bytes: &[u8], clock: Vec<VectorClockEntry>) -> ManifestSnapshot {
         let mut m = empty_manifest();
         m.blocks
@@ -169,6 +193,76 @@ mod tests {
             copy_holding(b"older", vec![vc(OTHER_COPY_DEVICE, 1)]),
         ];
         assert!(check(&copies, &[envelope(b"newer")]).is_ok());
+    }
+
+    /// The mirror of the case above: a missing version that dominates the
+    /// readable one still holds content no read version has.
+    #[test]
+    fn a_missing_version_that_dominates_a_readable_one_is_refused() {
+        let copies = [
+            copy_holding(b"newer", vec![vc(COPY_DEVICE, 1), vc(OTHER_COPY_DEVICE, 2)]),
+            copy_holding(b"older", vec![vc(OTHER_COPY_DEVICE, 1)]),
+        ];
+        assert!(check(&copies, &[envelope(b"older")]).is_err());
+    }
+
+    fn bundle(canonical: Manifest, copies: Vec<ManifestSnapshot>) -> VaultBundle {
+        VaultBundle {
+            canonical: snapshot(canonical),
+            copies,
+            diverging_blocks: BTreeMap::new(),
+        }
+    }
+
+    fn planned(blocks: &[[u8; 16]]) -> DiffPlan {
+        DiffPlan {
+            diverging_blocks: blocks.to_vec(),
+        }
+    }
+
+    /// Of two blocks new to the canonical manifest, the unplanned one is named.
+    #[test]
+    fn an_unplanned_new_block_is_named() {
+        let other: [u8; 16] = [0xBB; 16];
+        let mut copy = empty_manifest();
+        copy.blocks
+            .push(block_entry(BLOCK, [1; 32], vec![vc(COPY_DEVICE, 1)]));
+        copy.blocks
+            .push(block_entry(other, [2; 32], vec![vc(COPY_DEVICE, 1)]));
+        let b = bundle(empty_manifest(), vec![snapshot(copy)]);
+        assert!(ensure_divergent_blocks_are_planned(&b, &planned(&[BLOCK, other])).is_ok());
+        assert!(matches!(
+            ensure_divergent_blocks_are_planned(&b, &planned(&[BLOCK])),
+            Err(SyncError::BlockCopyUnavailable { block_uuid }) if block_uuid == other
+        ));
+    }
+
+    /// A block the canonical manifest lists, which a copy's version diverges
+    /// from, must be planned too: ingest leaves it out when its own file is
+    /// unreadable, and the merge would then cover the copy without it.
+    #[test]
+    fn an_unplanned_diverging_listed_block_is_refused() {
+        let mut canonical = empty_manifest();
+        canonical
+            .blocks
+            .push(block_entry(BLOCK, [1; 32], vec![vc(CANONICAL_DEVICE, 2)]));
+        let mut copy = empty_manifest();
+        copy.blocks
+            .push(block_entry(BLOCK, [2; 32], vec![vc(COPY_DEVICE, 1)]));
+        let b = bundle(canonical.clone(), vec![snapshot(copy)]);
+        assert!(ensure_divergent_blocks_are_planned(&b, &planned(&[BLOCK])).is_ok());
+        assert!(matches!(
+            ensure_divergent_blocks_are_planned(&b, &planned(&[])),
+            Err(SyncError::BlockCopyUnavailable { block_uuid }) if block_uuid == BLOCK
+        ));
+
+        // A copy the canonical entry dominates needs no plan.
+        let mut older = empty_manifest();
+        older
+            .blocks
+            .push(block_entry(BLOCK, [3; 32], vec![vc(CANONICAL_DEVICE, 1)]));
+        let b = bundle(canonical, vec![snapshot(older)]);
+        assert!(ensure_divergent_blocks_are_planned(&b, &planned(&[])).is_ok());
     }
 
     #[test]

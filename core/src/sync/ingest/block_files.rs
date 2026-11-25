@@ -56,7 +56,7 @@ pub(super) fn read_block_envelope(
             tracing::debug!(
                 path = %path.display(),
                 error = %err,
-                "block conflict-copy skipped: read error"
+                "block file skipped: read error"
             );
             return None;
         }
@@ -65,7 +65,7 @@ pub(super) fn read_block_envelope(
         tracing::debug!(
             path = %path.display(),
             size = bytes.len(),
-            "block conflict-copy skipped: size out of bounds"
+            "block file skipped: size out of bounds"
         );
         return None;
     }

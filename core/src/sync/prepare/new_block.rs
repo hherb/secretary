@@ -14,8 +14,10 @@ use crate::vault::BlockEntry;
 /// device edited it again and the file landed first, or because a merge
 /// commit wrote it and stopped before the manifest. Pairing by fingerprint
 /// would then refuse every retry. The entry is the first copy entry listing
-/// the block; the commit overwrites every field that differs between its
-/// versions except `created_at_ms`, which they share.
+/// the block. The commit rewrites its `fingerprint`, `block_name`,
+/// `vector_clock_summary` and `last_mod_ms`; `created_at_ms`, which every
+/// version shares, `recipients`, `suite_id` and `unknown` are kept from that
+/// first entry.
 ///
 /// # Errors
 ///
@@ -46,4 +48,31 @@ pub(super) fn new_block_seed(
             detail: format!("no copy manifest lists new block {block_uuid:02x?}"),
         })?;
     Ok((header.vector_clock, entry.clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::prepare::parent_block_clock_tests::{block_entry, empty_manifest, snapshot};
+
+    /// The golden vault's one block, named in its own header.
+    const GOLDEN_BLOCK: &str = "11223344-5566-7788-99aa-bbccddeeff00.cbor.enc";
+
+    /// A hostile host can copy another owner-signed block's file to this
+    /// block's path; the header names the block, so the seed refuses it.
+    #[test]
+    fn a_file_naming_another_block_is_refused() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data/golden_vault_001/blocks")
+            .join(GOLDEN_BLOCK);
+        let bytes = std::fs::read(path).expect("read golden block");
+        let other = [0x77; 16];
+        // A copy lists `other`, so only the header check can refuse.
+        let mut listing = empty_manifest();
+        listing.blocks.push(block_entry(other, [0; 32], vec![]));
+        assert!(matches!(
+            new_block_seed(&other, &bytes, &[snapshot(listing)]),
+            Err(SyncError::InvalidArgument { .. })
+        ));
+    }
 }
