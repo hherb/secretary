@@ -103,6 +103,7 @@ fn compute_diff_plan_empty_bundle_returns_empty_vec() {
         },
         copies: vec![],
         diverging_blocks: BTreeMap::new(),
+        trashed_envelopes: BTreeMap::new(),
     };
     let plan = compute_diff_plan(&bundle);
     assert!(plan.is_empty());
@@ -139,6 +140,7 @@ fn compute_diff_plan_returns_keys_in_ascending_order() {
         },
         copies: vec![],
         diverging_blocks: diverging,
+        trashed_envelopes: BTreeMap::new(),
     };
     let plan = compute_diff_plan(&bundle);
     assert_eq!(plan, vec![[0xAA; 16], [0xBB; 16]]);

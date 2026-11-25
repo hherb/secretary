@@ -2,6 +2,7 @@
 //!
 //! [`OpenVault`]: crate::vault::OpenVault
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::identity::card::ContactCard;
@@ -48,7 +49,30 @@ pub fn verify_vault_state(
             context: "failed to read vault.toml",
             source: e,
         })?;
-    verify_vault_state_with_toml(folder, &vault_toml_bytes, identity, local_highest_clock)
+    verify_vault_state_with_toml(
+        folder,
+        &vault_toml_bytes,
+        identity,
+        local_highest_clock,
+        &BTreeSet::new(),
+    )
+}
+
+/// [`verify_vault_state`] for a merge commit that removes the blocks in
+/// `trashed_by_merge` from `blocks` (crypto-design §11.6): their files are
+/// not fingerprint-checked. The commit reads and writes none of them, and the
+/// device that trashed one has moved its file to `trash/`.
+pub(crate) fn verify_vault_state_for_merge(
+    folder: &Path,
+    identity: &UnlockedIdentity,
+    trashed_by_merge: &BTreeSet<[u8; 16]>,
+) -> Result<VerifiedVaultState, VaultError> {
+    let vault_toml_bytes =
+        std::fs::read(folder.join(VAULT_TOML_FILENAME)).map_err(|e| VaultError::Io {
+            context: "failed to read vault.toml",
+            source: e,
+        })?;
+    verify_vault_state_with_toml(folder, &vault_toml_bytes, identity, None, trashed_by_merge)
 }
 
 /// [`verify_vault_state`] over `vault.toml` bytes the caller already holds,
@@ -58,6 +82,7 @@ pub(crate) fn verify_vault_state_with_toml(
     vault_toml_bytes: &[u8],
     identity: &UnlockedIdentity,
     local_highest_clock: Option<&[VectorClockEntry]>,
+    skip_block_files: &BTreeSet<[u8; 16]>,
 ) -> Result<VerifiedVaultState, VaultError> {
     // Steps 3-8: read manifest envelope, load + verify owner card,
     // verify + decrypt manifest, sanity-check body↔envelope and
@@ -83,7 +108,15 @@ pub(crate) fn verify_vault_state_with_toml(
     // recovery is to re-run `sync_once → prepare_merge →
     // commit_with_decisions`, which is convergent under CRDT
     // idempotence.
-    verify_block_fingerprints(folder, &manifest_body)?;
+    if skip_block_files.is_empty() {
+        verify_block_fingerprints(folder, &manifest_body)?;
+    } else {
+        let mut checked = manifest_body.clone();
+        checked
+            .blocks
+            .retain(|b| !skip_block_files.contains(&b.block_uuid));
+        verify_block_fingerprints(folder, &checked)?;
+    }
 
     // #350: best-effort completion of trash renames interrupted between
     // trash_block's manifest commit and its physical move. Rename-only

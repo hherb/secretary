@@ -22,6 +22,7 @@ use crate::crypto::aead::{AeadKey, AEAD_TAG_LEN};
 use crate::crypto::sig::{Ed25519Public, MlDsa65Public};
 use crate::identity::fingerprint::Fingerprint;
 use crate::sync::bundle::{BlockDivergence, BlockEnvelope, ManifestSnapshot, VaultBundle};
+use crate::sync::trash_collision;
 use crate::vault::block::VectorClockEntry;
 use crate::vault::orchestrators::MANIFEST_FILENAME;
 use crate::vault::{
@@ -350,10 +351,12 @@ pub(crate) fn authenticate_block_envelope(
 /// concurrent (divergent histories). Non-divergent blocks are absent
 /// from the returned map.
 ///
-/// A block a copy lists and the canonical manifest lists in neither
-/// `blocks` nor `trash` is new to this device and diverges too
-/// (crypto-design §11.7): its own file is read, authenticated, as the
-/// canonical envelope (see `new_blocks`).
+/// A block a copy lists and the canonical manifest does not is new to this
+/// device and diverges too (crypto-design §11.7): its own file is read,
+/// authenticated, as the canonical envelope (see `new_blocks`). A block in
+/// the merged trash follows its §11.6 outcome, decided from `trashed` (see
+/// [`crate::sync::trash_collision`]): a block the trash beats is never read,
+/// and one live beat it with is read when its trashed version needs folding.
 ///
 /// I/O errors during the canonical-block read are downgraded to a
 /// `tracing::warn!` and the block is skipped. `prepare_merge` then
@@ -365,15 +368,23 @@ pub(crate) fn ingest_block_divergence(
     folder: &Path,
     canonical: &Manifest,
     copies: &[ManifestSnapshot],
+    trashed: &BTreeMap<[u8; 16], BlockEnvelope>,
     canonical_owner_fp: Fingerprint,
     owner_ed25519_pk: &Ed25519Public,
     owner_ml_dsa_65_pk: &MlDsa65Public,
 ) -> Result<BTreeMap<[u8; 16], BlockDivergence>, std::io::Error> {
     let mut out: BTreeMap<[u8; 16], BlockDivergence> = BTreeMap::new();
+    let collisions = trash_collision::collisions(canonical, copies, trashed);
 
     for canonical_entry in &canonical.blocks {
         let block_uuid = canonical_entry.block_uuid;
-        if !listed_block_diverges(canonical_entry, copies) {
+        if !trash_collision::listed_block_needs_merge(
+            canonical_entry,
+            canonical,
+            copies,
+            trashed,
+            &collisions,
+        ) {
             continue;
         }
 
@@ -413,8 +424,7 @@ pub(crate) fn ingest_block_divergence(
 
     new_blocks::ingest_new_blocks(
         folder,
-        canonical,
-        copies,
+        new_blocks::blocks_new_to_canonical(canonical, copies, &collisions),
         canonical_owner_fp,
         owner_ed25519_pk,
         owner_ml_dsa_65_pk,
@@ -506,10 +516,19 @@ pub(crate) fn ingest_conflict_copies(
         ibk,
     )?;
 
+    let trashed_envelopes = trashed::ingest_trashed_envelopes(
+        folder,
+        canonical,
+        &copies,
+        canonical_owner_fp,
+        owner_ed25519_pk,
+        owner_ml_dsa_65_pk,
+    )?;
     let diverging_blocks = ingest_block_divergence(
         folder,
         canonical,
         &copies,
+        &trashed_envelopes,
         canonical_owner_fp,
         owner_ed25519_pk,
         owner_ml_dsa_65_pk,
@@ -523,6 +542,7 @@ pub(crate) fn ingest_conflict_copies(
         },
         copies,
         diverging_blocks,
+        trashed_envelopes,
     })
 }
 
@@ -575,6 +595,7 @@ pub(crate) fn enumerate_block_siblings(
 
 mod block_files;
 mod new_blocks;
+mod trashed;
 use block_files::{canonical_block_path, read_sibling_envelopes};
 pub(crate) use new_blocks::blocks_new_to_canonical;
 

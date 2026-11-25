@@ -571,8 +571,13 @@ pub fn open_vault(
     // Steps 3-8 + block fingerprints + trash sweeps: shared with the merge
     // commit and the session refresh (#101). The identity moves into
     // `OpenVault` below; only public material comes back.
-    let state =
-        verify_vault_state_with_toml(folder, &vault_toml_bytes, &unlocked, local_highest_clock)?;
+    let state = verify_vault_state_with_toml(
+        folder,
+        &vault_toml_bytes,
+        &unlocked,
+        local_highest_clock,
+        &std::collections::BTreeSet::new(),
+    )?;
 
     Ok(OpenVault {
         identity_block_key: unlocked.identity_block_key,

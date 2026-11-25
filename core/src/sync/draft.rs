@@ -143,9 +143,10 @@ pub struct DraftMerge {
     pub per_block_meta: BTreeMap<[u8; 16], MergedBlockMeta>,
     /// Union of `bundle.canonical.manifest.trash` and every
     /// `bundle.copies[*].manifest.trash`, reconciled by
-    /// `trash_merge::merge_trash_lists` (#401). `commit_with_decisions`
-    /// applies it as `new_manifest.trash` after the purge-terminal
-    /// live-vs-trash resolution. `#[zeroize(skip)]` — `TrashEntry` carries
+    /// `trash_merge::merge_trash_lists` (#401), without the entries a live
+    /// block beat (crypto-design §11.6, #783). `commit_with_decisions` writes
+    /// it as `new_manifest.trash` and drops every block it holds from
+    /// `blocks`. `#[zeroize(skip)]` — `TrashEntry` carries
     /// no secret material (UUIDs, timestamps, fingerprint, unknown-map),
     /// same as the vector-clock fields.
     #[zeroize(skip)]

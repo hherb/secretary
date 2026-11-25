@@ -84,6 +84,12 @@ pub struct VaultBundle {
     pub copies: Vec<ManifestSnapshot>,
     #[zeroize(skip)]
     pub diverging_blocks: BTreeMap<[u8; 16], BlockDivergence>,
+    /// The authenticated trashed file of each live-vs-trash collision whose
+    /// outcome needs it (crypto-design §11.6), keyed by `block_uuid` and
+    /// matched to the merged trash entry's fingerprint. Skipped for the same
+    /// reason as `diverging_blocks`; each envelope wipes itself on drop.
+    #[zeroize(skip)]
+    pub trashed_envelopes: BTreeMap<[u8; 16], BlockEnvelope>,
 }
 
 /// Compute the BLAKE3-256 hash of the canonical manifest envelope
