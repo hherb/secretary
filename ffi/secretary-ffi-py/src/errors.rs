@@ -63,7 +63,7 @@ create_exception!(secretary_ffi_py, VaultCannotDeleteOwnerContact, PyException);
 create_exception!(secretary_ffi_py, VaultSyncStateVaultMismatch, PyException);
 create_exception!(secretary_ffi_py, VaultSyncStateCorrupt, PyException);
 create_exception!(secretary_ffi_py, VaultSyncEvidenceStale, PyException);
-// A conflict copy's block file has not arrived yet (#781); retryable.
+// A block file the merge must read is unreadable, usually not arrived yet (#781); retryable.
 create_exception!(secretary_ffi_py, VaultSyncBlockCopyUnavailable, PyException);
 create_exception!(secretary_ffi_py, VaultSyncInProgress, PyException);
 create_exception!(secretary_ffi_py, VaultSyncFailed, PyException);

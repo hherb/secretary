@@ -130,8 +130,8 @@ fn map_sync_error(e: SyncError) -> FfiVaultError {
             }
         }
         SyncError::EvidenceStale => FfiVaultError::SyncEvidenceStale,
-        // A conflict copy's block file is still in flight (#781): retryable,
-        // and the caller should say so rather than report a bare failure.
+        // A block file the merge must read is unreadable (#781): usually still
+        // in flight, so retryable, and the caller should say so.
         SyncError::BlockCopyUnavailable { .. } => FfiVaultError::SyncBlockCopyUnavailable,
         SyncError::Vault(ve) => ve.into(),
         // Decision-coverage failures on the commit path: the supplied
@@ -179,8 +179,7 @@ mod tests {
             matches!(unknown, FfiVaultError::SyncDecisionsIncomplete),
             "got {unknown:?}"
         );
-        // A still-folded variant stays SyncFailed (pins the un-collapse didn't
-        // accidentally widen the SyncDecisionsIncomplete bucket).
+        // An unreadable block version has its own retryable arm (#781).
         let unavailable = map_sync_error(SyncError::BlockCopyUnavailable {
             block_uuid: [2u8; 16],
         });
@@ -188,6 +187,8 @@ mod tests {
             matches!(unavailable, FfiVaultError::SyncBlockCopyUnavailable),
             "got {unavailable:?}"
         );
+        // A still-folded variant stays SyncFailed (pins the un-collapse didn't
+        // accidentally widen the SyncDecisionsIncomplete bucket).
         let other = map_sync_error(SyncError::EmptyDraftWithVetoes);
         assert!(
             matches!(other, FfiVaultError::SyncFailed { .. }),

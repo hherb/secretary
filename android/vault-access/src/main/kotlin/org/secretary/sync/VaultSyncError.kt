@@ -101,8 +101,9 @@ sealed class VaultSyncError(message: String? = null) : Exception(message), Secre
     data object EvidenceStale : VaultSyncError()
 
     /**
-     * A conflict copy's block file has not arrived in the folder yet, so the pass refused to
-     * merge without it (#781). Nothing was written; retry once the cloud client has synced.
+     * A block file the merge must read is unreadable, so the pass refused to merge without
+     * it (#781). Usually it has not arrived yet; it may also be out of size bounds or fail
+     * authentication. Nothing was written; retry once the cloud client has synced.
      */
     data object BlockCopyUnavailable : VaultSyncError()
 

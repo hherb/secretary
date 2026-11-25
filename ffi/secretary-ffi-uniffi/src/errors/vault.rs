@@ -110,7 +110,8 @@ pub enum VaultError {
     /// Mirrors `FfiVaultError::SyncEvidenceStale`.
     #[error("vault changed on disk during sync; retry")]
     SyncEvidenceStale,
-    /// A conflict copy's block file has not arrived yet; no write occurred, retry.
+    /// A block file the merge must read is unreadable (usually not arrived yet;
+    /// also out of size bounds or failing authentication); no write occurred, retry.
     /// Mirrors `FfiVaultError::SyncBlockCopyUnavailable`.
     #[error("some vault files are still syncing; retry once they have arrived")]
     SyncBlockCopyUnavailable,
