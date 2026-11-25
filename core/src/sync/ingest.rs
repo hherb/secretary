@@ -355,8 +355,10 @@ pub(crate) fn authenticate_block_envelope(
 /// device and diverges too (crypto-design §11.7): its own file is read,
 /// authenticated, as the canonical envelope (see `new_blocks`). A block in
 /// the merged trash follows its §11.6 outcome, decided from `trashed` (see
-/// [`crate::sync::trash_collision`]): a block the trash beats is never read,
-/// and one live beat it with is read when its trashed version needs folding.
+/// [`crate::sync::trash_collision`]). A block the trash removes is never
+/// read. A block live won for is read if a copy diverges from it or its
+/// trashed version holds content the canonical one lacks; one the canonical
+/// manifest does not list is read as a new block.
 ///
 /// I/O errors during the canonical-block read are downgraded to a
 /// `tracing::warn!` and the block is skipped. `prepare_merge` then
@@ -484,7 +486,8 @@ pub(crate) fn compute_diff_plan(bundle: &VaultBundle) -> Vec<[u8; 16]> {
 /// a vault folder plus a canonical (already-authenticated) manifest.
 /// Called by [`crate::sync::sync_once`] only on the Concurrent
 /// dispatch path. Returns canonical + 0..N authenticated copies +
-/// per-block divergence in one structure.
+/// per-block divergence + the trashed files live-vs-trash collisions need
+/// (crypto-design §11.6) in one structure.
 ///
 /// All five §1a-D4 MUSTs run inside the manifest-level + block-level
 /// authenticators; per-file failures silently drop (spec §1a-D3).

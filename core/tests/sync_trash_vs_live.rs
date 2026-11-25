@@ -192,9 +192,9 @@ fn a_concurrent_edit_keeps_the_block_live_with_the_trashed_edits() {
     assert_eq!(outcomes[1], expected, "editor canonical");
 }
 
-/// B saw A's trash and restored X while A edited Y. The two look alike to
-/// the merge as a device that never saw the trash, so the trash wins in both
-/// orders, and X can be restored again.
+/// B saw A's trash and restored X while A edited Y. B's restored X keeps the
+/// trashed fingerprint, so to the merge it looks like a device that never
+/// saw the trash, and the trash wins in both orders. X can be restored again.
 #[test]
 fn a_concurrent_restore_leaves_the_block_restorable_in_the_trash() {
     let baseline = seeded();
@@ -209,10 +209,7 @@ fn a_concurrent_restore_leaves_the_block_restorable_in_the_trash() {
         a.edit_text_field(Y_BLOCK, A_RECORD, "f", "a", 400);
         let shared = if trasher_is_canonical {
             let shared = reconcile(&a, Some(&b), Y_BLOCK);
-            // B's restore moved the trashed file back to `blocks/`.
-            for e in std::fs::read_dir(shared.folder().join("trash")).expect("trash") {
-                std::fs::remove_file(e.expect("entry").path()).expect("rm trash file");
-            }
+            // B's restore copied the trashed file back to `blocks/`.
             apply_edit(&b, shared.folder());
             merge_and_settle(&baseline, shared.folder(), &b, &a);
             shared
@@ -329,4 +326,178 @@ fn the_merge_waits_for_a_trashed_file_it_needs() {
         outcome(&baseline, shared.folder()).records,
         [A_RECORD, B_RECORD].into_iter().collect()
     );
+}
+
+/// B saw A's trash, restored X and edited it, while A edited Y. The restore
+/// kept the trashed file (vault-format §7.1 step 5), so the merge can tell
+/// B's edit is newer than the trashed version: X stays live with B's edit in
+/// both orders. Before the restore kept the file, both orders refused for
+/// good: the edit had overwritten the only copy of the trashed version.
+#[test]
+fn a_restore_then_edit_keeps_the_block_live_in_both_orders() {
+    let baseline = seeded();
+    let mut trasher = Device::fork(&baseline, A_UUID, 0xA0);
+    trasher.trash_block(X_BLOCK, TRASH_MS);
+    let baseline = convergence_helpers::baseline_from_seeded(baseline, &trasher);
+    let mut outcomes = Vec::new();
+    for trasher_is_canonical in [true, false] {
+        let mut a = Device::fork(&baseline, A_UUID, 0xA0);
+        let mut b = Device::fork(&baseline, B_UUID, 0xB0);
+        b.restore_block(X_BLOCK, 400);
+        b.edit_text_field(X_BLOCK, B_RECORD, "f", "b", 500);
+        a.edit_text_field(Y_BLOCK, A_RECORD, "f", "a", 400);
+        let shared = if trasher_is_canonical {
+            let shared = reconcile(&a, Some(&b), Y_BLOCK);
+            apply_edit(&b, shared.folder());
+            merge_and_settle(&baseline, shared.folder(), &b, &a);
+            shared
+        } else {
+            let shared = reconcile(&b, Some(&a), Y_BLOCK);
+            merge_and_settle(&baseline, shared.folder(), &a, &b);
+            shared
+        };
+        outcomes.push(outcome(&baseline, shared.folder()));
+    }
+    let expected = Outcome {
+        live: true,
+        trashed: false,
+        records: [B_RECORD].into_iter().collect(),
+    };
+    assert_eq!(outcomes[0], expected, "trasher canonical");
+    assert_eq!(outcomes[1], expected, "restorer canonical");
+}
+
+/// Sync tools leave old conflict copies in place. After a merge trashed X
+/// and the user restored it (synced everywhere), a later concurrent merge
+/// still sees A's old manifest with its trash entry for X. That manifest is superseded (the
+/// merged manifest dominates it), so its entry is not counted and the
+/// restore stands (crypto-design §11.7).
+#[test]
+fn an_old_conflict_copy_does_not_trash_a_restored_block_again() {
+    let baseline = seeded();
+    let mut a = Device::fork(&baseline, A_UUID, 0xA0);
+    let mut b = Device::fork(&baseline, B_UUID, 0xB0);
+    a.trash_block(X_BLOCK, TRASH_MS);
+    b.edit_text_field(Y_BLOCK, B_RECORD, "f", "b", TRASH_MS);
+    let first = reconcile(&a, Some(&b), Y_BLOCK);
+    merge_and_settle(&baseline, first.folder(), &b, &a);
+    let merged = Baseline::from_folder(first.folder(), baseline.password().clone());
+    assert!(
+        !outcome(&baseline, first.folder()).live,
+        "first merge trashed X"
+    );
+
+    // The restore syncs to every device before the next concurrent write.
+    let mut r = Device::fork(&merged, A_UUID, 0xA1);
+    r.restore_block(X_BLOCK, 2_000);
+    let restored = convergence_helpers::baseline_from_seeded(merged, &r);
+
+    for p_is_canonical in [true, false] {
+        let mut p = Device::fork(&restored, A_UUID, 0xA2);
+        let mut q = Device::fork(&restored, B_UUID, 0xB2);
+        p.edit_text_field(Y_BLOCK, A_RECORD, "f", "p", 3_000);
+        q.edit_text_field(Y_BLOCK, B_RECORD, "f", "q", 3_000);
+        let (canonical, merger) = if p_is_canonical { (&p, &q) } else { (&q, &p) };
+        let shared = reconcile(canonical, Some(merger), Y_BLOCK);
+        std::fs::copy(
+            a.folder().join("manifest.cbor.enc"),
+            shared.folder().join("manifest.cbor.enc.sync-conflict-old"),
+        )
+        .expect("leave A's old manifest in place");
+        merge_and_settle(&restored, shared.folder(), merger, canonical);
+        let got = outcome(&baseline, shared.folder());
+        assert!(
+            got.live && !got.trashed,
+            "p canonical: {p_is_canonical}: {got:?}"
+        );
+    }
+}
+
+/// The trashed version is found as a conflict-copy sibling of the block, and
+/// another authentic version sits at the block's own path. Ingest picks the
+/// sibling by fingerprint, and the merge pairs it with its own header clock
+/// (no counted manifest lists it), so live wins with both edits.
+#[test]
+fn a_trashed_version_left_as_a_sibling_is_found_and_folded() {
+    let baseline = seeded();
+    let mut a = Device::fork(&baseline, A_UUID, 0xA0);
+    let mut b = Device::fork(&baseline, B_UUID, 0xB0);
+    a.edit_text_field(X_BLOCK, A_RECORD, "f", "a", 200);
+    a.trash_block(X_BLOCK, TRASH_MS);
+    b.edit_text_field(X_BLOCK, B_RECORD, "f", "b", 200);
+    let shared = reconcile(&b, Some(&a), Y_BLOCK);
+    let trashed = std::fs::read_dir(a.folder().join("trash"))
+        .expect("A's trash")
+        .next()
+        .expect("one trashed file")
+        .expect("entry")
+        .path();
+    let own = sync_helpers::block_file_path(shared.folder(), &X_BLOCK);
+    let sibling = own.with_file_name(format!(
+        "{}.sync-conflict-trashed",
+        own.file_name().expect("name").to_string_lossy()
+    ));
+    std::fs::copy(trashed, sibling).expect("place trashed version as a sibling");
+    merge_and_settle(&baseline, shared.folder(), &a, &b);
+    assert_eq!(
+        outcome(&baseline, shared.folder()).records,
+        [A_RECORD, B_RECORD].into_iter().collect()
+    );
+}
+
+/// A block live won for, which the canonical manifest lists, must be merged
+/// to fold its trashed version. While its own file has not arrived the merge
+/// refuses instead of leaving it out.
+#[test]
+fn a_live_won_block_whose_own_file_is_unreadable_is_refused() {
+    let baseline = seeded();
+    let mut a = Device::fork(&baseline, A_UUID, 0xA0);
+    let mut b = Device::fork(&baseline, B_UUID, 0xB0);
+    a.edit_text_field(X_BLOCK, A_RECORD, "f", "a", 200);
+    a.trash_block(X_BLOCK, TRASH_MS);
+    b.edit_text_field(X_BLOCK, B_RECORD, "f", "b", 200);
+    let shared = reconcile(&b, Some(&a), Y_BLOCK);
+    apply_trash_move(&a, shared.folder(), true);
+    std::fs::remove_file(sync_helpers::block_file_path(shared.folder(), &X_BLOCK))
+        .expect("own file not arrived");
+    let (_, draft) = prepare_as(&baseline, shared.folder(), &a);
+    assert!(matches!(
+        draft,
+        Err(SyncError::BlockCopyUnavailable { block_uuid }) if block_uuid == X_BLOCK
+    ));
+}
+
+/// The mirror of the test above: B's old manifest, left in place after a
+/// merge trashed X, still lists X live. It is superseded, so it does not
+/// bring X back as a block new to the merging device.
+#[test]
+fn an_old_conflict_copy_does_not_bring_a_trashed_block_back() {
+    let baseline = seeded();
+    let mut a = Device::fork(&baseline, A_UUID, 0xA0);
+    let mut b = Device::fork(&baseline, B_UUID, 0xB0);
+    a.trash_block(X_BLOCK, TRASH_MS);
+    b.edit_text_field(Y_BLOCK, B_RECORD, "f", "b", TRASH_MS);
+    let first = reconcile(&a, Some(&b), Y_BLOCK);
+    merge_and_settle(&baseline, first.folder(), &b, &a);
+    let merged = Baseline::from_folder(first.folder(), baseline.password().clone());
+
+    for p_is_canonical in [true, false] {
+        let mut p = Device::fork(&merged, A_UUID, 0xA2);
+        let mut q = Device::fork(&merged, B_UUID, 0xB2);
+        p.edit_text_field(Y_BLOCK, A_RECORD, "f", "p", 3_000);
+        q.edit_text_field(Y_BLOCK, B_RECORD, "f", "q", 3_000);
+        let (canonical, merger) = if p_is_canonical { (&p, &q) } else { (&q, &p) };
+        let shared = reconcile(canonical, Some(merger), Y_BLOCK);
+        std::fs::copy(
+            b.folder().join("manifest.cbor.enc"),
+            shared.folder().join("manifest.cbor.enc.sync-conflict-old"),
+        )
+        .expect("leave B's old manifest in place");
+        merge_and_settle(&merged, shared.folder(), merger, canonical);
+        let got = outcome(&baseline, shared.folder());
+        assert!(
+            !got.live && got.trashed,
+            "p canonical: {p_is_canonical}: {got:?}"
+        );
+    }
 }

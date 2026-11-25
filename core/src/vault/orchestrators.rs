@@ -2354,8 +2354,9 @@ pub(crate) fn resolve_recipient_uuids(
 ///    fingerprint first, then scanning `contacts/*.card` for the
 ///    rest. Unresolved → [`VaultError::MissingRecipientCard`]. Trash
 ///    file and manifest still untouched.
-/// 6. `rename(2)` the restore target to `blocks/<uuid>.cbor.enc`.
-///    Point of no easy return.
+/// 6. Copy the restore target's verified bytes to `blocks/<uuid>.cbor.enc`
+///    (atomic write), keeping the trash file for merges that still need
+///    it (crypto-design §11.6). Point of no easy return.
 /// 7. Best-effort `remove_file` every purge target. Individual
 ///    failures are swallowed — the block is already live.
 /// 8. Build the new [`BlockEntry`] from the decrypted file + resolved
@@ -2610,19 +2611,23 @@ pub fn restore_block(
     let recipients_uuids =
         resolve_recipient_uuids(folder, &open.owner_card, &block_file.recipients)?;
 
-    // Step 6: rename trash/<uuid>.cbor.enc.<ts> → blocks/<uuid>.cbor.enc.
-    // Point of no easy return — from here on, all errors are best-effort
-    // recovery: the block is on disk live, and the manifest update is the
-    // last step. On the #351 resume path the file is already in blocks/
-    // (a prior run did this rename), so we skip it and go straight to the
-    // manifest update the earlier run never reached.
+    // Step 6: copy the verified bytes of trash/<uuid>.cbor.enc.<ts> to
+    // blocks/<uuid>.cbor.enc (atomic write), keeping the trash file. A
+    // device that has not yet merged this restore still carries the trash
+    // entry, and a later merge reads that file's signed clock to decide the
+    // collision (crypto-design §11.6, #783): a rename would lose it for good
+    // once the restored block is edited. From here on, all errors are
+    // best-effort recovery: the block is on disk live, and the manifest
+    // update is the last step. On the #351 resume path the file is already
+    // in blocks/ (a prior run moved it), so we skip this and go straight to
+    // the manifest update the earlier run never reached.
     if !resume_from_blocks {
         std::fs::create_dir_all(&blocks_dir).map_err(|e| VaultError::Io {
             context: "restore_block: failed to create blocks/ subdirectory",
             source: e,
         })?;
-        std::fs::rename(&source_path, &target).map_err(|e| VaultError::Io {
-            context: "restore_block: rename trash/ → blocks/",
+        io::write_atomic(&target, &bytes).map_err(|e| VaultError::Io {
+            context: "restore_block: copy trash/ → blocks/",
             source: e,
         })?;
     }
@@ -2635,8 +2640,7 @@ pub fn restore_block(
     }
 
     // Step 8: build the new BlockEntry. fingerprint is BLAKE3-256 of
-    // the bytes we just verified (and which match the on-disk file
-    // after rename, since rename is a move not a rewrite).
+    // the bytes we just verified, which are the bytes step 6 wrote.
     //
     // `unknown` is reset to empty. This is intentional but not
     // free-of-tradeoff: the project's CBOR "unknown-keys" forward-

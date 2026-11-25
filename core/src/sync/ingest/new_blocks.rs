@@ -1,10 +1,10 @@
 //! Blocks new to the merging device (crypto-design §11.7, #781).
 //!
 //! A block that a conflict copy lists, and the canonical manifest does not,
-//! was created on a device this one has not merged with yet, or is one the
-//! canonical manifest trashed while a copy edited it (§11.6, live wins). The merged manifest's clock covers that copy, so dropping
-//! the block would lose it for good. It is ingested as a diverging block whose
-//! own file stands in for the local side.
+//! was created on a device this one has not merged with yet, or is in the
+//! merged trash and live won there (§11.6). The merged manifest's clock
+//! covers that copy, so dropping the block would lose it for good. It is
+//! ingested as a diverging block whose own file stands in for the local side.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -13,12 +13,14 @@ use super::block_files::{canonical_block_path, read_block_envelope, read_sibling
 use crate::crypto::sig::{Ed25519Public, MlDsa65Public};
 use crate::identity::fingerprint::Fingerprint;
 use crate::sync::bundle::{BlockDivergence, ManifestSnapshot};
+use crate::sync::trash_collision::{counted_manifests, trash_removes};
 use crate::vault::{Manifest, TrashCollision};
 
-/// Every block a copy manifest lists that `canonical` does not, ascending,
-/// unless it is in the merged trash and live did not win there (`collisions`,
-/// crypto-design §11.6). A block the trash beats leaves `blocks`; one whose
-/// collision cannot be decided yet is refused by `prepare_merge` instead.
+/// Every block a counted copy manifest lists that `canonical` does not,
+/// ascending (crypto-design §11.7), unless the merged trash removes it
+/// (§11.6: the trash won, or no counted manifest lists it live). A block
+/// whose collision cannot be decided yet is refused by `prepare_merge`
+/// instead.
 #[must_use]
 pub(crate) fn blocks_new_to_canonical(
     canonical: &Manifest,
@@ -26,12 +28,13 @@ pub(crate) fn blocks_new_to_canonical(
     collisions: &BTreeMap<[u8; 16], TrashCollision>,
 ) -> BTreeSet<[u8; 16]> {
     let known: BTreeSet<[u8; 16]> = canonical.blocks.iter().map(|b| b.block_uuid).collect();
-    copies
-        .iter()
-        .flat_map(|c| c.manifest.blocks.iter())
+    counted_manifests(canonical, copies)
+        .into_iter()
+        .flat_map(|m| m.blocks.iter())
         .map(|b| b.block_uuid)
         .filter(|uuid| !known.contains(uuid))
-        .filter(|uuid| matches!(collisions.get(uuid), None | Some(TrashCollision::LiveWins)))
+        .filter(|uuid| collisions.get(uuid) != Some(&TrashCollision::TrashedVersionUnavailable))
+        .filter(|uuid| !trash_removes(uuid, canonical, copies, collisions))
         .collect()
 }
 
@@ -93,7 +96,10 @@ mod tests {
             format_version: 1,
             suite_id: 1,
             owner_user_uuid: [0; 16],
-            vector_clock: vec![],
+            vector_clock: vec![crate::vault::block::VectorClockEntry {
+                device_uuid: [0x0B; 16],
+                counter: 1,
+            }],
             blocks,
             trash,
             kdf_params: KdfParamsRef {
@@ -131,12 +137,22 @@ mod tests {
         }
     }
 
-    fn snap(m: Manifest) -> ManifestSnapshot {
+    /// A copy manifest whose clock names `device` alone, so it is concurrent
+    /// with the canonical manifest and every other copy: none is superseded.
+    fn snap_from(device: u8, mut m: Manifest) -> ManifestSnapshot {
+        m.vector_clock = vec![crate::vault::block::VectorClockEntry {
+            device_uuid: [device; 16],
+            counter: 1,
+        }];
         ManifestSnapshot {
             manifest: m,
             raw_envelope_bytes: vec![],
             source_path: PathBuf::from("/dev/null"),
         }
+    }
+
+    fn snap(m: Manifest) -> ManifestSnapshot {
+        snap_from(0x0C, m)
     }
 
     fn new(canonical: &Manifest, copies: &[ManifestSnapshot]) -> Vec<[u8; 16]> {
@@ -167,7 +183,7 @@ mod tests {
     fn a_version_another_copy_trashed_is_not_new() {
         let copies = [
             snap(manifest(vec![live(FP)], vec![])),
-            snap(manifest(vec![], vec![trashed(Some(FP))])),
+            snap_from(0x0D, manifest(vec![], vec![trashed(Some(FP))])),
         ];
         assert!(new(&manifest(vec![], vec![]), &copies).is_empty());
     }
@@ -178,7 +194,7 @@ mod tests {
     fn a_block_a_legacy_entry_trashed_is_new() {
         let copies = [
             snap(manifest(vec![live(FP)], vec![])),
-            snap(manifest(vec![], vec![trashed(None)])),
+            snap_from(0x0D, manifest(vec![], vec![trashed(None)])),
         ];
         assert_eq!(new(&manifest(vec![], vec![]), &copies), vec![BLOCK]);
     }
@@ -189,7 +205,7 @@ mod tests {
     fn a_block_whose_collision_is_undecided_is_not_new() {
         let copies = [
             snap(manifest(vec![live(FP)], vec![])),
-            snap(manifest(vec![], vec![trashed(Some([0x22; 32]))])),
+            snap_from(0x0D, manifest(vec![], vec![trashed(Some([0x22; 32]))])),
         ];
         assert!(new(&manifest(vec![], vec![]), &copies).is_empty());
     }

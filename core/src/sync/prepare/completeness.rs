@@ -115,8 +115,9 @@ pub(super) fn ensure_uncovered_copies_are_readable(
         .flat_map(|c| c.manifest.blocks.iter())
         .filter(|entry| entry.block_uuid == *block_uuid)
         .collect();
-    // The clocks of the versions the fold will read: canonical's, and every
-    // copy version whose file arrived.
+    // The clocks of the versions the fold will read: canonical's, the
+    // carried trashed version's (§11.6), and every copy version whose file
+    // arrived.
     let read_clocks: Vec<&[VectorClockEntry]> = std::iter::once(canonical_clock)
         .chain(trashed_clock)
         .chain(
@@ -262,6 +263,8 @@ mod tests {
     fn an_unplanned_new_block_is_named() {
         let other: [u8; 16] = [0xBB; 16];
         let mut copy = empty_manifest();
+        // A copy clock concurrent with nothing else folded keeps it counted.
+        copy.vector_clock = vec![vc(COPY_DEVICE, 1)];
         copy.blocks
             .push(block_entry(BLOCK, [1; 32], vec![vc(COPY_DEVICE, 1)]));
         copy.blocks

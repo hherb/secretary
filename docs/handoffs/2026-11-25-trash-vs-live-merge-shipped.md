@@ -13,7 +13,8 @@ was deleted, and #781 got its "closed in code by #785" comment.
 |---|---|
 | `185347f1` | crypto-design §11.6 rewritten (and §11.7's trash parenthetical, vault-format §7's #401 note). |
 | `313f2c52` | The rule in code, with tests. |
-| (this commit) | ROADMAP, README, this handoff. |
+| `8001a45a` | ROADMAP, README, this handoff. |
+| (this commit) | `/finalcheck` review fixes (below), with docs and this handoff. |
 
 **The bug, measured with a probe.** Device A trashes block X; device B,
 which has not seen the trash, edits block Y. The old commit applied "live
@@ -61,7 +62,8 @@ copy is newer*, and when live wins, *fold the trashed version in*.
 
 No new error variant, no FFI, KAT or wire-format change.
 
-**Tests.** `sync_trash_vs_live.rs` (new, 5 tests):
+**Tests (before the review round).** `sync_trash_vs_live.rs` (new, 5
+tests, 10 after the review round):
 
 - three merge one pair in **both** canonical orders: stale device (with
   and without an edit before the trash), concurrent edit, concurrent restore;
@@ -75,7 +77,19 @@ Five mutations each went red, then were restored and sha-checked: never
 trash on a dominating clock, no trashed fold, no fingerprint skip, no
 undecided refusal, no rewrite refusal.
 
-**Gates**, each exit 0 unless noted:
+**Gates after the review round** (judged by cargo's exit code):
+
+- `cargo test --release --locked --workspace --no-fail-fast`: 112 binaries,
+  2420 passed, 2 failed. Both failures are in `cli/tests/notify_quirk.rs`,
+  the FSEvents flake #616; that binary passed 3 runs out of 3 on its own,
+  and no code from this PR is on its path.
+- `--lib` 726 passed. `sync_trash_vs_live` has 10 tests.
+- clippy `-D warnings`, rustdoc `-D warnings` and `cargo fmt --check` are
+  clean. The payload, secret-slot, lean-binding and ci-wiring guards pass.
+- Not run: the Swift/Kotlin conformance scripts. The FFI surface and KAT
+  are unchanged, but restore's on-disk effect changed.
+
+**Gates before the review round**, each exit 0 unless noted:
 
 - `cargo test --release --locked --workspace`: 112 binaries, 2407 passed,
   0 failed. This ran before the last test was added; afterwards `--lib`
@@ -88,7 +102,37 @@ undecided refusal, no rewrite refusal.
 - Not run: `conformance.py` (no Python or KAT change) and the Swift/Kotlin
   conformance scripts (no FFI change).
 
-**Issues:** filed #788. Commented on #787 (its part 2 is addressed in code
+**Review round (`/finalcheck`).** Four read-only review agents ran. You
+signed off on two behaviour changes; everything else was a test or doc fix:
+
+- **Restore keeps its trash file** (vault-format §7.1 step 5). A restore
+  followed by an edit, concurrent with another device's write, used to
+  refuse every merge for good: the rename plus the edit destroyed the only
+  copy of the trashed version, whose clock §11.6 needs. Leftover files are
+  #790.
+- **Superseded manifests are not counted** (§11.7). Sync tools never delete
+  conflict copies, so an old copy's trash entry trashed a restored block
+  again in every later merge. A manifest whose clock another one's equals
+  or dominates is now skipped for the trash union and the live versions,
+  and a block only such a copy lists is not carried back
+  (`trash_collision::trash_removes`).
+- A trashed version found as a block's sibling is paired with its header
+  clock, not reported as an orphan sibling.
+- Tests: an `Equal`-clock unit test (a re-key), plus five integration tests:
+  restore then edit in both orders, an old copy after a restore, an old
+  copy after a trash, a trashed file found as a sibling, and a live-won
+  block whose own file has not arrived.
+- Four more mutations go red (superseded manifests counted, restore
+  renaming, no sibling pairing, new blocks ignoring `trash_removes`), nine
+  in total. All are hand-run with a sha-checked restore, not
+  `scripts/mutate.py`.
+- About 18 doc and comment fixes. They include stale `resolve_live_vs_trash`
+  references in `sync_trash_merge.rs`, the README overclaiming that open
+  was fixed, and §11.6's "manifests alone".
+
+**Issues:** filed #788, #790 (a restore's leftover trash file is never
+retention-purged), #791 (three-device VL-2 failure, predates this PR) and
+#792 (the refusal's log does not say why a file was unusable). Commented on #787 (its part 2 is addressed in code
 by this rule, with no dedicated end-to-end test) and re-measured #777 and
 #784.
 
@@ -97,22 +141,25 @@ by this rule, with no dedicated end-to-end test) and re-measured #777 and
 1. **Merge this PR.** Acceptance: all 25 required checks are green. Then
    comment on #783 that it is closed in code, and on #787 that part 2
    merged.
-2. **#788** (open fails until a merge commits). Acceptance: decide in docs
+2. **#790** (a restore's leftover trash file holds an old version's
+   ciphertext forever). Acceptance: vault-format §7 says when an
+   entry-less trash file is removed, and a test pins it.
+3. **#788** (open fails until a merge commits). Acceptance: decide in docs
    what open does when a listed block's file is missing and an
    authenticated conflict copy trashed exactly that fingerprint, or show
    that every platform's open path runs a password sync first. Add a test
    that opens such a folder.
-3. **Manual GUI pass** (needs you at the devices; carried over). Add two
+4. **Manual GUI pass** (needs you at the devices; carried over). Add two
    checks:
    - Trash a block on A while B edits another block. After both sync, the
      block is trashed on both, and the vault opens on both.
    - Trash a block on A while B edits *that* block. It stays live, with
      both devices' edits.
-4. **Splits:** #777 (`prepare.rs` 726), #784 (`ingest.rs` 603), and
+5. **Splits:** #777 (`prepare.rs` 726), #784 (`ingest.rs` 603), and
    `commit/write.rs` (514; noted on #777). Acceptance: a verbatim move and
    an unchanged test-name set.
-5. **#728:** make the conformance scripts survive the new `ld`.
-6. **Carried over:** #786, #787 part 1, #780, #782, #768-#771, #753-#756,
+6. **#728:** make the conformance scripts survive the new `ld`.
+7. **Carried over:** #791, #792, #786, #787 part 1, #780, #782, #768-#771, #753-#756,
    #736, #734, #740-#742, #747 / #748, #738, #731, #649, #683, #677,
    #668 / #693, #699 / #701-#705, #763.
 
@@ -131,7 +178,13 @@ by this rule, with no dedicated end-to-end test) and re-measured #777 and
   a delete, so it should be rare.
 - **Three devices:** a canonical entry whose own file another device has
   overwritten still fails VL-2 (`BlockFingerprintMismatch`). This predates
-  #783.
+  #783 and is now #791.
+- **Leftover trash files (#790).** After a restore the old trash file
+  stays until the next restore or purge of that block. Once the block is
+  edited, it holds an older version's ciphertext.
+- **A restore made by an older client** (one that renamed the file),
+  followed by an edit and a concurrent merge with a copy that still holds
+  the trash entry, still refuses for good.
 - Unchanged: a copy whose file never arrives blocks sync for good (#786);
   v1 keeps `block_version` values it does not understand; `UnknownValue`
   is not zeroize-typed.

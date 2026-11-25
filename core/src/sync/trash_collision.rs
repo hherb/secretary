@@ -15,28 +15,60 @@ use crate::sync::ingest::{copy_version_is_uncovered, listed_block_diverges};
 use crate::vault::block::{decode_block_file, VectorClockEntry};
 use crate::vault::manifest::TrashEntry;
 use crate::vault::trash_merge::merge_trash_lists;
-use crate::vault::{resolve_trash_collision, BlockEntry, Manifest, TrashCollision};
+use crate::vault::{
+    clock_relation, resolve_trash_collision, BlockEntry, ClockRelation, Manifest, TrashCollision,
+};
 
-/// The trash lists of the canonical manifest and every copy, reconciled by
-/// §11.6's union (before any collision is resolved).
+/// The folded manifests (the canonical one, then each copy) that are not
+/// superseded (crypto-design §11.7): a manifest whose clock another one's
+/// dominates, or equals with that one earlier in the list, holds nothing the
+/// other lacks. Counting it would bring back a trash entry a later restore
+/// removed, since a trash entry carries no clock.
+#[must_use]
+pub(crate) fn counted_manifests<'a>(
+    canonical: &'a Manifest,
+    copies: &'a [ManifestSnapshot],
+) -> Vec<&'a Manifest> {
+    let all: Vec<&Manifest> = std::iter::once(canonical)
+        .chain(copies.iter().map(|c| &c.manifest))
+        .collect();
+    all.iter()
+        .enumerate()
+        .filter(|(i, m)| {
+            !all.iter().enumerate().any(|(j, other)| {
+                j != *i
+                    && match clock_relation(&other.vector_clock, &m.vector_clock) {
+                        ClockRelation::IncomingDominated => true,
+                        ClockRelation::Equal => j < *i,
+                        _ => false,
+                    }
+            })
+        })
+        .map(|(_, m)| *m)
+        .collect()
+}
+
+/// The trash lists of the [`counted_manifests`], reconciled by §11.6's union
+/// (before any collision is resolved).
 #[must_use]
 pub(crate) fn merged_trash(canonical: &Manifest, copies: &[ManifestSnapshot]) -> Vec<TrashEntry> {
-    let lists: Vec<&[TrashEntry]> = std::iter::once(canonical.trash.as_slice())
-        .chain(copies.iter().map(|c| c.manifest.trash.as_slice()))
+    let lists: Vec<&[TrashEntry]> = counted_manifests(canonical, copies)
+        .into_iter()
+        .map(|m| m.trash.as_slice())
         .collect();
     merge_trash_lists(&lists)
 }
 
-/// Every folded manifest's entry for `block_uuid` in `blocks`: the canonical
-/// one first, then each copy's.
+/// Every [`counted_manifests`] entry for `block_uuid` in `blocks`, the
+/// canonical one first.
 #[must_use]
 pub(crate) fn live_versions<'a>(
     block_uuid: &[u8; 16],
     canonical: &'a Manifest,
     copies: &'a [ManifestSnapshot],
 ) -> Vec<&'a BlockEntry> {
-    std::iter::once(canonical)
-        .chain(copies.iter().map(|c| &c.manifest))
+    counted_manifests(canonical, copies)
+        .into_iter()
         .flat_map(|m| m.blocks.iter())
         .filter(|e| e.block_uuid == *block_uuid)
         .collect()
@@ -95,9 +127,26 @@ pub(crate) fn resolved_trash(
         .collect()
 }
 
+/// Whether the merged trash removes `block_uuid` from `blocks`: it holds an
+/// entry for it that no live block beat. That covers a collision the trash
+/// won and an entry no counted manifest lists live (the only live listing
+/// may be a superseded copy's).
+#[must_use]
+pub(crate) fn trash_removes(
+    block_uuid: &[u8; 16],
+    canonical: &Manifest,
+    copies: &[ManifestSnapshot],
+    collisions: &BTreeMap<[u8; 16], TrashCollision>,
+) -> bool {
+    collisions.get(block_uuid) != Some(&TrashCollision::LiveWins)
+        && merged_trash(canonical, copies)
+            .iter()
+            .any(|t| t.block_uuid == *block_uuid)
+}
+
 /// Whether a block `canonical` lists must be merged: it diverges by its
 /// manifests, or live beat the trash and the trashed version holds content
-/// the canonical one does not. A block the trash beats is never merged: it
+/// the canonical one does not. A block the trash removes is never merged: it
 /// leaves `blocks`, so none of its versions is read.
 #[must_use]
 pub(crate) fn listed_block_needs_merge(
@@ -107,8 +156,10 @@ pub(crate) fn listed_block_needs_merge(
     trashed: &BTreeMap<[u8; 16], BlockEnvelope>,
     collisions: &BTreeMap<[u8; 16], TrashCollision>,
 ) -> bool {
+    if trash_removes(&canonical_entry.block_uuid, canonical, copies, collisions) {
+        return false;
+    }
     match collisions.get(&canonical_entry.block_uuid) {
-        Some(TrashCollision::TrashWins) => false,
         Some(TrashCollision::LiveWins) => {
             listed_block_diverges(canonical_entry, copies)
                 || merged_trash(canonical, copies)
@@ -125,8 +176,10 @@ pub(crate) fn listed_block_needs_merge(
 
 /// The trashed version to fold into `block_uuid` when live beat the trash,
 /// with its signed header clock: absent when live did not win, the entry
-/// names no version, or the version is already among `divergence`'s
-/// envelopes.
+/// names no version, or the version is the canonical envelope itself. It
+/// may also be one of `divergence`'s copy envelopes (a concurrent restore
+/// left it beside the block); the caller pairs that one with this clock,
+/// since no counted manifest need list it.
 #[must_use]
 pub(crate) fn trashed_fold_input<'a>(
     block_uuid: &[u8; 16],
@@ -144,10 +197,7 @@ pub(crate) fn trashed_fold_input<'a>(
         .find(|t| t.block_uuid == *block_uuid)?;
     let clock = trashed_clock(&entry, trashed)?;
     let envelope = trashed.get(block_uuid)?;
-    let already_read = std::iter::once(&divergence.canonical_envelope)
-        .chain(&divergence.copy_envelopes)
-        .any(|e| e.bytes == envelope.bytes);
-    (!already_read).then_some((envelope, clock))
+    (divergence.canonical_envelope.bytes != envelope.bytes).then_some((envelope, clock))
 }
 
 #[cfg(test)]
@@ -176,13 +226,54 @@ mod tests {
         }
     }
 
+    /// A manifest whose clock names `device` alone: concurrent with every
+    /// other such manifest, so none is superseded.
+    fn manifest_of(device: u8) -> Manifest {
+        let mut m = empty_manifest();
+        m.vector_clock = vec![VectorClockEntry {
+            device_uuid: [device; 16],
+            counter: 1,
+        }];
+        m
+    }
+
     /// Canonical lists `BLOCK` at `fp`; one copy trashed it.
     fn pair(fp: [u8; 32], purged_at_ms: Option<u64>) -> (Manifest, Vec<ManifestSnapshot>) {
-        let mut canonical = empty_manifest();
+        let mut canonical = manifest_of(0x0B);
         canonical.blocks.push(block_entry(BLOCK, fp, vc(1)));
-        let mut copy = empty_manifest();
+        let mut copy = manifest_of(0x0C);
         copy.trash.push(trash_entry(purged_at_ms));
         (canonical, vec![snapshot(copy)])
+    }
+
+    /// A manifest another one's clock dominates is not counted, the canonical
+    /// one included; of two equal clocks the first is kept.
+    #[test]
+    fn superseded_manifests_are_not_counted() {
+        let older = manifest_of(0x0B);
+        let mut newer = manifest_of(0x0B);
+        newer.vector_clock[0].counter = 2;
+        let other = manifest_of(0x0C);
+        let ids = |ms: Vec<&Manifest>| {
+            ms.iter()
+                .map(|m| m.vector_clock.clone())
+                .collect::<Vec<_>>()
+        };
+        let copies = [
+            snapshot(newer.clone()),
+            snapshot(other.clone()),
+            snapshot(other.clone()),
+        ];
+        assert_eq!(
+            ids(counted_manifests(&older, &copies)),
+            vec![newer.vector_clock.clone(), other.vector_clock.clone()],
+            "dominated canonical and the second equal copy dropped"
+        );
+        assert_eq!(
+            ids(counted_manifests(&newer, &[snapshot(older)])),
+            vec![newer.vector_clock],
+            "a dominated copy dropped"
+        );
     }
 
     /// The outcome is the same with either manifest canonical.
@@ -201,9 +292,10 @@ mod tests {
 
     #[test]
     fn a_trash_entry_nobody_lists_live_is_no_collision() {
-        let mut copy = empty_manifest();
+        let mut copy = manifest_of(0x0C);
         copy.trash.push(trash_entry(None));
-        assert!(collisions(&empty_manifest(), &[snapshot(copy)], &BTreeMap::new()).is_empty());
+        let canonical = manifest_of(0x0B);
+        assert!(collisions(&canonical, &[snapshot(copy)], &BTreeMap::new()).is_empty());
     }
 
     /// A version other than the trashed one needs the trashed file.
@@ -237,7 +329,7 @@ mod tests {
         let (canonical, copies) = pair(TRASHED_FP, None);
         // A copy version the canonical one does not cover would otherwise
         // make the block diverge.
-        let mut newer = empty_manifest();
+        let mut newer = manifest_of(0x0D);
         newer.blocks.push(block_entry(BLOCK, TRASHED_FP, vc(2)));
         let copies = [copies, vec![snapshot(newer)]].concat();
         let outcomes = collisions(&canonical, &copies, &BTreeMap::new());

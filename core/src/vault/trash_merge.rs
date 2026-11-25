@@ -7,10 +7,15 @@
 //! concept (block tombstone lifecycle, not record field LWW) and because
 //! `conflict.rs` is already large.
 //!
-//! All functions are pure. The merge is commutative, associative, and
+//! It also holds §11.6's live-vs-trash collision rule
+//! ([`resolve_trash_collision`], [`needs_trashed_clock`]), which decides a
+//! block in the merged trash that some folded manifest still lists live.
+//!
+//! All functions are pure. The list merge is commutative, associative, and
 //! idempotent (proved by `core/tests/proptest.rs`). Normative semantics:
-//! `docs/crypto-design.md` §11.6. Cross-language witness:
-//! `core/tests/python/conformance.py::py_merge_trash`.
+//! `docs/crypto-design.md` §11.6. Cross-language witness for the list merge:
+//! `core/tests/python/conformance_lib/merge/trash.py::py_merge_trash`. The
+//! collision rule has no Python counterpart yet.
 
 use std::collections::BTreeMap;
 
@@ -297,6 +302,17 @@ mod tests {
         assert!(needs_trashed_clock(&t, &[&v]));
         assert_eq!(
             resolve_trash_collision(&t, &[&v], Some(&vc(2))),
+            TrashCollision::TrashWins
+        );
+    }
+
+    /// A re-key (`share_block` / `revoke_block_recipient`) changes the
+    /// fingerprint and keeps the clock: an equal clock is covered.
+    #[test]
+    fn a_rekeyed_version_at_the_trashed_clock_loses_to_the_trash() {
+        let v = live(OTHER_FP, vc(2));
+        assert_eq!(
+            resolve_trash_collision(&trashed(None), &[&v], Some(&vc(2))),
             TrashCollision::TrashWins
         );
     }

@@ -59,10 +59,13 @@ pub struct BlockEnvelope {
 
 /// Authenticated conflict-copies for one block_uuid.
 ///
-/// Only populated for blocks whose `vector_clock_summary` differs
-/// between the canonical manifest and at least one conflict-copy
-/// manifest. Blocks that aren't in this map are not in conflict and
-/// the canonical envelope is the authoritative value.
+/// Only populated for blocks the merge must read: those whose
+/// `vector_clock_summary` differs between the canonical manifest and at
+/// least one conflict-copy manifest, blocks new to the canonical manifest
+/// (crypto-design §11.7), and blocks live won for whose trashed version
+/// holds content the canonical one lacks (§11.6). Blocks that aren't in
+/// this map are not in conflict and the canonical envelope is the
+/// authoritative value.
 #[derive(Debug, Clone, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct BlockDivergence {
     pub canonical_envelope: BlockEnvelope,

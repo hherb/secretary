@@ -141,14 +141,14 @@ pub struct DraftMerge {
     /// for the same reason.
     #[zeroize(skip)]
     pub per_block_meta: BTreeMap<[u8; 16], MergedBlockMeta>,
-    /// Union of `bundle.canonical.manifest.trash` and every
-    /// `bundle.copies[*].manifest.trash`, reconciled by
-    /// `trash_merge::merge_trash_lists` (#401), without the entries a live
-    /// block beat (crypto-design §11.6, #783). `commit_with_decisions` writes
-    /// it as `new_manifest.trash` and drops every block it holds from
-    /// `blocks`. `#[zeroize(skip)]` — `TrashEntry` carries
-    /// no secret material (UUIDs, timestamps, fingerprint, unknown-map),
-    /// same as the vector-clock fields.
+    /// Union of the trash of every manifest the merge counts (the canonical
+    /// one and each copy that is not superseded, crypto-design §11.7),
+    /// reconciled by `trash_merge::merge_trash_lists` (#401), without the
+    /// entries a live block beat (§11.6, #783). `commit_with_decisions`
+    /// writes it as `new_manifest.trash` and drops every block it holds from
+    /// `blocks`. `#[zeroize(skip)]` — `TrashEntry` carries no secret material
+    /// (UUIDs, timestamps, fingerprint, unknown-map), same as the
+    /// vector-clock fields.
     #[zeroize(skip)]
     pub merged_trash: Vec<crate::vault::manifest::TrashEntry>,
 }

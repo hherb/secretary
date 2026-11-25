@@ -54,8 +54,8 @@ use crate::vault::{
 /// [`crate::vault::verify_vault_state`]'s checks (manifest hybrid signature,
 /// owner-card key binding, KDF cross-check, and `verify_block_fingerprints`
 /// per design §D6, skipping the blocks the merged trash removes; no password,
-/// no Argon2id), re-hashes the on-disk
-/// manifest envelope for TOCTOU freshness against `draft.manifest_hash`,
+/// no Argon2id), re-hashes the on-disk manifest envelope for TOCTOU
+/// freshness against `draft.manifest_hash`,
 /// applies the caller's [`VetoDecision`] slice via `apply_decisions`,
 /// re-encrypts every diverging block with a fresh AEAD nonce, its merged
 /// `block_name` and `unknown` map, and its written clock (the fold's, plus
@@ -64,8 +64,10 @@ use crate::vault::{
 /// bytes, builds a new manifest body (updated `BlockEntry.fingerprint` /
 /// `block_name` / `vector_clock_summary` / `last_mod_ms` plus the
 /// manifest-level `vector_clock`, which is `draft.post_merge_clock` plus
-/// one for `draft.merging_device` per crypto-design §10), hybrid-signs the
-/// manifest, and atomically writes block-first then manifest-last.
+/// one for `draft.merging_device` per crypto-design §10, with
+/// `draft.merged_trash` as its trash and every block that trash holds
+/// dropped from `blocks`, §11.6), hybrid-signs the manifest, and atomically
+/// writes block-first then manifest-last.
 ///
 /// On success, returns the new [`SyncState`], whose clock is the written
 /// manifest clock, for the caller to persist into the OS keystore.
@@ -82,7 +84,10 @@ use crate::vault::{
 ///   `draft` and the on-disk manifest (a `block_uuid` in
 ///   `draft.plan.diverging_blocks` missing from `draft.per_block_clocks`
 ///   / `draft.per_block_meta` / `draft.per_block_records` or from the
-///   verified on-disk manifest).
+///   verified on-disk manifest), a draft that rewrites a block its merged
+///   trash removes, or an added entry (§11.7) for a block the verified
+///   manifest already lists, the merged trash holds, or the plan does not
+///   name. Each is refused before any file is written.
 /// - [`SyncError::Vault`] — wraps any re-verification, AEAD encrypt,
 ///   encoding, signing, or `write_atomic` failure.
 ///
@@ -233,8 +238,8 @@ pub fn commit_with_decisions(
     }
 
     // #401, #783: apply the reconciled trash list. `prepare_merge` already
-    // resolved every live-vs-trash collision (crypto-design §11.6) and left
-    // in it only the entries that beat a live block, so each block it holds
+    // resolved every live-vs-trash collision (crypto-design §11.6) and
+    // removed from it every entry a live block beat, so each block it holds
     // leaves `blocks` and the signed manifest stays well-formed (disjoint
     // blocks/trash). commit never moves or deletes block *files*; the
     // open-time sweeps relocate trashed and destroy purged ciphertext.

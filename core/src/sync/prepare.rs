@@ -478,11 +478,13 @@ pub fn prepare_merge(
         // Pair each copy envelope with its parent manifest's
         // vector_clock_summary via BLAKE3-256 fingerprint match; positional
         // alignment between `copy_envelopes` and `bundle.copies` is NOT
-        // guaranteed by 1a. The trashed version has no manifest entry and
-        // carries its own signed header clock.
+        // guaranteed by 1a. The trashed version is folded with its own
+        // signed header clock, not a manifest pairing, even when it is also
+        // one of the copy envelopes.
         let mut copy_inputs: Vec<(&[u8], Vec<VectorClockEntry>)> = divergence
             .copy_envelopes
             .iter()
+            .filter(|e| trashed.as_ref().is_none_or(|(t, _)| t.bytes != e.bytes))
             .map(|e| {
                 Ok((
                     e.bytes.as_slice(),
