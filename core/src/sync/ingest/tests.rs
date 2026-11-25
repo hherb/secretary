@@ -17,10 +17,8 @@ fn dummy_owner_keys() -> (Ed25519Public, MlDsa65Public) {
 /// A per-run random key: these tests only need one that cannot open the
 /// envelope under test.
 fn dummy_ibk() -> AeadKey {
-    use rand_core::RngCore;
-    let mut key = [0u8; 32];
-    rand_core::OsRng.fill_bytes(&mut key);
-    AeadKey::new(key)
+    // No zeroed buffer to fill: CodeQL reads one as a hard-coded key.
+    AeadKey::new(rand::random())
 }
 
 #[test]
