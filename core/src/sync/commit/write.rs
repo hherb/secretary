@@ -53,9 +53,9 @@ use crate::vault::{
 /// Re-verifies the vault from the already-unlocked `identity` via
 /// [`crate::vault::verify_vault_state`]'s checks (manifest hybrid signature,
 /// owner-card key binding, KDF cross-check, and `verify_block_fingerprints`
-/// per design §D6, skipping the blocks the merged trash removes; no password,
-/// no Argon2id), re-hashes the on-disk manifest envelope for TOCTOU
-/// freshness against `draft.manifest_hash`,
+/// per design §D6, skipping the blocks the merged trash removes and excusing
+/// no other absence (#788); no password, no Argon2id), re-hashes the on-disk
+/// manifest envelope for TOCTOU freshness against `draft.manifest_hash`,
 /// applies the caller's [`VetoDecision`] slice via `apply_decisions`,
 /// re-encrypts every diverging block with a fresh AEAD nonce, its merged
 /// `block_name` and `unknown` map, and its written clock (the fold's, plus

@@ -65,7 +65,8 @@ pub fn reconcile(
 /// with the trash keeps the file at its own path).
 pub fn apply_trash_move(from: &Device, shared: &Path, block_uuid: [u8; 16], keep_block: bool) {
     if !keep_block {
-        let _ = std::fs::remove_file(crate::sync_helpers::block_file_path(shared, &block_uuid));
+        std::fs::remove_file(crate::sync_helpers::block_file_path(shared, &block_uuid))
+            .expect("drop the trashed block file");
     }
     let dst = shared.join("trash");
     std::fs::create_dir_all(&dst).expect("trash dir");

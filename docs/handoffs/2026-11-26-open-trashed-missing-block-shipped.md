@@ -12,7 +12,8 @@ its "closed in code" comment.
 | SHA | What |
 |---|---|
 | `90660c44` | The rule in code and vault-format §4.3, tests, ROADMAP, README. |
-| (this commit) | This handoff. |
+| `a4df3acb`, `0b8dfe3c` | This handoff. |
+| (this commit) | PR #794 review fixes, below. |
 
 **The problem (#788), measured worse than the issue said.** Device A
 trashes block X (manifest write, `blocks/X -> trash/`). Device B, which has
@@ -43,11 +44,15 @@ before):
 
 - Each listed block needs a file whose BLAKE3 fingerprint matches, as
   before. One exception: an absent file is excused when a conflict-copy
-  manifest that passes §4.3 steps 1-9 under the owner's keys, with the same
-  `vault_uuid`, has a `trash` entry for that `block_uuid`.
-- The opened manifest is unchanged. Reading the block fails as missing
-  until the next sync's merge trashes it (crypto-design §11.6). No bytes of
-  the block are trusted.
+  manifest that passes §4.3 steps 1-5 and 7-9 under the owner's keys, with
+  the same `vault_uuid`, and that crypto-design §11.7 counts (not
+  superseded), has a `trash` entry for that `block_uuid`.
+- Open and refresh only. The merge commit excuses nothing beyond its own
+  merged trash, and `trash_block` refuses a block whose file is absent.
+- The opened manifest is unchanged. Reading the block fails (the bridge
+  says `CorruptVault`) until a merge by a device concurrent with the
+  canonical manifest, such as the trashing device, trashes it
+  (crypto-design §11.6). No bytes of the block are trusted.
 
 **Code.**
 
@@ -56,29 +61,44 @@ before):
   `NotFound`. Its three unit-test callers pass `|_| false`.
 - `vault/trashed_elsewhere.rs` (new): pure `blocks_trashed_in` and I/O
   `blocks_trashed_by_conflict_copies`, which reuses
-  `sync::ingest::ingest_manifest_copies` (the merge's five authentication
-  checks). Best-effort: a scan that fails excuses nothing.
-- `session_state.rs::verify_vault_state_with_toml` builds the predicate,
-  scanning the folder once and only on the first miss.
+  `sync::ingest::ingest_manifest_copies` (the merge's authentication
+  checks) and `sync::trash_collision::merged_trash` (the merge's §11.7
+  supersession rule; the module is now `pub(crate)`). Best-effort: a scan
+  that fails excuses nothing and logs at debug.
+- `session_state.rs::verify_vault_state_with_toml` takes
+  `trashed_by_merge: Option<&BTreeSet>`: `None` (open, refresh) builds the
+  predicate, scanning the folder once and only on the first miss; `Some`
+  (merge commit) skips the merged trash and excuses nothing else.
+- `trash_block` refuses with `BlockFileMissing` when `blocks/<uuid>` is
+  absent, before staging.
 - Test helper `apply_trash_move` moved from `sync_trash_vs_live.rs` into
   `convergence_helpers/reconcile.rs` (now takes the block uuid), so both
-  binaries share it. `sync_trash_vs_live.rs` went 532 -> 517 lines.
+  binaries share it. `sync_trash_vs_live.rs` went 532 -> 517 lines; the
+  review fixes moved its `prepare_as` into `convergence_helpers/sync_drive.rs`
+  too (now taking `now_ms`), 517 -> 491.
 - I checked that all three apps read a block only when it is selected
   (iOS `VaultBrowseViewModel`, Android `VaultBrowseModel.selectBlock`,
   desktop `RecordList.svelte`) and catch the error per block.
 
-**Tests.** `core/tests/open_trashed_missing_block.rs` (new, 3 tests):
+**Tests.** `core/tests/open_trashed_missing_block.rs` (new, 7 tests):
 opens and then merges to trashed, with and without an edit before the
 trash; a missing file no copy trashed is still refused, with and without a
-copy; a tampered copy is not credited. `trashed_elsewhere` has 2 unit
-tests. Hand-run mutations, each restored and `cmp`-checked: never excusing
-reds the first test; excusing every absence reds the other two.
+copy; a tampered copy is not credited; wrong bytes at X, a directory at X
+and a missing Y are each still refused; the session refuses to trash X; a
+superseded copy does not excuse; the merge commit refuses a live block
+whose file vanished after `prepare_merge`. `trashed_elsewhere` has 3 unit
+tests. Hand-run mutations, each restored: never excusing reds the first
+test; excusing every absence reds the next two; and (PR #794 review)
+counting superseded copies, excusing on the merge path and dropping
+`trash_block`'s refusal each red exactly their own test.
 
 **Gates** (judged by exit code):
 
 - `cargo test --release --locked --workspace --no-fail-fast`: exit 0, 114
-  binaries, 2445 passed, 0 failed (2435 before: the new binary's 8,
-  including the 5 shared `sync_helpers` tests, plus 2 unit tests).
+  binaries, 2450 passed, 0 failed after the review fixes (2445 at
+  `90660c44`, 2435 before it: the new binary's 8, including the 5 shared
+  `sync_helpers` tests, plus 2 unit tests; the review added 1 unit and 4
+  integration tests). The differential-replay test also exits 0.
 - clippy `-D warnings` (workspace, `--tests`), rustdoc `-D warnings`,
   `cargo fmt --check`: clean. Payload, secret-slot, ci-wiring and
   lean-binding guards pass.
@@ -94,15 +114,15 @@ reds the first test; excusing every absence reds the other two.
 2. **Manual GUI pass** (needs you at the devices; carried over, plus one
    new check):
    - Trash a block on A while B edits another block, and open B's app
-     before syncing. The vault opens, the trashed block shows a missing
-     error when selected, and after a sync it is trashed on both. (New,
+     before syncing. The vault opens, the trashed block shows a read
+     error when selected, and after A syncs it is trashed on both. (New,
      #788.)
    - Trash a block on A while B edits *that* block. It stays live, with
      both devices' edits.
    - Restore a block and edit it. The old `trash/` file stays (the 90-day
      sweep is covered by `trash_orphan_sweep.rs`).
 3. **Splits:** #777 (`prepare.rs` 726), #784 (`ingest.rs` 603), and
-   `commit/write.rs` (514; noted on #777). Acceptance: a verbatim move and
+   `commit/write.rs` (519; noted on #777). Acceptance: a verbatim move and
    an unchanged test-name set.
 4. **#728:** make the conformance scripts survive the new `ld`.
 5. **Carried over:** #791, #792, #786, #787 part 1, #780, #782,
@@ -111,12 +131,21 @@ reds the first test; excusing every absence reds the other two.
 
 ## (3) Open decisions and risks
 
-- **New: an old conflict copy can excuse a missing file the merge does not
-  trash.** Sync tools leave old copies in place. If one of them trashed X
-  and X was later restored, a missing `blocks/X` (a torn sync) is excused
-  at open; the merge then keeps X live and its commit still refuses with
-  `BlockFileMissing`, as before. Open is no worse than before (it used to
-  refuse too), but the error moves from open to sync.
+- **Closed in the PR #794 review: superseded copies, the merge commit and
+  `trash_block`.** The first version credited any authenticated copy, so an
+  old copy that trashed X excused a missing `blocks/X` after a restore,
+  and the merge commit used the same excuse and could sign a manifest
+  listing X with no file. The excuse now counts only copies crypto-design
+  §11.7 counts (`trash_collision::merged_trash`), applies on open and
+  refresh only, and `trash_block` refuses a block whose file is absent
+  (its newer trash entry would strand the trashing device's file).
+- **Only a concurrent device finishes the trash.** On B, whose manifest is
+  canonical, `sync_once` finds nothing to do; X stays listed and
+  unreadable (the bridge says `CorruptVault`) until A, or another device
+  that has not merged, syncs. The UI does not say "sync to finish".
+- **Filed from the review:** #796 (an excused block reads back as
+  `CorruptVault`, "damaged", with no hint to sync) and #797 (conflict-copy
+  discovery is not stated normatively in `docs/`).
 - **Not covered by a bridge-level test.** The bridge's open and password
   sync reach the fix through `core::open_vault`, which the core tests
   drive; no test builds this folder through the FFI (filed as #795). The

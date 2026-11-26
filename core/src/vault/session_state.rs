@@ -54,7 +54,7 @@ pub fn verify_vault_state(
         &vault_toml_bytes,
         identity,
         local_highest_clock,
-        &BTreeSet::new(),
+        None,
     )
 }
 
@@ -72,17 +72,24 @@ pub(crate) fn verify_vault_state_for_merge(
             context: "failed to read vault.toml",
             source: e,
         })?;
-    verify_vault_state_with_toml(folder, &vault_toml_bytes, identity, None, trashed_by_merge)
+    verify_vault_state_with_toml(
+        folder,
+        &vault_toml_bytes,
+        identity,
+        None,
+        Some(trashed_by_merge),
+    )
 }
 
 /// [`verify_vault_state`] over `vault.toml` bytes the caller already holds,
-/// so `open_vault` does not read the file twice.
+/// so `open_vault` does not read the file twice. `trashed_by_merge` is
+/// `Some` only for a merge commit ([`verify_vault_state_for_merge`]).
 pub(crate) fn verify_vault_state_with_toml(
     folder: &Path,
     vault_toml_bytes: &[u8],
     identity: &UnlockedIdentity,
     local_highest_clock: Option<&[VectorClockEntry]>,
-    skip_block_files: &BTreeSet<[u8; 16]>,
+    trashed_by_merge: Option<&BTreeSet<[u8; 16]>>,
 ) -> Result<VerifiedVaultState, VaultError> {
     // Steps 3-8: read manifest envelope, load + verify owner card,
     // verify + decrypt manifest, sanity-check body↔envelope and
@@ -109,31 +116,34 @@ pub(crate) fn verify_vault_state_with_toml(
     // commit_with_decisions`, which is convergent under CRDT
     // idempotence.
     //
-    // #788: a listed block whose file a concurrent trash moved away is
-    // excused when an authenticated conflict copy trashed it (vault-format
-    // §4.3, "Block files at open"); the next sync's merge decides it.
-    // The folder is scanned only on a miss.
-    let mut trashed_elsewhere = None;
-    let excuse_missing = |uuid: &[u8; 16]| {
-        trashed_elsewhere
-            .get_or_insert_with(|| {
-                trashed_elsewhere::blocks_trashed_by_conflict_copies(
-                    folder,
-                    &manifest_body,
-                    &owner_card,
-                    identity,
-                )
-            })
-            .contains(uuid)
-    };
-    if skip_block_files.is_empty() {
-        verify_block_fingerprints(folder, &manifest_body, excuse_missing)?;
-    } else {
-        let mut checked = manifest_body.clone();
-        checked
-            .blocks
-            .retain(|b| !skip_block_files.contains(&b.block_uuid));
-        verify_block_fingerprints(folder, &checked, excuse_missing)?;
+    // #788: on open and refresh, a listed block whose file a concurrent
+    // trash moved away is excused when a counted, authenticated conflict
+    // copy trashed it (vault-format §4.3, "Block files at open"), so a
+    // client that opens before it syncs can reach the merge that decides
+    // it. The folder is scanned only on a miss. A merge commit excuses
+    // nothing beyond the blocks its own merged trash removes: the manifest
+    // it signs must not list a block with no file.
+    match trashed_by_merge {
+        None => {
+            let mut trashed_by_copies = None;
+            verify_block_fingerprints(folder, &manifest_body, |uuid| {
+                trashed_by_copies
+                    .get_or_insert_with(|| {
+                        trashed_elsewhere::blocks_trashed_by_conflict_copies(
+                            folder,
+                            &manifest_body,
+                            &owner_card,
+                            identity,
+                        )
+                    })
+                    .contains(uuid)
+            })?;
+        }
+        Some(trashed) => {
+            let mut checked = manifest_body.clone();
+            checked.blocks.retain(|b| !trashed.contains(&b.block_uuid));
+            verify_block_fingerprints(folder, &checked, |_| false)?;
+        }
     }
 
     // #350: best-effort completion of trash renames interrupted between

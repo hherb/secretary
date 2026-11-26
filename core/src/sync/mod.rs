@@ -39,7 +39,7 @@ pub mod once;
 pub mod outcome;
 pub mod prepare;
 pub mod state;
-mod trash_collision;
+pub(crate) mod trash_collision;
 
 pub use bundle::{
     compute_manifest_hash, BlockDivergence, BlockEnvelope, ManifestHash, ManifestSnapshot,

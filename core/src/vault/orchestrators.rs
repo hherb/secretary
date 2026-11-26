@@ -576,7 +576,7 @@ pub fn open_vault(
         &vault_toml_bytes,
         &unlocked,
         local_highest_clock,
-        &std::collections::BTreeSet::new(),
+        None,
     )?;
 
     Ok(OpenVault {
@@ -2151,10 +2151,24 @@ pub fn trash_block(
         .iter()
         .position(|b| b.block_uuid == block_uuid)
         .ok_or(VaultError::BlockNotFound { block_uuid })?;
+    // #788: an open may excuse a listed block whose file another device's
+    // trash moved away. Trashing it here would sign a newer trash entry that
+    // wins the merge yet names no file in trash/, stranding that device's
+    // restorable copy, so refuse; a merge by that device trashes it.
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let src = folder
+        .join(BLOCKS_SUBDIR)
+        .join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}"));
+    if let Err(e) = std::fs::metadata(&src) {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return Err(VaultError::BlockFileMissing { block_uuid });
+        }
+    }
     // #293: capture the live content commitment before removing the entry.
     // The file is moved (rename) unchanged into trash/, so this BLAKE3-256
-    // (authenticated at the most recent open_vault) is exactly the hash of
-    // the trashed bytes restore will recompute and check.
+    // (authenticated at the most recent open_vault, whose fingerprint check
+    // the file passed) is exactly the hash of the trashed bytes restore will
+    // recompute and check.
     let content_fingerprint = open.manifest.blocks[entry_idx].fingerprint;
 
     // Step 3 (#350 manifest-first): STAGE the post-trash manifest on a
@@ -2207,10 +2221,6 @@ pub fn trash_block(
     // signed manifest already says trashed; the leftover blocks/ file is
     // a benign orphan open_vault ignores, restore_block resumes from
     // (#351), and the open-time sweep relocates it (#350 Task 4).
-    let uuid_hex = format_uuid_hyphenated(&block_uuid);
-    let src = folder
-        .join(BLOCKS_SUBDIR)
-        .join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}"));
     let dst = folder
         .join(TRASH_SUBDIR)
         .join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}.{now_ms}"));
