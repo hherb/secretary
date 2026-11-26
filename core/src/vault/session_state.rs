@@ -11,7 +11,7 @@ use crate::vault::manifest::{self, Manifest, ManifestFile};
 use crate::vault::orchestrators::{
     read_and_verify_manifest, verify_block_fingerprints, MANIFEST_FILENAME, VAULT_TOML_FILENAME,
 };
-use crate::vault::{repair, VaultError, VectorClockEntry};
+use crate::vault::{repair, trash_orphans, VaultError, VectorClockEntry};
 
 /// The public half of an opened vault: what [`verify_vault_state`] proves
 /// about the folder on disk, without any identity secret.
@@ -129,6 +129,16 @@ pub(crate) fn verify_vault_state_with_toml(
     // purge across the owner's devices via manifest file sync. Gated on
     // "not live in manifest.blocks" so a concurrent restore always wins.
     repair::sweep_purged_trash_files(folder, &manifest_body);
+
+    // #790: best-effort removal of a live block's old trash/ file (a restore
+    // keeps it) once the block was edited since, aged against the signed
+    // last write. A peer's unmerged trash file is kept.
+    trash_orphans::remove_expired_unreferenced(
+        folder,
+        &manifest_body,
+        trash_orphans::UNREFERENCED_TRASH_WINDOW_MS,
+        manifest_file.header.last_mod_ms,
+    );
 
     Ok(VerifiedVaultState {
         owner_card,

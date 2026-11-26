@@ -262,7 +262,7 @@ pub fn decode(s: &str) -> Result<VaultToml, VaultTomlError> {
 /// byte must be a lowercase hex digit (`0-9` or `a-f`). Uppercase and
 /// non-hyphenated forms are rejected to keep the canonical form symmetric
 /// with the encoder, which emits lowercase via `{:02x}`.
-fn parse_uuid_canonical(s: &str) -> Option<[u8; 16]> {
+pub(crate) fn parse_uuid_canonical(s: &str) -> Option<[u8; 16]> {
     let b = s.as_bytes();
     if b.len() != 36 {
         return None;

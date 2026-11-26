@@ -39,6 +39,7 @@ pub mod retention;
 mod rule_tokens;
 pub(crate) mod session_state;
 pub mod trash_merge;
+pub(crate) mod trash_orphans;
 pub(crate) mod trash_relocation;
 
 pub use block::{

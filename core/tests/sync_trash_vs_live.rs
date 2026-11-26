@@ -501,3 +501,32 @@ fn an_old_conflict_copy_does_not_bring_a_trashed_block_back() {
         );
     }
 }
+
+/// #790: A trashes X; B, which never saw the trash, writes more than 90 days
+/// later. With B canonical, the merge commit's verification sweeps against
+/// B's manifest, which names no entry for A's trash file. That file is the
+/// trashed block's only copy, and its clock equals B's live X, so it stays.
+#[test]
+fn the_merge_keeps_a_peers_trash_file_its_stale_manifest_does_not_name() {
+    const NINETY_DAYS_MS: u64 = 90 * 24 * 60 * 60 * 1000;
+    let baseline = seeded();
+    let mut a = Device::fork(&baseline, A_UUID, 0xA0);
+    let mut b = Device::fork(&baseline, B_UUID, 0xB0);
+    a.trash_block(X_BLOCK, TRASH_MS);
+    b.edit_text_field(Y_BLOCK, B_RECORD, "f", "b", TRASH_MS + NINETY_DAYS_MS + 1);
+    let shared = reconcile(&b, Some(&a), Y_BLOCK);
+    apply_trash_move(&a, shared.folder(), false);
+    let trash_files: Vec<_> = std::fs::read_dir(shared.folder().join("trash"))
+        .expect("read trash")
+        .map(|e| e.expect("trash entry").path())
+        .collect();
+    assert_eq!(trash_files.len(), 1);
+
+    merge_and_settle(&baseline, shared.folder(), &a, &b);
+
+    assert!(outcome(&baseline, shared.folder()).trashed);
+    assert!(
+        trash_files[0].exists(),
+        "the trashed block stays restorable"
+    );
+}
