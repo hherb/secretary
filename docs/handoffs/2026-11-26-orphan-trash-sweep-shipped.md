@@ -12,13 +12,15 @@ At session start #789 had merged. Its local branch was deleted, #783 got its
 | SHA | What |
 |---|---|
 | `d689b429` | The rule in code and vault-format §7, with tests. |
-| (this commit) | ROADMAP, README, this handoff. |
+| `ac55df6a` | ROADMAP, README, this handoff. |
+| (this commit) | `/finalcheck` review fixes: the sweep now keeps a peer's unmerged trash file (see "Review fix" below). |
 
 **The problem (#790).** Since #783 a restore keeps its
 `trash/<uuid>.cbor.enc.<ts>` file, because crypto-design §11.6 needs its
-signed header clock. It drops the `TrashEntry` that named the file, though,
-and every cleanup is keyed on entries. Once the block was edited, the old
-version's ciphertext stayed in `trash/` for good.
+signed header clock. It drops the `TrashEntry` that named the file, though. Only a later trash
+and restore or purge of the same block reached the file again (those match
+every `<uuid>.cbor.enc.*`), so once the block was edited the old version's
+ciphertext usually stayed in `trash/` for good.
 
 **The decisions (yours, two question dialogs):**
 
@@ -36,55 +38,84 @@ version's ciphertext stayed in `trash/` for good.
 **One refinement I made without asking** (please check you agree): "now"
 is the verified manifest header's `last_mod_ms`, the signed time of the
 latest write, not a clock read at open. `core` reads no clock anywhere, and
-this keeps it that way and makes the sweep testable. The edit after a
-restore is itself a write, so the countdown runs exactly in the case #790
-is about. A vault never written again keeps the file, which is harmless,
-since that copy is identical to the live block.
+this keeps it that way and makes the sweep testable. The countdown starts
+at the trash; any later write (the restore itself included) moves "now"
+forward. A file stays until a write lands more than 90 days after the
+trash.
+
+**Review fix, made without asking (please check you agree).** Two review
+agents found that the first rule, "any file no entry names", judged
+"names" against this device's manifest, which can be stale. A peer's trash
+file arrives before the manifest naming it; if this device's last write is
+more than 90 days after the trash (it wrote while offline), open, or the
+merge commit's `verify_vault_state_for_merge`, deleted it. The merge then
+picks trash (the live version is covered by fingerprint equality), and
+the entry has no file: an unrestorable block within the user's retention,
+spread to every device by cloud sync. The rule now also requires that the
+block is **live here** and that its `vector_clock_summary` **strictly
+dominates** the file's header clock. That is exactly "restored, then
+edited". A peer's trash has an equal clock (trash does not tick it), or a
+block not live here, so it is kept. What this gives up: a file left by a
+re-trash after a restore is no longer swept. It goes at that block's next
+restore or purge instead, which match every `<uuid>.cbor.enc.*`. The
+first rule's `named` check is gone, since a live block has no entry. The
+window is now defined as 90 days on its own, not as
+`DEFAULT_RETENTION_WINDOW_MS`.
 
 **The rule** (vault-format §7, "Open-time unreferenced-file sweep"):
 
-- On every `verify_vault_state` (open, and the merge commit's
-  verification), next to the purged-file sweep, remove each `trash/` file
-  in §7's grammar (canonical lowercase UUID, canonical `<unix-millis>`)
-  that no `manifest.trash` entry names (same `block_uuid` and
-  `tombstoned_at_ms`, purged or not), once
-  `last_mod_ms − ts > 90 days`. The test is saturating with an exclusive
-  boundary.
-- The window is the fixed `DEFAULT_RETENTION_WINDOW_MS`, not the user's
-  retention setting. An unnamed file cannot be restored; the window only
-  gives devices time to merge (§11.3).
+- On every `verify_vault_state` (open, the bridge's refresh and sync
+  session paths, and the merge commit's verification), next to the
+  purged-file sweep, remove each `trash/` file in §7's grammar (canonical
+  lowercase UUID, canonical `<unix-millis>`) whose block is live in
+  `manifest.blocks`, whose §6.1 header clock the live
+  `vector_clock_summary` strictly dominates, and with
+  `last_mod_ms − ts > 90 days`. The age test is saturating with an
+  exclusive boundary. A file that cannot be read or decoded is kept.
+- The window is a fixed 90 days, not the user's retention setting. The
+  removed file is an old version of a live block and cannot be restored;
+  the window only gives devices time to merge (§11.3).
 - No manifest write, best-effort, names outside the grammar left alone.
-- Accepted risk: a copy that has not merged for longer than the window
-  after the trash, and still lists the block as trashed, then refuses
-  every merge (#786's class). The window counts from the trash.
+- Accepted risk: a copy that lists the block as trashed while a live
+  version differs (it never saw a restore, or a peer trashed a block this
+  device edited before merging) and has not merged for longer than the
+  window after the trash then refuses every merge (#786's class). The
+  window counts from the trash.
 
 **Code.**
 
-- `core/src/vault/trash_orphans.rs` (new): pure `parse_trash_file_name`
-  and `expired_unreferenced`, the I/O `remove_expired_unreferenced`, and
-  `UNREFERENCED_TRASH_WINDOW_MS`.
+- `core/src/vault/trash_orphans.rs` (new): pure `parse_trash_file_name`,
+  `expired_unreferenced` and `superseded_by_live`, the I/O
+  `remove_expired_unreferenced` (reads each candidate's header with
+  `decode_block_file`), and `UNREFERENCED_TRASH_WINDOW_MS`.
 - `session_state.rs::verify_vault_state_with_toml` calls it after
   `sweep_purged_trash_files`.
 - `unlock/vault_toml.rs::parse_uuid_canonical` is now `pub(crate)` for
   reuse.
 - `retention.rs`, `purge.rs` and the FFI are unchanged.
 
-**Tests.** `trash_orphans` has 7 unit tests (grammar, boundary, future
-suffix, named purged or not, an entry for another stamp).
-`core/tests/trash_orphan_sweep.rs` (new) has 3: removed past the window
-(and the block stays live and opens), kept at exactly the window, and named
-and out-of-grammar files kept.
+**Tests.** `trash_orphans` has 8 unit tests (grammar, boundary, future
+suffix, the 90-day value, a block not live here, strict clock dominance).
+`core/tests/trash_orphan_sweep.rs` (new) has 4: removed past the window
+(and the block stays live and opens), kept at exactly the window, a peer's
+unmerged trash file of a live block kept, and named, unknown-uuid and
+out-of-grammar files kept.
 
-Hand-run mutations, each restored and sha-checked, went red: no sweep call,
-ignoring a naming entry (lib and integration), and an inclusive boundary
-(lib and integration). One early run was vacuous, because a
+`sync_trash_vs_live.rs` gained
+`the_merge_keeps_a_peers_trash_file_its_stale_manifest_does_not_name`, the
+review's merge-commit scenario.
+
+Hand-run mutations, each restored and byte-checked, went red: no sweep
+call, an inclusive boundary, and (review) dropping the clock condition,
+which reds both new peer tests. The sync one fails at its "stays
+restorable" assert, which is the data loss the first rule had. One early run was vacuous, because a
 `--lib trash_orphans` filter also filtered the integration binary down to 0
 tests; it was rerun with `--test` alone.
 
 **Gates** (judged by exit code):
 
 - `cargo test --release --locked --workspace --no-fail-fast`: 113 binaries,
-  2432 passed, 0 failed.
+  2435 passed, 0 failed (2432 before the review fix's three tests).
 - clippy `-D warnings` (workspace, `--tests`): clean. Rustdoc
   `-D warnings` and `cargo fmt` are clean. The payload, secret-slot and
   ci-wiring guards pass. The lean-binding guard passes.
@@ -124,8 +155,8 @@ tests; it was rerun with `--test` alone.
   file has been cleaned up (see the rule above). You accepted this. A
   clock on trash entries would remove it, but that needs a format change.
 - **The window ignores the user's retention setting** (fixed 90 days). A
-  user who set a 10-year retention still loses a restored block's old file
-  after 90 days. It cannot be restored either way.
+  user who set a 10-year retention still loses a restored-then-edited
+  block's old file after 90 days. It cannot be restored either way.
 - **The retention UIs still gate on entries only.** That is now harmless
   for #790, but "Run retention now" is unavailable while only entries
   younger than the window exist, which is the intended behaviour.

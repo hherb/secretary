@@ -130,8 +130,9 @@ pub(crate) fn verify_vault_state_with_toml(
     // "not live in manifest.blocks" so a concurrent restore always wins.
     repair::sweep_purged_trash_files(folder, &manifest_body);
 
-    // #790: best-effort removal of trash/ files no entry names (a restore
-    // keeps its trash file), aged against the signed last write.
+    // #790: best-effort removal of a live block's old trash/ file (a restore
+    // keeps it) once the block was edited since, aged against the signed
+    // last write. A peer's unmerged trash file is kept.
     trash_orphans::remove_expired_unreferenced(
         folder,
         &manifest_body,

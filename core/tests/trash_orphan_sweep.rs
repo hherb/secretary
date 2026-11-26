@@ -2,9 +2,10 @@
 //! vault-format §7, "Open-time unreferenced-file sweep").
 //!
 //! A restore keeps its `trash/<uuid>.cbor.enc.<ts>` file (§7.1 step 5) and
-//! drops the entry, so nothing keyed on entries ever removes it. Open removes
-//! such a file once `<ts>` is more than the 90-day default window before the
-//! manifest's signed `last_mod_ms`.
+//! drops the entry. Open removes such a file once the block has been edited
+//! since (its live clock strictly dominates the file's) and `<ts>` is more
+//! than 90 days before the manifest's signed `last_mod_ms`. A peer's trash file
+//! that arrives before the manifest naming it is kept.
 
 #![forbid(unsafe_code)]
 
@@ -16,7 +17,6 @@ use rand_core::{OsRng, RngCore};
 use secretary_core::crypto::secret::SecretBytes;
 use secretary_core::vault::{
     open_vault, restore_block, save_block, trash_block, BlockPlaintext, OpenVault, Unlocker,
-    DEFAULT_RETENTION_WINDOW_MS,
 };
 use secretary_test_utils::{copy_dir_to_tempdir, core_test_data_dir, golden_vault_001_password};
 
@@ -26,8 +26,10 @@ const T0: u64 = 2_000_000_100_000;
 const TRASHED_AT: u64 = T0 + 1_000;
 /// When it is restored.
 const RESTORED_AT: u64 = T0 + 2_000;
+/// The sweep's fixed window, 90 days (not the retention setting's default).
+const WINDOW_MS: u64 = 90 * 24 * 60 * 60 * 1000;
 /// The last write at which the sweep still keeps an unreferenced file.
-const LAST_KEPT: u64 = TRASHED_AT + DEFAULT_RETENTION_WINDOW_MS;
+const LAST_KEPT: u64 = TRASHED_AT + WINDOW_MS;
 
 fn random_uuid() -> [u8; 16] {
     let mut u = [0u8; 16];
@@ -45,6 +47,12 @@ fn hyphenated(uuid: &[u8; 16]) -> String {
         &hex[16..20],
         &hex[20..32]
     )
+}
+
+fn block_path(folder: &Path, uuid: &[u8; 16]) -> PathBuf {
+    folder
+        .join("blocks")
+        .join(format!("{}.cbor.enc", hyphenated(uuid)))
 }
 
 fn trash_path(folder: &Path, uuid: &[u8; 16], ts: u64) -> PathBuf {
@@ -140,11 +148,7 @@ fn open_removes_an_unreferenced_trash_file_past_the_window() {
         .blocks
         .iter()
         .any(|b| b.block_uuid == uuid));
-    assert!(vault
-        .folder()
-        .join("blocks")
-        .join(format!("{}.cbor.enc", hyphenated(&uuid)))
-        .exists());
+    assert!(block_path(vault.folder(), &uuid).exists());
     vault.open();
 }
 
@@ -155,6 +159,25 @@ fn open_keeps_an_unreferenced_trash_file_exactly_window_old() {
     vault.open();
 
     assert!(trash_path(vault.folder(), &uuid, TRASHED_AT).exists());
+}
+
+#[test]
+fn open_keeps_a_peers_unmerged_trash_file_of_a_live_block() {
+    // A peer trashed the block at TRASHED_AT; its file arrived before the
+    // manifest naming it. The file's clock equals the live one, so it may be
+    // the only copy a later trash-wins merge leaves restorable.
+    let vault = Vault::new();
+    let uuid = random_uuid();
+    let mut open = vault.open();
+    vault.save(&mut open, uuid, "trashed by a peer", T0);
+    let peer_trash = trash_path(vault.folder(), &uuid, TRASHED_AT);
+    fs::create_dir_all(peer_trash.parent().unwrap()).unwrap();
+    fs::copy(block_path(vault.folder(), &uuid), &peer_trash).unwrap();
+    vault.save(&mut open, random_uuid(), "a later write", LAST_KEPT + 1);
+
+    vault.open();
+
+    assert!(peer_trash.exists());
 }
 
 #[test]
@@ -176,6 +199,10 @@ fn open_keeps_named_and_out_of_grammar_trash_files() {
     for p in &planted {
         fs::write(p, b"x").unwrap();
     }
+    // A real block file under a uuid this manifest does not list: a peer's
+    // trash of a block this device has not merged yet.
+    let unknown = trash_path(vault.folder(), &random_uuid(), TRASHED_AT);
+    fs::copy(trash_path(vault.folder(), &trashed, TRASHED_AT), &unknown).unwrap();
     vault.save(&mut open, random_uuid(), "a later write", LAST_KEPT + 1);
 
     vault.open();
@@ -187,4 +214,5 @@ fn open_keeps_named_and_out_of_grammar_trash_files() {
     for p in &planted {
         assert!(p.exists(), "{p:?} is outside the trash grammar");
     }
+    assert!(unknown.exists(), "a block not live here is kept");
 }
