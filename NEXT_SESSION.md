@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-25-trash-vs-live-merge-shipped.md
+docs/handoffs/2026-11-26-orphan-trash-sweep-shipped.md
