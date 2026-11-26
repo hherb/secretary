@@ -7,15 +7,21 @@
 //! concept (block tombstone lifecycle, not record field LWW) and because
 //! `conflict.rs` is already large.
 //!
-//! All functions are pure. The merge is commutative, associative, and
+//! It also holds §11.6's live-vs-trash collision rule
+//! ([`resolve_trash_collision`], [`needs_trashed_clock`]), which decides a
+//! block in the merged trash that some folded manifest still lists live.
+//!
+//! All functions are pure. The list merge is commutative, associative, and
 //! idempotent (proved by `core/tests/proptest.rs`). Normative semantics:
-//! `docs/crypto-design.md` §11.6. Cross-language witness:
-//! `core/tests/python/conformance.py::py_merge_trash`.
+//! `docs/crypto-design.md` §11.6. Cross-language witness for the list merge:
+//! `core/tests/python/conformance_lib/merge/trash.py::py_merge_trash`. The
+//! collision rule has no Python counterpart yet.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use crate::vault::conflict::merge_unknown_map;
-use crate::vault::manifest::TrashEntry;
+use crate::vault::block::VectorClockEntry;
+use crate::vault::conflict::{clock_relation, merge_unknown_map, ClockRelation};
+use crate::vault::manifest::{BlockEntry, TrashEntry};
 
 /// Merge two [`TrashEntry`] that share a `block_uuid` (§11.6).
 ///
@@ -65,33 +71,68 @@ pub fn merge_trash_lists(lists: &[&[TrashEntry]]) -> Vec<TrashEntry> {
     acc.into_values().collect()
 }
 
-/// Purge-terminal live-vs-trash collision resolution (§11.6).
+/// How one §11.6 live-vs-trash collision resolves: a block in the merged
+/// trash that some folded manifest still lists in `blocks`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrashCollision {
+    /// Purge or trash wins: the block leaves `blocks`, the entry stays.
+    TrashWins,
+    /// Some live version holds an edit the trashing device never saw: the
+    /// entry is dropped and the block stays live, its uncovered live versions
+    /// merged with the trashed one.
+    LiveWins,
+    /// The rule needs the trashed file's clock and that file was not read.
+    TrashedVersionUnavailable,
+}
+
+/// Whether deciding `entry` against the `live` versions needs the trashed
+/// file's signed header clock: the entry is not purged, names a version, and
+/// some live version is not that version.
+#[must_use]
+pub fn needs_trashed_clock(entry: &TrashEntry, live: &[&BlockEntry]) -> bool {
+    match entry.fingerprint {
+        Some(fp) if entry.purged_at_ms.is_none() => live.iter().any(|v| v.fingerprint != fp),
+        _ => false,
+    }
+}
+
+/// Resolve a live-vs-trash collision (crypto-design §11.6) from the merged
+/// trash `entry`, every folded manifest's entry for the block (`live`), and
+/// the trashed file's signed header clock if it was read. Depends only on
+/// those inputs, never on which manifest is local.
 ///
-/// Given the live block uuids and the reconciled trash list, returns
-/// `(blocks_to_remove, trash)`:
-///
-/// - `blocks_to_remove` — block uuids the caller must drop from
-///   `manifest.blocks` because a **purged** trash entry collides with them
-///   (purge wins).
-/// - `trash` — the trash list with **non-purged** live collisions dropped
-///   (live wins). Purged entries are always kept.
-///
-/// The result guarantees `blocks` and `trash` are disjoint after the caller
-/// applies `blocks_to_remove`.
-pub fn resolve_live_vs_trash(
-    live_block_uuids: &BTreeSet<[u8; 16]>,
-    trash: Vec<TrashEntry>,
-) -> (BTreeSet<[u8; 16]>, Vec<TrashEntry>) {
-    let blocks_to_remove: BTreeSet<[u8; 16]> = trash
-        .iter()
-        .filter(|t| t.purged_at_ms.is_some() && live_block_uuids.contains(&t.block_uuid))
-        .map(|t| t.block_uuid)
-        .collect();
-    let trash = trash
-        .into_iter()
-        .filter(|t| t.purged_at_ms.is_some() || !live_block_uuids.contains(&t.block_uuid))
-        .collect();
-    (blocks_to_remove, trash)
+/// A live version is covered when it is the trashed version (equal
+/// fingerprint) or `trashed_clock` equals or dominates its clock.
+#[must_use]
+pub fn resolve_trash_collision(
+    entry: &TrashEntry,
+    live: &[&BlockEntry],
+    trashed_clock: Option<&[VectorClockEntry]>,
+) -> TrashCollision {
+    if entry.purged_at_ms.is_some() {
+        return TrashCollision::TrashWins;
+    }
+    let Some(fp) = entry.fingerprint else {
+        return TrashCollision::LiveWins;
+    };
+    if !needs_trashed_clock(entry, live) {
+        return TrashCollision::TrashWins;
+    }
+    let Some(trashed_clock) = trashed_clock else {
+        return TrashCollision::TrashedVersionUnavailable;
+    };
+    let covered = |v: &&BlockEntry| {
+        v.fingerprint == fp
+            || matches!(
+                clock_relation(trashed_clock, &v.vector_clock_summary),
+                ClockRelation::Equal | ClockRelation::IncomingDominated
+            )
+    };
+    if live.iter().all(covered) {
+        TrashCollision::TrashWins
+    } else {
+        TrashCollision::LiveWins
+    }
 }
 
 #[cfg(test)]
@@ -195,27 +236,130 @@ mod tests {
         assert!(m.unknown.contains_key("ka") && m.unknown.contains_key("kb"));
     }
 
-    #[test]
-    fn resolve_purge_terminal_removes_live_block() {
-        let live: BTreeSet<[u8; 16]> = [[0x0A; 16]].into_iter().collect();
-        let (remove, trash) = resolve_live_vs_trash(&live, vec![te(0x0A, 100, 0, None, Some(50))]);
-        assert_eq!(remove, [[0x0A; 16]].into_iter().collect());
-        assert_eq!(trash.len(), 1, "purged entry kept");
+    const FP: [u8; 32] = [0x11; 32];
+    const OTHER_FP: [u8; 32] = [0x22; 32];
+
+    fn vc(counter: u64) -> Vec<VectorClockEntry> {
+        vec![VectorClockEntry {
+            device_uuid: [0x0D; 16],
+            counter,
+        }]
+    }
+
+    fn concurrent_vc() -> Vec<VectorClockEntry> {
+        vec![VectorClockEntry {
+            device_uuid: [0x0E; 16],
+            counter: 1,
+        }]
+    }
+
+    fn live(fingerprint: [u8; 32], clock: Vec<VectorClockEntry>) -> BlockEntry {
+        BlockEntry {
+            block_uuid: [0x0A; 16],
+            block_name: String::new(),
+            fingerprint,
+            recipients: vec![],
+            vector_clock_summary: clock,
+            suite_id: 1,
+            created_at_ms: 0,
+            last_mod_ms: 0,
+            unknown: BTreeMap::new(),
+        }
+    }
+
+    /// The entry for block 0x0A recording `FP` as the trashed version.
+    fn trashed(purged: Option<u64>) -> TrashEntry {
+        te(0x0A, 100, 0, Some(0x11), purged)
     }
 
     #[test]
-    fn resolve_live_wins_over_nonpurged() {
-        let live: BTreeSet<[u8; 16]> = [[0x0A; 16]].into_iter().collect();
-        let (remove, trash) = resolve_live_vs_trash(&live, vec![te(0x0A, 100, 0, None, None)]);
-        assert!(remove.is_empty());
-        assert!(trash.is_empty(), "non-purged live collision dropped");
+    fn purge_wins_over_any_live_version() {
+        let v = live(OTHER_FP, concurrent_vc());
+        assert_eq!(
+            resolve_trash_collision(&trashed(Some(50)), &[&v], None),
+            TrashCollision::TrashWins
+        );
+    }
+
+    /// A copy that never saw the trash holds the trashed version itself;
+    /// no file is needed to tell.
+    #[test]
+    fn the_trashed_version_itself_loses_to_the_trash() {
+        let v = live(FP, vc(1));
+        let t = trashed(None);
+        assert!(!needs_trashed_clock(&t, &[&v]));
+        assert_eq!(
+            resolve_trash_collision(&t, &[&v], None),
+            TrashCollision::TrashWins
+        );
+    }
+
+    /// An older version the trashing device had seen is covered.
+    #[test]
+    fn a_version_the_trashed_one_dominates_loses_to_the_trash() {
+        let v = live(OTHER_FP, vc(1));
+        let t = trashed(None);
+        assert!(needs_trashed_clock(&t, &[&v]));
+        assert_eq!(
+            resolve_trash_collision(&t, &[&v], Some(&vc(2))),
+            TrashCollision::TrashWins
+        );
+    }
+
+    /// A re-key (`share_block` / `revoke_block_recipient`) changes the
+    /// fingerprint and keeps the clock: an equal clock is covered.
+    #[test]
+    fn a_rekeyed_version_at_the_trashed_clock_loses_to_the_trash() {
+        let v = live(OTHER_FP, vc(2));
+        assert_eq!(
+            resolve_trash_collision(&trashed(None), &[&v], Some(&vc(2))),
+            TrashCollision::TrashWins
+        );
+    }
+
+    /// An edit the trashing device never saw keeps the block live, whatever
+    /// else is covered.
+    #[test]
+    fn an_uncovered_version_keeps_the_block_live() {
+        let stale = live(FP, vc(1));
+        for edit in [live(OTHER_FP, vc(3)), live(OTHER_FP, concurrent_vc())] {
+            assert_eq!(
+                resolve_trash_collision(&trashed(None), &[&stale, &edit], Some(&vc(2))),
+                TrashCollision::LiveWins
+            );
+        }
+    }
+
+    /// Order of the live versions does not matter.
+    #[test]
+    fn the_outcome_does_not_depend_on_version_order() {
+        let a = live(FP, vc(1));
+        let b = live(OTHER_FP, concurrent_vc());
+        let t = trashed(None);
+        assert_eq!(
+            resolve_trash_collision(&t, &[&a, &b], Some(&vc(2))),
+            resolve_trash_collision(&t, &[&b, &a], Some(&vc(2)))
+        );
     }
 
     #[test]
-    fn resolve_no_collision_keeps_everything() {
-        let live: BTreeSet<[u8; 16]> = [[0x0B; 16]].into_iter().collect();
-        let (remove, trash) = resolve_live_vs_trash(&live, vec![te(0x0A, 100, 0, None, Some(50))]);
-        assert!(remove.is_empty());
-        assert_eq!(trash.len(), 1);
+    fn a_needed_trashed_file_that_was_not_read_is_unavailable() {
+        let v = live(OTHER_FP, vc(1));
+        assert_eq!(
+            resolve_trash_collision(&trashed(None), &[&v], None),
+            TrashCollision::TrashedVersionUnavailable
+        );
+    }
+
+    /// A legacy entry names no version, so nothing is covered.
+    #[test]
+    fn a_legacy_entry_without_a_fingerprint_loses_to_live() {
+        let v = live(FP, vc(1));
+        let t = te(0x0A, 100, 0, None, None);
+        assert!(!needs_trashed_clock(&t, &[&v]));
+        assert_eq!(
+            resolve_trash_collision(&t, &[&v], None),
+            TrashCollision::LiveWins
+        );
     }
 }

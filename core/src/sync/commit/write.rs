@@ -42,7 +42,7 @@ use crate::vault::orchestrators::{
     format_uuid_hyphenated, BLOCKS_SUBDIR, BLOCK_FILE_EXTENSION, MANIFEST_FILENAME,
 };
 use crate::vault::record::Record;
-use crate::vault::verify_vault_state;
+use crate::vault::session_state::verify_vault_state_for_merge;
 use crate::vault::{
     encode_block_file, encode_manifest_file, encrypt_block, sign_manifest, BlockHeader,
     BlockPlaintext, ManifestHeader, RecipientPublicKeys, FILE_KIND_BLOCK,
@@ -51,10 +51,11 @@ use crate::vault::{
 /// Atomic commit of a merged + decided vault state.
 ///
 /// Re-verifies the vault from the already-unlocked `identity` via
-/// [`verify_vault_state`] (manifest hybrid signature, owner-card key
-/// binding, KDF cross-check, and `verify_block_fingerprints` per design
-/// §D6; no password, no Argon2id), re-hashes the on-disk
-/// manifest envelope for TOCTOU freshness against `draft.manifest_hash`,
+/// [`crate::vault::verify_vault_state`]'s checks (manifest hybrid signature,
+/// owner-card key binding, KDF cross-check, and `verify_block_fingerprints`
+/// per design §D6, skipping the blocks the merged trash removes; no password,
+/// no Argon2id), re-hashes the on-disk manifest envelope for TOCTOU
+/// freshness against `draft.manifest_hash`,
 /// applies the caller's [`VetoDecision`] slice via `apply_decisions`,
 /// re-encrypts every diverging block with a fresh AEAD nonce, its merged
 /// `block_name` and `unknown` map, and its written clock (the fold's, plus
@@ -63,8 +64,10 @@ use crate::vault::{
 /// bytes, builds a new manifest body (updated `BlockEntry.fingerprint` /
 /// `block_name` / `vector_clock_summary` / `last_mod_ms` plus the
 /// manifest-level `vector_clock`, which is `draft.post_merge_clock` plus
-/// one for `draft.merging_device` per crypto-design §10), hybrid-signs the
-/// manifest, and atomically writes block-first then manifest-last.
+/// one for `draft.merging_device` per crypto-design §10, with
+/// `draft.merged_trash` as its trash and every block that trash holds
+/// dropped from `blocks`, §11.6), hybrid-signs the manifest, and atomically
+/// writes block-first then manifest-last.
 ///
 /// On success, returns the new [`SyncState`], whose clock is the written
 /// manifest clock, for the caller to persist into the OS keystore.
@@ -81,7 +84,10 @@ use crate::vault::{
 ///   `draft` and the on-disk manifest (a `block_uuid` in
 ///   `draft.plan.diverging_blocks` missing from `draft.per_block_clocks`
 ///   / `draft.per_block_meta` / `draft.per_block_records` or from the
-///   verified on-disk manifest).
+///   verified on-disk manifest), a draft that rewrites a block its merged
+///   trash removes, or an added entry (§11.7) for a block the verified
+///   manifest already lists, the merged trash holds, or the plan does not
+///   name. Each is refused before any file is written.
 /// - [`SyncError::Vault`] — wraps any re-verification, AEAD encrypt,
 ///   encoding, signing, or `write_atomic` failure.
 ///
@@ -106,7 +112,14 @@ pub fn commit_with_decisions(
     // verify_block_fingerprints (D6 gate) so a commit-in-progress crash
     // from a prior call surfaces as VaultError::BlockFingerprintMismatch
     // here rather than producing a silently inconsistent state.
-    let verified = verify_vault_state(vault_folder, identity, None).map_err(SyncError::Vault)?;
+    //
+    // A block still in `draft.merged_trash` leaves `blocks` (crypto-design
+    // §11.6): its file is not checked, since the device that trashed it may
+    // have moved it to `trash/` already.
+    let trashed_by_merge: BTreeSet<[u8; 16]> =
+        draft.merged_trash.iter().map(|t| t.block_uuid).collect();
+    let verified = verify_vault_state_for_merge(vault_folder, identity, &trashed_by_merge)
+        .map_err(SyncError::Vault)?;
 
     // Step 2: TOCTOU freshness re-check. Read the manifest envelope
     // bytes off disk, BLAKE3-hash them, compare with the hash captured
@@ -146,10 +159,24 @@ pub fn commit_with_decisions(
     // list contains exactly the owner, mirroring save_block / share_block.
     let bag = OwnerKeyBag::derive(&identity.identity, &verified.owner_card)?;
 
+    // A block the merge rewrites must survive it: one still in the merged
+    // trash would be written and then dropped from `blocks`.
+    if let Some(block_uuid) = draft
+        .plan
+        .diverging_blocks
+        .iter()
+        .find(|b| trashed_by_merge.contains(*b))
+    {
+        return Err(SyncError::InvalidArgument {
+            detail: format!("draft rewrites block {block_uuid:02x?}, which its trash removes"),
+        });
+    }
+
     // The manifest the merge writes over: the verified one, plus the entry of
     // each block new to this device (crypto-design §11.7), which the merge
-    // carries from the copy it came from. Each must name a planned block the
-    // verified manifest lists in neither `blocks` nor `trash`; checked before
+    // carries from the copy it came from. Each must name a planned block
+    // neither the verified manifest's `blocks` nor the merged trash holds
+    // (a block live beat the trash for is carried too, §11.6); checked before
     // any write, since a repeated `block_uuid` would otherwise surface only
     // at signing, after the block files were written.
     let mut base_manifest = verified.manifest.clone();
@@ -162,11 +189,7 @@ pub fn commit_with_decisions(
             .blocks
             .iter()
             .any(|b| b.block_uuid == *block_uuid)
-            || verified
-                .manifest
-                .trash
-                .iter()
-                .any(|t| t.block_uuid == *block_uuid);
+            || trashed_by_merge.contains(block_uuid);
         if entry.block_uuid != *block_uuid
             || known
             || !draft.plan.diverging_blocks.contains(block_uuid)
@@ -214,21 +237,16 @@ pub fn commit_with_decisions(
         }
     }
 
-    // #401: apply the reconciled trash list and resolve any live-vs-trash
-    // collision so the signed manifest stays well-formed (disjoint
-    // blocks/trash). Purge is terminal — a purged trash entry whose block
-    // is (concurrently) live wins: the block is dropped, the entry kept.
-    // A non-purged collision loses to the live block. commit never deletes
-    // block *files*; the open-time sweep destroys purged ciphertext.
-    let live_uuids: BTreeSet<[u8; 16]> = new_manifest.blocks.iter().map(|b| b.block_uuid).collect();
-    let (blocks_to_remove, reconciled_trash) =
-        crate::vault::resolve_live_vs_trash(&live_uuids, draft.merged_trash.clone());
-    if !blocks_to_remove.is_empty() {
-        new_manifest
-            .blocks
-            .retain(|b| !blocks_to_remove.contains(&b.block_uuid));
-    }
-    new_manifest.trash = reconciled_trash;
+    // #401, #783: apply the reconciled trash list. `prepare_merge` already
+    // resolved every live-vs-trash collision (crypto-design §11.6) and
+    // removed from it every entry a live block beat, so each block it holds
+    // leaves `blocks` and the signed manifest stays well-formed (disjoint
+    // blocks/trash). commit never moves or deletes block *files*; the
+    // open-time sweeps relocate trashed and destroy purged ciphertext.
+    new_manifest
+        .blocks
+        .retain(|b| !trashed_by_merge.contains(&b.block_uuid));
+    new_manifest.trash = draft.merged_trash.clone();
 
     // Step 7: sign + encode + atomic-write the manifest. The manifest
     // header preserves vault_uuid + created_at_ms from the prior

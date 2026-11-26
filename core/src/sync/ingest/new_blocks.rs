@@ -1,10 +1,10 @@
 //! Blocks new to the merging device (crypto-design §11.7, #781).
 //!
-//! A block that a conflict copy lists, and the canonical manifest lists in
-//! neither `blocks` nor `trash`, was created on a device this one has not
-//! merged with yet. The merged manifest's clock covers that copy, so dropping
-//! the block would lose it for good. It is ingested as a diverging block whose
-//! own file stands in for the local side.
+//! A block that a conflict copy lists, and the canonical manifest does not,
+//! was created on a device this one has not merged with yet, or is in the
+//! merged trash and live won there (§11.6). The merged manifest's clock
+//! covers that copy, so dropping the block would lose it for good. It is
+//! ingested as a diverging block whose own file stands in for the local side.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -13,54 +13,46 @@ use super::block_files::{canonical_block_path, read_block_envelope, read_sibling
 use crate::crypto::sig::{Ed25519Public, MlDsa65Public};
 use crate::identity::fingerprint::Fingerprint;
 use crate::sync::bundle::{BlockDivergence, ManifestSnapshot};
-use crate::vault::Manifest;
+use crate::sync::trash_collision::{counted_manifests, trash_removes};
+use crate::vault::{Manifest, TrashCollision};
 
-/// Every block a copy manifest lists that `canonical` lists in neither
-/// `blocks` nor `trash`, ascending. A block `canonical` has trashed is
-/// reconciled by the trash merge (§11.6), not here. So is a copy's version
-/// whose fingerprint a trash entry in any copy records: that exact file was
-/// trashed, and its own path no longer holds it, so requiring it would refuse
-/// every retry.
+/// Every block a counted copy manifest lists that `canonical` does not,
+/// ascending (crypto-design §11.7), unless the merged trash removes it
+/// (§11.6: the trash won, or no counted manifest lists it live). A block
+/// whose collision cannot be decided yet is refused by `prepare_merge`
+/// instead.
 #[must_use]
 pub(crate) fn blocks_new_to_canonical(
     canonical: &Manifest,
     copies: &[ManifestSnapshot],
+    collisions: &BTreeMap<[u8; 16], TrashCollision>,
 ) -> BTreeSet<[u8; 16]> {
-    let known: BTreeSet<[u8; 16]> = canonical
-        .blocks
-        .iter()
+    let known: BTreeSet<[u8; 16]> = canonical.blocks.iter().map(|b| b.block_uuid).collect();
+    counted_manifests(canonical, copies)
+        .into_iter()
+        .flat_map(|m| m.blocks.iter())
         .map(|b| b.block_uuid)
-        .chain(canonical.trash.iter().map(|t| t.block_uuid))
-        .collect();
-    let trashed: BTreeSet<([u8; 16], [u8; 32])> = copies
-        .iter()
-        .flat_map(|c| c.manifest.trash.iter())
-        .filter_map(|t| t.fingerprint.map(|fp| (t.block_uuid, fp)))
-        .collect();
-    copies
-        .iter()
-        .flat_map(|c| c.manifest.blocks.iter())
-        .filter(|b| !known.contains(&b.block_uuid))
-        .filter(|b| !trashed.contains(&(b.block_uuid, b.fingerprint)))
-        .map(|b| b.block_uuid)
+        .filter(|uuid| !known.contains(uuid))
+        .filter(|uuid| collisions.get(uuid) != Some(&TrashCollision::TrashedVersionUnavailable))
+        .filter(|uuid| !trash_removes(uuid, canonical, copies, collisions))
         .collect()
 }
 
-/// Add a [`BlockDivergence`] to `out` for each block new to `canonical`: the
-/// authenticated file at its own path is the canonical envelope, its
-/// authenticated siblings the copies. A block whose own file is unreadable
-/// or fails authentication is left out, and `prepare_merge` then refuses the
-/// merge until it arrives. Folder-level I/O errors propagate.
+/// Add a [`BlockDivergence`] to `out` for each of `new_blocks` (see
+/// [`blocks_new_to_canonical`]): the authenticated file at its own path is
+/// the canonical envelope, its authenticated siblings the copies. A block
+/// whose own file is unreadable or fails authentication is left out, and
+/// `prepare_merge` then refuses the merge until it arrives. Folder-level I/O
+/// errors propagate.
 pub(super) fn ingest_new_blocks(
     folder: &Path,
-    canonical: &Manifest,
-    copies: &[ManifestSnapshot],
+    new_blocks: BTreeSet<[u8; 16]>,
     canonical_owner_fp: Fingerprint,
     owner_ed25519_pk: &Ed25519Public,
     owner_ml_dsa_65_pk: &MlDsa65Public,
     out: &mut BTreeMap<[u8; 16], BlockDivergence>,
 ) -> Result<(), std::io::Error> {
-    for block_uuid in blocks_new_to_canonical(canonical, copies) {
+    for block_uuid in new_blocks {
         let Some(canonical_envelope) = read_block_envelope(
             canonical_block_path(folder, &block_uuid),
             canonical_owner_fp,
@@ -104,7 +96,10 @@ mod tests {
             format_version: 1,
             suite_id: 1,
             owner_user_uuid: [0; 16],
-            vector_clock: vec![],
+            vector_clock: vec![crate::vault::block::VectorClockEntry {
+                device_uuid: [0x0B; 16],
+                counter: 1,
+            }],
             blocks,
             trash,
             kdf_params: KdfParamsRef {
@@ -142,7 +137,13 @@ mod tests {
         }
     }
 
-    fn snap(m: Manifest) -> ManifestSnapshot {
+    /// A copy manifest whose clock names `device` alone, so it is concurrent
+    /// with the canonical manifest and every other copy: none is superseded.
+    fn snap_from(device: u8, mut m: Manifest) -> ManifestSnapshot {
+        m.vector_clock = vec![crate::vault::block::VectorClockEntry {
+            device_uuid: [device; 16],
+            counter: 1,
+        }];
         ManifestSnapshot {
             manifest: m,
             raw_envelope_bytes: vec![],
@@ -150,45 +151,75 @@ mod tests {
         }
     }
 
+    fn snap(m: Manifest) -> ManifestSnapshot {
+        snap_from(0x0C, m)
+    }
+
+    fn new(canonical: &Manifest, copies: &[ManifestSnapshot]) -> Vec<[u8; 16]> {
+        let collisions =
+            crate::sync::trash_collision::collisions(canonical, copies, &BTreeMap::new());
+        blocks_new_to_canonical(canonical, copies, &collisions)
+            .into_iter()
+            .collect()
+    }
+
     #[test]
     fn a_block_only_a_copy_lists_is_new() {
         let copies = [snap(manifest(vec![live(FP)], vec![]))];
-        let got = blocks_new_to_canonical(&manifest(vec![], vec![]), &copies);
-        assert_eq!(got.into_iter().collect::<Vec<_>>(), vec![BLOCK]);
+        assert_eq!(new(&manifest(vec![], vec![]), &copies), vec![BLOCK]);
     }
 
-    /// §11.6 reconciles a block the canonical manifest has trashed.
+    /// The canonical manifest trashed exactly the version the copy lists, so
+    /// the trash wins (§11.6).
     #[test]
     fn a_block_the_canonical_manifest_trashed_is_not_new() {
         let copies = [snap(manifest(vec![live(FP)], vec![]))];
         let canonical = manifest(vec![], vec![trashed(Some(FP))]);
-        assert!(blocks_new_to_canonical(&canonical, &copies).is_empty());
+        assert!(new(&canonical, &copies).is_empty());
     }
 
-    /// Another copy trashed exactly that file, so its path no longer holds
-    /// it: requiring it would refuse every retry.
+    /// Another copy trashed exactly that version: the trash wins.
     #[test]
     fn a_version_another_copy_trashed_is_not_new() {
         let copies = [
             snap(manifest(vec![live(FP)], vec![])),
-            snap(manifest(vec![], vec![trashed(Some(FP))])),
+            snap_from(0x0D, manifest(vec![], vec![trashed(Some(FP))])),
         ];
-        assert!(blocks_new_to_canonical(&manifest(vec![], vec![]), &copies).is_empty());
+        assert!(new(&manifest(vec![], vec![]), &copies).is_empty());
     }
 
-    /// A trash entry for another version, or one recording no fingerprint,
-    /// does not account for this version.
+    /// A legacy entry recording no fingerprint loses to the live copy, so the
+    /// block is carried.
     #[test]
-    fn a_version_no_trash_entry_records_is_new() {
-        for t in [trashed(Some([0x22; 32])), trashed(None)] {
-            let copies = [
-                snap(manifest(vec![live(FP)], vec![])),
-                snap(manifest(vec![], vec![t])),
-            ];
-            assert_eq!(
-                blocks_new_to_canonical(&manifest(vec![], vec![]), &copies).len(),
-                1
-            );
-        }
+    fn a_block_a_legacy_entry_trashed_is_new() {
+        let copies = [
+            snap(manifest(vec![live(FP)], vec![])),
+            snap_from(0x0D, manifest(vec![], vec![trashed(None)])),
+        ];
+        assert_eq!(new(&manifest(vec![], vec![]), &copies), vec![BLOCK]);
+    }
+
+    /// A trash entry for another version needs the trashed file to decide;
+    /// without it the block is not carried (`prepare_merge` refuses).
+    #[test]
+    fn a_block_whose_collision_is_undecided_is_not_new() {
+        let copies = [
+            snap(manifest(vec![live(FP)], vec![])),
+            snap_from(0x0D, manifest(vec![], vec![trashed(Some([0x22; 32]))])),
+        ];
+        assert!(new(&manifest(vec![], vec![]), &copies).is_empty());
+    }
+
+    /// Live beat the trash: carried, even though the canonical manifest
+    /// trashed it.
+    #[test]
+    fn a_block_live_won_for_is_new() {
+        let copies = [snap(manifest(vec![live(FP)], vec![]))];
+        let canonical = manifest(vec![], vec![trashed(Some([0x22; 32]))]);
+        let collisions = [(BLOCK, TrashCollision::LiveWins)].into_iter().collect();
+        assert_eq!(
+            blocks_new_to_canonical(&canonical, &copies, &collisions).len(),
+            1
+        );
     }
 }

@@ -88,22 +88,20 @@ fn purge_beats_concurrent_restore_across_conflict_copy() {
 
 /// #401 — the inverse role assignment from the sibling test above. There,
 /// the purger was canonical, so X was already purged-and-not-live in the
-/// canonical manifest *before* any merge ran: `commit_with_decisions`'s
-/// Step 6 `blocks_to_remove` set was always empty (X was never in
-/// `new_manifest.blocks` to begin with), and the outcome held regardless
-/// of whether the `resolve_live_vs_trash` / `retain` / `new_manifest.trash
-/// = reconciled_trash` wiring existed at all.
+/// canonical manifest *before* any merge ran: the commit had nothing to
+/// drop from `new_manifest.blocks`, and the outcome held whatever the
+/// commit's trash wiring did.
 ///
 /// Here the roles are swapped: the RESTORER (R) is canonical, so X is LIVE
 /// in `new_manifest.blocks` going into the merge, while the PURGER (P) is
-/// the conflict copy, contributing a purged `TrashEntry` for X via
-/// `draft.merged_trash`. That forces `live_uuids` to contain X and
-/// `resolve_live_vs_trash` to return `blocks_to_remove = {X}` — the
-/// `retain` call is the only code path that can produce the correct
-/// purge-terminal manifest in this configuration. Without it, X would
-/// remain live in `blocks` (a directly observable, wrong outcome) because
+/// the conflict copy, contributing a purged `TrashEntry` for X. A purged
+/// entry wins (`resolve_trash_collision` returns `TrashWins`), so it stays
+/// in `draft.merged_trash`, and the commit's
+/// `new_manifest.blocks.retain(|b| !trashed_by_merge.contains(..))` is the
+/// only code path that removes X. Without it, X would remain live in
+/// `blocks` (a directly observable, wrong outcome) because
 /// `new_manifest.blocks` starts as a clone of the canonical (R's) manifest
-/// with X live, and nothing else in Step 6 removes it.
+/// with X live.
 #[test]
 fn purge_beats_live_restore_when_restorer_is_canonical() {
     // Baseline with one block X that both devices share.
@@ -154,8 +152,8 @@ fn purge_beats_live_restore_when_restorer_is_canonical() {
     ));
 
     // Re-open the reconciled vault and assert the purge-terminal outcome.
-    // X went into the merge LIVE on the canonical side; only the Step 6
-    // `blocks_to_remove` -> `retain` wiring can have removed it here.
+    // X went into the merge LIVE on the canonical side; only the commit's
+    // `trashed_by_merge` -> `retain` wiring can have removed it here.
     let merged = Baseline::from_folder(shared.folder(), baseline.password().clone());
     let manifest = merged.open_manifest();
     assert!(

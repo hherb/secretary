@@ -74,7 +74,10 @@ pub use retention::{
     DEFAULT_RETENTION_WINDOW_MS,
 };
 pub use session_state::{verify_vault_state, VerifiedVaultState};
-pub use trash_merge::{merge_trash_entry, merge_trash_lists, resolve_live_vs_trash};
+pub use trash_merge::{
+    merge_trash_entry, merge_trash_lists, needs_trashed_clock, resolve_trash_collision,
+    TrashCollision,
+};
 // Cross-target test-hook re-exports: integration tests in `tests/*.rs`
 // (and the C.1.1a conflict-copy scanner internally) reuse the
 // canonical UUID-to-filename formatter and the blocks-subdir / block

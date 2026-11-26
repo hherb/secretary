@@ -6,9 +6,10 @@
 //! re-signs the manifest. The restore side reverses the move: scans
 //! `trash/<uuid>.cbor.enc.*`, picks the file whose suffix matches the
 //! signed `TrashEntry.tombstoned_at_ms` (#205),
-//! decrypts + hybrid-verifies, renames into `blocks/`, purges older
-//! copies, and re-signs the manifest. The §7 / §7.1 file-renaming
-//! semantics are atomic per POSIX `rename(2)`.
+//! decrypts + hybrid-verifies, copies its bytes into `blocks/` (keeping
+//! the trash file, #783), purges older copies, and re-signs the manifest.
+//! The trash move is atomic per POSIX `rename(2)`, the restore copy per
+//! `write_atomic`.
 //!
 //! NOTE: deviation from plan §2.1/2.5/2.6 — the plan called for inline
 //! `#[cfg(test)] mod tests` unit tests in `orchestrators.rs`. We pivot
@@ -506,8 +507,8 @@ fn restore_block_round_trip_after_single_trash() {
 // restore_block — crash resume: file already in blocks/, manifest not updated
 // ---------------------------------------------------------------------------
 
-/// #351: a prior `restore_block` renamed the trash file into `blocks/` (step 6)
-/// then crashed before the manifest write (step 11), leaving the manifest still
+/// #351: a prior `restore_block` (one from before #783, which renamed rather
+/// than copied) moved the trash file into `blocks/` (step 6) then crashed before the manifest write (step 11), leaving the manifest still
 /// listing the signed `TrashEntry` while `trash/` has no matching file. Retrying
 /// must RESUME from the live `blocks/` file (whose bytes hash to the signed
 /// `TrashEntry.fingerprint`) and complete the manifest update — not fail
@@ -628,7 +629,7 @@ fn restore_block_purges_older_copies() {
 
     restore_block(folder, &mut open, block_uuid, device_uuid, 5_000, &mut rng).unwrap();
 
-    // Newest moved to blocks/, older purged.
+    // Newest copied to blocks/, older purged.
     assert!(
         folder
             .join("blocks")
@@ -637,7 +638,8 @@ fn restore_block_purges_older_copies() {
         "newest trashed copy should be restored to blocks/"
     );
     assert!(!older.exists(), "older trashed copy should be purged");
-    assert!(!newest.exists(), "newest moved out of trash/");
+    // vault-format §7.1 step 5 (#783): the restore target stays in trash/.
+    assert!(newest.exists(), "the restored copy is kept in trash/");
 }
 
 // ---------------------------------------------------------------------------
@@ -647,7 +649,7 @@ fn restore_block_purges_older_copies() {
 /// `restore_block` rebuilds the `BlockEntry` from the on-disk file's
 /// header — the per-block `vector_clock_summary` is preserved verbatim,
 /// because the block's *content* did not change between trash and
-/// restore (rename is a move, not a rewrite). This is the sync-
+/// restore (restore writes the trashed bytes unchanged). This is the sync-
 /// correctness invariant that makes restore a continuation, not a
 /// fork.
 #[test]
@@ -1245,7 +1247,8 @@ fn restore_block_ignores_larger_suffix_forgery() {
     restore_block(folder, &mut open, block_uuid, device_uuid, 10_000, &mut rng).unwrap();
 
     // The restored live file is byte-identical to the authentic trashed
-    // file (rename is a move), proving the forgery was NOT selected.
+    // file (restore writes its bytes unchanged), proving the forgery was
+    // NOT selected.
     let restored = folder.join("blocks").join(format!("{uuid_hex}.cbor.enc"));
     assert_eq!(
         fs::read(&restored).unwrap(),
@@ -1253,7 +1256,11 @@ fn restore_block_ignores_larger_suffix_forgery() {
         "restored file must be the authentic signed-timestamp copy, not the larger-suffix forgery",
     );
     assert!(!forgery.exists(), "larger-suffix forgery must be purged");
-    assert!(!authentic.exists(), "authentic copy moved out of trash/");
+    // vault-format §7.1 step 5 (#783): the restore target stays in trash/.
+    assert!(
+        authentic.exists(),
+        "the restored authentic copy is kept in trash/"
+    );
 }
 
 /// #205 regression (the real attack): an attacker plants a **valid,
@@ -1348,7 +1355,11 @@ fn restore_block_selects_signed_timestamp_over_valid_larger_suffix_plant() {
         !plant.exists(),
         "valid larger-suffix stale plant must be purged"
     );
-    assert!(!authentic.exists(), "authentic copy moved out of trash/");
+    // vault-format §7.1 step 5 (#783): the restore target stays in trash/.
+    assert!(
+        authentic.exists(),
+        "the restored authentic copy is kept in trash/"
+    );
 }
 
 /// #205: when a signed `TrashEntry` exists and trash files are present

@@ -28,6 +28,7 @@ use crate::sync::draft::{
 };
 use crate::sync::error::SyncError;
 use crate::sync::outcome::DiffPlan;
+use crate::sync::trash_collision;
 use crate::unlock::UnlockedIdentity;
 use crate::vault::block::{decode_block_file, decrypt_block, BlockPlaintext, VectorClockEntry};
 use crate::vault::conflict::{
@@ -374,8 +375,9 @@ fn merge_error(e: ConflictError) -> SyncError {
 ///   read is unreadable (missing, out of size bounds, or failing
 ///   authentication): a block that diverges by its manifests is not in the
 ///   plan because its own file was unreadable at ingest, or a copy's
-///   version is covered by no version the fold reads. Merging without it
-///   would lose that content for good (#781).
+///   version is covered by no version the fold reads, or a live-vs-trash
+///   collision (crypto-design §11.6) needs the trashed file to be decided.
+///   Merging without it would lose that content for good (#781, #783).
 ///
 /// # Purity & cost
 ///
@@ -390,7 +392,13 @@ pub fn prepare_merge(
     plan: &DiffPlan,
     merging_device: [u8; 16],
 ) -> Result<DraftMerge, SyncError> {
-    completeness::ensure_divergent_blocks_are_planned(bundle, plan)?;
+    let trash_outcomes = trash_collision::collisions(
+        &bundle.canonical.manifest,
+        &bundle.copies,
+        &bundle.trashed_envelopes,
+    );
+    completeness::ensure_trash_collisions_are_decided(&trash_outcomes)?;
+    completeness::ensure_divergent_blocks_are_planned(bundle, &trash_outcomes, plan)?;
     let keys = derive_block_reader_keys(vault_folder, identity)?;
 
     let mut merged_records: BTreeMap<[u8; 16], Record> = BTreeMap::new();
@@ -451,12 +459,40 @@ pub fn prepare_merge(
                 (clock, Some(entry))
             }
         };
+        // Live beat the trash (§11.6): the trashed version is folded too.
+        let trashed = trash_collision::trashed_fold_input(
+            block_uuid,
+            &bundle.canonical.manifest,
+            &bundle.copies,
+            &bundle.trashed_envelopes,
+            &trash_outcomes,
+            divergence,
+        );
         completeness::ensure_uncovered_copies_are_readable(
             block_uuid,
             &canonical_block_clock,
+            trashed.as_ref().map(|(_, clock)| clock.as_slice()),
             &bundle.copies,
             &divergence.copy_envelopes,
         )?;
+        // Pair each copy envelope with its parent manifest's
+        // vector_clock_summary via BLAKE3-256 fingerprint match; positional
+        // alignment between `copy_envelopes` and `bundle.copies` is NOT
+        // guaranteed by 1a. The trashed version is folded with its own
+        // signed header clock, not a manifest pairing, even when it is also
+        // one of the copy envelopes.
+        let mut copy_inputs: Vec<(&[u8], Vec<VectorClockEntry>)> = divergence
+            .copy_envelopes
+            .iter()
+            .filter(|e| trashed.as_ref().is_none_or(|(t, _)| t.bytes != e.bytes))
+            .map(|e| {
+                Ok((
+                    e.bytes.as_slice(),
+                    parent_block_clock(&e.bytes, block_uuid, &bundle.copies)?,
+                ))
+            })
+            .collect::<Result<_, SyncError>>()?;
+        copy_inputs.extend(trashed.map(|(e, clock)| (e.bytes.as_slice(), clock)));
         let canonical_pt = decrypt_block_envelope(&divergence.canonical_envelope.bytes, &keys)?;
 
         let mut acc_records: BTreeMap<[u8; 16], Record> = canonical_pt
@@ -486,13 +522,8 @@ pub fn prepare_merge(
         // This block's collisions, kept only if the fold merged (see below).
         let mut block_collisions: BTreeMap<[u8; 16], BTreeSet<String>> = BTreeMap::new();
 
-        for copy_env in &divergence.copy_envelopes {
-            // Pair the envelope with its parent manifest's
-            // vector_clock_summary via BLAKE3-256 fingerprint match;
-            // positional alignment between `copy_envelopes` and
-            // `bundle.copies` is NOT guaranteed by 1a.
-            let copy_block_clock = parent_block_clock(&copy_env.bytes, block_uuid, &bundle.copies)?;
-            let copy_pt = decrypt_block_envelope(&copy_env.bytes, &keys)?;
+        for (copy_bytes, copy_block_clock) in copy_inputs {
+            let copy_pt = decrypt_block_envelope(copy_bytes, &keys)?;
 
             let acc_pt = BlockPlaintext {
                 block_version: acc_block_version,
@@ -657,14 +688,14 @@ pub fn prepare_merge(
     }
 
     // #401: reconcile trash lists across canonical + every conflict copy,
-    // the exact analog of the post_merge_clock fold above. Carried on the
-    // draft; commit_with_decisions applies it (with purge-terminal
-    // live-vs-trash resolution).
-    let trash_lists: Vec<&[crate::vault::manifest::TrashEntry]> =
-        std::iter::once(bundle.canonical.manifest.trash.as_slice())
-            .chain(bundle.copies.iter().map(|c| c.manifest.trash.as_slice()))
-            .collect();
-    let merged_trash = crate::vault::trash_merge::merge_trash_lists(&trash_lists);
+    // the exact analog of the post_merge_clock fold above, without the
+    // entries a live block beat (§11.6, #783). Carried on the draft;
+    // commit_with_decisions drops every block it still holds from `blocks`.
+    let merged_trash = trash_collision::resolved_trash(
+        &bundle.canonical.manifest,
+        &bundle.copies,
+        &trash_outcomes,
+    );
 
     let collisions: Vec<RecordCollisionSummary> = collisions
         .into_iter()
@@ -694,4 +725,4 @@ pub fn prepare_merge(
 mod tests;
 
 #[cfg(test)]
-mod parent_block_clock_tests;
+pub(crate) mod parent_block_clock_tests;

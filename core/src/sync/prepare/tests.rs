@@ -158,8 +158,9 @@ fn tied_timestamps_smallest_device_wins() {
 fn merge_trash_lists_is_wired_into_prepare_merge_shape() {
     // Compile-level guard: the fold helper is reachable from this module
     // and produces a sorted union. Full integration coverage is in
-    // core/tests/ (Task 7). This pins that prepare_merge builds
-    // `merged_trash` via the pure fn rather than dropping peer trash.
+    // core/tests/ (Task 7). It does not pin prepare_merge's wiring, which
+    // goes through `trash_collision::resolved_trash`; the integration tests
+    // in sync_trash_merge.rs and sync_trash_vs_live.rs do.
     use crate::vault::manifest::TrashEntry;
     use crate::vault::trash_merge::merge_trash_lists;
     use std::collections::BTreeMap;

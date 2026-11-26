@@ -5,7 +5,8 @@
 //! therefore the manifest's `BlockEntry.fingerprint` (BLAKE3-256 of
 //! those bytes) unchanged. This is the sync-correctness property —
 //! restore is a continuation, not a fork — and it holds across the
-//! input domain because `rename(2)` is a move, not a rewrite.
+//! input domain because trash renames the file and restore writes its
+//! bytes back unchanged.
 //!
 //! Cases pinned at 16 to match `share_block_proptest`'s rationale:
 //! per-case Argon2id-protected vault open dominates wall clock even at
@@ -159,8 +160,8 @@ proptest! {
 
     /// Property: `save → trash → restore` preserves the BlockEntry's
     /// fingerprint over arbitrary block_uuid + block_name inputs. The
-    /// fingerprint is BLAKE3-256 of the on-disk file bytes; `rename(2)`
-    /// does not mutate file content, so the post-restore fingerprint
+    /// fingerprint is BLAKE3-256 of the on-disk file bytes; neither the
+    /// trash rename nor the restore copy changes them, so the post-restore fingerprint
     /// matches the post-save fingerprint exactly.
     #[test]
     fn trash_restore_round_trip_preserves_block_fingerprint(

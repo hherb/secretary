@@ -6,21 +6,39 @@
 //! next sync sees an equal clock and reads no sibling, and the copy's own
 //! device adopts the merged manifest.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::crypto::hash::hash as blake3_hash;
 use crate::sync::bundle::{BlockEnvelope, ManifestSnapshot, VaultBundle};
 use crate::sync::error::SyncError;
-use crate::sync::ingest::{
-    blocks_new_to_canonical, copy_version_is_uncovered, listed_block_diverges,
-};
+use crate::sync::ingest::{blocks_new_to_canonical, copy_version_is_uncovered};
 use crate::sync::outcome::DiffPlan;
+use crate::sync::trash_collision::listed_block_needs_merge;
 use crate::vault::block::VectorClockEntry;
-use crate::vault::BlockEntry;
+use crate::vault::{BlockEntry, TrashCollision};
+
+/// Check that every live-vs-trash collision (crypto-design §11.6) could be
+/// decided: none needed a trashed file that ingest could not read.
+///
+/// # Errors
+///
+/// [`SyncError::BlockCopyUnavailable`] for the first undecided collision.
+pub(super) fn ensure_trash_collisions_are_decided(
+    collisions: &BTreeMap<[u8; 16], TrashCollision>,
+) -> Result<(), SyncError> {
+    match collisions
+        .iter()
+        .find(|(_, c)| **c == TrashCollision::TrashedVersionUnavailable)
+    {
+        Some((block_uuid, _)) => Err(unavailable(*block_uuid, "its trashed block file")),
+        None => Ok(()),
+    }
+}
 
 /// Check that every block a merge must read is in `plan`: each block new to
 /// the canonical manifest (crypto-design §11.7), and each block it lists that
-/// a copy's version diverges from. Both are decided from the manifests alone.
+/// a copy's version diverges from, or whose trashed version live carried
+/// (§11.6). Both are decided from the bundle and `collisions` alone.
 /// Ingest leaves a block out when the file standing in for its local side,
 /// `blocks/<uuid>.cbor.enc`, is missing, out of size bounds or fails
 /// authentication.
@@ -30,15 +48,24 @@ use crate::vault::BlockEntry;
 /// [`SyncError::BlockCopyUnavailable`] for the first such block not planned.
 pub(super) fn ensure_divergent_blocks_are_planned(
     bundle: &VaultBundle,
+    collisions: &BTreeMap<[u8; 16], TrashCollision>,
     plan: &DiffPlan,
 ) -> Result<(), SyncError> {
     let canonical = &bundle.canonical.manifest;
     let listed = canonical
         .blocks
         .iter()
-        .filter(|entry| listed_block_diverges(entry, &bundle.copies))
+        .filter(|entry| {
+            listed_block_needs_merge(
+                entry,
+                canonical,
+                &bundle.copies,
+                &bundle.trashed_envelopes,
+                collisions,
+            )
+        })
         .map(|entry| entry.block_uuid);
-    match blocks_new_to_canonical(canonical, &bundle.copies)
+    match blocks_new_to_canonical(canonical, &bundle.copies, collisions)
         .into_iter()
         .chain(listed)
         .find(|uuid| !plan.diverging_blocks.contains(uuid))
@@ -64,7 +91,8 @@ fn unavailable(block_uuid: [u8; 16], what: &'static str) -> SyncError {
 /// covered by one the fold will read: its clock is equal to or dominated by
 /// `canonical_clock`, or by the clock of a version with an envelope in
 /// `envelopes` (matched by BLAKE3-256 fingerprint, as `parent_block_clock`
-/// pairs them). Its own envelope counts, so an uncovered version needs one.
+/// pairs them), or by `trashed_clock`, the trashed version live carried
+/// (§11.6). Its own envelope counts, so an uncovered version needs one.
 ///
 /// # Errors
 ///
@@ -74,6 +102,7 @@ fn unavailable(block_uuid: [u8; 16], what: &'static str) -> SyncError {
 pub(super) fn ensure_uncovered_copies_are_readable(
     block_uuid: &[u8; 16],
     canonical_clock: &[VectorClockEntry],
+    trashed_clock: Option<&[VectorClockEntry]>,
     copies: &[ManifestSnapshot],
     envelopes: &[BlockEnvelope],
 ) -> Result<(), SyncError> {
@@ -86,9 +115,11 @@ pub(super) fn ensure_uncovered_copies_are_readable(
         .flat_map(|c| c.manifest.blocks.iter())
         .filter(|entry| entry.block_uuid == *block_uuid)
         .collect();
-    // The clocks of the versions the fold will read: canonical's, and every
-    // copy version whose file arrived.
+    // The clocks of the versions the fold will read: canonical's, the
+    // carried trashed version's (§11.6), and every copy version whose file
+    // arrived.
     let read_clocks: Vec<&[VectorClockEntry]> = std::iter::once(canonical_clock)
+        .chain(trashed_clock)
         .chain(
             versions
                 .iter()
@@ -145,7 +176,13 @@ mod tests {
     }
 
     fn check(copies: &[ManifestSnapshot], envelopes: &[BlockEnvelope]) -> Result<(), SyncError> {
-        ensure_uncovered_copies_are_readable(&BLOCK, &[vc(CANONICAL_DEVICE, 2)], copies, envelopes)
+        ensure_uncovered_copies_are_readable(
+            &BLOCK,
+            &[vc(CANONICAL_DEVICE, 2)],
+            None,
+            copies,
+            envelopes,
+        )
     }
 
     #[test]
@@ -211,6 +248,7 @@ mod tests {
             canonical: snapshot(canonical),
             copies,
             diverging_blocks: BTreeMap::new(),
+            trashed_envelopes: BTreeMap::new(),
         }
     }
 
@@ -225,14 +263,21 @@ mod tests {
     fn an_unplanned_new_block_is_named() {
         let other: [u8; 16] = [0xBB; 16];
         let mut copy = empty_manifest();
+        // A copy clock concurrent with nothing else folded keeps it counted.
+        copy.vector_clock = vec![vc(COPY_DEVICE, 1)];
         copy.blocks
             .push(block_entry(BLOCK, [1; 32], vec![vc(COPY_DEVICE, 1)]));
         copy.blocks
             .push(block_entry(other, [2; 32], vec![vc(COPY_DEVICE, 1)]));
         let b = bundle(empty_manifest(), vec![snapshot(copy)]);
-        assert!(ensure_divergent_blocks_are_planned(&b, &planned(&[BLOCK, other])).is_ok());
+        assert!(ensure_divergent_blocks_are_planned(
+            &b,
+            &BTreeMap::new(),
+            &planned(&[BLOCK, other])
+        )
+        .is_ok());
         assert!(matches!(
-            ensure_divergent_blocks_are_planned(&b, &planned(&[BLOCK])),
+            ensure_divergent_blocks_are_planned(&b, &BTreeMap::new(), &planned(&[BLOCK])),
             Err(SyncError::BlockCopyUnavailable { block_uuid }) if block_uuid == other
         ));
     }
@@ -250,9 +295,11 @@ mod tests {
         copy.blocks
             .push(block_entry(BLOCK, [2; 32], vec![vc(COPY_DEVICE, 1)]));
         let b = bundle(canonical.clone(), vec![snapshot(copy)]);
-        assert!(ensure_divergent_blocks_are_planned(&b, &planned(&[BLOCK])).is_ok());
+        assert!(
+            ensure_divergent_blocks_are_planned(&b, &BTreeMap::new(), &planned(&[BLOCK])).is_ok()
+        );
         assert!(matches!(
-            ensure_divergent_blocks_are_planned(&b, &planned(&[])),
+            ensure_divergent_blocks_are_planned(&b, &BTreeMap::new(), &planned(&[])),
             Err(SyncError::BlockCopyUnavailable { block_uuid }) if block_uuid == BLOCK
         ));
 
@@ -262,7 +309,39 @@ mod tests {
             .blocks
             .push(block_entry(BLOCK, [3; 32], vec![vc(CANONICAL_DEVICE, 1)]));
         let b = bundle(canonical, vec![snapshot(older)]);
-        assert!(ensure_divergent_blocks_are_planned(&b, &planned(&[])).is_ok());
+        assert!(ensure_divergent_blocks_are_planned(&b, &BTreeMap::new(), &planned(&[])).is_ok());
+    }
+
+    /// The trashed version live carried is read, so a copy version it
+    /// dominates needs no envelope of its own (§11.6).
+    #[test]
+    fn a_version_the_carried_trashed_one_dominates_needs_no_envelope() {
+        let copies = [copy_holding(b"older", vec![vc(COPY_DEVICE, 1)])];
+        let trashed = [vc(COPY_DEVICE, 2)];
+        let got = ensure_uncovered_copies_are_readable(
+            &BLOCK,
+            &[vc(CANONICAL_DEVICE, 2)],
+            Some(&trashed),
+            &copies,
+            &[],
+        );
+        assert!(got.is_ok());
+    }
+
+    #[test]
+    fn an_undecided_collision_is_refused() {
+        let collisions = [
+            ([0x01; 16], TrashCollision::TrashWins),
+            (BLOCK, TrashCollision::TrashedVersionUnavailable),
+        ]
+        .into_iter()
+        .collect();
+        assert!(matches!(
+            ensure_trash_collisions_are_decided(&collisions),
+            Err(SyncError::BlockCopyUnavailable { block_uuid }) if block_uuid == BLOCK
+        ));
+        let decided = [(BLOCK, TrashCollision::LiveWins)].into_iter().collect();
+        assert!(ensure_trash_collisions_are_decided(&decided).is_ok());
     }
 
     #[test]
