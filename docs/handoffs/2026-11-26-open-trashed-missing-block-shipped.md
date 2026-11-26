@@ -119,7 +119,8 @@ reds the first test; excusing every absence reds the other two.
   refuse too), but the error moves from open to sync.
 - **Not covered by a bridge-level test.** The bridge's open and password
   sync reach the fix through `core::open_vault`, which the core tests
-  drive; no test builds this folder through the FFI.
+  drive; no test builds this folder through the FFI (filed as #795). The
+  PR is #794.
 - Carried over from #790: a very stale copy can wedge sync once its trashed
   file has been swept; the sweep window ignores the user's retention
   setting; the repair orchestration's sweep calls do not include the
