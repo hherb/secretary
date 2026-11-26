@@ -15,7 +15,7 @@ mod sync_helpers;
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use convergence_helpers::{reconcile, Baseline, Device, VetoPolicy};
+use convergence_helpers::{apply_trash_move, reconcile, Baseline, Device, VetoPolicy};
 use secretary_core::sync::{
     commit_with_decisions, prepare_merge, sync_once, DraftMerge, SyncError, SyncOutcome, SyncState,
 };
@@ -38,21 +38,6 @@ fn seeded() -> Baseline {
     s.edit_text_field(X_BLOCK, SEED_RECORD, "f", "x", 100);
     s.edit_text_field(Y_BLOCK, SEED_RECORD, "f", "y", 100);
     convergence_helpers::baseline_from_seeded(baseline, &s)
-}
-
-/// Copy every file in `from`'s `trash/` into `shared`'s, and drop `shared`'s
-/// `blocks/X` unless `keep_block` (the trashing device's move, synced).
-fn apply_trash_move(from: &Device, shared: &Path, keep_block: bool) {
-    if !keep_block {
-        let _ = std::fs::remove_file(sync_helpers::block_file_path(shared, &X_BLOCK));
-    }
-    let dst = shared.join("trash");
-    std::fs::create_dir_all(&dst).expect("trash dir");
-    let src = from.folder().join("trash");
-    for e in std::fs::read_dir(src).expect("read trash") {
-        let e = e.expect("trash entry");
-        std::fs::copy(e.path(), dst.join(e.file_name())).expect("copy trash file");
-    }
 }
 
 /// Put `editor`'s `blocks/X` at its own path in `shared`: an edit made
@@ -142,7 +127,7 @@ fn a_device_that_never_saw_the_trash_does_not_bring_the_block_back() {
             shared
         } else {
             let shared = reconcile(&b, Some(&a), Y_BLOCK);
-            apply_trash_move(&a, shared.folder(), false);
+            apply_trash_move(&a, shared.folder(), X_BLOCK, false);
             merge_and_settle(&baseline, shared.folder(), &a, &b);
             shared
         };
@@ -177,7 +162,7 @@ fn a_concurrent_edit_keeps_the_block_live_with_the_trashed_edits() {
             shared
         } else {
             let shared = reconcile(&b, Some(&a), Y_BLOCK);
-            apply_trash_move(&a, shared.folder(), true);
+            apply_trash_move(&a, shared.folder(), X_BLOCK, true);
             merge_and_settle(&baseline, shared.folder(), &a, &b);
             shared
         };
@@ -268,7 +253,7 @@ fn a_commit_refuses_to_rewrite_a_block_its_trash_removes() {
     a.trash_block(X_BLOCK, TRASH_MS);
     b.edit_text_field(X_BLOCK, B_RECORD, "f", "b", 200);
     let shared = reconcile(&b, Some(&a), Y_BLOCK);
-    apply_trash_move(&a, shared.folder(), true);
+    apply_trash_move(&a, shared.folder(), X_BLOCK, true);
     let (identity, draft) = prepare_as(&baseline, shared.folder(), &a);
     let mut draft = draft.expect("prepare_merge");
     assert!(draft.plan.diverging_blocks.contains(&X_BLOCK));
@@ -320,7 +305,7 @@ fn the_merge_waits_for_a_trashed_file_it_needs() {
         "nothing written while refused"
     );
 
-    apply_trash_move(&a, shared.folder(), true);
+    apply_trash_move(&a, shared.folder(), X_BLOCK, true);
     merge_and_settle(&baseline, shared.folder(), &a, &b);
     assert_eq!(
         outcome(&baseline, shared.folder()).records,
@@ -457,7 +442,7 @@ fn a_live_won_block_whose_own_file_is_unreadable_is_refused() {
     a.trash_block(X_BLOCK, TRASH_MS);
     b.edit_text_field(X_BLOCK, B_RECORD, "f", "b", 200);
     let shared = reconcile(&b, Some(&a), Y_BLOCK);
-    apply_trash_move(&a, shared.folder(), true);
+    apply_trash_move(&a, shared.folder(), X_BLOCK, true);
     std::fs::remove_file(sync_helpers::block_file_path(shared.folder(), &X_BLOCK))
         .expect("own file not arrived");
     let (_, draft) = prepare_as(&baseline, shared.folder(), &a);
@@ -515,7 +500,7 @@ fn the_merge_keeps_a_peers_trash_file_its_stale_manifest_does_not_name() {
     a.trash_block(X_BLOCK, TRASH_MS);
     b.edit_text_field(Y_BLOCK, B_RECORD, "f", "b", TRASH_MS + NINETY_DAYS_MS + 1);
     let shared = reconcile(&b, Some(&a), Y_BLOCK);
-    apply_trash_move(&a, shared.folder(), false);
+    apply_trash_move(&a, shared.folder(), X_BLOCK, false);
     let trash_files: Vec<_> = std::fs::read_dir(shared.folder().join("trash"))
         .expect("read trash")
         .map(|e| e.expect("trash entry").path())

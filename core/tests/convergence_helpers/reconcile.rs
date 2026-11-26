@@ -58,3 +58,19 @@ pub fn reconcile(
 
     SharedFolder { _tmp: tmp, folder }
 }
+
+/// Apply a trashing device's synced `blocks/ -> trash/` move to `shared`:
+/// copy every file in `from`'s `trash/` in, and drop `shared`'s
+/// `blocks/<block_uuid>` unless `keep_block` (an edit made concurrently
+/// with the trash keeps the file at its own path).
+pub fn apply_trash_move(from: &Device, shared: &Path, block_uuid: [u8; 16], keep_block: bool) {
+    if !keep_block {
+        let _ = std::fs::remove_file(crate::sync_helpers::block_file_path(shared, &block_uuid));
+    }
+    let dst = shared.join("trash");
+    std::fs::create_dir_all(&dst).expect("trash dir");
+    for e in std::fs::read_dir(from.folder().join("trash")).expect("read trash") {
+        let e = e.expect("trash entry");
+        std::fs::copy(e.path(), dst.join(e.file_name())).expect("copy trash file");
+    }
+}

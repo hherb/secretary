@@ -542,6 +542,8 @@ order against the other checks made during interpretation.
 11. The manifest is now trusted. Use manifest.blocks to enumerate available blocks.
 ```
 
+**Block files at open.** After step 11 the reader checks that each block in `manifest.blocks` has a file at `blocks/<uuid>.cbor.enc` whose BLAKE3-256 fingerprint equals the entry's `fingerprint`, and refuses the open otherwise. A mismatch and an absent file are each reported as a typed error naming the block (§6.5). One absence is excused. A device that trashes a block moves its file to `trash/` (§7). A device that has not seen that trash can write the canonical manifest meanwhile, and that manifest still lists the block. The reader therefore opens the vault when a listed block's file is absent and a conflict-copy manifest in the folder has a `trash` entry for that `block_uuid`, whatever the entry's `fingerprint`: an edit made just before the trash leaves the canonical entry an older fingerprint. The copy counts only if it passes steps 1–9 of this section under the vault owner's keys and carries the same `vault_uuid`. The opened manifest is unchanged, so the block stays listed and a read of it fails as missing. The next sync's merge resolves it (crypto-design §11.6). This trusts no bytes; it only lets a client that opens before it syncs reach that sync.
+
 ### 4.4 Writing the manifest
 
 ```

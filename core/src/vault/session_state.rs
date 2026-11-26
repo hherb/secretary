@@ -11,7 +11,7 @@ use crate::vault::manifest::{self, Manifest, ManifestFile};
 use crate::vault::orchestrators::{
     read_and_verify_manifest, verify_block_fingerprints, MANIFEST_FILENAME, VAULT_TOML_FILENAME,
 };
-use crate::vault::{repair, trash_orphans, VaultError, VectorClockEntry};
+use crate::vault::{repair, trash_orphans, trashed_elsewhere, VaultError, VectorClockEntry};
 
 /// The public half of an opened vault: what [`verify_vault_state`] proves
 /// about the folder on disk, without any identity secret.
@@ -108,14 +108,32 @@ pub(crate) fn verify_vault_state_with_toml(
     // recovery is to re-run `sync_once → prepare_merge →
     // commit_with_decisions`, which is convergent under CRDT
     // idempotence.
+    //
+    // #788: a listed block whose file a concurrent trash moved away is
+    // excused when an authenticated conflict copy trashed it (vault-format
+    // §4.3, "Block files at open"); the next sync's merge decides it.
+    // The folder is scanned only on a miss.
+    let mut trashed_elsewhere = None;
+    let excuse_missing = |uuid: &[u8; 16]| {
+        trashed_elsewhere
+            .get_or_insert_with(|| {
+                trashed_elsewhere::blocks_trashed_by_conflict_copies(
+                    folder,
+                    &manifest_body,
+                    &owner_card,
+                    identity,
+                )
+            })
+            .contains(uuid)
+    };
     if skip_block_files.is_empty() {
-        verify_block_fingerprints(folder, &manifest_body)?;
+        verify_block_fingerprints(folder, &manifest_body, excuse_missing)?;
     } else {
         let mut checked = manifest_body.clone();
         checked
             .blocks
             .retain(|b| !skip_block_files.contains(&b.block_uuid));
-        verify_block_fingerprints(folder, &checked)?;
+        verify_block_fingerprints(folder, &checked, excuse_missing)?;
     }
 
     // #350: best-effort completion of trash renames interrupted between

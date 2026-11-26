@@ -41,6 +41,7 @@ pub(crate) mod session_state;
 pub mod trash_merge;
 pub(crate) mod trash_orphans;
 pub(crate) mod trash_relocation;
+pub(crate) mod trashed_elsewhere;
 
 pub use block::{
     decode_block_file, decrypt_block, encode_block_file, encrypt_block, verify_block_signature,
