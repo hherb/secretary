@@ -1,1 +1,1 @@
-docs/handoffs/2026-11-26-orphan-trash-sweep-shipped.md
+docs/handoffs/2026-11-26-open-trashed-missing-block-shipped.md
