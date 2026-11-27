@@ -21,7 +21,8 @@
 use std::path::Path;
 
 use secretary_core::sync::{
-    commit_with_decisions, prepare_merge, sync_once, SyncOutcome, SyncState, VetoDecision,
+    commit_with_decisions, prepare_merge, sync_once, DraftMerge, SyncError, SyncOutcome, SyncState,
+    VetoDecision,
 };
 use secretary_core::unlock::{open_with_password, UnlockedIdentity};
 
@@ -120,6 +121,31 @@ pub fn sync_as_adopter(
         SyncOutcome::AppliedAutomatically { new_state } => new_state,
         other => panic!("adopter expected AppliedAutomatically, got {other:?}"),
     }
+}
+
+/// Run `sync_once` (at `now_ms`) and `prepare_merge` over `shared` as
+/// `merger`, returning the draft unwrapped so a test can assert a refusal.
+pub fn prepare_as(
+    baseline: &Baseline,
+    shared: &Path,
+    merger: &Device,
+    now_ms: u64,
+) -> (UnlockedIdentity, Result<DraftMerge, SyncError>) {
+    let identity = open_with_password(
+        &std::fs::read(shared.join("vault.toml")).expect("vault.toml"),
+        &std::fs::read(shared.join("identity.bundle.enc")).expect("bundle"),
+        baseline.password(),
+    )
+    .expect("unlock");
+    let vault_uuid = baseline.open_manifest().vault_uuid;
+    let state = SyncState::new(vault_uuid, merger.manifest_clock()).expect("state");
+    let SyncOutcome::ConcurrentDetected { bundle, plan, .. } =
+        sync_once(shared, &identity, &state, now_ms).expect("sync_once")
+    else {
+        panic!("expected ConcurrentDetected");
+    };
+    let draft = prepare_merge(shared, &identity, &bundle, &plan, merger.device_uuid());
+    (identity, draft)
 }
 
 /// True iff re-running `sync_once` from `state` is a no-op (quiescence).

@@ -576,7 +576,7 @@ pub fn open_vault(
         &vault_toml_bytes,
         &unlocked,
         local_highest_clock,
-        &std::collections::BTreeSet::new(),
+        None,
     )?;
 
     Ok(OpenVault {
@@ -676,7 +676,9 @@ pub(crate) fn read_vault_manifest_full(
 /// file surfaces the UUID-tagged [`VaultError::BlockFileMissing`]
 /// (#350/#88). Other I/O failures (permissions, etc.) still surface a
 /// generic [`VaultError::Io`] with a static context string that does
-/// not carry the failing block's UUID.
+/// not carry the failing block's UUID. An absent file for which
+/// `excuse_missing(block_uuid)` returns `true` is skipped instead (#788;
+/// vault-format §4.3, "Block files at open"); it is asked only on an absence.
 ///
 /// `pub(crate)` because it is only invoked from
 /// [`crate::vault::verify_vault_state`] (and so [`open_vault`]); external
@@ -684,26 +686,36 @@ pub(crate) fn read_vault_manifest_full(
 pub(crate) fn verify_block_fingerprints(
     folder: &Path,
     manifest: &Manifest,
+    mut excuse_missing: impl FnMut(&[u8; 16]) -> bool,
 ) -> Result<(), VaultError> {
     let blocks_dir = folder.join(BLOCKS_SUBDIR);
     for entry in &manifest.blocks {
         let uuid_hex = format_uuid_hyphenated(&entry.block_uuid);
         let block_path = blocks_dir.join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}"));
-        let bytes = std::fs::read(&block_path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                // #350/#88: a listed-but-absent block gets a typed,
-                // uuid-carrying error. Not repairable — see the
-                // variant's doc; recovery is a completed sync.
-                VaultError::BlockFileMissing {
+        let bytes = match std::fs::read(&block_path) {
+            Ok(bytes) => bytes,
+            // #788: the caller vouches for this absence; no bytes are trusted.
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    && excuse_missing(&entry.block_uuid) =>
+            {
+                continue
+            }
+            // #350/#88: a listed-but-absent block gets a typed,
+            // uuid-carrying error. Not repairable — see the
+            // variant's doc; recovery is a completed sync.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(VaultError::BlockFileMissing {
                     block_uuid: entry.block_uuid,
-                }
-            } else {
-                VaultError::Io {
+                })
+            }
+            Err(e) => {
+                return Err(VaultError::Io {
                     context: "failed to read block file for fingerprint check",
                     source: e,
-                }
+                })
             }
-        })?;
+        };
         let got = *blake3_hash(&bytes).as_bytes();
         if got != entry.fingerprint {
             return Err(VaultError::BlockFingerprintMismatch {
@@ -2139,10 +2151,24 @@ pub fn trash_block(
         .iter()
         .position(|b| b.block_uuid == block_uuid)
         .ok_or(VaultError::BlockNotFound { block_uuid })?;
+    // #788: an open may excuse a listed block whose file another device's
+    // trash moved away. Trashing it here would sign a newer trash entry that
+    // wins the merge yet names no file in trash/, stranding that device's
+    // restorable copy, so refuse; a merge by that device trashes it.
+    let uuid_hex = format_uuid_hyphenated(&block_uuid);
+    let src = folder
+        .join(BLOCKS_SUBDIR)
+        .join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}"));
+    if let Err(e) = std::fs::metadata(&src) {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return Err(VaultError::BlockFileMissing { block_uuid });
+        }
+    }
     // #293: capture the live content commitment before removing the entry.
     // The file is moved (rename) unchanged into trash/, so this BLAKE3-256
-    // (authenticated at the most recent open_vault) is exactly the hash of
-    // the trashed bytes restore will recompute and check.
+    // (authenticated at the most recent open_vault, whose fingerprint check
+    // the file passed) is exactly the hash of the trashed bytes restore will
+    // recompute and check.
     let content_fingerprint = open.manifest.blocks[entry_idx].fingerprint;
 
     // Step 3 (#350 manifest-first): STAGE the post-trash manifest on a
@@ -2195,10 +2221,6 @@ pub fn trash_block(
     // signed manifest already says trashed; the leftover blocks/ file is
     // a benign orphan open_vault ignores, restore_block resumes from
     // (#351), and the open-time sweep relocates it (#350 Task 4).
-    let uuid_hex = format_uuid_hyphenated(&block_uuid);
-    let src = folder
-        .join(BLOCKS_SUBDIR)
-        .join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}"));
     let dst = folder
         .join(TRASH_SUBDIR)
         .join(format!("{uuid_hex}{BLOCK_FILE_EXTENSION}.{now_ms}"));
@@ -2822,7 +2844,8 @@ mod orchestrator_tests {
     #[test]
     fn verify_block_fingerprints_ok_on_consistent_vault() {
         let (folder, _tmp, manifest) = open_golden_vault_manifest_inline();
-        verify_block_fingerprints(&folder, &manifest).expect("consistent vault must verify");
+        verify_block_fingerprints(&folder, &manifest, |_| false)
+            .expect("consistent vault must verify");
     }
 
     #[test]
@@ -2845,7 +2868,7 @@ mod orchestrator_tests {
             .expect("golden block file must be non-empty") ^= 0xFF;
         std::fs::write(&block_path, &bytes).expect("write corrupted block");
 
-        let err = verify_block_fingerprints(&folder, &manifest)
+        let err = verify_block_fingerprints(&folder, &manifest, |_| false)
             .expect_err("corrupted block must surface a typed mismatch");
         match err {
             VaultError::BlockFingerprintMismatch {
@@ -2884,7 +2907,7 @@ mod orchestrator_tests {
         ));
         std::fs::remove_file(&block_path).expect("remove block file");
 
-        let err = verify_block_fingerprints(&folder, &manifest)
+        let err = verify_block_fingerprints(&folder, &manifest, |_| false)
             .expect_err("missing block file must surface an error");
         match err {
             VaultError::BlockFileMissing { block_uuid: got } => {
